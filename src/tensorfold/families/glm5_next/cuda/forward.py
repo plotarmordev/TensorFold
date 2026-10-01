@@ -99,13 +99,13 @@ class Buffers:
         exl3 = c.quant == "exl3"
         self.ey = torch.empty((rows, slots, D), dtype=bf if prefill and not exl3 else f32, device=dev)
         self.plan = grouped.Plan(rows, slots, c.experts + 1, dev, prefill=prefill and not exl3)
-        self.exl3 = None
+        self.exl3 = None                  # EXL3: the generic kernels' scratch (any bit width), sized to these rows
         if c.quant == "exl3":            # EXL3 routed experts, and the shared expert as a BF16 MLP
-            from .exl3_mm import Scratch
+            from . import exl3_generic
 
             sl = c.shared_width // w.world
-            self.exl3 = Scratch(rows, slots, D, ml, dev)
-            self.exl3_rows = rows
+            ex = next(layer.moe.experts for layer in w.layers if layer.moe is not None)
+            self.exl3 = exl3_generic.scratch(ex, rows, slots, dev)
             self.sgu = torch.empty((rows, 2 * sl), dtype=bf, device=dev)
             self.sact = torch.empty((rows, sl), dtype=bf, device=dev)
             self.sxs = torch.empty((rows, sl // 64), dtype=f32, device=dev)
@@ -397,10 +397,9 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> torch.Tensor:
         grouped.route(b.pick[:R], b.plan)
     if m.shared is not None:
         # EXL3: the routed slots through the trellis kernels, the shared expert (last slot) through BF16 matmuls
-        from . import exl3_mm
-
         from . import exl3_generic
-        ey_flat = exl3_generic.routed(b.normed[:R], b.pick, m.experts, b.exl3.rows, c.limit)
+
+        ey_flat = exl3_generic.routed(b.normed[:R], b.pick[:R], m.experts, b.exl3, R, c.limit)
         b.ey.view(-1, c.hidden)[:ey_flat.shape[0]].copy_(ey_flat)
         s = m.shared
         mm(b, b.normed[:R], s.gu, b.xs[:R], b.sgu[:R])

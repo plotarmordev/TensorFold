@@ -10,8 +10,9 @@ from typing import Any
 import torch
 
 from tensorfold.cuda import experts as grouped
+from tensorfold.cuda.exl3.experts import Exl3RoutedExperts
 
-from .exl3_mm import Exl3Experts, words as exl3_words
+from .exl3_mm import Exl3Experts
 from . import latent
 from .qmm import B16, Q4, as_i32, make_b16, make_q4, quantize4, stack_b16, stack_q4
 
@@ -171,7 +172,7 @@ class MLPW:
 class MoEW:
     router: torch.Tensor      # [E, D] bf16
     bias: torch.Tensor        # [E] fp32
-    experts: grouped.Experts | Exl3Experts  # 4-bit: E + 1 (shared expert last); EXL3: the E routed experts
+    experts: grouped.Experts | Exl3RoutedExperts  # 4-bit: E + 1 (shared expert last); EXL3: the E routed experts
     shared: MLPW | None = None            # EXL3 checkpoints: the shared expert (BF16)
 
 
@@ -226,7 +227,8 @@ class Weights:
             if isinstance(t, torch.Tensor) and t.data_ptr() not in seen:
                 seen.add(t.data_ptr())
                 total += t.numel() * t.element_size()
-            elif isinstance(t, (Q4, B16, grouped.Experts, Exl3Experts, HCW, KDAW, DSAW, MLPW, MoEW, LayerW, MTPW, IndexW)):
+            elif isinstance(t, (Q4, B16, grouped.Experts, Exl3Experts, Exl3RoutedExperts, HCW, KDAW, DSAW, MLPW, MoEW,
+                                LayerW, MTPW, IndexW)):
                 for v in vars(t).values():
                     add(v)
             elif isinstance(t, (list, tuple)):
@@ -345,7 +347,7 @@ def load(model_dir: str | Path, *, rank: int, device: str = "cuda", mtp: bool = 
             slot.copy_(x)
         return out
 
-    def moe_exl3(p: str) -> Exl3Experts:
+    def moe_exl3(p: str) -> Exl3RoutedExperts:
         from tensorfold.cuda.exl3 import experts as generic
         gate = generic.prepare(
             [(rd.get(PREFIX + p + f"experts.{e}.gate_proj.trellis").to(dev),

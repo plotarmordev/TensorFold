@@ -376,10 +376,11 @@ def test_resumed_prompts_equal_fresh_prefills(engine, sampling):
 def test_exl3_checkpoint_drafted_equals_serial(engine_x, sampling):
     """An EXL3 checkpoint through the same engine: every policy's reply equals serial decoding."""
 
+    from tensorfold.cuda.exl3.experts import Exl3RoutedExperts
     from tensorfold.families.glm5_next.cuda.engine import EXL3_AUTO, encode_policy
-    from tensorfold.families.glm5_next.cuda.exl3_mm import Exl3Experts
 
-    assert isinstance(engine_x.w.layers[1].moe.experts, Exl3Experts) and engine_x.w.layers[1].moe.shared is not None
+    moe = engine_x.w.layers[1].moe
+    assert isinstance(moe.experts, Exl3RoutedExperts) and moe.shared is not None
     assert engine_x._effective(encode_policy("auto")) == encode_policy(EXL3_AUTO)       # the default drafts DFlash2
     assert engine_x._effective(encode_policy("auto:1:1:0")) == encode_policy("auto:1:1:0")
     prompt = list(np.random.default_rng(8).integers(0, 1000, size=45))

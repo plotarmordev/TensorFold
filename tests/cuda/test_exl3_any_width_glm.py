@@ -64,8 +64,6 @@ def test_dequant_identity_against_format_unpack():
 def test_prepared_layer_reports_k2_from_the_checkpoint():
     """`prepare` derives k2 from each tensor's own last dim; a 3-bit pack must come
     out as k2 = 6 half-bits, not the 4-bit assumption of the dedicated wrapper."""
-    from tensorfold.cuda.exl3 import experts
-
     ex = _layer()
     assert ex.k2_gu == (K2, K2)
     assert ex.k2_d == (K2, K2)
