@@ -107,6 +107,24 @@ def test_bias_and_the_scale_words_of_older_checkpoints():
     assert torch.equal(signs.svh.cpu(), torch.from_numpy(fmt.unpack_signs(packed_sv)))
 
 
+@pytest.mark.parametrize("split", [(2, 4), (4, 4), (8, 4)])
+def test_a_layer_without_bias_reduces_split_k_as_with_a_zero_bias(split: tuple[int, int]):
+    """No bias, the common case, through the split-K reduction: every row equals the same layer's with an all-zero
+    bias, bit for bit. The reduction's ``finish`` once loaded ``bias[col]`` ahead of its null check, which faulted on
+    an RTX 4090 (CUDA 13) on the first request; under compute-sanitizer the invalid read shows wherever it happens."""
+
+    trellis, suh, svh = _tensors("mcg", 4, kt=64)                # K = 1024, N = 128: one column block, K split
+    plain = linear.Exl3Linear.from_tensors(trellis, suh, svh, "mcg")
+    zero = linear.Exl3Linear.from_tensors(trellis, suh, svh, "mcg", bias=torch.zeros(svh.numel(), dtype=torch.float16))
+    assert plain.bias is None and linear.plan(plain.k, plain.n)[0] > 1   # the shape's own plan splits K
+    plain.split = zero.split = split
+    x = torch.randn((17, plain.k), device="cuda").half()
+    for rows in ROWS[:5]:
+        got = plain(x[:rows], out_dtype=torch.float32)
+        torch.cuda.synchronize()
+        assert torch.equal(got, zero(x[:rows], out_dtype=torch.float32)), rows
+
+
 def test_stored_layout_gives_the_same_bits():
     trellis, suh, svh = _tensors("mul1", 3)
     strips = linear.Exl3Linear.from_tensors(trellis, suh, svh, "mul1", layout="strips")
