@@ -1,0 +1,3 @@
+source ed44eefbaefdfc6b52c0740ac9aeda3bbc5a36ba (base + the test alone), tf-cuda-test sha256 4e044f6e5798735f113305eb1d13880b15bca026b3294832564fe1345b9c6c90
+FAIL shared-fork: NoSideStream
+exit=1

@@ -1,0 +1,95 @@
+diff --git a/zig/tests/cuda/main.zig b/zig/tests/cuda/main.zig
+index 4e520fc3..0cc50bcb 100644
+--- a/zig/tests/cuda/main.zig
++++ b/zig/tests/cuda/main.zig
+@@ -14,6 +14,7 @@ const window_profile = @import("window_profile.zig");
+ const tree_accept = @import("tree_accept.zig");
+ const resume_tests = @import("resume_tests.zig");
+ const prompt_cuts = @import("prompt_cuts.zig");
++const shared_fork = @import("shared_fork.zig");
+ const chunk_costs = @import("chunk_costs.zig");
+ const grouped_tests = @import("grouped_tests.zig");
+ const fp8_tests = @import("fp8_tests.zig");
+@@ -76,6 +77,7 @@ const usage =
+     \\  marks MODEL IDS_FILE N PATTERNS   states kept inside chunks against chunks cut at the same rows, byte for byte
+     \\  prompt-cuts MODEL IDS_FILE   a prompt keeping states inside chunks and at their ends (background passes too), and resumed from each, equals one uncut pass
+     \\  prompt-segments MODEL IDS_FILE   a prompt run as 2 to 4 staggered segments a call equals one uncut pass, byte for byte
++    \\  shared-fork MODEL         the latent MoE's shared expert on the side stream (held back) against one stream, byte for byte
+     \\  recapture MODEL           graphs captured again while another sequence is bound: both keep their sampling rules
+     \\  grouped-plan <dir>        the shared expert plan against experts.route's bytes (oracle/grouped_plan.py)
+     \\  fp8-lane <dir>            block-FP8 projections against the Python lane matmul's bytes (oracle/fp8_lane.py)
+@@ -182,6 +184,7 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
+     if (std.mem.eql(u8, cmd, "marks")) return resume_tests.insideChunks(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2), try arg(rest, 3));
+     if (std.mem.eql(u8, cmd, "prompt-cuts")) return prompt_cuts.run(gpu, try arg(rest, 0), try arg(rest, 1));
+     if (std.mem.eql(u8, cmd, "prompt-segments")) return prompt_cuts.segments(gpu, try arg(rest, 0), try arg(rest, 1));
++    if (std.mem.eql(u8, cmd, "shared-fork")) return shared_fork.run(gpu, try arg(rest, 0));
+     if (std.mem.eql(u8, cmd, "recapture")) return recapture_tests.run(gpu, try arg(rest, 0));
+     if (std.mem.eql(u8, cmd, "grouped-plan")) return grouped_tests.plan(gpu, try arg(rest, 0));
+     if (std.mem.eql(u8, cmd, "carveout")) {
+diff --git a/zig/tests/cuda/shared_fork.zig b/zig/tests/cuda/shared_fork.zig
+new file mode 100644
+index 00000000..8b15a9b0
+--- /dev/null
++++ b/zig/tests/cuda/shared_fork.zig
+@@ -0,0 +1,61 @@
++//! The latent MoE with its shared expert on the side stream against the one-stream MoE, on the checkpoint's weights.
++
++const std = @import("std");
++const cuda = @import("cuda");
++const nemotron = @import("nemotron");
++const check = @import("check.zig");
++
++const hold_bytes = 256 << 20;
++
++/// MODEL in both precisions: every latent MoE layer at 1 to max_rows rows, forked against one stream, byte for byte.
++pub fn run(gpu: check.Gpu, model: []const u8) !void {
++    for ([_]nemotron.Precision{ .checkpoint, .full }) |p| try layers(gpu, model, p);
++}
++
++/// Each layer's delta with the side stream held back by copies before its fork, against the one-stream delta.
++fn layers(gpu: check.Gpu, model: []const u8, precision: nemotron.Precision) !void {
++    const gpa = gpu.gpa;
++    const e = try nemotron.Engine.init(gpa, gpu.io, gpu.ctx, model, null, .{ .context = 4096, .graphs = false, .precision = precision });
++    defer e.deinit();
++    const c = e.c;
++    const b = &e.b;
++    var plain = e.forward(null);
++    plain.side = null;
++    const forked = e.forward(null);
++    const side = forked.side orelse return error.NoSideStream;
++    var moes: std.ArrayList(nemotron.weights.MoE) = .empty;
++    defer moes.deinit(gpa);
++    for (e.w.blocks) |blk| if (blk.kind == .moe) try moes.append(gpa, blk.moe);
++    if (e.w.mtp) |m| try moes.append(gpa, m.moe);
++    var hold = try cuda.DeviceBuffer.alloc(e.ctx.d, hold_bytes);
++    defer hold.free();
++    const held: nemotron.kernels.Ops = .{ .k = &e.k, .s = side.s };
++    const most = nemotron.state.max_rows;
++    const x = try gpa.alloc(u16, most * c.hidden);
++    defer gpa.free(x);
++    const want = try gpa.alloc(u8, most * c.hidden * 2);
++    defer gpa.free(want);
++    const got = try gpa.alloc(u8, want.len);
++    defer gpa.free(got);
++    var prng = std.Random.DefaultPrng.init(0x5eed_f04c);
++    const rng = prng.random();
++    var cases: usize = 0;
++    for (moes.items, 0..) |moe, layer| for (1..most + 1) |rows| {
++        for (x[0 .. rows * c.hidden]) |*v| v.* = @truncate(@as(u32, @bitCast((rng.float(f32) - 0.5) * 4.0)) >> 16);
++        try e.ops().upload(b.y, std.mem.sliceAsBytes(x[0 .. rows * c.hidden]));
++        const len = rows * c.hidden * 2;
++        try nemotron.latent.run(&plain, moe, rows);
++        try e.ops().download(want[0..len], b.delta);
++        // the one-stream pass left the right shared rows behind: a sum that skips the join must read NaN instead
++        const shared_rows = b.ymoe + @as(u64, rows * c.top_k * c.ownShares()) * c.latent * 4;
++        try e.ops().fill32(shared_rows, 0x7fc00000, rows * c.ownShares() * c.hidden);
++        for (0..8) |_| try held.copy(hold.ptr + hold_bytes / 2, hold.ptr, hold_bytes / 2);
++        try nemotron.latent.run(&forked, moe, rows);
++        try e.ops().download(got[0..len], b.delta);
++        try e.stream.synchronize();
++        var what: [64]u8 = undefined;
++        try check.sameBytes(try std.fmt.bufPrint(&what, "shared-fork ({t}): layer {d} at {d} rows", .{ precision, layer, rows }), got[0..len], want[0..len]);
++        cases += 1;
++    };
++    check.pass("shared-fork ({t}): {d} (layer, rows) cases, the forked delta byte-equal to the one-stream delta", .{ precision, cases });
++}

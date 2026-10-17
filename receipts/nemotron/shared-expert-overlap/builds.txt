@@ -1,0 +1,24 @@
+== tip
+14c78e735cc9effb2dfb2c2dc53c54b93d06f481
+== base
+ed44eefbaefdfc6b52c0740ac9aeda3bbc5a36ba
+== testonly
+ed44eefbaefdfc6b52c0740ac9aeda3bbc5a36ba
+ M zig/tests/cuda/main.zig
+?? zig/tests/cuda/shared_fork.zig
+== mut
+14c78e735cc9effb2dfb2c2dc53c54b93d06f481
+ M zig/src/families/nemotron/cuda_latent.zig
+== commands (every build; native only for tip and base)
+zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix <out> -j2
+zig build install -Dsm=121 -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=<out>/fatbin --prefix <out> -j2
+zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=<out>/fatbin --prefix <out> -j2
+== sha256
+33d9dcf6e0064903ce08f723fd6b3559f8b3f03828e71200c9c02e5a314e8d6f  tip/native/bin/tensorfold-native
+f24658bd2f308a05495928e18f9d9e8240323bc11f4573feaef35deaefbdb93f  base/native/bin/tensorfold-native
+07ad762d349ff5028dea72e24327fff73d5c7475a6b0b11919f3ee7431e6710e  tip/bin/tf-cuda-test
+cc76592e24263fb8e3e5ca531a6339011aa2245f0f942fabc9f50b1900e7d4ef  base/bin/tf-cuda-test
+4e044f6e5798735f113305eb1d13880b15bca026b3294832564fe1345b9c6c90  testonly/bin/tf-cuda-test
+298197a24c81775c789fe52f26829590cef6f43cb7fa0f4a49256e41b7818d32  mut/bin/tf-cuda-test
+3847bd4b7d6c46708597688f9d4e8373f42829e62a185ee263d72d12bf119c44  tip/bin/tensorfold
+7a32b9e6176d37fb65706de02690b647c1ec323498f76ad927431e4bff35d5a5  base/bin/tensorfold

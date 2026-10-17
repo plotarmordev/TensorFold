@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "fixture_sha256": "d9d21019cc9f0da94494e7f523df34f503ed20d37b75cb544c10e5c5d5dfcfa8",
+  "requested_reply_tokens": 16,
+  "temperature": 0,
+  "seed": 1234,
+  "rows": [
+    {
+      "phase": "first",
+      "prompt_tokens": 8186,
+      "cached_tokens": 0,
+      "tokens": 16,
+      "cache_state": "cold",
+      "complete": true,
+      "token_sha": "58b069bf157f",
+      "token_sha256": "58b069bf157f046d9c3b33a22d6796284536721199ebafa17cdd6db43619328d",
+      "output_sha256": "6773737ef7c3007d01357fd4ffcb6900155d80a6e52dba4698fc3b1023ea1a15",
+      "ttft_s": 4.457528532017022,
+      "decode_tps": 32.07789278513128
+    },
+    {
+      "phase": "repeated",
+      "prompt_tokens": 8186,
+      "cached_tokens": 0,
+      "tokens": 16,
+      "cache_state": "cold",
+      "complete": true,
+      "token_sha": "58b069bf157f",
+      "token_sha256": "58b069bf157f046d9c3b33a22d6796284536721199ebafa17cdd6db43619328d",
+      "output_sha256": "6773737ef7c3007d01357fd4ffcb6900155d80a6e52dba4698fc3b1023ea1a15",
+      "ttft_s": 4.449915576959029,
+      "decode_tps": 32.05662680922831,
+      "equal_first_tokens": true,
+      "equal_first_output": true
+    },
+    {
+      "phase": "repeated",
+      "prompt_tokens": 8186,
+      "cached_tokens": 0,
+      "tokens": 16,
+      "cache_state": "cold",
+      "complete": true,
+      "token_sha": "58b069bf157f",
+      "token_sha256": "58b069bf157f046d9c3b33a22d6796284536721199ebafa17cdd6db43619328d",
+      "output_sha256": "6773737ef7c3007d01357fd4ffcb6900155d80a6e52dba4698fc3b1023ea1a15",
+      "ttft_s": 4.452521639992483,
+      "decode_tps": 31.923594902857033,
+      "equal_first_tokens": true,
+      "equal_first_output": true
+    },
+    {
+      "phase": "concurrent",
+      "prompt_tokens": 8186,
+      "cached_tokens": 0,
+      "tokens": 16,
+      "cache_state": "cold",
+      "complete": true,
+      "token_sha": "58b069bf157f",
+      "token_sha256": "58b069bf157f046d9c3b33a22d6796284536721199ebafa17cdd6db43619328d",
+      "output_sha256": "6773737ef7c3007d01357fd4ffcb6900155d80a6e52dba4698fc3b1023ea1a15",
+      "ttft_s": 6.448796511045657,
+      "decode_tps": 31.95069131214319,
+      "equal_first_tokens": true,
+      "equal_first_output": true
+    }
+  ],
+  "qualified": true,
+  "source_commit": "14c78e735cc9effb2dfb2c2dc53c54b93d06f481",
+  "binary_sha256": "33d9dcf6e0064903ce08f723fd6b3559f8b3f03828e71200c9c02e5a314e8d6f"
+}

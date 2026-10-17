@@ -1,0 +1,4 @@
+source 14c78e735cc9effb2dfb2c2dc53c54b93d06f481 (tip), tf-cuda-test sha256 07ad762d349ff5028dea72e24327fff73d5c7475a6b0b11919f3ee7431e6710e
+PASS shared-fork (checkpoint): 656 (layer, rows) cases, the forked delta byte-equal to the one-stream delta
+PASS shared-fork (full): 656 (layer, rows) cases, the forked delta byte-equal to the one-stream delta
+exit=0
