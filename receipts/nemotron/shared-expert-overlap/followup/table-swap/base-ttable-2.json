@@ -1,0 +1,31 @@
+{
+  "label": "base-ttable-2",
+  "mode": "concurrent",
+  "source_commit": "ed44eefbaefdfc6b52c0740ac9aeda3bbc5a36ba",
+  "binary_sha256": "f24658bd2f308a05495928e18f9d9e8240323bc11f4573feaef35deaefbdb93f",
+  "gpu": "NVIDIA GB10, 580.173.02",
+  "serve_flags": [
+    "--name",
+    "super",
+    "--no-update-check",
+    "--host",
+    "<loopback>",
+    "--port",
+    "8094",
+    "--prompt-cache-gib",
+    "0"
+  ],
+  "checkpoint": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@82d93699acd3be9e4617c53360fe5b3f5dbeb1b3",
+  "cost_tables_before": {
+    "249d4493496321b6d191c06384c9191b59531941094a9a01c9b52f2609dcb6ea.bin": "32d3e715dcba46b7384a863fa2d7769fd0b2ae8dcd28373073cf2ea93559f93d",
+    "c620f43fd763e4de5859f1f33b55f60f91a75e2bfb788778f49e677660b39478.bin": "32d3e715dcba46b7384a863fa2d7769fd0b2ae8dcd28373073cf2ea93559f93d"
+  },
+  "started": "2026-10-18T02:13:43",
+  "result": "completed",
+  "cost_tables_after": {
+    "249d4493496321b6d191c06384c9191b59531941094a9a01c9b52f2609dcb6ea.bin": "32d3e715dcba46b7384a863fa2d7769fd0b2ae8dcd28373073cf2ea93559f93d",
+    "c620f43fd763e4de5859f1f33b55f60f91a75e2bfb788778f49e677660b39478.bin": "32d3e715dcba46b7384a863fa2d7769fd0b2ae8dcd28373073cf2ea93559f93d"
+  },
+  "violations": [],
+  "gpu_idle_after": true
+}

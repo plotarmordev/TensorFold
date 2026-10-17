@@ -1,0 +1,16 @@
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 70.97 GiB; 8 streams at once, 0.35 GiB each at a 16384-token window, of 32.5 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, a 16.0 GiB prompt cache; own glue kernels
+[tensorfold] serving super at http://<loopback>:8094/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 16384; loaded in 15.4s)
+[tensorfold] thinking on (the chat template's default): replies reason in reasoning_content before the answer in content, and max_tokens counts both. --no-thinking turns it off; a request can send chat_template_kwargs {"enable_thinking": false}
+[tensorfold] <loopback> "GET /v1/models HTTP/1.1" 200 -
+[tensorfold] <loopback> "POST /v1/chat/completions HTTP/1.1" 200 -
+info: prompt cache: 8186 tokens, resumed at 0, kept 2; 2 states, 402 MiB and 0 MiB spare of 15728 MiB (hits 0, misses 1, evicted 0, refused 0, failed 0)
+[tensorfold] done chatcmpl-64c3405719d1b3a0b15055ca3d21a8c0 prompt=8186 cached=0 thinking=False effort=none tokens=256 sha=857f11a3163c finish=length rounds=50 accepted=208/697
+[tensorfold] <loopback> "POST /v1/chat/completions HTTP/1.1" 200 -
+info: prompt cache: 8467 tokens, resumed at 8180, kept 2; 4 states, 882 MiB and 0 MiB spare of 15728 MiB (hits 1, misses 1, evicted 0, refused 0, failed 0)
+[tensorfold] done chatcmpl-ad71cc339fb70bf7a80c33b4c860a1a8 prompt=8467 cached=8180 thinking=False effort=none tokens=256 sha=81b5f8e57655 finish=length rounds=38 accepted=227/262
+[tensorfold] <loopback> "POST /v1/chat/completions HTTP/1.1" 200 -
+info: prompt cache: 8467 tokens, resumed at 8461, kept 0; 4 states, 882 MiB and 0 MiB spare of 15728 MiB (hits 2, misses 1, evicted 0, refused 0, failed 0)
+[tensorfold] done chatcmpl-6e8c1ad34daec481c4cb90b4a9224ca4 prompt=8467 cached=8461 thinking=False effort=none tokens=256 sha=81b5f8e57655 finish=length rounds=255 accepted=0/0
+[tensorfold] <loopback> "POST /v1/chat/completions HTTP/1.1" 200 -
+info: prompt cache: 8186 tokens, resumed at 8180, kept 0; 4 states, 882 MiB and 0 MiB spare of 15728 MiB (hits 3, misses 1, evicted 0, refused 0, failed 0)
+[tensorfold] done chatcmpl-171f638e05c20412b0e062d485620955 prompt=8186 cached=8180 thinking=False effort=none tokens=256 sha=857f11a3163c finish=length rounds=50 accepted=208/697
