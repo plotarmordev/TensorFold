@@ -1,0 +1,8 @@
+Commit: 0a0b2ca5173075ec0bfd96a58762dd4f52dc7f8c
+zig fmt --check zig/src/native/cuda.zig zig/src/native/cuda_refusal.zig zig/src/families/nemotron/cuda_native.zig zig/src/families/nemotron/cuda_lanes.zig zig/src/families/nemotron/cuda_lone.zig
+Result: passed (the following && lean checker executed).
+
+python3 tools/zig/lean_check.py
+Before implementation (base with new refusal tests): 1941 files, 517 problems; exit 1.
+After implementation: 1941 files, 517 problems; exit 1.
+No new finding appears in any changed file; inherited findings were not suppressed.

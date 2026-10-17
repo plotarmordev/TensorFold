@@ -1,0 +1,16 @@
+Command: zig build test -j2
+Zig: installed aarch64-linux-0.17.0 compiler
+Base: 6ee828c2 with the new cuda_refusal tests only
+Exit: 1
+Build Summary: 81/84 steps succeeded (1 failed); 1376/1385 tests passed (7 skipped, 2 failed)
+
+cuda_refusal.test.CUDA MTP controls respect window and probability bounds: TestUnexpectedResult
+Failing assertion: backend(.{ .dir = "d", .model_type = "nemotron_h_omni", .mtp_drafts = 16 }) != null
+
+cuda_refusal.test.CUDA MTP controls refuse unsupported families before device work: TestExpectedStartsWith
+Expected prefix: --mtp-drafts
+Actual: empty string
+Failing assertion: backend(.{ .dir = "d", .model_type = model_type, .mtp_drafts = 0 }) orelse ""
+
+JPEG pixel cases skipped because libjpeg-turbo 3.1.4.1 was not found.
+This receipt transcribes the build output with private absolute stack paths removed.

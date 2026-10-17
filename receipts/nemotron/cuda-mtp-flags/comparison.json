@@ -1,0 +1,321 @@
+{
+  "runs": [
+    {
+      "label": "base-a",
+      "checks": [
+        {
+          "prompt": "code",
+          "equal_base_plain": true,
+          "token_sha256": "51e4c630298a14a1758cd0dfd37324d87ff4d45fd77386cbdc2a91d1030a770e",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 258.0,
+            "tensorfold:mtp_accepted_total": 194.0,
+            "tensorfold:decode_rounds_total": 61.0
+          }
+        },
+        {
+          "prompt": "chat",
+          "equal_base_plain": true,
+          "token_sha256": "161034fd0a090a343d93660eaf9476799296e3c0881c2edf362b3035c6aa34b3",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 282.0,
+            "tensorfold:mtp_accepted_total": 169.0,
+            "tensorfold:decode_rounds_total": 88.0
+          }
+        }
+      ],
+      "decode": [
+        {
+          "prompt": "fibonacci-raw",
+          "decode_tps_median": 42.206691470540946,
+          "decode_tps_all": [
+            42.03,
+            42.22,
+            42.21
+          ]
+        },
+        {
+          "prompt": "gpu-chat-no-think",
+          "decode_tps_median": 32.32611246360249,
+          "decode_tps_all": [
+            32.33,
+            32.33,
+            32.32
+          ]
+        }
+      ]
+    },
+    {
+      "label": "pr-a",
+      "checks": [
+        {
+          "prompt": "code",
+          "equal_base_plain": true,
+          "token_sha256": "51e4c630298a14a1758cd0dfd37324d87ff4d45fd77386cbdc2a91d1030a770e",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 254.0,
+            "tensorfold:mtp_accepted_total": 194.0,
+            "tensorfold:decode_rounds_total": 61.0
+          }
+        },
+        {
+          "prompt": "chat",
+          "equal_base_plain": true,
+          "token_sha256": "161034fd0a090a343d93660eaf9476799296e3c0881c2edf362b3035c6aa34b3",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 282.0,
+            "tensorfold:mtp_accepted_total": 169.0,
+            "tensorfold:decode_rounds_total": 88.0
+          }
+        }
+      ],
+      "decode": [
+        {
+          "prompt": "fibonacci-raw",
+          "decode_tps_median": 42.37905211343394,
+          "decode_tps_all": [
+            42.38,
+            42.38,
+            42.36
+          ]
+        },
+        {
+          "prompt": "gpu-chat-no-think",
+          "decode_tps_median": 32.27903864777345,
+          "decode_tps_all": [
+            32.27,
+            32.29,
+            32.28
+          ]
+        }
+      ]
+    },
+    {
+      "label": "pr-b",
+      "checks": [
+        {
+          "prompt": "code",
+          "equal_base_plain": true,
+          "token_sha256": "51e4c630298a14a1758cd0dfd37324d87ff4d45fd77386cbdc2a91d1030a770e",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 254.0,
+            "tensorfold:mtp_accepted_total": 194.0,
+            "tensorfold:decode_rounds_total": 61.0
+          }
+        },
+        {
+          "prompt": "chat",
+          "equal_base_plain": true,
+          "token_sha256": "161034fd0a090a343d93660eaf9476799296e3c0881c2edf362b3035c6aa34b3",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 282.0,
+            "tensorfold:mtp_accepted_total": 169.0,
+            "tensorfold:decode_rounds_total": 88.0
+          }
+        }
+      ],
+      "decode": [
+        {
+          "prompt": "fibonacci-raw",
+          "decode_tps_median": 42.48738919758714,
+          "decode_tps_all": [
+            42.46,
+            42.49,
+            42.51
+          ]
+        },
+        {
+          "prompt": "gpu-chat-no-think",
+          "decode_tps_median": 32.336432500325536,
+          "decode_tps_all": [
+            32.34,
+            32.32,
+            32.34
+          ]
+        }
+      ]
+    },
+    {
+      "label": "base-b",
+      "checks": [
+        {
+          "prompt": "code",
+          "equal_base_plain": true,
+          "token_sha256": "51e4c630298a14a1758cd0dfd37324d87ff4d45fd77386cbdc2a91d1030a770e",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 258.0,
+            "tensorfold:mtp_accepted_total": 194.0,
+            "tensorfold:decode_rounds_total": 61.0
+          }
+        },
+        {
+          "prompt": "chat",
+          "equal_base_plain": true,
+          "token_sha256": "161034fd0a090a343d93660eaf9476799296e3c0881c2edf362b3035c6aa34b3",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 282.0,
+            "tensorfold:mtp_accepted_total": 169.0,
+            "tensorfold:decode_rounds_total": 88.0
+          }
+        }
+      ],
+      "decode": [
+        {
+          "prompt": "fibonacci-raw",
+          "decode_tps_median": 42.28753220043693,
+          "decode_tps_all": [
+            42.29,
+            42.3,
+            42.27
+          ]
+        },
+        {
+          "prompt": "gpu-chat-no-think",
+          "decode_tps_median": 32.36278654654127,
+          "decode_tps_all": [
+            32.38,
+            32.36,
+            32.35
+          ]
+        }
+      ]
+    },
+    {
+      "label": "cap0",
+      "checks": [
+        {
+          "prompt": "code",
+          "equal_base_plain": true,
+          "token_sha256": "51e4c630298a14a1758cd0dfd37324d87ff4d45fd77386cbdc2a91d1030a770e",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 0.0,
+            "tensorfold:mtp_accepted_total": 0.0,
+            "tensorfold:decode_rounds_total": 255.0
+          }
+        },
+        {
+          "prompt": "chat",
+          "equal_base_plain": true,
+          "token_sha256": "161034fd0a090a343d93660eaf9476799296e3c0881c2edf362b3035c6aa34b3",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 0.0,
+            "tensorfold:mtp_accepted_total": 0.0,
+            "tensorfold:decode_rounds_total": 255.0
+          }
+        }
+      ],
+      "decode": [
+        {
+          "prompt": "fibonacci-raw",
+          "decode_tps_median": 18.598975832107065,
+          "decode_tps_all": [
+            18.6,
+            18.6,
+            18.6
+          ]
+        },
+        {
+          "prompt": "gpu-chat-no-think",
+          "decode_tps_median": 18.5836579332898,
+          "decode_tps_all": [
+            18.58,
+            18.58,
+            18.59
+          ]
+        }
+      ]
+    },
+    {
+      "label": "cap1",
+      "checks": [
+        {
+          "prompt": "code",
+          "equal_base_plain": true,
+          "token_sha256": "51e4c630298a14a1758cd0dfd37324d87ff4d45fd77386cbdc2a91d1030a770e",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 146.0,
+            "tensorfold:mtp_accepted_total": 123.0,
+            "tensorfold:decode_rounds_total": 132.0
+          }
+        },
+        {
+          "prompt": "chat",
+          "equal_base_plain": true,
+          "token_sha256": "161034fd0a090a343d93660eaf9476799296e3c0881c2edf362b3035c6aa34b3",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 141.0,
+            "tensorfold:mtp_accepted_total": 114.0,
+            "tensorfold:decode_rounds_total": 141.0
+          }
+        }
+      ],
+      "decode": [
+        {
+          "prompt": "fibonacci-raw",
+          "decode_tps_median": 29.03244027934333,
+          "decode_tps_all": [
+            29.03,
+            29.02,
+            29.05
+          ]
+        },
+        {
+          "prompt": "gpu-chat-no-think",
+          "decode_tps_median": 27.42612718427563,
+          "decode_tps_all": [
+            27.4,
+            27.43,
+            27.43
+          ]
+        }
+      ]
+    },
+    {
+      "label": "confidence1",
+      "checks": [
+        {
+          "prompt": "code",
+          "equal_base_plain": true,
+          "token_sha256": "51e4c630298a14a1758cd0dfd37324d87ff4d45fd77386cbdc2a91d1030a770e",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 146.0,
+            "tensorfold:mtp_accepted_total": 123.0,
+            "tensorfold:decode_rounds_total": 132.0
+          }
+        },
+        {
+          "prompt": "chat",
+          "equal_base_plain": true,
+          "token_sha256": "161034fd0a090a343d93660eaf9476799296e3c0881c2edf362b3035c6aa34b3",
+          "metrics_delta": {
+            "tensorfold:mtp_drafted_total": 141.0,
+            "tensorfold:mtp_accepted_total": 114.0,
+            "tensorfold:decode_rounds_total": 141.0
+          }
+        }
+      ],
+      "decode": [
+        {
+          "prompt": "fibonacci-raw",
+          "decode_tps_median": 28.927856102241112,
+          "decode_tps_all": [
+            28.93,
+            28.92,
+            28.93
+          ]
+        },
+        {
+          "prompt": "gpu-chat-no-think",
+          "decode_tps_median": 27.31229005657351,
+          "decode_tps_all": [
+            27.31,
+            27.32,
+            27.31
+          ]
+        }
+      ]
+    }
+  ],
+  "passed": 252,
+  "failed": 0
+}
