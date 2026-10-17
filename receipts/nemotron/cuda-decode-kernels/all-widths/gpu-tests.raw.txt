@@ -1,0 +1,118 @@
+NVIDIA GB10, 580.173.02
+== tf-cuda-test kernel-contract
+PASS nonfinite cuda RMS norm tf_rms_rows_bf16 (16-byte form): 2692 non-finite and 18812 finite outputs match the float64 classes
+PASS repeat cuda RMS norm tf_rms_rows_bf16 (16-byte form): five runs byte-identical (91392 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda RMS norm tf_rms_rows_bf16 (16-byte form): 2 shapes within the float64 bound (worst 0.995 of the bound), 5 edges refused by the kernel
+PASS sums cuda RMS norm tf_rms_rows_bf16 (16-byte form): within its bound at k 7168; fp16 sums would miss 256x, bf16 0.6x (a bf16 output follows the sum of squares as ss^-1/2: a bf16 sum's error is a few output ulps (the fp32-out form proves it))
+PASS nonfinite cuda RMS norm tf_rms_rows (f16 in, fp32 out): 2692 non-finite and 18812 finite outputs match the float64 classes
+PASS repeat cuda RMS norm tf_rms_rows (f16 in, fp32 out): five runs byte-identical (182784 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda RMS norm tf_rms_rows (f16 in, fp32 out): 2 shapes within the float64 bound (worst 0.186 of the bound), 5 edges refused by the kernel
+PASS sums cuda RMS norm tf_rms_rows (f16 in, fp32 out): exact sums at k 9216, where fp16 sums would miss by 1864135x and bf16 by 3137x
+FAIL nonfinite control: fmax row max: 1 of 8 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL control: fmax row max: red at nonfinite, as planted
+FAIL repeat control: atomic-add row sum: 4 of 4 repeats differ from the first run's bytes, first at byte 4
+CONTROL control: atomic-add row sum: red at repeat, as planted
+FAIL repeat control: row sum writing its input: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL control: row sum writing its input: red at repeat, as planted
+FAIL shapes control: row sum losing a tail input: at 8x1x1 output 0 is 0.000000e0 where float64 gives -5.117188e-1: 2396744.29 of its bound
+CONTROL control: row sum losing a tail input: red at shapes, as planted
+FAIL sums control: dot summed in half: 79310475.6x over its exact-sum bound at k 4096: not fp32 sums (fp16 would miss 79310476x, bf16 16777216x)
+CONTROL control: dot summed in half: red at sums, as planted
+PASS nonfinite cuda nemotron router logits tf_nemo_router: 640 non-finite and 5504 finite outputs match the float64 classes
+PASS repeat cuda nemotron router logits tf_nemo_router: five runs byte-identical (49152 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda nemotron router logits tf_nemo_router: 9 shapes within the float64 bound (worst 0.003 of the bound), 0 edges refused by the kernel
+PASS sums cuda nemotron router logits tf_nemo_router: exact sums at k 2688, where fp16 sums would miss by 12615x and bf16 by 106612x
+PASS nonfinite cuda nemotron top-k tf_nemo_topk: the stated rule holds: a NaN logit is never picked ahead of a number; ties go to the lower expert; two shared slots follow the top-k
+PASS repeat cuda nemotron top-k tf_nemo_topk: five runs byte-identical (1024 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda nemotron top-k tf_nemo_topk: 5 shapes exact by its own check (worst 0.000 of the bound), 0 edges refused by the kernel
+N/A  sums cuda nemotron top-k tf_nemo_topk: declares none sums
+PASS nonfinite cuda nemotron latent top-k tf_super_topk: the stated rule holds: the one-warp form's bytes, and its host twin's picks: a NaN never ahead of a number, ties to the lower expert, every pick past the numbers expert 0
+PASS repeat cuda nemotron latent top-k tf_super_topk: five runs byte-identical (264 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda nemotron latent top-k tf_super_topk: 7 shapes bit-equal to the kernel it replaces (worst 0.000 of the bound), 0 edges refused by the kernel
+N/A  sums cuda nemotron latent top-k tf_super_topk: declares none sums
+PASS nonfinite cuda qmm_group (cluster tile): 41216 non-finite and 41216 finite outputs match the float64 classes
+PASS repeat cuda qmm_group (cluster tile): five runs byte-identical (329728 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda qmm_group (cluster tile): 12 shapes within the float64 bound (worst 0.987 of the bound), 0 edges refused by the kernel
+PASS sums cuda qmm_group (cluster tile): exact sums at k 4096, where fp16 sums would miss by 10336x and bf16 by 61425x
+PASS nonfinite cuda lane_gemv: 41216 non-finite and 41216 finite outputs match the float64 classes
+PASS repeat cuda lane_gemv: five runs byte-identical (329728 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda lane_gemv: 12 shapes bit-equal to the kernel it replaces (worst 0.000 of the bound), 0 edges refused by the kernel
+PASS sums cuda lane_gemv: exact sums at k 4096, where fp16 sums would miss by 10296x and bf16 by 74642x
+PASS nonfinite cuda lane_gemv split-K: 41216 non-finite and 41216 finite outputs match the float64 classes
+PASS repeat cuda lane_gemv split-K: five runs byte-identical (329728 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda lane_gemv split-K: 8 shapes bit-equal to the kernel it replaces (worst 0.000 of the bound), 4 edges refused by the kernel
+PASS sums cuda lane_gemv split-K: exact sums at k 4096, where fp16 sums would miss by 12821x and bf16 by 85037x
+PASS nonfinite cuda prompt16 FP4 tile 4: 2048 non-finite and 2048 finite outputs match the float64 classes
+PASS repeat cuda prompt16 FP4 tile 4: five runs byte-identical (65536 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda prompt16 FP4 tile 4: 13 shapes within the float64 bound (worst 0.994 of the bound), 0 edges refused by the kernel
+PASS sums cuda prompt16 FP4 tile 4: exact sums at k 2560, where fp16 sums would miss by 491x and bf16 by 6400x
+PASS nonfinite cuda prompt16 FP4 tile 4, fp32 out: 2048 non-finite and 2048 finite outputs match the float64 classes
+PASS repeat cuda prompt16 FP4 tile 4, fp32 out: five runs byte-identical (131072 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda prompt16 FP4 tile 4, fp32 out: 15 shapes within the float64 bound (worst 0.103 of the bound), 0 edges refused by the kernel
+PASS sums cuda prompt16 FP4 tile 4, fp32 out: exact sums at k 3072, where fp16 sums would miss by 16777215x and bf16 by 188277639x
+PASS nonfinite cuda qmmf FP4 fp32 out (slices in a cluster): 2048 non-finite and 2048 finite outputs match the float64 classes
+PASS repeat cuda qmmf FP4 fp32 out (slices in a cluster): five runs byte-identical (32768 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda qmmf FP4 fp32 out (slices in a cluster): 18 shapes within the float64 bound (worst 0.032 of the bound), 0 edges refused by the kernel
+PASS sums cuda qmmf FP4 fp32 out (slices in a cluster): exact sums at k 6144, where fp16 sums would miss by 60753856x and bf16 by 452537422x
+PASS nonfinite cuda qmmf FP4 fp32 out (slices by reduce_kernel<true>): 2048 non-finite and 2048 finite outputs match the float64 classes
+PASS repeat cuda qmmf FP4 fp32 out (slices by reduce_kernel<true>): five runs byte-identical (32768 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda qmmf FP4 fp32 out (slices by reduce_kernel<true>): 18 shapes within the float64 bound (worst 0.033 of the bound), 0 edges refused by the kernel
+PASS sums cuda qmmf FP4 fp32 out (slices by reduce_kernel<true>): exact sums at k 6144, where fp16 sums would miss by 87444880x and bf16 by 471626164x
+PASS nonfinite cuda tf_rank_sum (a reduce-scatter's rank-order sum): 4 non-finite and 32764 finite outputs match the float64 classes
+PASS repeat cuda tf_rank_sum (a reduce-scatter's rank-order sum): five runs byte-identical (262144 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda tf_rank_sum (a reduce-scatter's rank-order sum): 7 shapes within the float64 bound (worst 0.554 of the bound), 0 edges refused by the kernel
+PASS sums cuda tf_rank_sum (a reduce-scatter's rank-order sum): exact sums at k 5, where fp16 sums would miss by infx and bf16 by 22889715029x
+PASS nonfinite cuda ck experts up tf_ck4_up_relu2_few: the stated rule holds: as the prompt kernel it replaces gives them: NaN and infinite alphas, a NaN block scale
+PASS repeat cuda ck experts up tf_ck4_up_relu2_few: five runs byte-identical (10752 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda ck experts up tf_ck4_up_relu2_few: 12 shapes bit-equal to the kernel it replaces (worst 0.000 of the bound), 0 edges refused by the kernel
+PASS sums cuda ck experts up tf_ck4_up_relu2_few: exact sums at k 4096, where fp16 sums would miss by 128x and bf16 by 128x
+PASS nonfinite cuda ck experts down tf_ck4_down_f32_few: the stated rule holds: as the prompt kernel it replaces gives them: NaN and infinite alphas, a NaN block scale
+PASS repeat cuda ck experts down tf_ck4_down_f32_few: five runs byte-identical (16384 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda ck experts down tf_ck4_down_f32_few: 12 shapes bit-equal to the kernel it replaces (worst 0.000 of the bound), 0 edges refused by the kernel
+PASS sums cuda ck experts down tf_ck4_down_f32_few: exact sums at k 2688, where fp16 sums would miss by infx and bf16 by 16777216x
+PASS limits: 29 registered CUDA launches against sm_80/86/89/120/121, 0 problems
+PASS limits live sm_121 most shared bytes a block (opt-in): the driver says 101376, the table 101376
+PASS limits live sm_121 threads a block: the driver says 1024, the table 1024
+PASS limits live norms tf_rms_rows_bf16: 256 threads launched, the driver allows 256; 80 registers, 32 + 0 shared bytes (recorded 80, 32)
+PASS limits live norms tf_rms_rows: 1024 threads launched, the driver allows 1024; 45 registers, 132 + 0 shared bytes (recorded 45, 132)
+PASS limits live router tf_nemo_router: 256 threads launched, the driver allows 256; 40 registers, 0 + 28800 shared bytes (recorded 40, 0)
+PASS limits live router tf_nemo_topk: 32 threads launched, the driver allows 32; 91 registers, 0 + 0 shared bytes (recorded 91, 0)
+PASS limits live latent tf_super_topk: 1024 threads launched, the driver allows 1024; 30 registers, 4352 + 0 shared bytes (recorded 30, 4352)
+PASS limits live qmm_group cluster of 8: 128 threads launched, the driver allows 128; 48 registers, 0 + 35328 shared bytes (recorded 48, 0)
+PASS limits live qmm_group one CTA a tile: 128 threads launched, the driver allows 128; 48 registers, 0 + 35328 shared bytes (recorded 48, 0)
+PASS limits live lane_gemv: 128 threads launched, the driver allows 128; 64 registers, 0 + 35328 shared bytes (recorded 64, 0)
+PASS limits live lane_gemv split-K: 128 threads launched, the driver allows 128; 44 registers, 128 + 17664 shared bytes (recorded 44, 128)
+PASS limits live prompt16 FP4: 128 threads launched, the driver allows 128; 212 registers, 0 + 41984 shared bytes (recorded 212, 0)
+PASS limits live prompt16 FP8: 128 threads launched, the driver allows 128; 218 registers, 0 + 49152 shared bytes (recorded 218, 0)
+PASS limits live prompt16 FP4 fp32 out: 128 threads launched, the driver allows 128; 212 registers, 0 + 41984 shared bytes (recorded 212, 0)
+PASS limits live qmmf FP4 fp32 out 16-row tile: 128 threads launched, the driver allows 128; 56 registers, 0 + 17408 shared bytes (recorded 56, 0)
+PASS limits live qmmf FP4 fp32 out 16-row tile, cluster of 8: 128 threads launched, the driver allows 128; 48 registers, 0 + 17408 shared bytes (recorded 48, 0)
+PASS limits live qmmf FP4 fp32 out 32-row tile: 128 threads launched, the driver allows 128; 64 registers, 0 + 25600 shared bytes (recorded 64, 0)
+PASS limits live qmmf FP4 fp32 out 32-row tile, cluster of 8: 128 threads launched, the driver allows 128; 63 registers, 0 + 25600 shared bytes (recorded 63, 0)
+PASS limits live qmmf FP4 fp32 out 64-row tile: 128 threads launched, the driver allows 128; 78 registers, 0 + 41984 shared bytes (recorded 78, 0)
+PASS limits live qmmf FP4 fp32 out 64-row tile, cluster of 8: 128 threads launched, the driver allows 128; 78 registers, 0 + 41984 shared bytes (recorded 78, 0)
+PASS limits live qmmf FP4 fp32 out fused slices: 128 threads launched, the driver allows 128; 168 registers, 0 + 41984 shared bytes (recorded 168, 0)
+PASS limits live qmmf reduce_kernel<true>: 256 threads launched, the driver allows 1024; 40 registers, 0 + 0 shared bytes (recorded 40, 0)
+PASS limits live ck tf_ck4_up_relu2_few: 128 threads launched, the driver allows 128; 125 registers, 0 + 0 shared bytes (recorded 125, 0)
+PASS limits live ck tf_ck4_down_f32_few: 128 threads launched, the driver allows 128; 128 registers, 0 + 0 shared bytes (recorded 128, 0)
+PASS limits live rank_sum tf_rank_sum: 256 threads launched, the driver allows 256; 40 registers, 0 + 0 shared bytes (recorded 40, 0)
+PASS limits live vit vision_kernel<80, 8> (RADIO): 256 threads launched, the driver allows 256; 122 registers, 0 + 45056 shared bytes (recorded 122, 0)
+PASS limits live vit full_kernel<72> (SigLIP2): 256 threads launched, the driver allows 256; 169 registers, 0 + 65536 shared bytes (recorded 169, 0)
+PASS limits live vit tf_vit_layer_norm: 256 threads launched, the driver allows 256; 40 registers, 32 + 0 shared bytes (recorded 40, 32)
+PASS limits live vit tf_vit_pointwise: 256 threads launched, the driver allows 256; 14 registers, 0 + 0 shared bytes (recorded 14, 0)
+PASS limits live vit tf_vit_bias: 256 threads launched, the driver allows 256; 12 registers, 0 + 0 shared bytes (recorded 12, 0)
+PASS limits live vit tf_vit_unshuffle: 256 threads launched, the driver allows 256; 34 registers, 0 + 0 shared bytes (recorded 34, 0)
+RED  limits live control: past its bounds: 512 threads launched, the driver allows 256; 10 registers, 0 + 0 shared bytes (recorded 10, 0)
+RED  limits live control: heavy at 1,024 threads: 1024 threads launched, the driver allows 384; 166 registers, 0 + 0 shared bytes (recorded 166, 0)
+SUMMARY 15 kernels: 15 pass gates 1-4, 0 fail, 0 known findings; 5 controls: 5 red as planted, 0 missed; 0 limit problems; gates 61466 ms, limits 1 ms
+exit=0
+== tf-cuda-test glue
+PASS glue: 1301 of 1301 comparisons byte-equal to the host references (norms, router, top-k, the latent top-k, conv, scan, attention, draw, several streams at once) and the shared-window kernels to the one-stream ones; every reference at least 16% nonzero
+exit=0
+== tf-cuda-test modelopt
+PASS modelopt repack: fp8, bf16 and fp4 lane tiles and nvfp4 expert blocks (and column halves) equal the host packers
+PASS fp8 lane: rows 1-16 byte-equal, 300 prompt rows chunk-invariant, worst |err| / (1% of max(|ref|, 1)): decode 0.388, prompt 0.389
+PASS bf16 lane: rows 1-16 byte-equal, 300 prompt rows chunk-invariant, worst |err| / (1% of max(|ref|, 1)): decode 0.385, prompt 0.388
+PASS nvfp4 relu^2 experts: rms error / rms(fp64) up 3.316e-3 (decode 3.316e-3), down 1.646e-3 (decode 1.646e-3); 13-row launch bytes == 40-row
+PASS checkpoint nvfp4 experts: 1 and 16 token rows (32 columns a warp, four steps in flight) byte-equal to the same pairs in a 40-row call (64 columns a warp)
+exit=0

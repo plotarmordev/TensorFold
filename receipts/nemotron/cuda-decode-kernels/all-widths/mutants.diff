@@ -1,0 +1,37 @@
+diff --git a/zig/kernels/cuda/ck_experts.cu b/zig/kernels/cuda/ck_experts.cu
+index 11efa553..365f9cda 100644
+--- a/zig/kernels/cuda/ck_experts.cu
++++ b/zig/kernels/cuda/ck_experts.cu
+@@ -129,8 +129,15 @@ __device__ __forceinline__ void grouped(const uint8_t* __restrict__ codes, const
+                 if (kg + U - 1 < KG) fetch(kg + U - 1, st[(u + U - 1) % U]);
+                 if (kg < KG)
+ #pragma unroll
+-                    for (int j = 0; j < TJ; ++j)
+-                        mma4::mma_fp4(acc[j], st[u].a, st[u].b[j].x, st[u].b[j].y, st[u].sa, st[u].s[j]);
++                    for (int j = 0; j < TJ; ++j) {
++                        if constexpr (U == 4) {
++                            float t4[4] = {0.0f, 0.0f, 0.0f, 0.0f};
++                            mma4::mma_fp4(t4, st[u].a, st[u].b[j].x, st[u].b[j].y, st[u].sa, st[u].s[j]);
++                            for (int q = 0; q < 4; ++q) acc[j][q] += t4[q];
++                        } else {
++                            mma4::mma_fp4(acc[j], st[u].a, st[u].b[j].x, st[u].b[j].y, st[u].sa, st[u].s[j]);
++                        }
++                    }
+             }
+         }
+         const float al = __ldg(alpha + e);
+diff --git a/zig/kernels/cuda/nemotron_latent.cu b/zig/kernels/cuda/nemotron_latent.cu
+index efc55b77..a972f896 100644
+--- a/zig/kernels/cuda/nemotron_latent.cu
++++ b/zig/kernels/cuda/nemotron_latent.cu
+@@ -46,8 +46,8 @@ extern "C" __global__ void __launch_bounds__(MAXE)
+             for (int q = 0; q < 4; ++q) {
+                 const float4 v = sel4[j / 4 + q];
+                 const int i = j + 4 * q;
+-                rank += beats(v.x, i, sel, e) + beats(v.y, i + 1, sel, e) + beats(v.z, i + 2, sel, e) +
+-                        beats(v.w, i + 3, sel, e);
++                rank += beats(v.x, -i, sel, -e) + beats(v.y, -(i + 1), sel, -e) + beats(v.z, -(i + 2), sel, -e) +
++                        beats(v.w, -(i + 3), sel, -e);
+             }
+         }
+         if (rank < TOPK) pick_s[rank] = e, prob_s[rank] = score;
