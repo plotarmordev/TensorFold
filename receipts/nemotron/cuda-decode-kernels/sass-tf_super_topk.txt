@@ -1,0 +1,3 @@
+cuobjdump -sass (CUDA 13.0) of nemotron_latent.fatbin (sm_121) from main 6ee828c2 and from e367c8f5, function tf_super_topk,
+addresses stripped: 23253 lines each, 0 differing lines (identical code).
+sha256 of the two SASS listings after stripping: c43924d7515adc15 / c43924d7515adc15

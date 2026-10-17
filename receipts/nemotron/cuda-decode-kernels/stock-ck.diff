@@ -1,0 +1,49 @@
+diff --git a/zig/tests/cuda/contract_ck.zig b/zig/tests/cuda/contract_ck.zig
+index f8528e77..bb1264b5 100644
+--- a/zig/tests/cuda/contract_ck.zig
++++ b/zig/tests/cuda/contract_ck.zig
+@@ -49,6 +49,7 @@ pub const Experts = struct {
+     out: u64 = 0,
+     base: u64 = 0,
+     msg: [160]u8 = undefined,
++    stock: ?[2]cuda.Function = null, // main's tf_ck4_up_relu2, tf_ck4_down_f32
+ 
+     pub fn deinit(self: *Experts) void {
+         self.free();
+@@ -201,7 +202,11 @@ pub const Experts = struct {
+     }
+ 
+     pub fn replaced(self: *Experts) ![]const u8 {
+-        try self.launch(0, self.base);
++        if (self.stock) |fs| {
++            const up = self.kind == .up;
++            const x = self.shape;
++            try Ck.run(self.rig.s, fs[@intFromBool(!up)], self.ck.resident[0][@intFromBool(!up)], 64, self.xd, self.xRows(), if (up) slots else 0, self.wd[0], self.wd[1], self.ad, x.k, x.n, self.plan, self.base, self.items());
++        } else try self.launch(0, self.base);
+         return self.rig.bytes(self.base, self.count() * c.size(spec(self.kind).out));
+     }
+ 
+diff --git a/zig/tests/cuda/contract_tests.zig b/zig/tests/cuda/contract_tests.zig
+index 4eb16995..c601a116 100644
+--- a/zig/tests/cuda/contract_tests.zig
++++ b/zig/tests/cuda/contract_tests.zig
+@@ -96,6 +96,11 @@ pub fn run(gpu: check.Gpu) !void {
+     var rank = rank_k.Rank{ .rig = .{ .gpu = gpu, .s = s }, .sum = &rank_sum };
+     defer rank.deinit();
+     try kernels.append(a, rank.kernel());
++    const stock_bytes = try std.Io.Dir.cwd().readFileAlloc(gpu.io, "stock/ck_experts.fatbin", a, .limited(1 << 28));
++    defer a.free(stock_bytes);
++    var stock_mod = try cuda.Module.load(gpu.d, stock_bytes);
++    defer stock_mod.unload();
++    std.debug.print("STOCK ck_experts.fatbin: {d} bytes; replaced() runs its tf_ck4_up_relu2 / tf_ck4_down_f32\n", .{stock_bytes.len});
+     var ck: ?cuda.ck.Ck = null;
+     if (cap >= 120) ck = try cuda.ck.Ck.load(gpu.d, cap / 10, sms) else std.debug.print("N/A  ck experts: the block-scaled FP4 mma needs sm_120a, this GPU is sm_{d}\n", .{cap});
+     defer if (ck) |*q| q.unload();
+@@ -104,6 +109,7 @@ pub fn run(gpu: check.Gpu) !void {
+     defer for (ck_experts[0..nck]) |*x| x.deinit();
+     if (ck) |*q| for ([_]ck_k.Kind{ .up, .down }) |kind| {
+         ck_experts[nck] = .{ .rig = .{ .gpu = gpu, .s = s }, .kind = kind, .ck = q, .router = try cuda.grouped.Router.resolve(mods[6]) };
++        ck_experts[nck].stock = .{ try stock_mod.function("tf_ck4_up_relu2"), try stock_mod.function("tf_ck4_down_f32") };
+         try kernels.append(a, ck_experts[nck].kernel());
+         nck += 1;
+     };

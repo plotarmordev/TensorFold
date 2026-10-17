@@ -1,0 +1,37 @@
+Served binaries of the four receipt holds (base-1, pr-1, pr-2, base-2). The label "native-b8613a54" in pr-*.json and
+summary.md is the first 8 hex digits of the served tensorfold-native's sha256, not a commit.
+
+Build (both binaries, on the build host, aarch64, zig 0.17.0, nvcc 13.0):
+  zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix OUT -j2
+  zig build native  -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 \
+                    -Dfatbins=OUT/fatbin --prefix OUT -j2
+
+main (labels base-1, base-2): source 6ee828c24bf802cdd73507d6fc60bb27a82c0d66, clean checkout
+  tensorfold-native sha256 5af1edaf4157995d8e38df5f831a67b131f416941955420f47a8ee8774d4b09b
+branch (labels pr-1, pr-2): source e367c8f557db6ab516c2f89a6ff6a51f232cad56
+  tensorfold-native sha256 b8613a54cbcad257fdada95639147b40c4eabbd6e818ae4067db84abbbccf695
+
+Rebuild check: the branch's binary was built from the working tree before the three commits were written; after the
+holds, a clean detached checkout of e367c8f5 (0 changed files at build time) at the same
+checkout path, built with the commands above, gives:
+  b8613a54cbcad257fdada95639147b40c4eabbd6e818ae4067db84abbbccf695  tensorfold-native (rebuilt from e367c8f5)
+  b8613a54cbcad257fdada95639147b40c4eabbd6e818ae4067db84abbbccf695  tensorfold-native (served in pr-1, pr-2)
+Byte-identical. The checkout path matters: nvcc names anonymous-namespace symbols after a hash of the source path
+(glm_quant.fatbin's _ZN43_INTERNAL_<hash>_12_glm_quant_cu_..., 14 bytes), so the same commit built from another
+directory differs in those bytes only.
+
+The follow-up commit 0bb5e63b touches tests only:
+ zig/tests/cuda/contract_router.zig |  4 ++--
+ zig/tests/cuda/glue_tests.zig      | 18 ++++++++++++------
+ 2 files changed, 14 insertions(+), 8 deletions(-)
+
+GPU tests (gpu-tests.raw.txt): tf-cuda-test built with
+  zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 \
+                    -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc --prefix OUT -j2
+  df318767ea2b5c297e1c48f3ef5cdbc287ce7f1e4dc461ac66e401042a0cfb6e  tf-cuda-test (ran gpu-tests.raw.txt)
+  df318767ea2b5c297e1c48f3ef5cdbc287ce7f1e4dc461ac66e401042a0cfb6e  tf-cuda-test (rebuilt from a clean e367c8f5 checkout)
+Byte-identical. kernel-contract-limits in that file read sm_80/86/89/120/121 fatbins built from the same tree
+(zig build fatbins kernel-contract-fatbins -Dnvcc=... -Dsm=80,86,89,120,121).
+
+Follow-up 0bb5e63b: tf-cuda-test 8f19f042aec323a0bdae17fde3b67bda679c695df2e9b3724cec043621ca70f1 (same flags, clean
+checkout) ran gpu-tests-0bb5e63b.raw.txt.
