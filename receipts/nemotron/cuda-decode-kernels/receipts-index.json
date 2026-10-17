@@ -1,0 +1,64 @@
+{
+  "holds": {
+    "base-1": {
+      "source_commit": "6ee828c24bf802cdd73507d6fc60bb27a82c0d66",
+      "build": [
+        "zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix OUT -j2",
+        "zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=OUT/fatbin --prefix OUT -j2"
+      ],
+      "tensorfold_native_sha256": "5af1edaf4157995d8e38df5f831a67b131f416941955420f47a8ee8774d4b09b"
+    },
+    "pr-1": {
+      "source_commit": "e367c8f557db6ab516c2f89a6ff6a51f232cad56",
+      "build": [
+        "zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix OUT -j2",
+        "zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=OUT/fatbin --prefix OUT -j2"
+      ],
+      "tensorfold_native_sha256": "b8613a54cbcad257fdada95639147b40c4eabbd6e818ae4067db84abbbccf695",
+      "note": "the 'commit' field 'native-b8613a54' in pr-1.json and pr-2.json is this sha256's prefix; a clean checkout of source_commit rebuilds it byte for byte (provenance.txt)"
+    },
+    "pr-2": {
+      "source_commit": "e367c8f557db6ab516c2f89a6ff6a51f232cad56",
+      "build": [
+        "zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix OUT -j2",
+        "zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=OUT/fatbin --prefix OUT -j2"
+      ],
+      "tensorfold_native_sha256": "b8613a54cbcad257fdada95639147b40c4eabbd6e818ae4067db84abbbccf695",
+      "note": "the 'commit' field 'native-b8613a54' in pr-1.json and pr-2.json is this sha256's prefix; a clean checkout of source_commit rebuilds it byte for byte (provenance.txt)"
+    },
+    "base-2": {
+      "source_commit": "6ee828c24bf802cdd73507d6fc60bb27a82c0d66",
+      "build": [
+        "zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix OUT -j2",
+        "zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=OUT/fatbin --prefix OUT -j2"
+      ],
+      "tensorfold_native_sha256": "5af1edaf4157995d8e38df5f831a67b131f416941955420f47a8ee8774d4b09b"
+    }
+  },
+  "gpu_tests": {
+    "gpu-tests.raw.txt": {
+      "source_commit": "e367c8f557db6ab516c2f89a6ff6a51f232cad56",
+      "build": "zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc --prefix OUT -j2",
+      "tf_cuda_test_sha256": "df318767ea2b5c297e1c48f3ef5cdbc287ce7f1e4dc461ac66e401042a0cfb6e"
+    },
+    "gpu-tests-0bb5e63b.raw.txt": {
+      "source_commit": "0bb5e63b132b1f71fb98b0aee64a9350cd64b22e",
+      "build": "zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc --prefix OUT -j2",
+      "tf_cuda_test_sha256": "8f19f042aec323a0bdae17fde3b67bda679c695df2e9b3724cec043621ca70f1"
+    },
+    "gpu-tests-stock-ck.raw.txt": {
+      "source_commit": "e367c8f557db6ab516c2f89a6ff6a51f232cad56",
+      "patch": "stock-ck.diff (not in the PR)",
+      "build": "zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc --prefix OUT -j2",
+      "tf_cuda_test_sha256": "3632b66370df65d9e2e8b6b95725d786604f24b5533014df3b2f40917c050bfd",
+      "baseline_fatbin": "ck_experts.fatbin of 6ee828c2, sha256 253759a380cd01b5c117b4e0dd95da09ce7c89e6fbf5ca006218774a5716a6ad"
+    },
+    "gpu-tests-mutants.raw.txt": {
+      "source_commit": "e367c8f557db6ab516c2f89a6ff6a51f232cad56",
+      "patch": "mutants.diff (planted faults, not in the PR)",
+      "build": "zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc --prefix OUT -j2",
+      "tf_cuda_test_sha256": "11befbfde0d29756f8a28e8ff442ce82b700ac0c4f3589489b6f42297eb0e780"
+    }
+  },
+  "toolchain": "zig 0.17.0, CUDA 13.0 (nvcc 13.0.r13.0), aarch64-linux; GPU NVIDIA GB10, driver 580.173.02"
+}
