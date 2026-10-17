@@ -1,0 +1,37 @@
+test
++- test-cuda-host
+   +- run test w
+[default] (warn): lm_head is 8-bit in groups of 64: CUDA reads Nemotron MLX checkpoints at 4-bit in groups of 64 only; mixed and 6- or 8-bit (oQ) checkpoints serve on Macs
+[default] (warn): backbone.embeddings is 8-bit in groups of 64: the Intel GPU engine reads Nemotron MLX checkpoints at 4-bit in groups of 64 only; mixed and 6- or 8-bit (oQ) checkpoints serve on Macs
+failed command: <cache>/o/a8e68b15b8d8a453f47dba1b745c3b7d/test --cache-dir=<cache> --seed=0xc7013470 --listen=-
+
+test
++- run test w
+[default] (warn): a round could not be recorded: OutOfDeviceMemory
+failed command: <cache>/o/e67812b5cb9608f44045ad39a1d94e73/test --cache-dir=<cache> --seed=0xc7013470 --listen=-
+
+test
++- run test w
+[default] (warn): lm_head is 8-bit in groups of 64: CUDA reads Nemotron MLX checkpoints at 4-bit in groups of 64 only; mixed and 6- or 8-bit (oQ) checkpoints serve on Macs
+[default] (warn): backbone.embeddings is 8-bit in groups of 64: the Intel GPU engine reads Nemotron MLX checkpoints at 4-bit in groups of 64 only; mixed and 6- or 8-bit (oQ) checkpoints serve on Macs
+failed command: <cache>/o/53ea81381ffa9d7e219c2c9205cca9be/test --cache-dir=<cache> --seed=0xc7013470 --listen=-
+
+test
++- test-cuda-host
+   +- run test w
+libjpeg-turbo 3.1.4.1 not found: LFM2's JPEG cases skipped
+libjpeg-turbo 3.1.4.1 not found: LFM2's JPEG cases skipped
+failed command: <cache>/o/496506dfa0a267950c72ec333d2673b4/test --cache-dir=<cache> --seed=0xc7013470 --listen=-
+
+test
++- test-cuda-host
+   +- run test w
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+[default] (warn): model.layers.0.mlp.up_proj.weight: another spelling of module layers.0.mlp.up_proj declares a different width
+[default] (warn): layers.0.mlp.up_proj: another spelling of module layers.0.mlp.up_proj declares a different width
+[default] (warn): model.layers.0.mlp.up_proj: another spelling of module layers.0.mlp.up_proj declares a different width
+failed command: <cache>/o/0c8258dc05e4ea39ea645eba8dfed298/test --cache-dir=<cache> --seed=0xc7013470 --listen=-
+
+Build Summary: 84/84 steps succeeded; 1377/1384 tests passed (7 skipped)

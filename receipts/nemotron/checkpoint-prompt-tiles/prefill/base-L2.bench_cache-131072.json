@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "fixture_sha256": "61c8ef4d1860de1910f8c51a2081c1b50d59af5a703301860d86c743dd39ebd5",
+  "requested_reply_tokens": 16,
+  "temperature": 0,
+  "seed": 1234,
+  "rows": [
+    {
+      "phase": "first",
+      "prompt_tokens": 131072,
+      "cached_tokens": 0,
+      "tokens": 16,
+      "cache_state": "cold",
+      "complete": true,
+      "token_sha": "29cb05e3461a",
+      "token_sha256": "29cb05e3461a3e2fafa475f7faeaf21e25558453492bfde5b3f0d18a4377cc8c",
+      "output_sha256": "37ee63e1905153144cf22624ce1842f7277bbd85d196bbbaee7408ba1ff0988c",
+      "ttft_s": 139.49133690190502,
+      "decode_tps": null,
+      "unmeasured": true
+    },
+    {
+      "phase": "repeated",
+      "prompt_tokens": 131072,
+      "cached_tokens": 0,
+      "tokens": 16,
+      "cache_state": "cold",
+      "complete": true,
+      "token_sha": "29cb05e3461a",
+      "token_sha256": "29cb05e3461a3e2fafa475f7faeaf21e25558453492bfde5b3f0d18a4377cc8c",
+      "output_sha256": "37ee63e1905153144cf22624ce1842f7277bbd85d196bbbaee7408ba1ff0988c",
+      "ttft_s": 145.93274837406352,
+      "decode_tps": null,
+      "unmeasured": true,
+      "equal_first_tokens": true,
+      "equal_first_output": true
+    },
+    {
+      "phase": "concurrent",
+      "prompt_tokens": 131072,
+      "cached_tokens": 0,
+      "tokens": 16,
+      "cache_state": "cold",
+      "complete": true,
+      "token_sha": "29cb05e3461a",
+      "token_sha256": "29cb05e3461a3e2fafa475f7faeaf21e25558453492bfde5b3f0d18a4377cc8c",
+      "output_sha256": "37ee63e1905153144cf22624ce1842f7277bbd85d196bbbaee7408ba1ff0988c",
+      "ttft_s": 149.96676877804566,
+      "decode_tps": null,
+      "unmeasured": true,
+      "equal_first_tokens": true,
+      "equal_first_output": true
+    }
+  ],
+  "qualified": true,
+  "source_commit": "50a34190b04055ff9268cc12f9d8284323830a25",
+  "binary_sha256": "38cb28f3e07de241d172d7579c9b1b55a291bdfc45475506c2e5a7c443236dc4"
+}

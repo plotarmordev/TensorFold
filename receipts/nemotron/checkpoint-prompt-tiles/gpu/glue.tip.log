@@ -1,0 +1,3 @@
+source a79678c5624e55f5b009700e4d953e8034de9336 (tip), tf-cuda-test sha256 68646553a7b3e3cec21efd411bd3940102ea68966f7b33d460e8ec1158a51dc2
+PASS glue: 1332 of 1332 comparisons byte-equal to the host references (norms, router, top-k, the latent top-k, conv, scan, attention, draw, several streams at once) and the shared-window kernels to the one-stream ones; every reference at least 16% nonzero
+exit=0

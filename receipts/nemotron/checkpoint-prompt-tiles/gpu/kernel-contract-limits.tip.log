@@ -1,0 +1,237 @@
+source a79678c5624e55f5b009700e4d953e8034de9336 (tip, sm_80/86/89/120/121 fatbins of the same checkout), tf-cuda-test sha256 68646553a7b3e3cec21efd411bd3940102ea68966f7b33d460e8ec1158a51dc2
+PASS limits sm_80 norms tf_rms_rows_bf16: 79 registers, 32 static shared bytes, bound 256 (record current)
+PASS limits sm_86 norms tf_rms_rows_bf16: 79 registers, 32 static shared bytes, bound 256 (record current)
+PASS limits sm_89 norms tf_rms_rows_bf16: 79 registers, 32 static shared bytes, bound 256 (record current)
+PASS limits sm_120 norms tf_rms_rows_bf16: 80 registers, 32 static shared bytes, bound 256 (record current)
+PASS limits sm_121 norms tf_rms_rows_bf16: 80 registers, 32 static shared bytes, bound 256 (record current)
+RECORD norms tf_rms_rows_bf16: .usage = .{ .{ .regs = 79, .static = 32, .bound = 256 }, .{ .regs = 79, .static = 32, .bound = 256 }, .{ .regs = 79, .static = 32, .bound = 256 }, .{ .regs = 80, .static = 32, .bound = 256 }, .{ .regs = 80, .static = 32, .bound = 256 }, }
+PASS limits sm_80 norms tf_rms_rows: 32 registers, 132 static shared bytes, bound 1024 (record current)
+PASS limits sm_86 norms tf_rms_rows: 46 registers, 132 static shared bytes, bound 1024 (record current)
+PASS limits sm_89 norms tf_rms_rows: 46 registers, 132 static shared bytes, bound 1024 (record current)
+PASS limits sm_120 norms tf_rms_rows: 45 registers, 132 static shared bytes, bound 1024 (record current)
+PASS limits sm_121 norms tf_rms_rows: 45 registers, 132 static shared bytes, bound 1024 (record current)
+RECORD norms tf_rms_rows: .usage = .{ .{ .regs = 32, .static = 132, .bound = 1024 }, .{ .regs = 46, .static = 132, .bound = 1024 }, .{ .regs = 46, .static = 132, .bound = 1024 }, .{ .regs = 45, .static = 132, .bound = 1024 }, .{ .regs = 45, .static = 132, .bound = 1024 }, }
+PASS limits sm_80 router tf_nemo_router: 32 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 router tf_nemo_router: 40 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 router tf_nemo_router: 40 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 router tf_nemo_router: 40 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 router tf_nemo_router: 40 registers, 0 static shared bytes, bound 256 (record current)
+RECORD router tf_nemo_router: .usage = .{ .{ .regs = 32, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, }
+PASS limits sm_80 router tf_nemo_router_tiles: 181 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 router tf_nemo_router_tiles: 184 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 router tf_nemo_router_tiles: 184 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 router tf_nemo_router_tiles: 177 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 router tf_nemo_router_tiles: 177 registers, 0 static shared bytes, bound 256 (record current)
+RECORD router tf_nemo_router_tiles: .usage = .{ .{ .regs = 181, .static = 0, .bound = 256 }, .{ .regs = 184, .static = 0, .bound = 256 }, .{ .regs = 184, .static = 0, .bound = 256 }, .{ .regs = 177, .static = 0, .bound = 256 }, .{ .regs = 177, .static = 0, .bound = 256 }, }
+PASS limits sm_80 router tf_nemo_topk: 94 registers, 0 static shared bytes, bound 32 (record current)
+PASS limits sm_86 router tf_nemo_topk: 95 registers, 0 static shared bytes, bound 32 (record current)
+PASS limits sm_89 router tf_nemo_topk: 95 registers, 0 static shared bytes, bound 32 (record current)
+PASS limits sm_120 router tf_nemo_topk: 91 registers, 0 static shared bytes, bound 32 (record current)
+PASS limits sm_121 router tf_nemo_topk: 91 registers, 0 static shared bytes, bound 32 (record current)
+RECORD router tf_nemo_topk: .usage = .{ .{ .regs = 94, .static = 0, .bound = 32 }, .{ .regs = 95, .static = 0, .bound = 32 }, .{ .regs = 95, .static = 0, .bound = 32 }, .{ .regs = 91, .static = 0, .bound = 32 }, .{ .regs = 91, .static = 0, .bound = 32 }, }
+PASS limits sm_80 latent tf_super_topk_few: 32 registers, 4352 static shared bytes, bound 1024 (record current)
+PASS limits sm_86 latent tf_super_topk_few: 38 registers, 4352 static shared bytes, bound 1024 (record current)
+PASS limits sm_89 latent tf_super_topk_few: 38 registers, 4352 static shared bytes, bound 1024 (record current)
+PASS limits sm_120 latent tf_super_topk_few: 30 registers, 4352 static shared bytes, bound 1024 (record current)
+PASS limits sm_121 latent tf_super_topk_few: 30 registers, 4352 static shared bytes, bound 1024 (record current)
+RECORD latent tf_super_topk_few: .usage = .{ .{ .regs = 32, .static = 4352, .bound = 1024 }, .{ .regs = 38, .static = 4352, .bound = 1024 }, .{ .regs = 38, .static = 4352, .bound = 1024 }, .{ .regs = 30, .static = 4352, .bound = 1024 }, .{ .regs = 30, .static = 4352, .bound = 1024 }, }
+PASS limits sm_80 latent tf_super_combine_sums: 32 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 latent tf_super_combine_sums: 40 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 latent tf_super_combine_sums: 40 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 latent tf_super_combine_sums: 40 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 latent tf_super_combine_sums: 40 registers, 0 static shared bytes, bound 128 (record current)
+RECORD latent tf_super_combine_sums: .usage = .{ .{ .regs = 32, .static = 0, .bound = 128 }, .{ .regs = 40, .static = 0, .bound = 128 }, .{ .regs = 40, .static = 0, .bound = 128 }, .{ .regs = 40, .static = 0, .bound = 128 }, .{ .regs = 40, .static = 0, .bound = 128 }, }
+PASS limits sm_80 latent tf_super_moe_out_sums: 26 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 latent tf_super_moe_out_sums: 22 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 latent tf_super_moe_out_sums: 22 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 latent tf_super_moe_out_sums: 24 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 latent tf_super_moe_out_sums: 24 registers, 0 static shared bytes, bound 256 (record current)
+RECORD latent tf_super_moe_out_sums: .usage = .{ .{ .regs = 26, .static = 0, .bound = 256 }, .{ .regs = 22, .static = 0, .bound = 256 }, .{ .regs = 22, .static = 0, .bound = 256 }, .{ .regs = 24, .static = 0, .bound = 256 }, .{ .regs = 24, .static = 0, .bound = 256 }, }
+PASS limits sm_80 qmm_group cluster of 8: 54 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 qmm_group cluster of 8: 54 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 qmm_group cluster of 8: 54 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 qmm_group cluster of 8: 48 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 qmm_group cluster of 8: 48 registers, 0 static shared bytes, bound 128 (record current)
+RECORD qmm_group cluster of 8: .usage = .{ .{ .regs = 54, .static = 0, .bound = 128 }, .{ .regs = 54, .static = 0, .bound = 128 }, .{ .regs = 54, .static = 0, .bound = 128 }, .{ .regs = 48, .static = 0, .bound = 128 }, .{ .regs = 48, .static = 0, .bound = 128 }, }
+PASS limits sm_80 qmm_group one CTA a tile: 54 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 qmm_group one CTA a tile: 54 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 qmm_group one CTA a tile: 54 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 qmm_group one CTA a tile: 48 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 qmm_group one CTA a tile: 48 registers, 0 static shared bytes, bound 128 (record current)
+RECORD qmm_group one CTA a tile: .usage = .{ .{ .regs = 54, .static = 0, .bound = 128 }, .{ .regs = 54, .static = 0, .bound = 128 }, .{ .regs = 54, .static = 0, .bound = 128 }, .{ .regs = 48, .static = 0, .bound = 128 }, .{ .regs = 48, .static = 0, .bound = 128 }, }
+PASS limits sm_80 lane_gemv: 64 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 lane_gemv: 57 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 lane_gemv: 57 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 lane_gemv: 64 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 lane_gemv: 64 registers, 0 static shared bytes, bound 128 (record current)
+RECORD lane_gemv: .usage = .{ .{ .regs = 64, .static = 0, .bound = 128 }, .{ .regs = 57, .static = 0, .bound = 128 }, .{ .regs = 57, .static = 0, .bound = 128 }, .{ .regs = 64, .static = 0, .bound = 128 }, .{ .regs = 64, .static = 0, .bound = 128 }, }
+PASS limits sm_80 lane_gemv split-K: 62 registers, 128 static shared bytes, bound 128 (record current)
+PASS limits sm_86 lane_gemv split-K: 56 registers, 128 static shared bytes, bound 128 (record current)
+PASS limits sm_89 lane_gemv split-K: 56 registers, 128 static shared bytes, bound 128 (record current)
+PASS limits sm_120 lane_gemv split-K: 44 registers, 128 static shared bytes, bound 128 (record current)
+PASS limits sm_121 lane_gemv split-K: 44 registers, 128 static shared bytes, bound 128 (record current)
+RECORD lane_gemv split-K: .usage = .{ .{ .regs = 62, .static = 128, .bound = 128 }, .{ .regs = 56, .static = 128, .bound = 128 }, .{ .regs = 56, .static = 128, .bound = 128 }, .{ .regs = 44, .static = 128, .bound = 128 }, .{ .regs = 44, .static = 128, .bound = 128 }, }
+PASS limits sm_80 prompt16 FP4: 255 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 prompt16 FP4: 255 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 prompt16 FP4: 255 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 prompt16 FP4: 212 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 prompt16 FP4: 212 registers, 0 static shared bytes, bound 128 (record current)
+RECORD prompt16 FP4: .usage = .{ .{ .regs = 255, .static = 0, .bound = 128 }, .{ .regs = 255, .static = 0, .bound = 128 }, .{ .regs = 255, .static = 0, .bound = 128 }, .{ .regs = 212, .static = 0, .bound = 128 }, .{ .regs = 212, .static = 0, .bound = 128 }, }
+PASS limits sm_80 prompt16 FP8: 243 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 prompt16 FP8: 243 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 prompt16 FP8: 243 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 prompt16 FP8: 218 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 prompt16 FP8: 218 registers, 0 static shared bytes, bound 128 (record current)
+RECORD prompt16 FP8: .usage = .{ .{ .regs = 243, .static = 0, .bound = 128 }, .{ .regs = 243, .static = 0, .bound = 128 }, .{ .regs = 243, .static = 0, .bound = 128 }, .{ .regs = 218, .static = 0, .bound = 128 }, .{ .regs = 218, .static = 0, .bound = 128 }, }
+PASS limits sm_80 prompt16 FP4 fp32 out: 255 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 prompt16 FP4 fp32 out: 255 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 prompt16 FP4 fp32 out: 255 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 prompt16 FP4 fp32 out: 212 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 prompt16 FP4 fp32 out: 212 registers, 0 static shared bytes, bound 128 (record current)
+RECORD prompt16 FP4 fp32 out: .usage = .{ .{ .regs = 255, .static = 0, .bound = 128 }, .{ .regs = 255, .static = 0, .bound = 128 }, .{ .regs = 255, .static = 0, .bound = 128 }, .{ .regs = 212, .static = 0, .bound = 128 }, .{ .regs = 212, .static = 0, .bound = 128 }, }
+PASS limits sm_80 qmmf FP4 fp32 out 16-row tile: 88 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 qmmf FP4 fp32 out 16-row tile: 88 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 qmmf FP4 fp32 out 16-row tile: 96 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 qmmf FP4 fp32 out 16-row tile: 56 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 qmmf FP4 fp32 out 16-row tile: 56 registers, 0 static shared bytes, bound 128 (record current)
+RECORD qmmf FP4 fp32 out 16-row tile: .usage = .{ .{ .regs = 88, .static = 0, .bound = 128 }, .{ .regs = 88, .static = 0, .bound = 128 }, .{ .regs = 96, .static = 0, .bound = 128 }, .{ .regs = 56, .static = 0, .bound = 128 }, .{ .regs = 56, .static = 0, .bound = 128 }, }
+PASS limits sm_80 qmmf FP4 fp32 out 16-row tile, cluster of 8: 64 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 qmmf FP4 fp32 out 16-row tile, cluster of 8: 64 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 qmmf FP4 fp32 out 16-row tile, cluster of 8: 78 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 qmmf FP4 fp32 out 16-row tile, cluster of 8: 48 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 qmmf FP4 fp32 out 16-row tile, cluster of 8: 48 registers, 0 static shared bytes, bound 128 (record current)
+RECORD qmmf FP4 fp32 out 16-row tile, cluster of 8: .usage = .{ .{ .regs = 64, .static = 0, .bound = 128 }, .{ .regs = 64, .static = 0, .bound = 128 }, .{ .regs = 78, .static = 0, .bound = 128 }, .{ .regs = 48, .static = 0, .bound = 128 }, .{ .regs = 48, .static = 0, .bound = 128 }, }
+PASS limits sm_80 qmmf FP4 fp32 out 32-row tile: 106 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 qmmf FP4 fp32 out 32-row tile: 106 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 qmmf FP4 fp32 out 32-row tile: 128 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 qmmf FP4 fp32 out 32-row tile: 64 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 qmmf FP4 fp32 out 32-row tile: 64 registers, 0 static shared bytes, bound 128 (record current)
+RECORD qmmf FP4 fp32 out 32-row tile: .usage = .{ .{ .regs = 106, .static = 0, .bound = 128 }, .{ .regs = 106, .static = 0, .bound = 128 }, .{ .regs = 128, .static = 0, .bound = 128 }, .{ .regs = 64, .static = 0, .bound = 128 }, .{ .regs = 64, .static = 0, .bound = 128 }, }
+PASS limits sm_80 qmmf FP4 fp32 out 32-row tile, cluster of 8: 64 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 qmmf FP4 fp32 out 32-row tile, cluster of 8: 64 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 qmmf FP4 fp32 out 32-row tile, cluster of 8: 80 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 qmmf FP4 fp32 out 32-row tile, cluster of 8: 63 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 qmmf FP4 fp32 out 32-row tile, cluster of 8: 63 registers, 0 static shared bytes, bound 128 (record current)
+RECORD qmmf FP4 fp32 out 32-row tile, cluster of 8: .usage = .{ .{ .regs = 64, .static = 0, .bound = 128 }, .{ .regs = 64, .static = 0, .bound = 128 }, .{ .regs = 80, .static = 0, .bound = 128 }, .{ .regs = 63, .static = 0, .bound = 128 }, .{ .regs = 63, .static = 0, .bound = 128 }, }
+PASS limits sm_80 qmmf FP4 fp32 out 64-row tile: 148 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 qmmf FP4 fp32 out 64-row tile: 148 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 qmmf FP4 fp32 out 64-row tile: 180 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 qmmf FP4 fp32 out 64-row tile: 78 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 qmmf FP4 fp32 out 64-row tile: 78 registers, 0 static shared bytes, bound 128 (record current)
+RECORD qmmf FP4 fp32 out 64-row tile: .usage = .{ .{ .regs = 148, .static = 0, .bound = 128 }, .{ .regs = 148, .static = 0, .bound = 128 }, .{ .regs = 180, .static = 0, .bound = 128 }, .{ .regs = 78, .static = 0, .bound = 128 }, .{ .regs = 78, .static = 0, .bound = 128 }, }
+PASS limits sm_80 qmmf FP4 fp32 out 64-row tile, cluster of 8: 64 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 qmmf FP4 fp32 out 64-row tile, cluster of 8: 64 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 qmmf FP4 fp32 out 64-row tile, cluster of 8: 72 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 qmmf FP4 fp32 out 64-row tile, cluster of 8: 78 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 qmmf FP4 fp32 out 64-row tile, cluster of 8: 78 registers, 0 static shared bytes, bound 128 (record current)
+RECORD qmmf FP4 fp32 out 64-row tile, cluster of 8: .usage = .{ .{ .regs = 64, .static = 0, .bound = 128 }, .{ .regs = 64, .static = 0, .bound = 128 }, .{ .regs = 72, .static = 0, .bound = 128 }, .{ .regs = 78, .static = 0, .bound = 128 }, .{ .regs = 78, .static = 0, .bound = 128 }, }
+PASS limits sm_80 qmmf FP4 fp32 out fused slices: 182 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 qmmf FP4 fp32 out fused slices: 182 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 qmmf FP4 fp32 out fused slices: 228 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 qmmf FP4 fp32 out fused slices: 168 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 qmmf FP4 fp32 out fused slices: 168 registers, 0 static shared bytes, bound 128 (record current)
+RECORD qmmf FP4 fp32 out fused slices: .usage = .{ .{ .regs = 182, .static = 0, .bound = 128 }, .{ .regs = 182, .static = 0, .bound = 128 }, .{ .regs = 228, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, }
+PASS limits sm_80 qmmf reduce_kernel<true>: 32 registers, 0 static shared bytes, bound 0 (record current)
+PASS limits sm_86 qmmf reduce_kernel<true>: 36 registers, 0 static shared bytes, bound 0 (record current)
+PASS limits sm_89 qmmf reduce_kernel<true>: 36 registers, 0 static shared bytes, bound 0 (record current)
+PASS limits sm_120 qmmf reduce_kernel<true>: 40 registers, 0 static shared bytes, bound 0 (record current)
+PASS limits sm_121 qmmf reduce_kernel<true>: 40 registers, 0 static shared bytes, bound 0 (record current)
+RECORD qmmf reduce_kernel<true>: .usage = .{ .{ .regs = 32, .static = 0, .bound = 0 }, .{ .regs = 36, .static = 0, .bound = 0 }, .{ .regs = 36, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, }
+PASS limits sm_80 ck tf_ck4_up_relu2_few: 19 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 ck tf_ck4_up_relu2_few: 19 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 ck tf_ck4_up_relu2_few: 19 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 ck tf_ck4_up_relu2_few: 125 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 ck tf_ck4_up_relu2_few: 125 registers, 0 static shared bytes, bound 128 (record current)
+RECORD ck tf_ck4_up_relu2_few: .usage = .{ .{ .regs = 19, .static = 0, .bound = 128 }, .{ .regs = 19, .static = 0, .bound = 128 }, .{ .regs = 19, .static = 0, .bound = 128 }, .{ .regs = 125, .static = 0, .bound = 128 }, .{ .regs = 125, .static = 0, .bound = 128 }, }
+PASS limits sm_80 ck tf_ck4_down_f32_few: 24 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_86 ck tf_ck4_down_f32_few: 24 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_89 ck tf_ck4_down_f32_few: 24 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_120 ck tf_ck4_down_f32_few: 128 registers, 0 static shared bytes, bound 128 (record current)
+PASS limits sm_121 ck tf_ck4_down_f32_few: 128 registers, 0 static shared bytes, bound 128 (record current)
+RECORD ck tf_ck4_down_f32_few: .usage = .{ .{ .regs = 24, .static = 0, .bound = 128 }, .{ .regs = 24, .static = 0, .bound = 128 }, .{ .regs = 24, .static = 0, .bound = 128 }, .{ .regs = 128, .static = 0, .bound = 128 }, .{ .regs = 128, .static = 0, .bound = 128 }, }
+PASS limits sm_80 ck tf_ck4_up_nvfp4_prompt: 80 registers, 46080 static shared bytes, bound 256 (record current)
+PASS limits sm_86 ck tf_ck4_up_nvfp4_prompt: 88 registers, 46080 static shared bytes, bound 256 (record current)
+PASS limits sm_89 ck tf_ck4_up_nvfp4_prompt: 94 registers, 46080 static shared bytes, bound 256 (record current)
+PASS limits sm_120 ck tf_ck4_up_nvfp4_prompt: 114 registers, 46080 static shared bytes, bound 256 (record current)
+PASS limits sm_121 ck tf_ck4_up_nvfp4_prompt: 114 registers, 46080 static shared bytes, bound 256 (record current)
+RECORD ck tf_ck4_up_nvfp4_prompt: .usage = .{ .{ .regs = 80, .static = 46080, .bound = 256 }, .{ .regs = 88, .static = 46080, .bound = 256 }, .{ .regs = 94, .static = 46080, .bound = 256 }, .{ .regs = 114, .static = 46080, .bound = 256 }, .{ .regs = 114, .static = 46080, .bound = 256 }, }
+PASS limits sm_80 ck tf_ck4_down_f32_prompt: 80 registers, 36864 static shared bytes, bound 256 (record current)
+PASS limits sm_86 ck tf_ck4_down_f32_prompt: 90 registers, 36864 static shared bytes, bound 256 (record current)
+PASS limits sm_89 ck tf_ck4_down_f32_prompt: 90 registers, 36864 static shared bytes, bound 256 (record current)
+PASS limits sm_120 ck tf_ck4_down_f32_prompt: 128 registers, 36864 static shared bytes, bound 256 (record current)
+PASS limits sm_121 ck tf_ck4_down_f32_prompt: 128 registers, 36864 static shared bytes, bound 256 (record current)
+RECORD ck tf_ck4_down_f32_prompt: .usage = .{ .{ .regs = 80, .static = 36864, .bound = 256 }, .{ .regs = 90, .static = 36864, .bound = 256 }, .{ .regs = 90, .static = 36864, .bound = 256 }, .{ .regs = 128, .static = 36864, .bound = 256 }, .{ .regs = 128, .static = 36864, .bound = 256 }, }
+PASS limits sm_80 ck tf_ck4_down_sum_prompt: 164 registers, 36864 static shared bytes, bound 256 (record current)
+PASS limits sm_86 ck tf_ck4_down_sum_prompt: 164 registers, 36864 static shared bytes, bound 256 (record current)
+PASS limits sm_89 ck tf_ck4_down_sum_prompt: 164 registers, 36864 static shared bytes, bound 256 (record current)
+PASS limits sm_120 ck tf_ck4_down_sum_prompt: 222 registers, 36864 static shared bytes, bound 256 (record current)
+PASS limits sm_121 ck tf_ck4_down_sum_prompt: 222 registers, 36864 static shared bytes, bound 256 (record current)
+RECORD ck tf_ck4_down_sum_prompt: .usage = .{ .{ .regs = 164, .static = 36864, .bound = 256 }, .{ .regs = 164, .static = 36864, .bound = 256 }, .{ .regs = 164, .static = 36864, .bound = 256 }, .{ .regs = 222, .static = 36864, .bound = 256 }, .{ .regs = 222, .static = 36864, .bound = 256 }, }
+PASS limits sm_80 ck tf_ck8_128: 64 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 ck tf_ck8_128: 64 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 ck tf_ck8_128: 122 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 ck tf_ck8_128: 76 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 ck tf_ck8_128: 76 registers, 0 static shared bytes, bound 256 (record current)
+RECORD ck tf_ck8_128: .usage = .{ .{ .regs = 64, .static = 0, .bound = 256 }, .{ .regs = 64, .static = 0, .bound = 256 }, .{ .regs = 122, .static = 0, .bound = 256 }, .{ .regs = 76, .static = 0, .bound = 256 }, .{ .regs = 76, .static = 0, .bound = 256 }, }
+PASS limits sm_80 ck tf_ck8_128c cluster of 8: 64 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 ck tf_ck8_128c cluster of 8: 64 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 ck tf_ck8_128c cluster of 8: 58 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 ck tf_ck8_128c cluster of 8: 104 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 ck tf_ck8_128c cluster of 8: 104 registers, 0 static shared bytes, bound 256 (record current)
+RECORD ck tf_ck8_128c cluster of 8: .usage = .{ .{ .regs = 64, .static = 0, .bound = 256 }, .{ .regs = 64, .static = 0, .bound = 256 }, .{ .regs = 58, .static = 0, .bound = 256 }, .{ .regs = 104, .static = 0, .bound = 256 }, .{ .regs = 104, .static = 0, .bound = 256 }, }
+PASS limits sm_80 rank_sum tf_rank_sum: 32 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 rank_sum tf_rank_sum: 40 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 rank_sum tf_rank_sum: 40 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 rank_sum tf_rank_sum: 40 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 rank_sum tf_rank_sum: 40 registers, 0 static shared bytes, bound 256 (record current)
+RECORD rank_sum tf_rank_sum: .usage = .{ .{ .regs = 32, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, }
+PASS limits sm_80 vit vision_kernel<80, 8> (RADIO): 143 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 vit vision_kernel<80, 8> (RADIO): 143 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 vit vision_kernel<80, 8> (RADIO): 143 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 vit vision_kernel<80, 8> (RADIO): 122 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 vit vision_kernel<80, 8> (RADIO): 122 registers, 0 static shared bytes, bound 256 (record current)
+RECORD vit vision_kernel<80, 8> (RADIO): .usage = .{ .{ .regs = 143, .static = 0, .bound = 256 }, .{ .regs = 143, .static = 0, .bound = 256 }, .{ .regs = 143, .static = 0, .bound = 256 }, .{ .regs = 122, .static = 0, .bound = 256 }, .{ .regs = 122, .static = 0, .bound = 256 }, }
+PASS limits sm_80 vit full_kernel<72> (SigLIP2): 152 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 vit full_kernel<72> (SigLIP2): 152 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 vit full_kernel<72> (SigLIP2): 152 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 vit full_kernel<72> (SigLIP2): 169 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 vit full_kernel<72> (SigLIP2): 169 registers, 0 static shared bytes, bound 256 (record current)
+RECORD vit full_kernel<72> (SigLIP2): .usage = .{ .{ .regs = 152, .static = 0, .bound = 256 }, .{ .regs = 152, .static = 0, .bound = 256 }, .{ .regs = 152, .static = 0, .bound = 256 }, .{ .regs = 169, .static = 0, .bound = 256 }, .{ .regs = 169, .static = 0, .bound = 256 }, }
+PASS limits sm_80 vit tf_vit_layer_norm: 38 registers, 32 static shared bytes, bound 256 (record current)
+PASS limits sm_86 vit tf_vit_layer_norm: 38 registers, 32 static shared bytes, bound 256 (record current)
+PASS limits sm_89 vit tf_vit_layer_norm: 38 registers, 32 static shared bytes, bound 256 (record current)
+PASS limits sm_120 vit tf_vit_layer_norm: 40 registers, 32 static shared bytes, bound 256 (record current)
+PASS limits sm_121 vit tf_vit_layer_norm: 40 registers, 32 static shared bytes, bound 256 (record current)
+RECORD vit tf_vit_layer_norm: .usage = .{ .{ .regs = 38, .static = 32, .bound = 256 }, .{ .regs = 38, .static = 32, .bound = 256 }, .{ .regs = 38, .static = 32, .bound = 256 }, .{ .regs = 40, .static = 32, .bound = 256 }, .{ .regs = 40, .static = 32, .bound = 256 }, }
+PASS limits sm_80 vit tf_vit_pointwise: 14 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 vit tf_vit_pointwise: 14 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 vit tf_vit_pointwise: 14 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 vit tf_vit_pointwise: 14 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 vit tf_vit_pointwise: 14 registers, 0 static shared bytes, bound 256 (record current)
+RECORD vit tf_vit_pointwise: .usage = .{ .{ .regs = 14, .static = 0, .bound = 256 }, .{ .regs = 14, .static = 0, .bound = 256 }, .{ .regs = 14, .static = 0, .bound = 256 }, .{ .regs = 14, .static = 0, .bound = 256 }, .{ .regs = 14, .static = 0, .bound = 256 }, }
+PASS limits sm_80 vit tf_vit_bias: 12 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 vit tf_vit_bias: 12 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 vit tf_vit_bias: 12 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 vit tf_vit_bias: 12 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 vit tf_vit_bias: 12 registers, 0 static shared bytes, bound 256 (record current)
+RECORD vit tf_vit_bias: .usage = .{ .{ .regs = 12, .static = 0, .bound = 256 }, .{ .regs = 12, .static = 0, .bound = 256 }, .{ .regs = 12, .static = 0, .bound = 256 }, .{ .regs = 12, .static = 0, .bound = 256 }, .{ .regs = 12, .static = 0, .bound = 256 }, }
+PASS limits sm_80 vit tf_vit_unshuffle: 29 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 vit tf_vit_unshuffle: 32 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 vit tf_vit_unshuffle: 32 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 vit tf_vit_unshuffle: 34 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 vit tf_vit_unshuffle: 34 registers, 0 static shared bytes, bound 256 (record current)
+RECORD vit tf_vit_unshuffle: .usage = .{ .{ .regs = 29, .static = 0, .bound = 256 }, .{ .regs = 32, .static = 0, .bound = 256 }, .{ .regs = 32, .static = 0, .bound = 256 }, .{ .regs = 34, .static = 0, .bound = 256 }, .{ .regs = 34, .static = 0, .bound = 256 }, }
+RED  limits sm_80 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_80: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_86 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_86: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_89 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_89: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_120 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_120: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_121 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_121: launched at 512 threads past its __launch_bounds__ 256
+RECORD control: past its bounds: .usage = .{ .{ .regs = 10, .static = 0, .bound = 256 }, .{ .regs = 10, .static = 0, .bound = 256 }, .{ .regs = 10, .static = 0, .bound = 256 }, .{ .regs = 10, .static = 0, .bound = 256 }, .{ .regs = 10, .static = 0, .bound = 256 }, }
+RED  limits sm_80 control: heavy at 1,024 threads: 168 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_80: 168 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_86 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_86: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_89 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_89: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_120 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_120: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_121 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_121: 166 registers x 1024 threads need 172032, a block has 65536
+RECORD control: heavy at 1,024 threads: .usage = .{ .{ .regs = 168, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, }
+PASS kernel-contract-limits: every registered launch fits sm_80, sm_86, sm_89, sm_120 and sm_121, every control red
+exit=0

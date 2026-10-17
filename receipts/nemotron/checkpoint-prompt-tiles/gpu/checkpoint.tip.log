@@ -1,0 +1,9 @@
+source a79678c5624e55f5b009700e4d953e8034de9336 (tip), tf-cuda-test sha256 68646553a7b3e3cec21efd411bd3940102ea68966f7b33d460e8ec1158a51dc2
+PASS checkpoint experts: 258 pairs over 2 experts [192, 256], prompt NVFP4 up rows == decode up then quant4, prompt down == decode down
+PASS checkpoint experts: 28800 pairs over 96 experts [1344, 1024], prompt NVFP4 up rows == decode up then quant4, prompt down == decode down
+PASS checkpoint share sums: 1408 picks over 8 experts in 2 shares [1024, 1344], combine and shared add byte-equal to decode's fp32 shares
+PASS checkpoint share sums: 300 picks over 1 experts in 2 shares [4096, 2688], combine and shared add byte-equal to decode's fp32 shares
+PASS checkpoint FP8: 129 rows x [192, 256], 1 K slices, prompt byte-equal to rows alone
+PASS checkpoint FP8: 129 rows x [192, 2048], 4 K slices, prompt byte-equal to rows alone
+PASS checkpoint FP8: 129 rows x [4096, 8192], 4 K slices, prompt byte-equal to rows alone
+exit=0

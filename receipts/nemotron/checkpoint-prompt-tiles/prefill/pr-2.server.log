@@ -1,0 +1,45 @@
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 71.54 GiB; 8 streams at once, 1.34 GiB each at a 131584-token window, of 30.8 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, no prompt cache; own glue kernels
+[tensorfold] serving super at http://<loopback>:8097/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 131584; loaded in 18.2s)
+[tensorfold] thinking on (the chat template's default): replies reason in reasoning_content before the answer in content, and max_tokens counts both. --no-thinking turns it off; a request can send chat_template_kwargs {"enable_thinking": false}
+[tensorfold] <loopback> "GET /v1/models HTTP/1.1" 200 -
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+[tensorfold] done cmpl-fb71ca5afaffa171e8f0674fb23a6709 prompt=2048 cached=0 thinking=False effort=none tokens=16 sha=027891eacb70 finish=length rounds=6 accepted=16/74
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+[tensorfold] done cmpl-96fbb1df95f795029f404e02253ae285 prompt=2048 cached=0 thinking=False effort=none tokens=16 sha=027891eacb70 finish=length rounds=6 accepted=16/74
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+[tensorfold] done cmpl-a7cfa89b072c33ee331ba142a56e0bfa prompt=2048 cached=0 thinking=False effort=none tokens=16 sha=027891eacb70 finish=length rounds=6 accepted=16/74
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+[tensorfold] done cmpl-e9cf898abf95aa45ef29f0e15e92f05f prompt=2048 cached=0 thinking=False effort=none tokens=16 sha=027891eacb70 finish=length rounds=15 accepted=0/0
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+[tensorfold] done cmpl-b3019abc3a25d397ebad06d72cb7ef37 prompt=8192 cached=0 thinking=False effort=none tokens=16 sha=80b2b503a848 finish=length rounds=5 accepted=16/75
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+[tensorfold] done cmpl-aa8a668edf352b37430fe407bd578fc4 prompt=8192 cached=0 thinking=False effort=none tokens=16 sha=80b2b503a848 finish=length rounds=5 accepted=16/75
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+[tensorfold] done cmpl-24d2d5531354cc911e46c475adb483f2 prompt=8192 cached=0 thinking=False effort=none tokens=16 sha=80b2b503a848 finish=length rounds=5 accepted=16/75
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 4.0
+[tensorfold] done cmpl-992fa5483504db23f995ff49e82cd4a9 prompt=8192 cached=0 thinking=False effort=none tokens=16 sha=80b2b503a848 finish=length rounds=15 accepted=0/0
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 12.0
+[tensorfold] done cmpl-adf5c52189d44e86864c73c541370e9e prompt=32768 cached=0 thinking=False effort=none tokens=16 sha=70fb5c3caf05 finish=length rounds=2 accepted=19/30
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 16.0
+[tensorfold] done cmpl-a467a080a3ac6a0513b97af46d9dcb12 prompt=32768 cached=0 thinking=False effort=none tokens=16 sha=70fb5c3caf05 finish=length rounds=2 accepted=19/30
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 14.0
+[tensorfold] done cmpl-29d5735bab788e3e568df160380562fd prompt=32768 cached=0 thinking=False effort=none tokens=16 sha=70fb5c3caf05 finish=length rounds=2 accepted=19/30
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 16.0
+[tensorfold] done cmpl-49691fd868ce0c658747606e7f22a4ca prompt=32768 cached=0 thinking=False effort=none tokens=16 sha=70fb5c3caf05 finish=length rounds=15 accepted=0/0
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 32.0
+[tensorfold] done cmpl-9120ad1c863818e4463d88171e4288d0 prompt=65536 cached=0 thinking=False effort=none tokens=16 sha=2e8f1a6db1bf finish=length rounds=4 accepted=16/55
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 38.0
+[tensorfold] done cmpl-a2fd6e69b55c24a245814df6f512c73d prompt=65536 cached=0 thinking=False effort=none tokens=16 sha=2e8f1a6db1bf finish=length rounds=4 accepted=16/55
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 34.0
+[tensorfold] done cmpl-5dfd355cc42882b5a78c40d53850d0ae prompt=65536 cached=0 thinking=False effort=none tokens=16 sha=2e8f1a6db1bf finish=length rounds=4 accepted=16/55
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 36.0
+[tensorfold] done cmpl-0e56dc422d7229e2c32ba8ac855b0a25 prompt=65536 cached=0 thinking=False effort=none tokens=16 sha=2e8f1a6db1bf finish=length rounds=15 accepted=0/0

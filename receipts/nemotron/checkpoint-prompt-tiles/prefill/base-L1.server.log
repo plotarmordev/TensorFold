@@ -1,0 +1,18 @@
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 72.01 GiB; 8 streams at once, 1.34 GiB each at a 131584-token window, of 30.2 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, no prompt cache; own glue kernels
+[tensorfold] serving super at http://<loopback>:8097/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 131584; loaded in 18.5s)
+[tensorfold] thinking on (the chat template's default): replies reason in reasoning_content before the answer in content, and max_tokens counts both. --no-thinking turns it off; a request can send chat_template_kwargs {"enable_thinking": false}
+[tensorfold] <loopback> "GET /v1/models HTTP/1.1" 200 -
+[tensorfold] <loopback> "POST /tokenize HTTP/1.1" 200 -
+[tensorfold] <loopback> "POST /tokenize HTTP/1.1" 200 -
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 78.0
+[tensorfold] done cmpl-a6a78c5c33757be3d9b6aa01d745e793 prompt=131072 cached=0 thinking=False effort=none tokens=16 sha=29cb05e3461a finish=length rounds=1 accepted=14/15
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 90.0
+[tensorfold] done cmpl-727d0b59cc04d4ef0277af859027bd4c prompt=131072 cached=0 thinking=False effort=none tokens=16 sha=29cb05e3461a finish=length rounds=1 accepted=14/15
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 96.0
+[tensorfold] done cmpl-e4bab3eb3c3486bfe9a6f7f50772f966 prompt=131072 cached=0 thinking=False effort=none tokens=16 sha=29cb05e3461a finish=length rounds=1 accepted=14/15
+[tensorfold] <loopback> "POST /v1/completions HTTP/1.1" 200 -
+info: heat_wait_s 96.0
+[tensorfold] done cmpl-f696d701612fc50662be10060440c76d prompt=131072 cached=0 thinking=False effort=none tokens=16 sha=29cb05e3461a finish=length rounds=15 accepted=0/0

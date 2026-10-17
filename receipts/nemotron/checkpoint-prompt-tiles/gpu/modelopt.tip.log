@@ -1,0 +1,7 @@
+source a79678c5624e55f5b009700e4d953e8034de9336 (tip), tf-cuda-test sha256 68646553a7b3e3cec21efd411bd3940102ea68966f7b33d460e8ec1158a51dc2
+PASS modelopt repack: fp8, bf16 and fp4 lane tiles and nvfp4 expert blocks (and column halves) equal the host packers
+PASS fp8 lane: rows 1-16 byte-equal, 300 prompt rows chunk-invariant, worst |err| / (1% of max(|ref|, 1)): decode 0.388, prompt 0.389
+PASS bf16 lane: rows 1-16 byte-equal, 300 prompt rows chunk-invariant, worst |err| / (1% of max(|ref|, 1)): decode 0.385, prompt 0.388
+PASS nvfp4 relu^2 experts: rms error / rms(fp64) up 3.316e-3 (decode 3.316e-3), down 1.646e-3 (decode 1.646e-3); 13-row launch bytes == 40-row
+PASS checkpoint nvfp4 experts: 1 and 16 token rows (32 columns a warp, four steps in flight) byte-equal to the same pairs in a 40-row call (64 columns a warp)
+exit=0

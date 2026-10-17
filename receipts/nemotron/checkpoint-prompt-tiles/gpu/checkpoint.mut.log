@@ -1,0 +1,10 @@
+source a79678c5624e55f5b009700e4d953e8034de9336 (tip + mutant.diff), tf-cuda-test sha256 07ffd8260988b09c1857aa10318f93a485701023301caa8b27636bb401bc22d7
+PASS checkpoint experts: 258 pairs over 2 experts [192, 256], prompt NVFP4 up rows == decode up then quant4, prompt down == decode down
+PASS checkpoint experts: 28800 pairs over 96 experts [1344, 1024], prompt NVFP4 up rows == decode up then quant4, prompt down == decode down
+  word 1: 41bdc10a (2.3719257e1) for 41bdc10b (2.371926e1)
+  word 2: c099419d (-4.7892594e0) for c098419c (-4.758009e0)
+  word 3: c08741c5 (-4.2267785e0) for c08641c4 (-4.195528e0)
+  word 4: 4069413b (3.6446064e0) for 4066413c (3.5977316e0)
+FAIL checkpoint share sums through the combine: first difference at byte 4, 21405 of 32768 words differ
+FAIL checkpoint: TestFailed
+exit=1

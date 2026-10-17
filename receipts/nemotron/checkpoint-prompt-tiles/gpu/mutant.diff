@@ -1,0 +1,28 @@
+diff --git a/zig/kernels/cuda/ck_experts.cu b/zig/kernels/cuda/ck_experts.cu
+index e89a5dec..e91ec3b0 100644
+--- a/zig/kernels/cuda/ck_experts.cu
++++ b/zig/kernels/cuda/ck_experts.cu
+@@ -250,7 +250,7 @@ __device__ __forceinline__ void grouped_prompt(const uint8_t* __restrict__ codes
+ #pragma unroll
+                     for (int c = 0; c < 4; ++c) {
+                         const float v = acc[i][j][c] * al;
+-                        sum[i][j][c] = s ? __fadd_rn(sum[i][j][c], v) : v;
++                        sum[i][j][c] = s ? __fadd_rn(tf_ck4::bf(sum[i][j][c]), v) : v;
+                         acc[i][j][c] = 0.0f;
+                     }
+         };
+diff --git a/zig/kernels/cuda/nemotron_route.cu b/zig/kernels/cuda/nemotron_route.cu
+index 75889217..3de7b638 100644
+--- a/zig/kernels/cuda/nemotron_route.cu
++++ b/zig/kernels/cuda/nemotron_route.cu
+@@ -104,8 +104,8 @@ tf_nemo_router_tiles(const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* _
+                     float xf[8], wf[8];
+ #pragma unroll
+                     for (int i = 0; i < 8; ++i) {
+-                        xf[i] = unpack(word(xv[i], w), half);
+-                        wf[i] = unpack(word(wv[i], w), half);
++                        xf[i] = unpack(word(xv[i], w), 1 - half);
++                        wf[i] = unpack(word(wv[i], w), 1 - half);
+                     }
+ #pragma unroll
+                     for (int i = 0; i < 8; ++i)

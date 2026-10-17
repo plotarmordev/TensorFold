@@ -1,0 +1,24 @@
+== tip
+a79678c5624e55f5b009700e4d953e8034de9336
+== base
+50a34190b04055ff9268cc12f9d8284323830a25
+== mut
+a79678c5624e55f5b009700e4d953e8034de9336
+ M zig/kernels/cuda/ck_experts.cu
+ M zig/kernels/cuda/nemotron_route.cu
+== commands (scripts/build.sh; mut: the tip checkout plus gpu/mutant.diff)
+zig 0.17.0, nvcc Build cuda_13.0.r13.0/compiler.36424714_0
+zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=<nvcc> -Dsm=121
+zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=<out>/fatbin
+zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dsm=121 -Dnvcc=<nvcc>
+zig build fatbins kernel-contract-fatbins -Dnvcc=<nvcc> -Dsm=80,86,89,120,121 (tip checkout, for kernel-contract-limits)
+== sha256
+692e2fd510491ae264fac0deaa66b6453eacc367adb50badeda332a3d1279d17  tip/native/bin/tensorfold-native
+2e1daefd9cb596d76d69c9561da492ddcba0640896e6c3e874205ad819cfe479  tip/bin/tensorfold
+68646553a7b3e3cec21efd411bd3940102ea68966f7b33d460e8ec1158a51dc2  tip/bin/tf-cuda-test
+38cb28f3e07de241d172d7579c9b1b55a291bdfc45475506c2e5a7c443236dc4  base/native/bin/tensorfold-native
+3847bd4b7d6c46708597688f9d4e8373f42829e62a185ee263d72d12bf119c44  base/bin/tensorfold
+08662952ea63e65d7733aea06130985467b17deee4fbcfe51d23823a28935e62  base/bin/tf-cuda-test
+b7f7df1a295ede80561862cc8d79c1e3de0906ded80ebcefd37ebc26cf294cc5  mut/native/bin/tensorfold-native
+a58472381a8edc88e6624d30d6d4bc5b8845af3e3549b8d4acd4149539567795  mut/bin/tensorfold
+07ffd8260988b09c1857aa10318f93a485701023301caa8b27636bb401bc22d7  mut/bin/tf-cuda-test

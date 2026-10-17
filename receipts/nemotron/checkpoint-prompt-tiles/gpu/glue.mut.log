@@ -1,0 +1,11 @@
+source a79678c5624e55f5b009700e4d953e8034de9336 (tip + mutant.diff), tf-cuda-test sha256 07ffd8260988b09c1857aa10318f93a485701023301caa8b27636bb401bc22d7
+DIFFER router partials: 49608 of 230400 elements, first at 2: got 0.45077384, want 0.45077392
+DIFFER top-k weights: 328 of 2400 elements, first at 1: got 0.42594418, want 0.4259442
+DIFFER Super router tiles against tf_nemo_router: 32327 of 135168 elements, first at 12: got -0.18504024, want -0.1850403
+DIFFER Super router tiles: 32327 of 135168 elements, first at 12: got -0.18504024, want -0.1850403
+DIFFER Super router tiles against tf_nemo_router: 293687 of 1228800 elements, first at 0: got -0.10236341, want -0.10236344
+DIFFER Super router tiles: 293687 of 1228800 elements, first at 0: got -0.10236341, want -0.10236344
+DIFFER Super router tiles against tf_nemo_router: 4003148 of 16793600 elements, first at 9: got 0.1807796, want 0.18077958
+FAIL glue: 7 of 1332 comparisons differ from the host references or the one-stream kernels
+FAIL glue: TestFailed
+exit=1
