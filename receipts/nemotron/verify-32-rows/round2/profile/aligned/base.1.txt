@@ -1,0 +1,145 @@
+WINDOW 1 rows at position 18: graph 48.170 ms, eager without marks 50.334 ms
+  eager with 356 marks, shared expert forked: 50.160 ms
+            embed    1 calls    0.006 ms   0.0%
+             norm   89 calls    2.635 ms   5.3%
+         mamba_in   40 calls   13.371 ms  26.7%
+        conv_scan   40 calls    1.347 ms   2.7%
+            gnorm   40 calls    0.245 ms   0.5%
+        mamba_out   40 calls    6.955 ms  13.9%
+              qkv    8 calls    0.719 ms   1.4%
+        attention    8 calls    0.150 ms   0.3%
+           attn_o    8 calls    0.642 ms   1.3%
+            route   40 calls    1.478 ms   2.9%
+     experts_down   40 calls   20.305 ms  40.5%
+             head    1 calls    2.294 ms   4.6%
+           sample    1 calls    0.018 ms   0.0%
+  eager with 356 marks, shared expert on one stream: 50.195 ms
+            embed    1 calls    0.006 ms   0.0%
+             norm   89 calls    2.644 ms   5.3%
+         mamba_in   40 calls   13.368 ms  26.6%
+        conv_scan   40 calls    1.342 ms   2.7%
+            gnorm   40 calls    0.246 ms   0.5%
+        mamba_out   40 calls    6.971 ms  13.9%
+              qkv    8 calls    0.717 ms   1.4%
+        attention    8 calls    0.149 ms   0.3%
+           attn_o    8 calls    0.647 ms   1.3%
+            route   40 calls    1.482 ms   3.0%
+     experts_down   40 calls   20.313 ms  40.5%
+             head    1 calls    2.296 ms   4.6%
+           sample    1 calls    0.018 ms   0.0%
+WINDOW 3 rows at position 18: graph 63.790 ms, eager without marks 66.072 ms
+  eager with 356 marks, shared expert forked: 66.452 ms
+            embed    1 calls    0.008 ms   0.0%
+             norm   89 calls    2.863 ms   4.3%
+         mamba_in   40 calls   13.433 ms  20.2%
+        conv_scan   40 calls    1.424 ms   2.1%
+            gnorm   40 calls    0.246 ms   0.4%
+        mamba_out   40 calls    6.959 ms  10.5%
+              qkv    8 calls    0.725 ms   1.1%
+        attention    8 calls    0.156 ms   0.2%
+           attn_o    8 calls    0.649 ms   1.0%
+            route   40 calls    1.496 ms   2.3%
+     experts_down   40 calls   36.146 ms  54.4%
+             head    1 calls    2.312 ms   3.5%
+           sample    1 calls    0.018 ms   0.0%
+  eager with 356 marks, shared expert on one stream: 66.443 ms
+            embed    1 calls    0.008 ms   0.0%
+             norm   89 calls    2.864 ms   4.3%
+         mamba_in   40 calls   13.450 ms  20.2%
+        conv_scan   40 calls    1.419 ms   2.1%
+            gnorm   40 calls    0.245 ms   0.4%
+        mamba_out   40 calls    6.948 ms  10.5%
+              qkv    8 calls    0.723 ms   1.1%
+        attention    8 calls    0.155 ms   0.2%
+           attn_o    8 calls    0.649 ms   1.0%
+            route   40 calls    1.496 ms   2.3%
+     experts_down   40 calls   36.147 ms  54.4%
+             head    1 calls    2.315 ms   3.5%
+           sample    1 calls    0.018 ms   0.0%
+WINDOW 8 rows at position 18: graph 90.086 ms, eager without marks 91.996 ms
+  eager with 356 marks, shared expert forked: 92.316 ms
+            embed    1 calls    0.008 ms   0.0%
+             norm   89 calls    2.961 ms   3.2%
+         mamba_in   40 calls   13.563 ms  14.7%
+        conv_scan   40 calls    1.706 ms   1.8%
+            gnorm   40 calls    0.245 ms   0.3%
+        mamba_out   40 calls    7.049 ms   7.6%
+              qkv    8 calls    0.732 ms   0.8%
+        attention    8 calls    0.158 ms   0.2%
+           attn_o    8 calls    0.651 ms   0.7%
+            route   40 calls    1.533 ms   1.7%
+     experts_down   40 calls   61.370 ms  66.5%
+             head    1 calls    2.339 ms   2.5%
+           sample    1 calls    0.018 ms   0.0%
+  eager with 356 marks, shared expert on one stream: 92.522 ms
+            embed    1 calls    0.008 ms   0.0%
+             norm   89 calls    2.957 ms   3.2%
+         mamba_in   40 calls   13.569 ms  14.7%
+        conv_scan   40 calls    1.708 ms   1.8%
+            gnorm   40 calls    0.246 ms   0.3%
+        mamba_out   40 calls    7.060 ms   7.6%
+              qkv    8 calls    0.722 ms   0.8%
+        attention    8 calls    0.158 ms   0.2%
+           attn_o    8 calls    0.652 ms   0.7%
+            route   40 calls    1.533 ms   1.7%
+     experts_down   40 calls   61.526 ms  66.5%
+             head    1 calls    2.335 ms   2.5%
+           sample    1 calls    0.018 ms   0.0%
+WINDOW 12 rows at position 18: graph 104.281 ms, eager without marks 106.181 ms
+  eager with 356 marks, shared expert forked: 106.495 ms
+            embed    1 calls    0.008 ms   0.0%
+             norm   89 calls    2.986 ms   2.8%
+         mamba_in   40 calls   13.649 ms  12.8%
+        conv_scan   40 calls    1.924 ms   1.8%
+            gnorm   40 calls    0.245 ms   0.2%
+        mamba_out   40 calls    7.119 ms   6.7%
+              qkv    8 calls    0.725 ms   0.7%
+        attention    8 calls    0.164 ms   0.2%
+           attn_o    8 calls    0.654 ms   0.6%
+            route   40 calls    1.604 ms   1.5%
+     experts_down   40 calls   75.041 ms  70.5%
+             head    1 calls    2.359 ms   2.2%
+           sample    1 calls    0.020 ms   0.0%
+  eager with 356 marks, shared expert on one stream: 106.514 ms
+            embed    1 calls    0.008 ms   0.0%
+             norm   89 calls    2.993 ms   2.8%
+         mamba_in   40 calls   13.644 ms  12.8%
+        conv_scan   40 calls    1.926 ms   1.8%
+            gnorm   40 calls    0.246 ms   0.2%
+        mamba_out   40 calls    7.116 ms   6.7%
+              qkv    8 calls    0.726 ms   0.7%
+        attention    8 calls    0.164 ms   0.2%
+           attn_o    8 calls    0.661 ms   0.6%
+            route   40 calls    1.605 ms   1.5%
+     experts_down   40 calls   75.050 ms  70.5%
+             head    1 calls    2.360 ms   2.2%
+           sample    1 calls    0.020 ms   0.0%
+WINDOW 16 rows at position 18: graph 118.809 ms, eager without marks 120.616 ms
+  eager with 356 marks, shared expert forked: 122.228 ms
+            embed    1 calls    0.008 ms   0.0%
+             norm   89 calls    3.093 ms   2.5%
+         mamba_in   40 calls   13.859 ms  11.3%
+        conv_scan   40 calls    2.179 ms   1.8%
+            gnorm   40 calls    0.245 ms   0.2%
+        mamba_out   40 calls    7.231 ms   5.9%
+              qkv    8 calls    0.732 ms   0.6%
+        attention    8 calls    0.174 ms   0.1%
+           attn_o    8 calls    0.665 ms   0.5%
+            route   40 calls    1.641 ms   1.3%
+     experts_down   40 calls   89.923 ms  73.6%
+             head    1 calls    2.373 ms   1.9%
+           sample    1 calls    0.023 ms   0.0%
+  eager with 356 marks, shared expert on one stream: 122.031 ms
+            embed    1 calls    0.008 ms   0.0%
+             norm   89 calls    3.087 ms   2.5%
+         mamba_in   40 calls   13.833 ms  11.3%
+        conv_scan   40 calls    2.174 ms   1.8%
+            gnorm   40 calls    0.246 ms   0.2%
+        mamba_out   40 calls    7.232 ms   5.9%
+              qkv    8 calls    0.734 ms   0.6%
+        attention    8 calls    0.173 ms   0.1%
+           attn_o    8 calls    0.667 ms   0.5%
+            route   40 calls    1.635 ms   1.3%
+     experts_down   40 calls   89.479 ms  73.3%
+             head    1 calls    2.382 ms   2.0%
+           sample    1 calls    0.024 ms   0.0%

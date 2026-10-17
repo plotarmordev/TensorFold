@@ -1,0 +1,88 @@
+[
+ {
+  "label": "pr-1",
+  "prompt": "fibonacci-raw",
+  "temperature": 0.0,
+  "tokens": 256,
+  "decode_tps_median": 46.83999995593634,
+  "decode_tps_all": [
+   46.84,
+   46.84,
+   46.87
+  ],
+  "ttft_s_median": 0.12594087899196893,
+  "evidence": [
+   {
+    "prompt_tokens": 15,
+    "cached_tokens": 0,
+    "tokens": 256,
+    "cache_state": "cold",
+    "complete": true,
+    "token_sha": "51e4c630298a",
+    "output_sha256": "95e5f47024c11166782edb4d3e909eb2588ce18e8e962357d8d53904803afd39"
+   },
+   {
+    "prompt_tokens": 15,
+    "cached_tokens": 0,
+    "tokens": 256,
+    "cache_state": "cold",
+    "complete": true,
+    "token_sha": "51e4c630298a",
+    "output_sha256": "95e5f47024c11166782edb4d3e909eb2588ce18e8e962357d8d53904803afd39"
+   },
+   {
+    "prompt_tokens": 15,
+    "cached_tokens": 0,
+    "tokens": 256,
+    "cache_state": "cold",
+    "complete": true,
+    "token_sha": "51e4c630298a",
+    "output_sha256": "95e5f47024c11166782edb4d3e909eb2588ce18e8e962357d8d53904803afd39"
+   }
+  ],
+  "sample": " The function should take an integer n and return the nth number in the Fibonacci sequence. The Fibonacci sequence is a series of numbers where a number is the "
+ },
+ {
+  "label": "pr-1",
+  "prompt": "gpu-chat-no-think",
+  "temperature": 0.0,
+  "tokens": 256,
+  "decode_tps_median": 36.21088217881723,
+  "decode_tps_all": [
+   36.21,
+   36.21,
+   36.19
+  ],
+  "ttft_s_median": 0.20842046407051384,
+  "evidence": [
+   {
+    "prompt_tokens": 35,
+    "cached_tokens": 0,
+    "tokens": 256,
+    "cache_state": "cold",
+    "complete": true,
+    "token_sha": "161034fd0a09",
+    "output_sha256": "bfdf9424d0baf9a111e39c4fd8a78b2b3318e4c0e8e2c9ebbf44630fe7cb4899"
+   },
+   {
+    "prompt_tokens": 35,
+    "cached_tokens": 0,
+    "tokens": 256,
+    "cache_state": "cold",
+    "complete": true,
+    "token_sha": "161034fd0a09",
+    "output_sha256": "bfdf9424d0baf9a111e39c4fd8a78b2b3318e4c0e8e2c9ebbf44630fe7cb4899"
+   },
+   {
+    "prompt_tokens": 35,
+    "cached_tokens": 0,
+    "tokens": 256,
+    "cache_state": "cold",
+    "complete": true,
+    "token_sha": "161034fd0a09",
+    "output_sha256": "bfdf9424d0baf9a111e39c4fd8a78b2b3318e4c0e8e2c9ebbf44630fe7cb4899"
+   }
+  ],
+  "sample": "### Part 1: How a GPU does matrix multiplication (plain English)\n\nImagine you have two giant spreadsheets of numbers (matrices) and you want to multiply them to"
+ }
+]

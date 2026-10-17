@@ -1,0 +1,38 @@
+info: heat_wait_s 2.0
+info: heat_wait_s 2.0
+info: heat_wait_s 2.0
+info: heat_wait_s 2.0
+info: heat_wait_s 2.0
+info: heat_wait_s 2.0
+rows 1 a stream: 309 kept rows, 0 differ
+rows 2 a stream: 140 kept rows, 0 differ
+rows 3 a stream: 111 kept rows, 0 differ
+rows 4 a stream: 80 kept rows, 0 differ
+rows 5 a stream: 50 kept rows, 0 differ
+rows 6 a stream: 255 kept rows, 0 differ
+rows 7 a stream: 59 kept rows, 0 differ
+rows 8 a stream: 104 kept rows, 0 differ
+rows 9 a stream: 124 kept rows, 0 differ
+rows 10 a stream: 115 kept rows, 0 differ
+rows 11 a stream: 69 kept rows, 0 differ
+rows 12 a stream: 132 kept rows, 0 differ
+rows 13 a stream: 127 kept rows, 0 differ
+rows 14 a stream: 154 kept rows, 0 differ
+rows 15 a stream: 52 kept rows, 0 differ
+rows 16 a stream: 168 kept rows, 0 differ
+rows 17 a stream: 84 kept rows, 0 differ
+rows 18 a stream: 90 kept rows, 0 differ
+rows 19 a stream: 65 kept rows, 0 differ
+rows 20 a stream: 130 kept rows, 0 differ
+rows 21 a stream: 167 kept rows, 0 differ
+rows 22 a stream: 110 kept rows, 0 differ
+rows 23 a stream: 69 kept rows, 0 differ
+rows 24 a stream: 192 kept rows, 0 differ
+rows 25 a stream: 37 kept rows, 0 differ
+rows 26 a stream: 39 kept rows, 0 differ
+rows 27 a stream: 13 kept rows, 0 differ
+rows 28 a stream: 70 kept rows, 0 differ
+rows 30 a stream: 30 kept rows, 0 differ
+rows 31 a stream: 15 kept rows, 0 differ
+rows 32 a stream: 32 kept rows, 0 differ
+PASS shared widths, 8 streams: 3192 of 3192 kept rows equal serial (400 tokens a stream, 132 shared windows)

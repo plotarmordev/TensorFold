@@ -1,0 +1,22 @@
+base 39993136 (fresh --cache-dir for every step)
+== zig build test-kernel-contract
+exit=0
+Build Summary: 3/3 steps succeeded; 18/18 tests passed
+== zig build test
+exit=0
+failed command: <cache>/o/51f2122ccd3077e3816cbf64d21332be/test --cache-dir=<cache> --seed=0xf15136a --listen=-
+failed command: <cache>/o/841d5ca07d2b6ccf6db5e24b4d52796e/test --cache-dir=<cache> --seed=0xf15136a --listen=-
+failed command: <cache>/o/ba58a02272901a969b67bb45619a6dc0/test --cache-dir=<cache> --seed=0xf15136a --listen=-
+failed command: <cache>/o/8947d7da6620d7623bc2824afe5abb5d/test --cache-dir=<cache> --seed=0xf15136a --listen=-
+Build Summary: 84/84 steps succeeded; 1378/1385 tests passed (7 skipped)
+== zig build test-golden
+exit=0
+309/319 equal to the frozen Python answers, 0 unexpected differences
+Build Summary: 4/4 steps succeeded
+== zig build fuzz-cortheon
+exit=0
+Build Summary: 3/3 steps succeeded; 7/7 tests passed
+== zig fmt --check zig build.zig
+exit=0
+== python3 tools/zig/lean_check.py
+1943 files, 517 problems

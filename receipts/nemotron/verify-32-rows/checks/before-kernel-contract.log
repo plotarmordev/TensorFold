@@ -1,0 +1,181 @@
+PASS nonfinite cuda RMS norm tf_rms_rows_bf16 (16-byte form): 2692 non-finite and 18812 finite outputs match the float64 classes
+PASS repeat cuda RMS norm tf_rms_rows_bf16 (16-byte form): five runs byte-identical (91392 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda RMS norm tf_rms_rows_bf16 (16-byte form): 2 shapes within the float64 bound (worst 0.995 of the bound), 5 edges refused by the kernel
+PASS sums cuda RMS norm tf_rms_rows_bf16 (16-byte form): within its bound at k 7168; fp16 sums would miss 256x, bf16 0.6x (a bf16 output follows the sum of squares as ss^-1/2: a bf16 sum's error is a few output ulps (the fp32-out form proves it))
+PASS nonfinite cuda RMS norm tf_rms_rows (f16 in, fp32 out): 2692 non-finite and 18812 finite outputs match the float64 classes
+PASS repeat cuda RMS norm tf_rms_rows (f16 in, fp32 out): five runs byte-identical (182784 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda RMS norm tf_rms_rows (f16 in, fp32 out): 2 shapes within the float64 bound (worst 0.186 of the bound), 5 edges refused by the kernel
+PASS sums cuda RMS norm tf_rms_rows (f16 in, fp32 out): exact sums at k 9216, where fp16 sums would miss by 1864135x and bf16 by 3137x
+FAIL nonfinite control: fmax row max: 1 of 8 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL control: fmax row max: red at nonfinite, as planted
+FAIL repeat control: atomic-add row sum: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL control: atomic-add row sum: red at repeat, as planted
+FAIL repeat control: row sum writing its input: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL control: row sum writing its input: red at repeat, as planted
+FAIL shapes control: row sum losing a tail input: at 8x1x1 output 0 is 0.000000e0 where float64 gives -5.117188e-1: 2396744.29 of its bound
+CONTROL control: row sum losing a tail input: red at shapes, as planted
+FAIL sums control: dot summed in half: 79310475.6x over its exact-sum bound at k 4096: not fp32 sums (fp16 would miss 79310476x, bf16 16777216x)
+CONTROL control: dot summed in half: red at sums, as planted
+PASS nonfinite cuda nemotron router logits tf_nemo_router: 640 non-finite and 5504 finite outputs match the float64 classes
+PASS repeat cuda nemotron router logits tf_nemo_router: five runs byte-identical (49152 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda nemotron router logits tf_nemo_router: 9 shapes within the float64 bound (worst 0.003 of the bound), 0 edges refused by the kernel
+PASS sums cuda nemotron router logits tf_nemo_router: exact sums at k 2688, where fp16 sums would miss by 12615x and bf16 by 106612x
+PASS nonfinite cuda nemotron top-k tf_nemo_topk: the stated rule holds: a NaN logit is never picked ahead of a number; ties go to the lower expert; two shared slots follow the top-k
+PASS repeat cuda nemotron top-k tf_nemo_topk: five runs byte-identical (1024 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda nemotron top-k tf_nemo_topk: 5 shapes exact by its own check (worst 0.000 of the bound), 0 edges refused by the kernel
+N/A  sums cuda nemotron top-k tf_nemo_topk: declares none sums
+PASS nonfinite cuda nemotron latent top-k tf_super_topk_few: the stated rule holds: tf_super_topk's bytes, and its host twin's picks: a NaN never ahead of a number, ties to the lower expert, every pick past the numbers expert 0
+PASS repeat cuda nemotron latent top-k tf_super_topk_few: five runs byte-identical (264 bytes), inputs and guards untouched, no overlap
+PASS shapes cuda nemotron latent top-k tf_super_topk_few: 7 shapes bit-equal to the kernel it replaces (worst 0.000 of the bound), 0 edges refused by the kernel
+N/A  sums cuda nemotron latent top-k tf_super_topk_few: declares none sums
+PASS nonfinite cuda nemotron mamba scan tf_nemo_scan: the stated rule holds: glue_ref.scan's bytes (y, the window's dt, the state after the kept rows), NaN wherever it gives NaN
+PASS repeat cuda nemotron mamba scan tf_nemo_scan: five runs byte-identical (4489216 bytes), inputs and guards untouched, no overlap
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda nemotron mamba scan tf_nemo_scan: CudaFailed
+N/A  sums cuda nemotron mamba scan tf_nemo_scan: declares none sums
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda qmm_group (cluster tile): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda qmm_group (cluster tile): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda qmm_group (cluster tile): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda qmm_group (cluster tile): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda lane_gemv: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda lane_gemv: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda lane_gemv: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda lane_gemv: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda lane_gemv split-K: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda lane_gemv split-K: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda lane_gemv split-K: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda lane_gemv split-K: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda prompt16 FP4 tile 4: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda prompt16 FP4 tile 4: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda prompt16 FP4 tile 4: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda prompt16 FP4 tile 4: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda prompt16 FP4 tile 4, fp32 out: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda prompt16 FP4 tile 4, fp32 out: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda prompt16 FP4 tile 4, fp32 out: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda prompt16 FP4 tile 4, fp32 out: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda qmmf FP4 fp32 out (slices in a cluster): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda qmmf FP4 fp32 out (slices in a cluster): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda qmmf FP4 fp32 out (slices in a cluster): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda qmmf FP4 fp32 out (slices in a cluster): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda qmmf FP4 fp32 out (slices by reduce_kernel<true>): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda qmmf FP4 fp32 out (slices by reduce_kernel<true>): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda qmmf FP4 fp32 out (slices by reduce_kernel<true>): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda qmmf FP4 fp32 out (slices by reduce_kernel<true>): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda tf_rank_sum (a reduce-scatter's rank-order sum): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda tf_rank_sum (a reduce-scatter's rank-order sum): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda tf_rank_sum (a reduce-scatter's rank-order sum): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda tf_rank_sum (a reduce-scatter's rank-order sum): CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda ck experts up tf_ck4_up_relu2_few: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda ck experts up tf_ck4_up_relu2_few: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda ck experts up tf_ck4_up_relu2_few: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda ck experts up tf_ck4_up_relu2_few: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL nonfinite cuda ck experts down tf_ck4_down_f32_few: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL repeat cuda ck experts down tf_ck4_down_f32_few: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL shapes cuda ck experts down tf_ck4_down_f32_few: CudaFailed
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuMemAlloc: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL sums cuda ck experts down tf_ck4_down_f32_few: CudaFailed
+PASS limits: 30 registered CUDA launches against sm_80/86/89/120/121, 0 problems
+PASS limits live sm_121 most shared bytes a block (opt-in): the driver says 101376, the table 101376
+PASS limits live sm_121 threads a block: the driver says 1024, the table 1024
+error: cuModuleLoadData: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+error: cuStreamSynchronize: CUDA_ERROR_ILLEGAL_ADDRESS (700) an illegal memory access was encountered
+FAIL kernel-contract: CudaFailed

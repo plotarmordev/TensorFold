@@ -1,0 +1,5 @@
+1/2 pr5-dd-before.test.pooled costs never add more ms a row as rows grow...OK
+============ expected this output: =============  len: 16 (0x10)
+FAIL (TestExpectedEqual)
+1 passed; 0 skipped; 1 failed.
+error: the following test command failed with exit code 1:

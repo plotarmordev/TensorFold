@@ -1,0 +1,24 @@
+Source commits (full):
+  branch tip (this pull request): 480ad61f5bb8507da6b051cf138b8e615c59a519 (tree 0214bea1c9b39b95548854275f8611039cb81794)
+  base (the tip it sits on, a local merge of nemotron/cuda-decode-kernels e367c8f5 and nemotron/cuda-mtp-flags a1ad3aef): 39993136981823d314a1a6204ecc6f95ae25bb45
+Each built from a checkout of that commit with no local changes (git status --porcelain empty before and after the build).
+Zig: aarch64-linux-0.17.0; nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+Build commands (run from the checkout; <out> is the output prefix):
+  zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix <out> -j2
+  zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=<out>/fatbin --prefix <out> -j2
+  zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc --prefix <out> -j2
+Limits records: zig build fatbins kernel-contract-fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=80,86,89,120,121 --prefix <out>, then tf-cuda-test kernel-contract-limits <out>/fatbin
+(limits.log: built at 9f384557f35725e949e969b1928be55ba59b0ba1; the last commit changes no kernel or launch).
+
+SHA-256 of the binaries every receipt ran (server holds in holds-480ad61f/, GPU checks in checks/):
+base:
+ef46e9ba4e9b05a763306f3c37ef99ec7bf77892ec657bb078ac37e3b49c6e7c  native/bin/tensorfold-native
+a85aee30a7d88a7716820fb56524418c8d98e232dd7e8a3c9862b7f1eb8db2f9  bin/tensorfold
+8fcde077bf3eed88d088c5db4a0eeefc7da0445e836ec72b4d27bc0b34238632  bin/tf-cuda-test
+branch tip:
+029382b0c0e504d31bb7bf64b1307de9ccba5e9d1a4c8c88e3aa9df6b2526564  native/bin/tensorfold-native
+6d4b6b61e7a4103ac1ea36f29428475e96327bdc4c1997882b51f22b2abc764d  bin/tensorfold
+6ac40e9bfd82ba220bc6622ebe1da176aa8824d04ea0bc101c3abd6d5b4b2852  bin/tf-cuda-test
+Fail-before tf-cuda-test (9f384557 with before.diff applied): a8b83fa33263d6af143bc3b6966aa416aa4f150ccbde1375367f7923a8584028
+
+holds-9f384557/ ran the previous tip 9f384557 (tensorfold-native b3193ef971d608bfa71590904dfb48bde245ee569babf61d0ba389d01d79baa5) against the same base.

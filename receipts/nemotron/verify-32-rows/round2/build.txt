@@ -1,0 +1,24 @@
+Source commits (full):
+  branch tip (this pull request): fa2af585fc52b888bbba09e379367b8e0792115b (tree 7b3becda2043b70011bb1779ad3fab282f70f142)
+  base (the tip it sits on, a local merge of nemotron/cuda-decode-kernels e367c8f5 and nemotron/cuda-mtp-flags a1ad3aef): 39993136981823d314a1a6204ecc6f95ae25bb45
+Each built from a fresh checkout of that commit with no local changes (git status --porcelain empty before and after the build).
+Zig: aarch64-linux-0.17.0; nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+Build commands (run from the checkout; <out> is the output prefix):
+  zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix <out> -j2
+  zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=<out>/fatbin --prefix <out> -j2
+  zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc --prefix <out> -j2
+Limits records: zig build fatbins kernel-contract-fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=80,86,89,120,121 --prefix <out>
+(from the same checkout of fa2af585), then tf-cuda-test kernel-contract-limits <out>/fatbin (checks/limits.log).
+
+SHA-256 of the binaries every receipt in this folder ran (holds in holds-fa2af585/, GPU checks in checks/, profile/):
+base (the same build as ../build.txt's base):
+ef46e9ba4e9b05a763306f3c37ef99ec7bf77892ec657bb078ac37e3b49c6e7c  native/bin/tensorfold-native
+a85aee30a7d88a7716820fb56524418c8d98e232dd7e8a3c9862b7f1eb8db2f9  bin/tensorfold
+8fcde077bf3eed88d088c5db4a0eeefc7da0445e836ec72b4d27bc0b34238632  bin/tf-cuda-test
+branch tip fa2af585:
+097904fb69e20ae74986e50ab438db6abec16a68aaa0ce74d51ef4656513179b  native/bin/tensorfold-native
+b06f13b0eb29aca1cb65b63ab6e33e393c8040c234ee1d5f3c2a8adae8f43264  bin/tensorfold
+4e9ba1ebd7ef43c7a61e00e1a5d12a12c56d5069afd7f072c7a166a9a96274d2  bin/tf-cuda-test
+profile/unaligned and profile/aligned ran the previous tip 480ad61f (tf-cuda-test 6ac40e9bfd82ba220bc6622ebe1da176aa8824d04ea0bc101c3abd6d5b4b2852,
+../build.txt) against the base; profile/tip-aligned ran fa2af585 against the base.
+GPU: NVIDIA GB10, driver 580.173.02, CUDA 13.0.

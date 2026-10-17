@@ -1,0 +1,1 @@
+PASS glue: 1337 of 1337 comparisons byte-equal to the host references (norms, router, top-k, the latent top-k, conv, scan, attention, draw, several streams at once) and the shared-window kernels to the one-stream ones; every reference at least 8% nonzero
