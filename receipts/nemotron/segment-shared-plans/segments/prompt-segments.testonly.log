@@ -1,0 +1,5 @@
+info: heat_wait_s 2.0
+FAIL prompt-segments: a pass as 2 segments a call differs from the uncut pass
+FAIL prompt-segments: TestFailed
+Command exited with non-zero status 1
+32.30 s

@@ -1,0 +1,30 @@
+NVIDIA GB10, 580.173.02
+RESULT driver CUDA 13000, device NVIDIA GB10, sm_121, 48 SMs, 124610 MiB total, 75741 MiB free, kernels embedded true
+== base --segments 1
+Running as unit: pr1-ref.service; invocation ID: 1d7e1cf871d14a86b3ac0c038bb80e82
+base-seg1 drafted: prompt 8186 cached 0 tokens 256 sha 857f11a3163c107f8e12864988d1dc6ba065bf279c0db94c63ee608b881b92e6
+== base --segments 2
+Running as unit: pr1-ref.service; invocation ID: ce4c3513b1b04ed0b59bb4f6475fab9c
+base-seg2 drafted: prompt 8186 cached 0 tokens 256 sha 376584461f3c1ac840f375481fc3628040b6421160d44324a7b58cda94f36f70
+== pr --segments 1
+Running as unit: pr1-ref.service; invocation ID: 44e2f15729ae4224aa86c063a49836ab
+pr-seg1 drafted: prompt 8186 cached 0 tokens 256 sha 857f11a3163c107f8e12864988d1dc6ba065bf279c0db94c63ee608b881b92e6
+pr-seg1 undrafted: prompt 8186 cached 0 tokens 256 sha 857f11a3163c107f8e12864988d1dc6ba065bf279c0db94c63ee608b881b92e6
+== pr --segments 2
+Running as unit: pr1-ref.service; invocation ID: e13f776e718e46a4b300e823faa1ae10
+pr-seg2 drafted: prompt 8186 cached 0 tokens 256 sha 857f11a3163c107f8e12864988d1dc6ba065bf279c0db94c63ee608b881b92e6
+pr-seg2 undrafted: prompt 8186 cached 0 tokens 256 sha 857f11a3163c107f8e12864988d1dc6ba065bf279c0db94c63ee608b881b92e6
+== tf-cuda-test prompt-segments (testonly)
+exit 1
+info: heat_wait_s 2.0
+FAIL prompt-segments: a pass as 2 segments a call differs from the uncut pass
+FAIL prompt-segments: TestFailed
+Command exited with non-zero status 1
+32.30 s
+== tf-cuda-test prompt-segments (pr)
+exit 0
+info: heat_wait_s 2.0
+info: heat_wait_s 4.0
+PASS prompt-segments: a 8186-token pass as 2 to 4 segments a call equals the uncut pass
+49.34 s
+done

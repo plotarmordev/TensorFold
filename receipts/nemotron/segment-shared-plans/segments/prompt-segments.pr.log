@@ -1,0 +1,4 @@
+info: heat_wait_s 2.0
+info: heat_wait_s 4.0
+PASS prompt-segments: a 8186-token pass as 2 to 4 segments a call equals the uncut pass
+49.34 s

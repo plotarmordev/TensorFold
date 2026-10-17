@@ -1,0 +1,11 @@
+Linux 6.17.0-1029-nvidia aarch64
+Ubuntu 24.04.4 LTS
+== base --segments 1
+Running as unit: pr1-ref.service; invocation ID: c32e7c88567a4d09b9b68235d8623b66
+base-seg1 drafted: prompt 8186 cached 0 tokens 256 sha 857f11a3163c107f8e12864988d1dc6ba065bf279c0db94c63ee608b881b92e6
+base-seg1 undrafted: prompt 8186 cached 0 tokens 256 sha 857f11a3163c107f8e12864988d1dc6ba065bf279c0db94c63ee608b881b92e6
+== base --segments 2
+Running as unit: pr1-ref.service; invocation ID: 11c03e3652b54fc4a2dfb88c366862a3
+base-seg2 drafted: prompt 8186 cached 0 tokens 256 sha 376584461f3c1ac840f375481fc3628040b6421160d44324a7b58cda94f36f70
+base-seg2 undrafted: prompt 8186 cached 0 tokens 256 sha 376584461f3c1ac840f375481fc3628040b6421160d44324a7b58cda94f36f70
+done

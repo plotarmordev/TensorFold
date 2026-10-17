@@ -1,0 +1,14 @@
+PASS prompt-cuts: a 8186-token pass keeping at { 1, 777, 2047, 2048, 2049, 8153, 8185 } equals the uncut pass
+info: heat_wait_s 2.0
+info: heat_wait_s 4.0
+info: heat_wait_s 4.0
+info: heat_wait_s 2.0
+info: heat_wait_s 2.0
+info: heat_wait_s 4.0
+PASS prompt-cuts: passes resumed at each keep equal the uncut pass
+info: heat_wait_s 6.0
+FAIL prompt-cuts: a background pass stepping aside kept { 512 }, not [768]
+FAIL prompt-cuts: TestFailed
+Command exited with non-zero status 1
+92.14 s
+exit 1

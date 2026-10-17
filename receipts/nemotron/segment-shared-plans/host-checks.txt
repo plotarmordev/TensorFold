@@ -1,0 +1,9 @@
+# Host checks at 57418b92 (base 6ee828c2), Zig 0.17.0, aarch64 Linux
+zig build test: exit 0, 79.05 s
+zig build test-kernel-contract: exit 0, 6.94 s
+zig build test-golden: exit 0, 80.39 s
+zig build fuzz-cortheon: exit 0, 25.62 s
+zig build test --summary all: Build Summary: 84/84 steps succeeded; 417/424 tests passed (7 skipped)
+309/319 equal to the frozen Python answers, 0 unexpected differences
+zig fmt --check zig/ build.zig: exit 0
+lean: 517 problems, 517 on the base, 0 new
