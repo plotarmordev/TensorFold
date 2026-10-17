@@ -1,0 +1,161 @@
+{
+  "label": "sampled-pr",
+  "mode": "sampled",
+  "commit": "f58dc04b4a98ed2e5b89c17bb5966ef58a1df4c7",
+  "binary_sha256": "3eefef75610ce5b42262f9c4ad5a347c8d36f04ba62022811edf3afe782a2596",
+  "build": [
+    "zig 0.17.0 aarch64-linux, nvcc cuda_13.0.r13.0/compiler.36424714_0, from a checkout with git status --porcelain empty",
+    "zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix <out> -j2",
+    "zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=<out>/fatbin --prefix <out> -j2",
+    "zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc --prefix <out> -j2"
+  ],
+  "gpu": "NVIDIA GB10, 580.173.02",
+  "cuda": "Build cuda_13.0.r13.0/compiler.36424714_0",
+  "serve_flags": [
+    "--name",
+    "super",
+    "--no-update-check",
+    "--host",
+    "<loopback>",
+    "--port",
+    "8096",
+    "--prompt-cache-gib",
+    "0"
+  ],
+  "checkpoint": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@82d93699acd3be9e4617c53360fe5b3f5dbeb1b3",
+  "costs_measured_fresh": false,
+  "started": "2026-10-18T03:40:20",
+  "ready_s": 18.0,
+  "admission": "CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 71.22 GiB; 8 streams at once, 0.40 GiB each at a 16384-token window, of 31.9 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, no prompt cache; own glue kernels",
+  "costs": {
+    "full": {
+      "rows": 32,
+      "verify_ms": [
+        47.6014,
+        55.691,
+        61.7976,
+        67.9043,
+        72.9713,
+        78.0384,
+        82.6583,
+        87.2782,
+        91.8981,
+        96.037,
+        100.176,
+        104.315,
+        108.4539,
+        112.5929,
+        116.7319,
+        119.1276,
+        123.4716,
+        126.639,
+        129.8065,
+        132.804,
+        135.8015,
+        138.799,
+        141.7966,
+        144.7941,
+        147.7916,
+        150.7892,
+        153.7763,
+        156.1916,
+        158.6069,
+        161.0222,
+        163.4375,
+        165.6101
+      ],
+      "level_ms": 3.5166
+    },
+    "subset": {
+      "rows": 32,
+      "verify_ms": [
+        47.6014,
+        55.691,
+        61.7976,
+        67.9043,
+        72.9713,
+        78.0384,
+        82.6583,
+        87.2782,
+        91.8981,
+        96.037,
+        100.176,
+        104.315,
+        108.4539,
+        112.5929,
+        116.7319,
+        119.1276,
+        123.4716,
+        126.639,
+        129.8065,
+        132.804,
+        135.8015,
+        138.799,
+        141.7966,
+        144.7941,
+        147.7916,
+        150.7892,
+        153.7763,
+        156.1916,
+        158.6069,
+        161.0222,
+        163.4375,
+        165.6101
+      ],
+      "level_ms": 2.0534
+    }
+  },
+  "sampled": {
+    "lang_en": {
+      "drafted": "51309ce68298016db78eaaa9657559d45e4a34b41e2b95e4cfa8fe28f082e212",
+      "plain": "51309ce68298016db78eaaa9657559d45e4a34b41e2b95e4cfa8fe28f082e212"
+    },
+    "lang_es": {
+      "drafted": "a39bc9ad330d21a3d8f4d3f3d94fb84906759b87dd8c5127956ee672a539d163",
+      "plain": "a39bc9ad330d21a3d8f4d3f3d94fb84906759b87dd8c5127956ee672a539d163"
+    },
+    "lang_fr": {
+      "drafted": "9a8fdfc86a49bac14019dcf3ed44d946ca481138fe1b46bcc20919de9fbb1bbc",
+      "plain": "9a8fdfc86a49bac14019dcf3ed44d946ca481138fe1b46bcc20919de9fbb1bbc"
+    },
+    "lang_de": {
+      "drafted": "066f089018cb5fba4ff74d2142d80aff41561b83f1d8bca0a846c066a56cf078",
+      "plain": "066f089018cb5fba4ff74d2142d80aff41561b83f1d8bca0a846c066a56cf078"
+    },
+    "lang_it": {
+      "drafted": "5da74ea6541c7d1ef2203ec90e42abca9c4725498511257149ba9a7ca79f39f9",
+      "plain": "5da74ea6541c7d1ef2203ec90e42abca9c4725498511257149ba9a7ca79f39f9"
+    },
+    "lang_ja": {
+      "drafted": "3d23be512cf95e0ae5e07be2efddbba2d0e46699127cffdbc91a3dbe7c4aabcd",
+      "plain": "3d23be512cf95e0ae5e07be2efddbba2d0e46699127cffdbc91a3dbe7c4aabcd"
+    },
+    "multilingual": {
+      "drafted": "f242e485a73e2cce6eac31fdb90bbd65fab826d030ea0eecf1ac8323a463d62d",
+      "plain": "f242e485a73e2cce6eac31fdb90bbd65fab826d030ea0eecf1ac8323a463d62d"
+    }
+  },
+  "concurrent": [
+    {
+      "multilingual": {
+        "token_sha256": "f242e485a73e2cce6eac31fdb90bbd65fab826d030ea0eecf1ac8323a463d62d",
+        "equal_solo": true
+      },
+      "lang_ja": {
+        "token_sha256": "3d23be512cf95e0ae5e07be2efddbba2d0e46699127cffdbc91a3dbe7c4aabcd",
+        "equal_solo": true
+      },
+      "lang_de": {
+        "token_sha256": "066f089018cb5fba4ff74d2142d80aff41561b83f1d8bca0a846c066a56cf078",
+        "equal_solo": true
+      },
+      "lang_en": {
+        "token_sha256": "51309ce68298016db78eaaa9657559d45e4a34b41e2b95e4cfa8fe28f082e212",
+        "equal_solo": true
+      }
+    }
+  ],
+  "result": "completed",
+  "violations": [],
+  "gpu_idle_after": true
+}

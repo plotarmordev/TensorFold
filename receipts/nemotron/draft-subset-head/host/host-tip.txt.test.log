@@ -1,0 +1,139 @@
+test
++- run test w
+[default] (warn): a round could not be recorded: OutOfDeviceMemory
+failed command: <cache>/test/o/376ffecbb1006947005dfbdc57790412/test --cache-dir=<cache>/test --seed=0xcfcb386d --listen=-
+
+test
++- run test w
+[default] (warn): lm_head is 8-bit in groups of 64: CUDA reads Nemotron MLX checkpoints at 4-bit in groups of 64 only; mixed and 6- or 8-bit (oQ) checkpoints serve on Macs
+[default] (warn): backbone.embeddings is 8-bit in groups of 64: the Intel GPU engine reads Nemotron MLX checkpoints at 4-bit in groups of 64 only; mixed and 6- or 8-bit (oQ) checkpoints serve on Macs
+failed command: <cache>/test/o/53ea81381ffa9d7e219c2c9205cca9be/test --cache-dir=<cache>/test --seed=0xcfcb386d --listen=-
+
+test
++- test-cuda-host
+   +- run test w
+[default] (warn): lm_head is 8-bit in groups of 64: CUDA reads Nemotron MLX checkpoints at 4-bit in groups of 64 only; mixed and 6- or 8-bit (oQ) checkpoints serve on Macs
+[default] (warn): backbone.embeddings is 8-bit in groups of 64: the Intel GPU engine reads Nemotron MLX checkpoints at 4-bit in groups of 64 only; mixed and 6- or 8-bit (oQ) checkpoints serve on Macs
+failed command: <cache>/test/o/3de9b7602306de97c1941b308e1cdc93/test --cache-dir=<cache>/test --seed=0xcfcb386d --listen=-
+
+test
++- test-cuda-host
+   +- run test w
+libjpeg-turbo 3.1.4.1 not found: LFM2's JPEG cases skipped
+libjpeg-turbo 3.1.4.1 not found: LFM2's JPEG cases skipped
+failed command: <cache>/test/o/a1862573eb8ba486f5c64339d38c9e6f/test --cache-dir=<cache>/test --seed=0xcfcb386d --listen=-
+
+test
++- test-cuda-host
+   +- run test w
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+[default] (warn): model.layers.0.mlp.up_proj.weight: another spelling of module layers.0.mlp.up_proj declares a different width
+[default] (warn): layers.0.mlp.up_proj: another spelling of module layers.0.mlp.up_proj declares a different width
+[default] (warn): model.layers.0.mlp.up_proj: another spelling of module layers.0.mlp.up_proj declares a different width
+failed command: <cache>/test/o/ae49a490f160a284803aca0384c807e7/test --cache-dir=<cache>/test --seed=0xcfcb386d --listen=-
+
+Build Summary: 84/84 steps succeeded; 1381/1388 tests passed (7 skipped)
+test success
++- run test 2 pass (2 total) 14ms MaxRSS:7M
+|  +- compile test debug native success 2s MaxRSS:324M
++- run test 18 pass (18 total) 12ms MaxRSS:8M
+|  +- compile test debug native success 2s MaxRSS:337M
++- test-cuda-host success
+|  +- run test 1 pass (1 total) 6ms MaxRSS:6M
+|  |  +- compile test debug native success 2s MaxRSS:328M
+|  +- run test 368 pass (368 total) 31s MaxRSS:41M
+|  |  +- compile test debug native success 17s MaxRSS:1G
+|  +- run test 5 pass (5 total) 6ms MaxRSS:8M
+|  |  +- compile test debug native success 2s MaxRSS:341M
+|  +- run test 45 pass (45 total) 48ms MaxRSS:8M
+|  |  +- compile test debug native success 3s MaxRSS:382M
+|  |     +- options cached
+|  +- run test 154 pass (154 total) 3s MaxRSS:131M
+|  |  +- compile test debug native success 5s MaxRSS:579M
+|  +- run test 118 pass (118 total) 3s MaxRSS:41M
+|  |  +- compile test debug native success 4s MaxRSS:548M
+|  +- run test 37 pass (37 total) 336ms MaxRSS:73M
+|  |  +- compile test debug native success 3s MaxRSS:427M
+|  |     +- WriteFile draft_ids.txt success
+|  |     +- options (reused)
+|  +- run test 13 pass (13 total) 4s MaxRSS:11M
+|  |  +- compile test debug native success 4s MaxRSS:455M
+|  |     +- options (reused)
+|  +- run test 10 pass (10 total) 96ms MaxRSS:20M
+|  |  +- compile test debug native success 2s MaxRSS:371M
+|  |     +- options (reused)
+|  +- run test 5 pass (5 total) 18ms MaxRSS:7M
+|  |  +- compile test debug native success 2s MaxRSS:339M
+|  +- run test 20 pass (20 total) 159ms MaxRSS:8M
+|  |  +- compile test debug native success 3s MaxRSS:409M
+|  +- run test 24 pass (24 total) 21ms MaxRSS:10M
+|  |  +- compile test debug native success 4s MaxRSS:510M
+|  |     +- options (reused)
+|  |     +- WriteFile draft_ids.txt (reused)
+|  +- run test 3 pass (3 total) 7ms MaxRSS:7M
+|  |  +- compile test debug native success 2s MaxRSS:328M
+|  +- run test 25 pass (25 total) 17ms MaxRSS:10M
+|  |  +- compile test debug native success 3s MaxRSS:372M
+|  |     +- options (reused)
+|  +- run test 5 pass (5 total) 14ms MaxRSS:7M
+|  |  +- compile test debug native success 2s MaxRSS:333M
+|  +- run test 23 pass (23 total) 5s MaxRSS:36M
+|  |  +- compile test debug native success 3s MaxRSS:402M
+|  +- run test 1 pass (1 total) 13ms MaxRSS:10M
+|     +- compile test debug native success 2s MaxRSS:341M
+|        +- options success
+|        +- options (reused)
+|        +- WriteFile draft_ids.txt (reused)
+|        +- WriteFile exlr8_alias.zig success
++- run test 4 pass (4 total) 29ms MaxRSS:7M
+|  +- compile test debug native success 2s MaxRSS:322M
+|     +- options success
++- run test 10 pass (10 total) 43ms MaxRSS:9M
+|  +- compile test debug native success 2s MaxRSS:372M
+|     +- options (reused)
++- run test 3 pass (3 total) 13ms MaxRSS:9M
+|  +- compile test debug native success 2s MaxRSS:331M
+|     +- options (reused)
++- run test 168 pass (168 total) 4s MaxRSS:13M
+|  +- compile test fast native success 32s MaxRSS:1G
++- run test 51 pass (51 total) 53ms MaxRSS:12M
+|  +- compile test debug native success 2s MaxRSS:386M
+|     +- options success
+|     |  +- compile lib hip-mock-success debug native success 75ms MaxRSS:54M
+|     |  +- compile lib hip-mock-failed debug native success 77ms MaxRSS:54M
+|     |  +- compile lib hip-mock-missing debug native success 74ms MaxRSS:54M
+|     +- WriteFile kernels.zig cached
++- run test 23 pass, 1 skip (24 total) 70ms MaxRSS:12M
+|  +- compile test debug native success 3s MaxRSS:422M
++- run test 49 pass (49 total) 161ms MaxRSS:11M
+|  +- compile test debug native success 3s MaxRSS:421M
+|     +- WriteFile kernels.zig success
++- run test 30 pass, 1 skip (31 total) 50ms MaxRSS:11M
+|  +- compile test debug native success 5s MaxRSS:565M
+|     +- WriteFile kernels.zig (reused)
++- run test 17 pass (17 total) 177ms MaxRSS:11M
+|  +- compile test debug native success 5s MaxRSS:575M
+|     +- WriteFile kernels.zig (reused)
++- run test 4 pass (4 total) 22ms MaxRSS:10M
+|  +- compile test debug native success 2s MaxRSS:333M
+|     +- WriteFile kernels.zig (reused)
++- run test 3 pass (3 total) 12ms MaxRSS:10M
+|  +- compile test debug native success 2s MaxRSS:344M
+|     +- WriteFile kernels.zig (reused)
++- compile exe tf-qwen35-test debug native success 1s MaxRSS:242M
+|  +- WriteFile kernels.zig (reused)
++- compile exe tensorfold-native safe native success 2s MaxRSS:228M
+|  +- options (reused)
+|  +- WriteFile exlr8_alias.zig cached
+|  +- WriteFile kernels.zig (reused)
++- run test 26 pass, 5 skip (31 total) 38ms MaxRSS:13M
+|  +- compile test safe native success 21s MaxRSS:807M
++- run test 107 pass (107 total) 5s MaxRSS:40M
+|  +- compile test debug native success 4s MaxRSS:475M
++- run test 9 pass (9 total) 16ms MaxRSS:12M
+|  +- compile test debug native success 2s MaxRSS:381M
++- run exe learned-warning-test success 40ms
+   +- compile exe learned-warning-test debug native success 2s MaxRSS:360M
+

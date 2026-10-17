@@ -1,0 +1,5 @@
+Build Summary: 3/3 steps succeeded; 18/18 tests passed
+test-kernel-contract success
++- run test 18 pass (18 total) 378ms MaxRSS:4M
+   +- compile test debug native success 2s MaxRSS:371M
+

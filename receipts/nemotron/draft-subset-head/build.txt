@@ -1,0 +1,25 @@
+Source commits (full):
+  branch tip (this pull request): f58dc04b4a98ed2e5b89c17bb5966ef58a1df4c7 (tree 9b373faaa16dcafbf8a5d964d1c2da510a2a75cc)
+  base (the tip it sits on, nemotron/verify-32-rows): fa2af585fc52b888bbba09e379367b8e0792115b
+Each built from a fresh checkout of that commit with no local changes (git status --porcelain empty before and after the build).
+Zig: aarch64-linux-0.17.0; nvcc: cuda_13.0.r13.0/compiler.36424714_0
+Build commands (run from the checkout; <out> is the output prefix):
+  zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix <out> -j2
+  zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dfatbins=<out>/fatbin --prefix <out> -j2
+  zig build install -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dversion=1.0.12 -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc --prefix <out> -j2
+
+SHA-256 of the binaries every receipt in this folder ran:
+base fa2af585 (the build the verify-32-rows receipts ran as its branch tip):
+097904fb69e20ae74986e50ab438db6abec16a68aaa0ce74d51ef4656513179b  native/bin/tensorfold-native
+branch tip f58dc04b:
+3eefef75610ce5b42262f9c4ad5a347c8d36f04ba62022811edf3afe782a2596  native/bin/tensorfold-native
+9ac7211ba56bcf44dfab46f26d8ef2330d2fcd59b63598eb5f81336244563209  bin/tensorfold
+e6b6ae3535a660af76f552879af6e841812b2fa4ad07e62b1c0b1a8426842448  bin/tf-cuda-test
+
+core/: six holds on a DGX Spark (GB10), base, branch, branch, base, branch, base, each a fresh server.
+lang/: six holds on a second DGX Spark (GB10) in the same order, each a fresh server.
+Each build's window-cost cache files (both heads' keys) were deleted before its first hold on a node.
+sampled/: one seeded temperature-1 hold of each build on the second DGX Spark, on the tables lang/ measured.
+checks/: the branch's tf-cuda-test kernel-contract and modelopt on the second DGX Spark.
+host/: upstream's CI steps at the branch tip; before.diff + before.test-cuda-host.log: the new host test on the base.
+GPU: NVIDIA GB10, driver 580.173.02, CUDA 13.0.

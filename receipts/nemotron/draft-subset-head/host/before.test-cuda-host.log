@@ -1,0 +1,44 @@
+test-cuda-host
++- run test
+   +- compile test debug native 1 errors
+zig/src/families/nemotron/draft_ids.zig:24:12: error: use of undeclared identifier 'Coverage'
+    var c: Coverage = try .init(std.testing.allocator, 131072, &.{ 1, 131071 });
+           ^~~~~~~~
+error: 1 compilation errors
+failed command: zig test -Odebug --dep cuda --dep core --dep lanes --dep nemotron --dep build_options --dep checkpoint_cli -Mroot=zig/src/cli/cuda_main.zig -Odebug --dep kernel_options --dep stagger -Mcuda=zig/src/cuda/root.zig -Odebug --dep tokenizer -Mcore=zig/src/core/root.zig -Odebug -Mlanes=zig/src/core/lanes/lanes.zig -Odebug --dep cuda --dep core --dep lanes --dep heat --dep nemotron_draft_ids --dep radio -Mnemotron=zig/src/families/nemotron/cuda.zig -Mbuild_options=.zig-cache/o/7262a0c5c48cea01848e33387ac21ff4/options.zig -fno-strip -Odebug --dep native_engines --dep exlr8 -Mcheckpoint_cli=zig/src/cli/cli.zig -Mkernel_options=.zig-cache/o/163d285497c58d762b93d74b6b1f42b0/options.zig -Odebug -Mstagger=zig/src/core/stagger.zig -Odebug -Mtokenizer=zig/src/core/tokenizer/tokenizer.zig -Odebug -Mheat=zig/src/core/heat.zig -Mnemotron_draft_ids=.zig-cache/o/c4d00251b1de0efbacebe457c9f83c3f/draft_ids.zig -Odebug --dep cuda --dep core --dep lanes -Mradio=zig/src/families/radio/radio.zig -Odebug --dep cuda --dep engine_api --dep lanes --dep nemotron --dep lfm2 --dep core --dep glm_cuda -Mnative_engines=zig/src/native/cuda.zig -Odebug --dep core -Mexlr8=.zig-cache/o/5c576d3285657ce8d2438945e38b4605/exlr8_alias.zig -Odebug --dep lanes -Mengine_api=zig/src/core/engine_api.zig -Odebug --dep cuda --dep core -Mlfm2=zig/src/families/lfm2/lfm2.zig -Odebug --dep cuda --dep core --dep canon --dep lanes --dep heat -Mglm_cuda=zig/src/families/glm/cuda.zig -Odebug -Mcanon=zig/src/cluster/canon.zig -lc --cache-dir .zig-cache --global-cache-dir <home>/.cache/zig --build-root . --name test --zig-lib-dir <home>/opt/zig-aarch64-linux-0.17.0/lib/ --listen=-
+
+test-cuda-host
++- run test
+   +- compile test debug native 1 errors
+zig/src/families/nemotron/draft_ids.zig:24:12: error: use of undeclared identifier 'Coverage'
+    var c: Coverage = try .init(std.testing.allocator, 131072, &.{ 1, 131071 });
+           ^~~~~~~~
+error: 1 compilation errors
+failed command: zig test -Odebug --dep cuda --dep core --dep lanes --dep heat --dep nemotron_draft_ids --dep radio -Mroot=zig/src/families/nemotron/cuda.zig -Odebug --dep kernel_options --dep stagger -Mcuda=zig/src/cuda/root.zig -Odebug --dep tokenizer -Mcore=zig/src/core/root.zig -Odebug -Mlanes=zig/src/core/lanes/lanes.zig -Odebug -Mheat=zig/src/core/heat.zig -Mnemotron_draft_ids=.zig-cache/o/c4d00251b1de0efbacebe457c9f83c3f/draft_ids.zig -Odebug --dep cuda --dep core --dep lanes -Mradio=zig/src/families/radio/radio.zig -Mkernel_options=.zig-cache/o/163d285497c58d762b93d74b6b1f42b0/options.zig -Odebug -Mstagger=zig/src/core/stagger.zig -Odebug -Mtokenizer=zig/src/core/tokenizer/tokenizer.zig -lc --cache-dir .zig-cache --global-cache-dir <home>/.cache/zig --build-root . --name test --zig-lib-dir <home>/opt/zig-aarch64-linux-0.17.0/lib/ --listen=-
+
+test-cuda-host
++- run test
+   +- compile test debug native 1 errors
+zig/src/families/nemotron/draft_ids.zig:24:12: error: use of undeclared identifier 'Coverage'
+    var c: Coverage = try .init(std.testing.allocator, 131072, &.{ 1, 131071 });
+           ^~~~~~~~
+error: 1 compilation errors
+failed command: zig test -Odebug --dep cuda --dep engine_api --dep lanes --dep nemotron --dep lfm2 --dep core --dep glm_cuda -Mroot=zig/src/native/cuda.zig -Odebug --dep kernel_options --dep stagger -Mcuda=zig/src/cuda/root.zig -Odebug --dep lanes -Mengine_api=zig/src/core/engine_api.zig -Odebug -Mlanes=zig/src/core/lanes/lanes.zig -Odebug --dep cuda --dep core --dep lanes --dep heat --dep nemotron_draft_ids --dep radio -Mnemotron=zig/src/families/nemotron/cuda.zig -Odebug --dep cuda --dep core -Mlfm2=zig/src/families/lfm2/lfm2.zig -Odebug --dep tokenizer -Mcore=zig/src/core/root.zig -Odebug --dep cuda --dep core --dep canon --dep lanes --dep heat -Mglm_cuda=zig/src/families/glm/cuda.zig -Mkernel_options=.zig-cache/o/163d285497c58d762b93d74b6b1f42b0/options.zig -Odebug -Mstagger=zig/src/core/stagger.zig -Odebug -Mheat=zig/src/core/heat.zig -Mnemotron_draft_ids=.zig-cache/o/c4d00251b1de0efbacebe457c9f83c3f/draft_ids.zig -Odebug --dep cuda --dep core --dep lanes -Mradio=zig/src/families/radio/radio.zig -Odebug -Mtokenizer=zig/src/core/tokenizer/tokenizer.zig -Odebug -Mcanon=zig/src/cluster/canon.zig -lc --cache-dir .zig-cache --global-cache-dir <home>/.cache/zig --build-root . --name test --zig-lib-dir <home>/opt/zig-aarch64-linux-0.17.0/lib/ --listen=-
+
+test-cuda-host
++- run test w
+libjpeg-turbo 3.1.4.1 not found: LFM2's JPEG cases skipped
+libjpeg-turbo 3.1.4.1 not found: LFM2's JPEG cases skipped
+failed command: ./.zig-cache/o/a1862573eb8ba486f5c64339d38c9e6f/test --cache-dir=./.zig-cache --seed=0xf29bf524 --listen=-
+
+test-cuda-host
++- run test w
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+[default] (warn): model.layers.0.mlp.up_proj.weight: another spelling of module layers.0.mlp.up_proj declares a different width
+[default] (warn): layers.0.mlp.up_proj: another spelling of module layers.0.mlp.up_proj declares a different width
+[default] (warn): model.layers.0.mlp.up_proj: another spelling of module layers.0.mlp.up_proj declares a different width
+failed command: ./.zig-cache/o/ae49a490f160a284803aca0384c807e7/test --cache-dir=./.zig-cache --seed=0xf29bf524 --listen=-
+
+Build Summary: 32/39 steps succeeded (3 failed); 795/795 tests passed

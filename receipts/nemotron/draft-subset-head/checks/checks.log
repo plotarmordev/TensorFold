@@ -1,0 +1,11 @@
+== 02:12:40 kernel-contract 70C
+== kernel-contract exit 0
+PASS limits live vit tf_vit_bias: 256 threads launched, the driver allows 256; 12 registers, 0 + 0 shared bytes (recorded 12, 0)
+PASS limits live vit tf_vit_unshuffle: 256 threads launched, the driver allows 256; 34 registers, 0 + 0 shared bytes (recorded 34, 0)
+SUMMARY 16 kernels: 16 pass gates 1-4, 0 fail, 0 known findings; 5 controls: 5 red as planted, 0 missed; 0 limit problems; gates 61870 ms, limits 1 ms
+== 02:13:43 modelopt 63C
+== modelopt exit 0
+PASS bf16 lane: rows 1-16 byte-equal, 300 prompt rows chunk-invariant, worst |err| / (1% of max(|ref|, 1)): decode 0.385, prompt 0.388
+PASS nvfp4 relu^2 experts: rms error / rms(fp64) up 3.316e-3 (decode 3.316e-3), down 1.646e-3 (decode 1.646e-3); 13-row launch bytes == 40-row
+PASS checkpoint nvfp4 experts: 1, 16 and 32 token rows (32 columns a warp, four steps in flight) byte-equal to the same pairs in a 40-row call (64 columns a warp)
+== 02:13:43 end; GPU: []
