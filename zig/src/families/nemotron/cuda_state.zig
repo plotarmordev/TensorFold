@@ -13,11 +13,16 @@ const worker = @import("cuda_worker.zig");
 
 pub const max_rows = 32; // a verify window's rows at most (the widest row tile of the row-parallel kernels)
 pub const prefill_rows = 2048; // rows of a staggered segment's chunk, and of a pass under dumps or lessons
-pub const pass_rows = 2 * prefill_rows; // rows a serial prompt pass runs at most (a row's bits are the same at any cut)
+pub const pass_rows = 4 * prefill_rows; // upper bound for pinned prompt rows and recorder staging
 pub const yield_rows = 256; // rows of a background pass's chunk: a request that arrives waits for one at most
 pub const chunk_keys = 512; // keys an attention chunk holds, at fixed absolute positions
 const shared_rows = cuda.qlinear.Affine4Kernels.max_rows; // rows a shared plan covers (windowRows without a latent MoE)
 const shared_words = 2 * shared_rows + 8 * shared_rows; // the shared expert's members, then (items, counts) a row count
+
+/// Checkpoint prompt tiles keep activations packed; other paths retain their smaller scratch allocation.
+pub fn passRows(c: Config) usize {
+    return if (c.ck and c.world == 1 and c.latent > 0 and !c.bolt) pass_rows else 2 * prefill_rows;
+}
 
 /// Super verifies 32 rows; Bolt copies and non-latent affine models retain their qualified 16-row window.
 pub fn windowRows(c: Config) usize {
@@ -109,8 +114,7 @@ fn sharedBytes(c: Config) usize {
 }
 
 /// Scratch windows and chunks share on one stream: window logits, chunk io, activations, the expert plan.
-fn scratchSizes(c: Config, nch: usize) [scratch_count]usize {
-    const R: usize = pass_rows;
+fn scratchSizes(c: Config, nch: usize, R: usize) [scratch_count]usize {
     const W: usize = windowRows(c);
     const D: usize = c.hidden;
     const ns: usize = c.slots();
@@ -149,6 +153,21 @@ fn scratchSizes(c: Config, nch: usize) [scratch_count]usize {
         R * own * 4,                       job,                                            ck8,
         ck4,                               lanePartBytes(c),
     };
+}
+
+/// Includes the same alignment allowance as Buffers.init, without the sequence's persistent planes.
+pub fn scratchBytes(c: Config, nch: usize, rows: usize) usize {
+    var total: usize = 0;
+    for (scratchSizes(c, nch, rows)) |n| total += n + 256;
+    return total;
+}
+
+pub fn notePrompt(c: Config, nch: usize, mtp: bool) void {
+    const rows = passRows(c);
+    const scratch = scratchBytes(c, nch, rows);
+    const growth = scratch - scratchBytes(c, nch, 2 * prefill_rows);
+    const head_growth = if (mtp) (rows - 2 * prefill_rows) * (8 * c.hidden + c.hidden / 8 + 4) else 0;
+    std.log.info("prompt: {d} rows, scratch {d} MiB (+{d} MiB), MTP scratch growth {d} MiB", .{ rows, scratch >> 20, growth >> 20, head_growth >> 20 });
 }
 
 /// One sequence: its own buffers (seq_fields, then its MTP head's) and where it stands while another is bound.
@@ -301,7 +320,7 @@ pub const Buffers = struct {
     /// Sizes every buffer for `max_len` cache rows and `nch` attention chunk partials a row; the own sequence's first.
     pub fn init(d: *const cuda.Driver, c: Config, max_len: usize, nch: usize, carve: ?*cuda.Carveout) !Buffers {
         const own = seqSizes(c, max_len);
-        const scratch = scratchSizes(c, nch);
+        const scratch = scratchSizes(c, nch, passRows(c));
         const carved = try Carved.take(carve, own[0]);
         errdefer if (carved) |x| x.give();
         var total = Carved.arenaBytes(carved, &own);
@@ -320,7 +339,7 @@ pub const Buffers = struct {
 
     /// Its own scratch for another prompt segment, sharing `b`'s caches and state (follow); deinit frees the scratch.
     pub fn sibling(b: *const Buffers, d: *const cuda.Driver, c: Config, nch: usize) !Buffers {
-        const scratch = scratchSizes(c, nch);
+        const scratch = scratchSizes(c, nch, passRows(c));
         var total: usize = 0;
         for (scratch) |n| total += n + 256;
         var s: Buffers = b.*;
@@ -378,7 +397,7 @@ pub const Buffers = struct {
     /// Writes every row count's shared plan: a latent MoE's (row, share) pairs by Ops.plan, else pairs in row order.
     pub fn initShared(b: *const Buffers, ops: kern.Ops, c: Config) !void {
         if (c.latent > 0 and !c.bolt) {
-            try latent.initShareIds(ops.k.latent.?, ops.s, b.sids, pass_rows, c.ownShares());
+            try latent.initShareIds(ops.k.latent.?, ops.s, b.sids, passRows(c), c.ownShares());
             for (1..windowRows(c) + 1) |rows| try ops.plan(b.sids, rows * c.ownShares(), c.ownShares(), 16, b.latentPlan(c, rows));
             return ops.s.synchronize();
         }
@@ -394,7 +413,7 @@ pub const Buffers = struct {
         }
         try ops.upload(b.shared, std.mem.sliceAsBytes(&w));
         if (c.latent > 0) {
-            const z: [pass_rows]u32 = @splat(0);
+            const z: [2 * prefill_rows]u32 = @splat(0);
             try ops.upload(b.sids, std.mem.sliceAsBytes(&z));
         }
         try ops.s.synchronize();
@@ -469,4 +488,43 @@ test "each row count's latent shared plan holds its pairs and items, apart from 
             try std.testing.expect(if (rows < max_rows) end <= b.latentPlan(c, rows + 1).members else end <= sharedBytes(c));
         }
     }
+}
+
+test "checkpoint prompt capacity preserves narrow paths and sizes every scratch plane" {
+    var c: Config = .{
+        .hidden = 4096,
+        .vocab = 131072,
+        .layers = 0,
+        .mamba_heads = 128,
+        .mamba_head_dim = 64,
+        .groups = 8,
+        .state = 128,
+        .conv_kernel = 4,
+        .heads = 32,
+        .kv_heads = 2,
+        .head_dim = 128,
+        .experts = 512,
+        .top_k = 22,
+        .expert_width = 2688,
+        .shared_width = 5376,
+        .routed_scaling = 5,
+        .eps = 1e-5,
+        .latent = 1024,
+        .shares = 2,
+        .ck = true,
+    };
+    try std.testing.expectEqual(@as(usize, 8192), passRows(c));
+    const narrow = scratchSizes(c, 257, 4096);
+    const wide = scratchSizes(c, 257, passRows(c));
+    for (narrow, wide) |a, b| try std.testing.expect(b >= a and b <= 2 * a);
+    try std.testing.expectEqual(@as(u64, scratchBytes(c, 257, 8192) - scratchBytes(c, 257, 4096)), scratchBytes(c, 33, 8192) - scratchBytes(c, 33, 4096));
+    std.debug.print("prompt scratch: narrow={d} wide={d} delta={d}\n", .{ scratchBytes(c, 257, 4096), scratchBytes(c, 257, 8192), scratchBytes(c, 257, 8192) - scratchBytes(c, 257, 4096) });
+    c.ck = false;
+    try std.testing.expectEqual(@as(usize, 4096), passRows(c));
+    c.ck = true;
+    c.world = 2;
+    try std.testing.expectEqual(@as(usize, 4096), passRows(c));
+    c.world = 1;
+    c.bolt = true;
+    try std.testing.expectEqual(@as(usize, 4096), passRows(c));
 }

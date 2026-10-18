@@ -200,6 +200,7 @@ pub const Engine = struct {
         errdefer if (!keep_owner) if (e.vision) |v| v.deinit();
         e.b = try state.Buffers.init(ctx.d, e.c, e.max_len, e.nch, e.carve);
         errdefer if (!keep_owner) e.b.deinit();
+        state.notePrompt(e.c, e.nch, mtp);
         try e.b.initShared(e.ops(), e.c);
         if (e.segments > 1) e.seg = try segs.Segments.init(e, e.segments);
         errdefer if (!keep_owner) if (e.seg) |*s| s.deinit();

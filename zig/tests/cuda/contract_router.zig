@@ -28,7 +28,7 @@ pub fn logitsSpec() c.Spec {
 
 /// Nano's router and Super's (512 experts) past 32 rows.
 pub fn tilesSpec() c.Spec {
-    return .{ .name = "cuda nemotron router logits tf_nemo_router_tiles", .accum = .f32, .depth = sliceChain, .out = .f32, .replaces = "tf_nemo_router", .tiles = .{ .{ .size = 128 }, .{ .size = 128, .step = 16, .min = 16 }, .{} }, .served = &.{ .{ .rows = 300, .n = 128, .k = 2688 }, .{ .rows = 129, .n = 512, .k = 4096 }, .{ .rows = 4100, .n = 512, .k = 4096 } } };
+    return .{ .name = "cuda nemotron router logits tf_nemo_router_tiles", .accum = .f32, .depth = sliceChain, .out = .f32, .replaces = "tf_nemo_router", .tiles = .{ .{ .size = 128 }, .{ .size = 128, .step = 16, .min = 16 }, .{} }, .served = &.{ .{ .rows = 300, .n = 128, .k = 2688 }, .{ .rows = 129, .n = 512, .k = 4096 }, .{ .rows = 4100, .n = 512, .k = 4096 }, .{ .rows = 8192, .n = 512, .k = 4096 } } };
 }
 
 /// x [rows, D] bf16 times the router's W [E, D] bf16: fp32 partials [slices][rows][E]; `tiles` runs in place of `f`.

@@ -35,8 +35,8 @@ pub fn spec(kind: Kind) c.Spec {
     const tiles = [3]c.Tile{ .{ .size = 16 }, .{ .size = 64, .step = 64, .min = 64 }, .{ .size = 256, .step = 64, .min = 64 } };
     // a prompt block: a plan item of 128 pairs (32 token rows) by 128 columns, four 64-input steps in flight
     const prompt_tiles = [3]c.Tile{ .{ .size = 128 / slots }, .{ .size = 128, .step = 64, .min = 64 }, .{ .size = 256, .step = 64, .min = 64 } };
-    const ups = &[_]c.Shape{ .{ .rows = 129, .n = 1344, .k = 1024 }, .{ .rows = 300, .n = 1344, .k = 1024 }, .{ .rows = 129, .n = 2688, .k = 4096 } };
-    const downs = &[_]c.Shape{ .{ .rows = 129, .n = 1024, .k = 1344 }, .{ .rows = 300, .n = 1024, .k = 1344 }, .{ .rows = 129, .n = 4096, .k = 2688 } };
+    const ups = &[_]c.Shape{ .{ .rows = 129, .n = 1344, .k = 1024 }, .{ .rows = 300, .n = 1344, .k = 1024 }, .{ .rows = 129, .n = 2688, .k = 4096 }, .{ .rows = 8192, .n = 1344, .k = 1024 }, .{ .rows = 8192, .n = 2688, .k = 4096 } };
+    const downs = &[_]c.Shape{ .{ .rows = 129, .n = 1024, .k = 1344 }, .{ .rows = 300, .n = 1024, .k = 1344 }, .{ .rows = 129, .n = 4096, .k = 2688 }, .{ .rows = 8192, .n = 1024, .k = 1344 }, .{ .rows = 8192, .n = 4096, .k = 2688 } };
     return switch (kind) {
         .up => .{ .name = "cuda ck experts up tf_ck4_up_relu2_few", .accum = .f32, .depth = stepDepth, .ops = 2, .mids = 1, .out = .bf16, .replaces = "tf_ck4_up_relu2", .nan = .{ .stated = rule }, .tiles = tiles, .served = &.{ .{ .rows = 1, .n = 1344, .k = 1024 }, .{ .rows = 32, .n = 1344, .k = 1024 }, .{ .rows = 1, .n = 2688, .k = 4096 }, .{ .rows = 32, .n = 2688, .k = 4096 } } },
         .down => .{ .name = "cuda ck experts down tf_ck4_down_f32_few", .accum = .f32, .depth = stepDepth, .ops = 1, .out = .f32, .replaces = "tf_ck4_down_f32", .nan = .{ .stated = rule }, .tiles = tiles, .served = &.{ .{ .rows = 1, .n = 1024, .k = 1344 }, .{ .rows = 32, .n = 1024, .k = 1344 }, .{ .rows = 1, .n = 4096, .k = 2688 }, .{ .rows = 32, .n = 4096, .k = 2688 } } },

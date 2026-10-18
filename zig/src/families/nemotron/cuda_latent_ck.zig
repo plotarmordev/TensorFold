@@ -63,7 +63,7 @@ pub fn summed(c: Config, rows: usize) bool {
 pub fn routed(o: kern.Ops, r: Layer, plan: kern.Plan, act: u64, ck4: u64, picks: u64, lat: u64, rows: usize, own: usize, c: Config, out: u64) !void {
     const q = if (o.k.ck) |*x| x else return error.CheckpointMathNotLoaded;
     if (ck4 == 0) return error.NoCheckpointRows;
-    const at = rowsAt(c, @import("cuda_state.zig").pass_rows, ck4);
+    const at = rowsAt(c, @import("cuda_state.zig").passRows(c), ck4);
     const pairs = rows * c.top_k * own;
     const t = tile(rows);
     try q.quant4(o.s, lat, c.latent, rows, c.latent, r.up_act, at.lat);
@@ -83,7 +83,7 @@ pub fn routed(o: kern.Ops, r: Layer, plan: kern.Plan, act: u64, ck4: u64, picks:
 pub fn shared(o: kern.Ops, h: Layer, plan: kern.Plan, shared_plan: ?kern.Plan, sact: u64, sids: u64, ck4: u64, hidden: u64, rows: usize, own: usize, c: Config, out: u64) !void {
     const q = if (o.k.ck) |*x| x else return error.CheckpointMathNotLoaded;
     if (ck4 == 0) return error.NoCheckpointRows;
-    const at = rowsAt(c, @import("cuda_state.zig").pass_rows, ck4);
+    const at = rowsAt(c, @import("cuda_state.zig").passRows(c), ck4);
     try q.quant4(o.s, hidden, c.hidden, rows, c.hidden, h.up_act, at.hid);
     const t = tile(rows);
     const sp = shared_plan orelse plan;

@@ -27,8 +27,8 @@ fn oneAdd(_: c.Shape) usize {
 /// Super's latent (1,024 wide, 22 picks a row) and hidden (4,096) rows at prompt passes.
 pub fn spec(kind: Kind) c.Spec {
     return switch (kind) {
-        .combine => .{ .name = "cuda nemotron latent combine tf_super_combine_sums (bf16 share sums)", .accum = .f32, .depth = pickChain, .out = .bf16, .replaces = "tf_super_combine", .nan = .{ .stated = rule }, .tiles = .{ .{}, .{ .size = 1024, .step = 8, .min = 8 }, .{} }, .served = &.{ .{ .rows = 129, .n = 1024, .k = 22 }, .{ .rows = 300, .n = 1024, .k = 22 } } },
-        .shared_add => .{ .name = "cuda nemotron latent shared add tf_super_moe_out_sums (bf16 share sums)", .accum = .f32, .depth = oneAdd, .out = .bf16, .replaces = "tf_super_moe_out", .nan = .{ .stated = rule }, .tiles = .{ .{}, .{ .size = 2048, .step = 8, .min = 8 }, .{} }, .served = &.{ .{ .rows = 129, .n = 4096, .k = 1 }, .{ .rows = 300, .n = 4096, .k = 1 } }, .sums = .{ .f16 = 0, .bf16 = 0, .why = "one fp32 add of two bf16 values a output" } },
+        .combine => .{ .name = "cuda nemotron latent combine tf_super_combine_sums (bf16 share sums)", .accum = .f32, .depth = pickChain, .out = .bf16, .replaces = "tf_super_combine", .nan = .{ .stated = rule }, .tiles = .{ .{}, .{ .size = 1024, .step = 8, .min = 8 }, .{} }, .served = &.{ .{ .rows = 129, .n = 1024, .k = 22 }, .{ .rows = 300, .n = 1024, .k = 22 }, .{ .rows = 8192, .n = 1024, .k = 22 } } },
+        .shared_add => .{ .name = "cuda nemotron latent shared add tf_super_moe_out_sums (bf16 share sums)", .accum = .f32, .depth = oneAdd, .out = .bf16, .replaces = "tf_super_moe_out", .nan = .{ .stated = rule }, .tiles = .{ .{}, .{ .size = 2048, .step = 8, .min = 8 }, .{} }, .served = &.{ .{ .rows = 129, .n = 4096, .k = 1 }, .{ .rows = 300, .n = 4096, .k = 1 }, .{ .rows = 8192, .n = 4096, .k = 1 } }, .sums = .{ .f16 = 0, .bf16 = 0, .why = "one fp32 add of two bf16 values a output" } },
     };
 }
 

@@ -115,7 +115,7 @@ pub const Head = struct {
         if (e.c.bolt or e.w.mtp == null) return error.NoMtpHead;
         const c = e.c;
         const D: usize = c.hidden;
-        const R: usize = state.pass_rows;
+        const R: usize = state.passRows(c);
         const kv: usize = @as(usize, e.max_len) * c.kv_heads * c.head_dim * 2;
         const n = if (e.w.draft_coverage != null) c.vocab else e.w.draft_count;
         const S: usize = streams;

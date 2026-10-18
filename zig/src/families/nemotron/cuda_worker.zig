@@ -38,7 +38,7 @@ pub fn firstBytes(c: Config) usize {
 
 /// Rank 0's job buffer: the first message, then a long job's sections.
 pub fn jobBytes(c: Config) usize {
-    return firstBytes(c) + payloadBytes(c, state.pass_rows);
+    return firstBytes(c) + payloadBytes(c, state.passRows(c));
 }
 
 /// Rank 0: layer `id`'s job of `rows` rows to rank 1, its picks, latent rows and hidden rows.
@@ -61,7 +61,7 @@ pub fn send(f: *const fwd.Forward, id: u32, rows: usize) !void {
 
 /// Rank 0: rank 1's expert rows for its job, into rank 1's region of ymoe.
 pub fn receive(f: *const fwd.Forward, rows: usize) !void {
-    const region: u64 = latent.partFloats(f.c, state.pass_rows) * 4;
+    const region: u64 = latent.partFloats(f.c, state.passRows(f.c)) * 4;
     try f.tp.?.recv(f.ops.s, f.b.ymoe + region, latent.partFloats(f.c, rows) * 4, 1);
 }
 
@@ -136,7 +136,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: 
     defer w.deinit();
     const layers = try loadLayers(gpa, io, ops, dir, c, &w);
     defer gpa.free(layers.blocks);
-    const R = state.pass_rows;
+    const R = state.passRows(c);
     const own = c.ownShares();
     const pairs = R * c.top_k * own;
     const sw = c.expert_width / c.shares;

@@ -35,6 +35,14 @@ cumulative-confidence threshold from 0 to 1 instead of the cost-based cutoff. A 
 drafting. The same controls apply in lone and shared rounds, including resumes and handoff.
 Positive MTP caps leave copied continuations and Recall on their existing row limits.
 
+Single-GPU checkpoint precision runs serial prompt passes of up to 8,192 rows. Full precision and multi-GPU
+passes retain the 4,096-row capacity; segmented passes, background passes and passes with lessons or dumps
+retain their narrower cuts. The startup `prompt:` line reports the scratch allocation and its growth over
+the smaller capacity, including the draft head's additional scratch separately. This capacity is fixed by
+the precision and rank configuration, not reduced automatically under memory pressure. Stream and prompt-cache
+admission use the memory remaining after these allocations; memory-constrained configurations may fail to load.
+No row's arithmetic changes with a pass boundary.
+
 ## Run on two GB10s
 
 Rank 0 runs the whole model and serves; rank 1 holds only its share of every MoE layer's experts (the MTP layer's

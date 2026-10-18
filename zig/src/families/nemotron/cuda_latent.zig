@@ -392,7 +392,7 @@ pub fn run(f: *const fwd.Forward, m: W.MoE, rows: usize) !void {
     var n: usize = own;
     if (f.tp) |tp| {
         try worker.receive(f, rows);
-        share_stride = partFloats(c, state.pass_rows);
+        share_stride = partFloats(c, state.passRows(c));
         pair_stride = Lw;
         shared_share = share_stride;
         shared_row = D;
