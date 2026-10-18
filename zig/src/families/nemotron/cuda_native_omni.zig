@@ -10,7 +10,6 @@ pub const formats = native.formats;
 pub const default_image_tokens: u32 = 13312;
 pub const default_context = native.default_context;
 pub const max_segments = native.max_segments;
-pub const prompt_rows = native.prompt_rows;
 pub const Options = native.Options;
 pub const explains_open = true;
 pub const Loaded = native.Loaded;

@@ -62,7 +62,7 @@ pub const Cuda = struct {
     mtp_confidence: ?f64 = null,
     bits: ?cuda.HostBuffer = null, // structured output's row bits, device-mapped (row_slots rows), made at first use
     bits_dev: u64 = 0,
-    tapped: ?cuda.HostBuffer = null, // a recorder's rows on their way to the host (state.pass_rows of them)
+    tapped: ?cuda.HostBuffer = null, // a recorder's prompt pass on its way to the host
     copy_drafts: bool = false, // the global draft switch also controls lane-core copy proposals
 
     pub fn init(gpa: std.mem.Allocator, e: *Engine, head: ?*Head) !Cuda {
@@ -367,7 +367,7 @@ pub const Cuda = struct {
     fn prepareFeaturesFn(ptr: *anyopaque, taps: []const u32) anyerror!void {
         const self = of(ptr);
         if (taps.len != 1 or taps[0] != finalTap(self.e.c)) return error.UnsupportedTaps;
-        if (self.tapped == null) self.tapped = try cuda.HostBuffer.alloc(self.e.ctx.d, state.pass_rows * self.e.c.hidden * 2);
+        if (self.tapped == null) self.tapped = try cuda.HostBuffer.alloc(self.e.ctx.d, state.passRows(self.e.c) * self.e.c.hidden * 2);
     }
 
     /// The prompt's rows from the host until the first verify; then the last verify's, read from its sequence.

@@ -31,7 +31,6 @@ pub const also_model_types: []const []const u8 = &.{"nemotron_h_omni"};
 pub const formats: []const []const u8 = &.{ "mlx-q4g64", "modelopt-nvfp4", "modelopt-ggml" };
 pub const default_context: i64 = engine.default_context;
 pub const max_segments: u32 = @import("cuda_segments.zig").MAX;
-pub const prompt_rows: u32 = state.pass_rows;
 pub const window_rows: u32 = state.max_rows; // a request's last verify window: its pages hold that many rows past it
 pub const max_drafts: u32 = @import("cuda_mtp.zig").max_chain; // Super's; open refuses more than a checkpoint's window holds
 
@@ -52,6 +51,7 @@ pub const Loaded = struct {
     backend: lanes.backend.Backend,
     facts: lanes.Model,
     rows: u32,
+    prompt_rows: u32,
     /// Device bytes each admitted stream allocates for its own sequence (caches, state, head caches).
     stream_bytes: usize,
     /// Streams that allocate nothing: the first takes the engine's own sequence, whose buffers the graphs hold.
@@ -139,6 +139,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
         .backend = own.lanes.backend(),
         .facts = own.lanes.facts(),
         .rows = own.lanes.facts().exact_width,
+        .prompt_rows = @intCast(state.passRows(e.c)),
         .stream_bytes = e.seqBytes(),
         .ctx = own,
         .deinit = release,
