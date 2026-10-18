@@ -9,7 +9,9 @@ const Gpu = struct {
     pub fn bind(b: anytype, seq: anytype) void {
         b.e.bind(seq);
     }
+    /// A shared round's streams read the copy their batched draft made; a lone draft's, its own row.
     pub fn download(b: anytype, raw: []f32) !void {
+        if (try b.head.?.batched(raw.len)) |copied| return @memcpy(raw, copied);
         try b.e.ops().download(std.mem.sliceAsBytes(raw), b.head.?.probs);
         try b.e.stream.synchronize();
     }

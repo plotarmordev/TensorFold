@@ -146,6 +146,7 @@ const Scratch = struct {
         var h: Head = undefined;
         h.e = e;
         h.pos = 0;
+        h.chance_count = 0;
         h.pinned = .{ .d = d, .bytes = std.mem.sliceAsBytes(&s.pinned) };
         h.copied = .{ .d = d, .handle = @ptrFromInt(1) };
         for (&h.ready) |*event| event.* = h.copied;
@@ -243,6 +244,7 @@ test "restored head: 15 and 16 token transitions reach mixed shrinking real chai
     b.lanes = .empty;
     defer b.lanes.deinit(t.allocator);
     b.pinned = h.pinned;
+    b.mtp_confidence = 0.5;
     const covered = @as([16]u32, @splat(1));
     const uncovered = @as([15]u32, @splat(1)) ++ [_]u32{97};
     const cases = .{
@@ -295,6 +297,20 @@ test "restored head: 15 and 16 token transitions reach mixed shrinking real chai
         try b.backend().vtable.held.?(b.backend().ptr, &n, &neighbor_batch);
         try t.expectEqualSlices(u32, &solo, &batch);
         try t.expectEqualSlices(u32, &neighbor_solo, &neighbor_batch);
+        // the policy reads both streams from the batch's one copy, not from their device rows (rewritten here)
+        const half: u32 = @bitCast(@as(f32, 0.5));
+        @memset(&own.probs, half);
+        @memset(&other.probs, half);
+        var chances: [3]f64 = undefined;
+        try t.expect(try b.backend().vtable.probabilities.?(b.backend().ptr, &s, &chances));
+        try t.expectEqualSlices(f64, &.{ 1, 1, 1 }, &chances);
+        try t.expect(try b.backend().vtable.probabilities.?(b.backend().ptr, &n, chances[0..2]));
+        try t.expectEqualSlices(f64, &.{ 1, 1 }, chances[0..2]);
+        try t.expect(try b.backend().vtable.probabilities.?(b.backend().ptr, &n, &chances)); // past its drafts: its row
+        try t.expectEqualSlices(f64, &.{ 0.5, 0.25, 0.125 }, &chances);
+        try h.begin(0); // any later draft leaves the copy behind
+        try t.expect(try b.backend().vtable.probabilities.?(b.backend().ptr, &s, &chances));
+        try t.expectEqualSlices(f64, &.{ 0.5, 0.25, 0.125 }, &chances);
         try t.expectEqualSlices(usize, &.{ 2, 2, 1 }, &Frame.live);
         try t.expectEqual(@as(usize, 5), Frame.samples);
         try t.expectEqual(@as(usize, 0), Frame.errors);

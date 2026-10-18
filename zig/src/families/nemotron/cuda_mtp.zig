@@ -17,6 +17,7 @@ const host_drafts = meta_words; // pinned layout: meta, drafts, confidences, the
 const host_probs = host_drafts + max_chain;
 const host_tokens = host_probs + max_chain;
 const host_metas = host_tokens + state.pass_rows; // a meta row a stream for `chains`
+const host_chances = host_metas + streams * meta_words; // `chains`' confidences, max_chain a stream in turn
 
 /// The output rows a draft level reads: the draft vocabulary's (the draft head), or the target's whole head.
 pub const Vocab = @import("cuda_mtp_projection.zig").Vocab;
@@ -39,6 +40,9 @@ pub const Part = struct {
 
 /// A stream's rows in a head forward: where they start, how many, its meta row, its head caches and its head.
 pub const Span = struct { row0: usize, rows: usize, meta: u64, k_cache: u64, v_cache: u64, vocab: Vocab, table: u64 = 0 };
+
+/// A stream's confidences the last `chains` copied to the host: its sequence's device row, and how many.
+const Chances = struct { probs: u64, levels: usize };
 
 pub const Head = struct {
     // Host fixtures replace only the network transform; projection, chain scheduling and sample dispatch stay real.
@@ -80,6 +84,8 @@ pub const Head = struct {
     pos: usize = 0,
     keep: usize = 0,
     levels: usize = 0,
+    chances: [streams]Chances = undefined, // the last `chains`' streams, in their pinned rows' order
+    chance_count: usize = 0, // 0 once any other draft follows them
     has_buf: bool = false,
     has_pinned: bool = false,
     has_copied: bool = false,
@@ -135,7 +141,7 @@ pub const Head = struct {
             at += std.mem.alignForward(usize, s, 256);
         }
         try h.buf.fill8(0, e.stream.handle); // on the engine's stream: the legacy one would race its first uploads
-        h.pinned = try cuda.HostBuffer.alloc(e.ctx.d, (host_metas + S * meta_words) * 4);
+        h.pinned = try cuda.HostBuffer.alloc(e.ctx.d, (host_chances + S * max_chain) * 4);
         h.has_pinned = true;
         h.copied = try cuda.Event.init(e.ctx.d, false);
         h.has_copied = true;
@@ -346,6 +352,7 @@ pub const Head = struct {
         h.pos += keep;
         h.keep = keep;
         h.levels = 0;
+        h.chance_count = 0;
     }
 
     /// begin again for the `keep` rows the head last began (another driver resumes the stream): its meta rewritten.
@@ -396,6 +403,7 @@ pub const Head = struct {
                 return x.depth > y.depth;
             }
         }.deeper);
+        h.chance_count = 0;
         try h.copied.synchronize();
         const host = h.pinned.slice(u32)[host_metas..][0 .. parts.len * meta_words];
         for (parts, 0..) |p, k| {
@@ -431,6 +439,22 @@ pub const Head = struct {
                 try h.sample(h.logits + k * n * 2, p.rule, meta + 4, p.ids + j * 4, p.probs + (j - 1) * 4, j, p.vocab);
             }
         }
+        // every stream's confidences to the host behind one event: the round's reads wait once, not once a stream
+        for (parts, h.chances[0..parts.len], 0..) |p, *x, k| {
+            try o.download(std.mem.sliceAsBytes(h.pinned.slice(f32)[host_chances + k * max_chain ..][0..p.depth]), p.probs);
+            x.* = .{ .probs = p.probs, .levels = p.depth };
+        }
+        try h.copied.record(e.stream);
+        h.chance_count = parts.len;
+    }
+
+    /// The bound sequence's first `levels` confidences, if the last `chains` drafted them and no draft came since.
+    pub fn batched(h: *Head, levels: usize) !?[]const f32 {
+        for (h.chances[0..h.chance_count], 0..) |x, k| if (x.probs == h.probs and levels <= x.levels) {
+            try h.copied.synchronize(); // the round's first read waits for the copies, the rest find them done
+            return h.pinned.slice(f32)[host_chances + k * max_chain ..][0..levels];
+        };
+        return null;
     }
 
     /// Draft j's confidence: its share of the head's top-k, at temperature 1 or the request's (waits for level j).
@@ -450,6 +474,7 @@ pub const Head = struct {
         const e = h.e;
         try e.ops().upload(h.logits, logits);
         const j = offset + 1;
+        h.chance_count = 0;
         try h.sample(h.logits, if (e.sampling != null) e.b.rule else null, h.meta + 4, e.b.ids + j * 4, h.probs + (j - 1) * 4, j, .subset);
         var tok: [1]u32 = undefined;
         var prob: [1]f32 = undefined;
