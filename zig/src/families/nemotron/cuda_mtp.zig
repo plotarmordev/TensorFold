@@ -16,7 +16,6 @@ const meta_words = 1 + state.max_rows; // a meta row: the head's position, then 
 const host_drafts = meta_words; // pinned layout: meta, drafts, confidences, then a prompt chunk's tokens (int32 words)
 const host_probs = host_drafts + max_chain;
 const host_tokens = host_probs + max_chain;
-const host_metas = host_tokens + state.pass_rows; // a meta row a stream for `chains`
 
 /// The output rows a draft level reads: the draft vocabulary's (the draft head), or the target's whole head.
 pub const Vocab = @import("cuda_mtp_projection.zig").Vocab;
@@ -135,7 +134,7 @@ pub const Head = struct {
             at += std.mem.alignForward(usize, s, 256);
         }
         try h.buf.fill8(0, e.stream.handle); // on the engine's stream: the legacy one would race its first uploads
-        h.pinned = try cuda.HostBuffer.alloc(e.ctx.d, (host_metas + S * meta_words) * 4);
+        h.pinned = try cuda.HostBuffer.alloc(e.ctx.d, (host_tokens + R + S * meta_words) * 4);
         h.has_pinned = true;
         h.copied = try cuda.Event.init(e.ctx.d, false);
         h.has_copied = true;
@@ -397,7 +396,7 @@ pub const Head = struct {
             }
         }.deeper);
         try h.copied.synchronize();
-        const host = h.pinned.slice(u32)[host_metas..][0 .. parts.len * meta_words];
+        const host = h.pinned.slice(u32)[host_tokens + state.passRows(e.c) ..][0 .. parts.len * meta_words];
         for (parts, 0..) |p, k| {
             const m = host[k * meta_words ..][0..meta_words];
             m[0] = @intCast(p.pos);
