@@ -518,7 +518,7 @@ test "checkpoint prompt capacity preserves narrow paths and sizes every scratch 
     const wide = scratchSizes(c, 257, passRows(c));
     for (narrow, wide) |a, b| try std.testing.expect(b >= a and b <= 2 * a);
     try std.testing.expectEqual(@as(u64, scratchBytes(c, 257, 8192) - scratchBytes(c, 257, 4096)), scratchBytes(c, 33, 8192) - scratchBytes(c, 33, 4096));
-    std.debug.print("prompt scratch: narrow={d} wide={d} delta={d}\n", .{ scratchBytes(c, 257, 4096), scratchBytes(c, 257, 8192), scratchBytes(c, 257, 8192) - scratchBytes(c, 257, 4096) });
+    try std.testing.expectEqual(@as(usize, 1835290624), scratchBytes(c, 257, 8192) - scratchBytes(c, 257, 4096));
     c.ck = false;
     try std.testing.expectEqual(@as(usize, 4096), passRows(c));
     c.ck = true;

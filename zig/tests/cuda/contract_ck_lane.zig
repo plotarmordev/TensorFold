@@ -22,7 +22,7 @@ fn laneDepth(s: c.Shape) usize {
 
 /// Super's FP8 projections at prompt rows: the Mamba out projection, the latent projection and back.
 pub fn spec(kind: Kind) c.Spec {
-    const served = &[_]c.Shape{ .{ .rows = 129, .n = 4096, .k = 8192 }, .{ .rows = 256, .n = 1024, .k = 4096 }, .{ .rows = 300, .n = 4096, .k = 1024 }, .{ .rows = 8192, .n = 4096, .k = 8192 } };
+    const served = &[_]c.Shape{ .{ .rows = 129, .n = 4096, .k = 8192 }, .{ .rows = 256, .n = 1024, .k = 4096 }, .{ .rows = 300, .n = 4096, .k = 1024 }, .{ .rows = 8192, .n = 128, .k = 256 } };
     const tiles = [3]c.Tile{ .{ .size = 128 }, .{ .size = 128, .step = 64, .min = 64 }, .{} };
     return switch (kind) {
         .cluster => .{ .name = "cuda ck FP8 prompt tile tf_ck8_128c (slices in a cluster)", .accum = .f32, .depth = laneDepth, .ops = 1, .out = .bf16, .replaces = "tf_ck8_64c and tf_ck8_64sc", .nan = .{ .stated = rule }, .tiles = tiles, .served = served },

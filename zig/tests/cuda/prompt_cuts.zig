@@ -42,7 +42,7 @@ pub fn run(gpu: check.Gpu, model: []const u8, ids_path: []const u8) !void {
     var ids = try readIds(gpu, ids_path);
     defer ids.deinit(gpa);
     const n = ids.items.len;
-    try check.expect(n > R + 64, "prompt-cuts: the prompt needs more than {d} tokens, has {d}", .{ R + 64, n });
+    try check.expect(n > nemotron.state.pass_rows + 64, "prompt-cuts: the prompt needs more than {d} tokens, has {d}", .{ nemotron.state.pass_rows + 64, n });
     const e = try nemotron.Engine.init(gpa, gpu.io, gpu.ctx, model, null, .{ .context = 16384, .mtp = true, .graphs = true, .sampling = null, .segments = 1 });
     defer e.deinit();
     try @import("shared_plans.zig").compare(e);
@@ -51,7 +51,7 @@ pub fn run(gpu: check.Gpu, model: []const u8, ids_path: []const u8) !void {
     try h.capture();
     const plain = try digest(gpa, e, h, try e.prefill(ids.items, null, h), n - 1 - e.last_chunk);
 
-    const marks = [_]u32{ 1, 777, R - 1, R, R + 1, @intCast(n - 33), @intCast(n - 1) };
+    const marks = [_]u32{ 1, 777, R - 1, R, R + 1, 2 * R - 1, 2 * R, 2 * R + 1, 4 * R - 1, 4 * R, 4 * R + 1, @intCast(n - 33), @intCast(n - 1) };
     var target: nemotron.reuse.Target = .{ .e = e, .head = h };
     var kept: Kept = .{ .target = &target, .gpa = gpa };
     defer {

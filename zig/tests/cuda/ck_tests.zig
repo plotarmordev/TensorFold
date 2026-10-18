@@ -146,8 +146,7 @@ fn shareSums(r: *Rig, q: *const cuda.ck.Ck, latent: cuda.Module, rows: usize, pi
     check.pass("checkpoint share sums: {d} picks over {d} experts in {d} shares [{d}, {d}], combine and shared add byte-equal to decode's fp32 shares", .{ groups, count, shares, n, k });
 }
 
-fn lane(r: *Rig, q: *const cuda.ck.Ck, n: usize, k: usize) !void {
-    const m = 129;
+fn lane(r: *Rig, q: *const cuda.ck.Ck, m: usize, n: usize, k: usize) !void {
     const host = try r.a.alloc(u8, m * k);
     for (host) |*v| v.* = 0x20 + r.rng.uintLessThan(u8, 32);
     const x = try r.dev(host);
@@ -186,7 +185,10 @@ pub fn run(gpu: check.Gpu) !void {
     defer latent.unload();
     try shareSums(&r, &q, latent, 64, 22, 8, 2, 1344, 1024); // Super's routed shares, two items an expert
     try shareSums(&r, &q, latent, 300, 1, 1, 2, 2688, 4096); // its shared expert: one expert, a pick a row
-    try lane(&r, &q, 192, 256);
-    try lane(&r, &q, 192, 2048);
-    try lane(&r, &q, 4096, 8192);
+    try lane(&r, &q, 129, 192, 256);
+    try lane(&r, &q, 129, 192, 2048);
+    try lane(&r, &q, 129, 4096, 8192);
+    try lane(&r, &q, 8192, 4096, 8192);
+    try experts(&r, &q, 8192, 1024, 1344, 96);
+    try shareSums(&r, &q, latent, 8192, 1, 1, 2, 2688, 4096);
 }

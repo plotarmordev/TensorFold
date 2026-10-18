@@ -43,6 +43,7 @@ test {
     _ = @import("config.zig");
     _ = @import("draft_ids.zig");
     _ = kernels;
+    _ = state;
     _ = @import("cuda_triton.zig");
     _ = @import("cuda_sampler.zig");
     _ = @import("cuda_torch_ops.zig");
