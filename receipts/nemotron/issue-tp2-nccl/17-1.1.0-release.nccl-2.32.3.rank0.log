@@ -1,0 +1,351 @@
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+[New Thread 0xfffff4e45100 (LWP 3710527)]
+[New Thread 0xffffe5649100 (LWP 3710528)]
+[New Thread 0xffffedb97100 (LWP 3710532)]
+[New Thread 0xfffdd2d31100 (LWP 3710533)]
+[New Thread 0xffffe4a49100 (LWP 3710534)]
+[New Thread 0xfffdd1d21100 (LWP 3710535)]
+[Thread 0xffffe4a49100 (LWP 3710534) exited]
+[New Thread 0xffffe4a49100 (LWP 3710536)]
+rank0-host:3710525:3710525 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+rank0-host:3710525:3710525 [0] NCCL INFO Bootstrap: Using enp1s0f0np0:192.0.2.1<0>
+rank0-host:3710525:3710525 [0] NCCL INFO NCCL_COMM_ID set by environment to 192.0.2.1:29741
+rank0-host:3710525:3710525 [0] NCCL INFO cudaDriverVersion 13000
+rank0-host:3710525:3710525 [0] NCCL INFO NCCL version 2.32.3+cuda13.4
+rank0-host:3710525:3710525 [0] NCCL INFO NCCL git version unknown unknown
+rank0-host:3710525:3710525 [0] NCCL INFO NCCL_COMM_ID set by environment to 192.0.2.1:29741
+rank0-host:3710525:3710534 [0] NCCL INFO Socket handshake magic 0x564ab9f2fc4b9d6c (built-in default)
+rank0-host:3710525:3710525 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so
+rank0-host:3710525:3710525 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f0np0
+rank0-host:3710525:3710525 [0] NCCL INFO NCCL_IB_HCA set to =rocep1s0f0
+rank0-host:3710525:3710525 [0] NCCL INFO NET/IB : Using [0]rocep1s0f0:1/RoCE [RO]; OOB enp1s0f0np0:192.0.2.1<0>
+rank0-host:3710525:3710525 [0] NCCL INFO Initialized NET plugin IB
+rank0-host:3710525:3710525 [0] NCCL INFO Assigned NET plugin IB to comm
+rank0-host:3710525:3710525 [0] NCCL INFO RMA/Plugin: Could not find: libnccl-rma.so
+rank0-host:3710525:3710525 [0] NCCL INFO RMA/Plugin: Initialized plugin 
+rank0-host:3710525:3710525 [0] NCCL INFO RMA/Plugin: Assigned plugin RMA_IB_PROXY to comm
+rank0-host:3710525:3710525 [0] NCCL INFO GIN/Plugin: Could not find: libnccl-gin.so
+rank0-host:3710525:3710525 [0] NCCL INFO Using network IB
+rank0-host:3710525:3710525 [0] NCCL INFO Loaded NVML from libnvidia-ml.so.1
+rank0-host:3710525:3710525 [0] NCCL INFO [Rank 0] ncclCommInitRank comm 0x7a2e6f0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init START
+rank0-host:3710525:3710525 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+rank0-host:3710525:3710525 [0] NCCL INFO Bootstrap timings total 0.003679 (create 0.000033, send 0.000109, recv 0.001026, ring 0.000607, delay 0.000000)
+rank0-host:3710525:3710525 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-19).
+rank0-host:3710525:3710525 [0] NCCL INFO Rank 0: 1 Net devices
+rank0-host:3710525:3710525 [0] NCCL INFO Rank 0: 0 CollNet devices
+rank0-host:3710525:3710525 [0] NCCL INFO Local Net device counts across ranks: min 1 max 1
+rank0-host:3710525:3710525 [0] NCCL INFO Local CollNet device counts across ranks: min 0 max 0
+rank0-host:3710525:3710525 [0] NCCL INFO comm 0x7a2e6f0 rank 0 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 00/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 01/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 02/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 03/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 04/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 05/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 06/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 07/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 08/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 09/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 10/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 11/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 12/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 13/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 14/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 15/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 16/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 17/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 18/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 19/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 20/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 21/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 22/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 23/64 : 0 1
+rank0-host[New Thread 0xfffd8c9cf100 (LWP 3710537)]
+[New Thread 0xfffd738e4100 (LWP 3710538)]
+0:3710525:3710525 [0] NCCL INFO Channel 24/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 25/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 26/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 27/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 28/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 29/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 30/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 31/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 32/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 33/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 34/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 35/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 36/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 37/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 38/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 39/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 40/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 41/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 42/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 43/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 44/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 45/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 46/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 47/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 48/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 49/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 50/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 51/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 52/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 53/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 54/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 55/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 56/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 57/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 58/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 59/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 60/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 61/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 62/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 63/64 : 0 1
+rank0-host:3710525:3710525 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1 [2] 1/-1/-1->0->-1 [3] 1/-1/-1->0->-1 [4] 1/-1/-1->0->-1 [5] 1/-1/-1->0->-1 [6] 1/-1/-1->0->-1 [7] 1/-1/-1->0->-1 [8] 1/-1/-1->0->-1 [9] 1/-1/-1->0->-1 [10] 1/-1/-1->0->-1 [11] 1/-1/-1->0->-1 [12] 1/-1/-1->0->-1 [13] 1/-1/-1->0->-1 [14] 1/-1/-1->0->-1 [15] 1/-1/-1->0->-1 [16] 1/-1/-1->0->-1 [17] 1/-1/-1->0->-1 [18] 1/-1/-1->0->-1 [19] 1/-1/-1->0->-1 [20] 1/-1/-1->0->-1 [21] 1/-1/-1->0->-1 [22] 1/-1/-1->0->-1 [23] 1/-1/-1->0->-1 [24] 1/-1/-1->0->-1 [25] 1/-1/-1->0->-1 [26] 1/-1/-1->0->-1 [27] 1/-1/-1->0->-1 [28] 1/-1/-1->0->-1 [29] 1/-1/-1->0->-1 [30] 1/-1/-1->0->-1 [31] 1/-1/-1->0->-1 [32] -1/-1/-1->0->1 [33] -1/-1/-1->0->1 [34] -1/-1/-1->0->1 [35] -1/-1/-1->0->1 [36] -1/-1/-1->0->1 [37] -1/-1/-1->0->1 [38] -1/-1/-1->0->1 [39] -1/-1/-1->0->1 [40] -1/-1/-1->0->1 [41] -1/-1/-1->0->1 [42] -1/-1/-1->0->1 [43] -1/-1/-1->0->1 [44] -1/-1/-1->0->1 [45] -1/-1/-1->0->1 [46] -1/-1/-1->0->1 [47] -1/-1/-1->0->1 [48] -1/-1/-1->0->1 [49] -1/-1/-1->0->1 [50] -1/-1/-1->0->1 [51] -1/-1/
+rank0-host:3710525:3710525 [0] NCCL INFO P2P Chunksize set to 262144
+rank0-host:3710525:3710525 [0] NCCL INFO Tuning P2P operations with maxP2pPeers = 2
+rank0-host:3710525:3710525 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+rank0-host:3710525:3710525 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+rank0-host:3710525:3710537 [0] NCCL INFO [Proxy Service] Device 0 CPU core 9
+rank0-host:3710525:3710537 [0] NCCL INFO proxy listening socket at 192.0.2.1<55065>
+rank0-host:3710525:3710538 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 6
+spar[New Thread 0xfffd730d4100 (LWP 3710539)]
+rank0-host:3710525:3710525 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so
+rank0-host:3710525:3710525 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+rank0-host:3710525:3710525 [0] NCCL INFO 64 coll channels, 64 collnet channels, 0 nvls channels, 64 p2p channels, 1 p2p channels per peer
+rank0-host:3710525:3710525 [0] NCCL INFO symmetricSupport 0, cuMemEnable 1, globalGinSupport 0, cuMemGdrSupport 0, contiguousRanksPerHost 1, crossNicSupport 1
+rank0-host:3710525:3710525 [0] NCCL INFO CC Off, workFifoBytes 1048576
+rank0-host:3710525:3710525 [0] NCCL INFO ncclCommInitRank comm 0x7a2e6f0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init COMPLETE
+rank0-host:3710525:3710525 [0] NCCL INFO Init timings - ncclCommInitRank: rank 0 nranks 2 total 0.32 (kernels 0.25, alloc 0.04, bootstrap 0.00, allgathers 0.00, topo 0.01, graphs 0.00, connections 0.03, rest 0.00)
+rank0-host:3710525:3710539 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 12
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 02/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 03/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 04/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 05/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 06/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 07/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 08/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 09/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 10/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 11/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 12/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 13/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 14/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 15/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 16/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 17/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 18/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 19/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 20/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 21/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 22/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 23/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 24/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 25/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 26/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 27/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 28/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 29/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 30/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 31/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 32/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 33/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 34/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 35/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 36/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 37/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 38/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 39/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 40/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 41/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 42/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 43/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 44/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 45/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 46/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 47/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 48/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 49/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 50/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 51/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 52/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 53/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 54/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 55/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 56/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 57/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 58/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 59/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 60/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 61/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 62/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 63/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 02/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 03/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 04/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 05/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 06/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 07/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 08/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 09/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 10/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 11/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 12/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 13/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 14/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 15/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 16/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 17/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 18/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 19/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 20/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 21/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 22/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 23/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 24/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 25/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 26/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 27/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 28/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 29/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 30/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 31/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 32/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 33/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 34/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 35/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 36/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 37/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 38/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 39/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 40/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 41/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 42/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 43/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 44/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 45/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 46/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 47/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 48/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 49/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 50/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 51/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 52/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 53/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 54/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 55/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 56/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 57/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 58/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 59/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3710525:3710525 [0] NCCL INFO Channel 60/0 : 0[0] -> info: rank 0 of 2: every rank agrees on the model, its 2 expert shares and the build
+[New Thread 0xfffd728c4100 (LWP 3710542)]
+[New Thread 0xfffd718b4100 (LWP 3710543)]
+[New Thread 0xfffd5bd3d100 (LWP 3710544)]
+[New Thread 0xfffd5ad2d100 (LWP 3710545)]
+[New Thread 0xfffd59d1d100 (LWP 3710546)]
+[New Thread 0xfffd4ff42100 (LWP 3710547)]
+[New Thread 0xfffd4ef32100 (LWP 3710548)]
+[New Thread 0xfffd4df22100 (LWP 3710549)]
+[Thread 0xfffd4ef32100 (LWP 3710548) exited]
+[Thread 0xfffd4df22100 (LWP 3710549) exited]
+[Thread 0xfffd5bd3d100 (LWP 3710544) exited]
+[Thread 0xfffd718b4100 (LWP 3710543) exited]
+[Thread 0xfffd5ad2d100 (LWP 3710545) exited]
+[Thread 0xfffd4ff42100 (LWP 3710547) exited]
+[Thread 0xfffd59d1d100 (LWP 3710546) exited]
+[Thread 0xfffd728c4100 (LWP 3710542) exited]
+info: checkpoint digest: 0.0 GiB read in 18.8 s, 88/88 cached files
+[New Thread 0xfffd4df22100 (LWP 3711545)]
+[New Thread 0xfffd4ef32100 (LWP 3712232)]
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 39.98 GiB; 1 stream at once, the engine's own at a 16384-token window (0.40 GiB, in the model's), 0 more taking 0 pages of 512 rows (0.00 GiB) as they need them, 264 MiB fixed each, of 53.3 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, no prompt cache; own glue kernels
+[tensorfold] serving nemotron-3.5-super-vl at http://127.0.0.1:8897/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 16384; loaded in 58.6s)
+[tensorfold] thinking on (the chat template's default): replies reason in reasoning_content before the answer in content, and max_tokens counts both. --no-thinking turns it off; a request can send chat_template_kwargs {"enable_thinking": false}
+[New Thread 0xfffd728c4100 (LWP 3712233)]
+[New Thread 0xfffd718b4100 (LWP 3712235)]
+[tensorfold] 127.0.0.1 "GET /health HTTP/1.1" 200 -
+[Thread 0xfffd718b4100 (LWP 3712235) exited]
+[New Thread 0xfffd718b4100 (LWP 3712243)]
+[tensorfold] 127.0.0.1 "GET /health HTTP/1.1" 200 -
+[Thread 0xfffd718b4100 (LWP 3712243) exited]
+[New Thread 0xfffd718b4100 (LWP 3712244)]
+[tensorfold] 127.0.0.1 "GET /v1/models HTTP/1.1" 200 -
+[Thread 0xfffd718b4100 (LWP 3712244) exited]
+[New Thread 0xfffd718b4100 (LWP 3712245)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-b60112acf515d17bd753bd54f80e2622 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=31 accepted=368/385
+[Thread 0xfffd718b4100 (LWP 3712245) exited]
+[New Thread 0xfffd718b4100 (LWP 3712619)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-9611af7dc31912ddd8d769968573e543 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=31 accepted=368/385
+[Thread 0xfffd718b4100 (LWP 3712619) exited]
+[New Thread 0xfffd718b4100 (LWP 3712637)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-fefa5c63916c161c94ee049689b0338d prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=31 accepted=368/385
+[Thread 0xfffd718b4100 (LWP 3712637) exited]
+[New Thread 0xfffd718b4100 (LWP 3712661)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-cb1f3c4e3a6f895cf6a53932b2556020 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=31 accepted=368/385
+[Thread 0xfffd718b4100 (LWP 3712661) exited]
+[New Thread 0xfffd718b4100 (LWP 3712666)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-d159c309b60d416a3bf923c7ae8cbf09 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+[Thread 0xfffd718b4100 (LWP 3712666) exited]
+[New Thread 0xfffd718b4100 (LWP 3713038)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-471ef555b8c8d5ba11b761220ef1b6e1 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+[Thread 0xfffd718b4100 (LWP 3713038) exited]
+[New Thread 0xfffd718b4100 (LWP 3713093)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-2a78f46865b5abafbdec82b5afd4382b prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+[Thread 0xfffd718b4100 (LWP 3713093) exited]
+[New Thread 0xfffd718b4100 (LWP 3713157)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-acae270e8f38de3b1af0b12c8b07ede1 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+[Thread 0xfffd718b4100 (LWP 3713157) exited]
+[New Thread 0xfffd718b4100 (LWP 3713210)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-377a1b113f92dba927da37064c63af69 prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=107 accepted=148/253
+[Thread 0xfffd718b4100 (LWP 3713210) exited]
+[New Thread 0xfffd718b4100 (LWP 3713662)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-77fdcf009832f932d88014a6013bbc79 prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=107 accepted=148/253
+[Thread 0xfffd718b4100 (LWP 3713662) exited]
+[New Thread 0xfffd718b4100 (LWP 3713677)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-8f2408df1f5a86f553378a058629e0bf prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=107 accepted=148/253
+[Thread 0xfffd718b4100 (LWP 3713677) exited]
+[New Thread 0xfffd718b4100 (LWP 3713698)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-b6b23fecc6e7bc28e388697c017d8995 prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=107 accepted=148/253
+[Thread 0xfffd718b4100 (LWP 3713698) exited]
+[New Thread 0xfffd718b4100 (LWP 3713734)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-8c2ea2aa0269dd9f1901d32f31614fb6 prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+[Thread 0xfffd718b4100 (LWP 3713734) exited]
+[New Thread 0xfffd718b4100 (LWP 3714014)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-c05194b2684936b618b4f88b6d38eb34 prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=57 accepted=199/277
+[Thread 0xfffd718b4100 (LWP 3714014) exited]
+[New Thread 0xfffd718b4100 (LWP 3714028)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-2d43f0118699ead40ed905aaf186aaab prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=57 accepted=199/277
+[Thread 0xfffd718b4100 (LWP 3714028) exited]
+[New Thread 0xfffd718b4100 (LWP 3714051)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-a6fce3e3071067c143b6481d487005e0 prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=57 accepted=199/277
+[Thread 0xfffd718b4100 (LWP 3714051) exited]
+[New Thread 0xfffd718b4100 (LWP 3714056)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-860677afb4810207d2860ee3551cbf87 prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=57 accepted=199/277
+[Thread 0xfffd718b4100 (LWP 3714056) exited]
+[New Thread 0xfffd718b4100 (LWP 3714070)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-19ec3b430a71461fdf5e57dc041a7791 prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=255 accepted=0/0
+[Thread 0xfffd718b4100 (LWP 3714070) exited]

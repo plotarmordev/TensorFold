@@ -1,0 +1,61 @@
+diff --git a/zig/src/families/nemotron/cuda_costs.zig b/zig/src/families/nemotron/cuda_costs.zig
+index 452c9aed..86c5897d 100644
+--- a/zig/src/families/nemotron/cuda_costs.zig
++++ b/zig/src/families/nemotron/cuda_costs.zig
+@@ -11,8 +11,7 @@ const Vocab = mtp.Vocab;
+ const state = @import("cuda_state.zig");
+ const rule = lanes.cost_rule;
+ const profile_window = @import("cuda_profile_window.zig");
+-const regime = cuda.launch.few_rows; // windows past it take the router's and the lanes' wider kernels
+-const prefix = 16; // text tokens before the timed windows, at any window width: a window's ms depends on its tokens
++const regime = std.math.maxInt(usize); // bisect: one pool over every row, as the 1.0.12 series priced its table
+ 
+ // Windows hold this prefix's pending token, then the text's next tokens as drafts, after the head drafts as in a round.
+ const text = "The river had been rising for three days, and by the time the ferry stopped running the town had moved its " ++
+@@ -103,9 +102,9 @@ fn timeAll(gpa: std.mem.Allocator, io: std.Io, e: *Engine, h: *Head, model_dir:
+     const ids = try tok.encode(gpa, text);
+     defer gpa.free(ids);
+     const rows = state.windowRows(e.c);
+-    if (ids.len < prefix + rows) return error.CostTextTooShort;
+-    const pending = try e.prefill(ids[0..prefix], null, h);
+-    const last_hidden = e.b.p_hidden + (prefix - 1) * @as(u64, e.c.hidden) * 2;
++    if (ids.len < 2 * rows + 2) return error.CostTextTooShort;
++    const pending = try e.prefill(ids[0..rows], null, h);
++    const last_hidden = e.b.p_hidden + (rows - 1) * @as(u64, e.c.hidden) * 2;
+     var saved = try e.b.snapshot(e.ops());
+     defer saved.free();
+     var head_saved = try h.snapshot();
+@@ -114,7 +113,7 @@ fn timeAll(gpa: std.mem.Allocator, io: std.Io, e: *Engine, h: *Head, model_dir:
+     var last_saved = try cuda.DeviceBuffer.alloc(e.ctx.d, e.c.hidden * 2);
+     defer last_saved.free();
+     try e.ops().copy(last_saved.ptr, last_hidden, e.c.hidden * 2);
+-    const cont = ids[prefix..];
++    const cont = ids[rows..];
+     var next = try cuda.DeviceBuffer.alloc(e.ctx.d, rows * 4); // the text's own next tokens: the window's drafts
+     defer next.free();
+     try e.ops().upload(next.ptr, std.mem.sliceAsBytes(cont[0..rows]));
+@@ -129,13 +128,14 @@ fn timeAll(gpa: std.mem.Allocator, io: std.Io, e: *Engine, h: *Head, model_dir:
+         saved: cuda.DeviceBuffer,
+         head_saved: cuda.DeviceBuffer,
+         head_pos: usize,
++        pos: usize,
+         last: u64,
+         pending: u32,
+         continuation: u64,
+ 
+         pub fn restore(w: *@This()) !void {
+             try w.e.b.restore(w.e.ops(), w.saved);
+-            w.e.pos = prefix;
++            w.e.pos = w.pos;
+             w.e.parity = 0;
+             w.e.prev_keep = 0;
+         }
+@@ -197,7 +197,7 @@ fn timeAll(gpa: std.mem.Allocator, io: std.Io, e: *Engine, h: *Head, model_dir:
+             for (x.chains) |*c| try c.afterWidth(i);
+         }
+     };
+-    const windows: W = .{ .e = e, .h = h, .t = t, .saved = saved, .head_saved = head_saved, .head_pos = head_pos, .last = last_saved.ptr, .pending = pending, .continuation = next.ptr };
++    const windows: W = .{ .e = e, .h = h, .t = t, .saved = saved, .head_saved = head_saved, .head_pos = head_pos, .pos = rows, .last = last_saved.ptr, .pending = pending, .continuation = next.ptr };
+     var chains: [2]rule.ChainLevel(L) = undefined;
+     for (heads, chains[0..heads.len]) |v, *c| c.* = .{ .timer = .{ .e = e, .h = h, .t = t, .saved = head_saved, .pos = head_pos, .last = last_hidden, .pending = pending, .vocab = v } };
+     var observer: Heads = .{ .chains = chains[0..heads.len] };

@@ -1,0 +1,512 @@
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+[New Thread 0xfffff4e45100 (LWP 3678760)]
+[New Thread 0xffffe70fd100 (LWP 3678761)]
+[New Thread 0xffffe7f9f100 (LWP 3678765)]
+[New Thread 0xfffdd3b31100 (LWP 3678766)]
+[New Thread 0xfffdd2b21100 (LWP 3678767)]
+[New Thread 0xfffdd2311100 (LWP 3678770)]
+[Thread 0xfffdd2b21100 (LWP 3678767) exited]
+[New Thread 0xfffdd2b21100 (LWP 3678771)]
+rank0-host:3678758:3678758 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+rank0-host:3678758:3678758 [0] NCCL INFO Bootstrap: Using enp1s0f0np0:192.0.2.1<0>
+rank0-host:3678758:3678758 [0] NCCL INFO NCCL_COMM_ID set by environment to 192.0.2.1:29741
+rank0-host:3678758:3678758 [0] NCCL INFO cudaDriverVersion 13000
+rank0-host:3678758:3678758 [0] NCCL INFO NCCL version 2.32.3+cuda13.4
+rank0-host:3678758:3678758 [0] NCCL INFO NCCL git version unknown unknown
+rank0-host:3678758:3678758 [0] NCCL INFO NCCL_COMM_ID set by environment to 192.0.2.1:29741
+rank0-host:3678758:3678767 [0] NCCL INFO Socket handshake magic 0x564ab9f2fc4b9d6c (built-in default)
+rank0-host:3678758:3678758 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so
+rank0-host:3678758:3678758 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f0np0
+rank0-host:3678758:3678758 [0] NCCL INFO NCCL_IB_HCA set to =rocep1s0f0
+rank0-host:3678758:3678758 [0] NCCL INFO NET/IB : Using [0]rocep1s0f0:1/RoCE [RO]; OOB enp1s0f0np0:192.0.2.1<0>
+rank0-host:3678758:3678758 [0] NCCL INFO Initialized NET plugin IB
+rank0-host:3678758:3678758 [0] NCCL INFO Assigned NET plugin IB to comm
+rank0-host:3678758:3678758 [0] NCCL INFO RMA/Plugin: Could not find: libnccl-rma.so
+rank0-host:3678758:3678758 [0] NCCL INFO RMA/Plugin: Initialized plugin 
+rank0-host:3678758:3678758 [0] NCCL INFO RMA/Plugin: Assigned plugin RMA_IB_PROXY to comm
+rank0-host:3678758:3678758 [0] NCCL INFO GIN/Plugin: Could not find: libnccl-gin.so
+rank0-host:3678758:3678758 [0] NCCL INFO Using network IB
+rank0-host:3678758:3678758 [0] NCCL INFO Loaded NVML from libnvidia-ml.so.1
+rank0-host:3678758:3678758 [0] NCCL INFO [Rank 0] ncclCommInitRank comm 0x44ef780 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init START
+rank0-host:3678758:3678758 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+rank0-host:3678758:3678758 [0] NCCL INFO Bootstrap timings total 0.018651 (create 0.000036, send 0.000109, recv 0.016179, ring 0.000625, delay 0.000001)
+rank0-host:3678758:3678758 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-19).
+rank0-host:3678758:3678758 [0] NCCL INFO Rank 0: 1 Net devices
+rank0-host:3678758:3678758 [0] NCCL INFO Rank 0: 0 CollNet devices
+rank0-host:3678758:3678758 [0] NCCL INFO Local Net device counts across ranks: min 1 max 1
+rank0-host:3678758:3678758 [0] NCCL INFO Local CollNet device counts across ranks: min 0 max 0
+rank0-host:3678758:3678758 [0] NCCL INFO comm 0x44ef780 rank 0 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 00/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 01/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 02/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 03/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 04/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 05/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 06/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 07/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 08/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 09/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 10/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 11/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 12/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 13/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 14/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 15/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 16/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 17/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 18/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 19/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 20/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 21/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 22/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 23/64 : 0 1
+rank0-host[New Thread 0xfffdd0b7f100 (LWP 3678772)]
+[New Thread 0xfffd8c9cf100 (LWP 3678773)]
+0:3678758:3678758 [0] NCCL INFO Channel 24/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 25/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 26/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 27/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 28/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 29/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 30/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 31/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 32/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 33/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 34/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 35/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 36/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 37/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 38/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 39/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 40/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 41/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 42/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 43/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 44/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 45/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 46/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 47/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 48/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 49/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 50/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 51/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 52/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 53/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 54/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 55/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 56/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 57/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 58/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 59/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 60/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 61/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 62/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 63/64 : 0 1
+rank0-host:3678758:3678758 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1 [2] 1/-1/-1->0->-1 [3] 1/-1/-1->0->-1 [4] 1/-1/-1->0->-1 [5] 1/-1/-1->0->-1 [6] 1/-1/-1->0->-1 [7] 1/-1/-1->0->-1 [8] 1/-1/-1->0->-1 [9] 1/-1/-1->0->-1 [10] 1/-1/-1->0->-1 [11] 1/-1/-1->0->-1 [12] 1/-1/-1->0->-1 [13] 1/-1/-1->0->-1 [14] 1/-1/-1->0->-1 [15] 1/-1/-1->0->-1 [16] 1/-1/-1->0->-1 [17] 1/-1/-1->0->-1 [18] 1/-1/-1->0->-1 [19] 1/-1/-1->0->-1 [20] 1/-1/-1->0->-1 [21] 1/-1/-1->0->-1 [22] 1/-1/-1->0->-1 [23] 1/-1/-1->0->-1 [24] 1/-1/-1->0->-1 [25] 1/-1/-1->0->-1 [26] 1/-1/-1->0->-1 [27] 1/-1/-1->0->-1 [28] 1/-1/-1->0->-1 [29] 1/-1/-1->0->-1 [30] 1/-1/-1->0->-1 [31] 1/-1/-1->0->-1 [32] -1/-1/-1->0->1 [33] -1/-1/-1->0->1 [34] -1/-1/-1->0->1 [35] -1/-1/-1->0->1 [36] -1/-1/-1->0->1 [37] -1/-1/-1->0->1 [38] -1/-1/-1->0->1 [39] -1/-1/-1->0->1 [40] -1/-1/-1->0->1 [41] -1/-1/-1->0->1 [42] -1/-1/-1->0->1 [43] -1/-1/-1->0->1 [44] -1/-1/-1->0->1 [45] -1/-1/-1->0->1 [46] -1/-1/-1->0->1 [47] -1/-1/-1->0->1 [48] -1/-1/-1->0->1 [49] -1/-1/-1->0->1 [50] -1/-1/-1->0->1 [51] -1/-1/
+rank0-host:3678758:3678758 [0] NCCL INFO P2P Chunksize set to 262144
+rank0-host:3678758:3678758 [0] NCCL INFO Tuning P2P operations with maxP2pPeers = 2
+rank0-host:3678758:3678758 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+rank0-host:3678758:3678758 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+rank0-host:3678758:3678772 [0] NCCL INFO [Proxy Service] Device 0 CPU core 0
+rank0-host:3678758:3678772 [0] NCCL INFO proxy listening socket at 192.0.2.1<60645>
+rank0-host:3678758:3678773 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 0
+spar[New Thread 0xfffd738e4100 (LWP 3678774)]
+rank0-host:3678758:3678758 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so
+rank0-host:3678758:3678758 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+rank0-host:3678758:3678758 [0] NCCL INFO 64 coll channels, 64 collnet channels, 0 nvls channels, 64 p2p channels, 1 p2p channels per peer
+rank0-host:3678758:3678758 [0] NCCL INFO symmetricSupport 0, cuMemEnable 1, globalGinSupport 0, cuMemGdrSupport 0, contiguousRanksPerHost 1, crossNicSupport 1
+rank0-host:3678758:3678758 [0] NCCL INFO CC Off, workFifoBytes 1048576
+rank0-host:3678758:3678758 [0] NCCL INFO ncclCommInitRank comm 0x44ef780 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init COMPLETE
+rank0-host:3678758:3678758 [0] NCCL INFO Init timings - ncclCommInitRank: rank 0 nranks 2 total 0.33 (kernels 0.25, alloc 0.03, bootstrap 0.02, allgathers 0.00, topo 0.01, graphs 0.00, connections 0.03, rest 0.00)
+rank0-host:3678758:3678774 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 19
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 02/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 03/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 04/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 05/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 06/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 07/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 08/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 09/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 10/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 11/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 12/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 13/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 14/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 15/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 16/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 17/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 18/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 19/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 20/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 21/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 22/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 23/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 24/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 25/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 26/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 27/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 28/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 29/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 30/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 31/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 32/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 33/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 34/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 35/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 36/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 37/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 38/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 39/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 40/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 41/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 42/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 43/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 44/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 45/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 46/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 47/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 48/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 49/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 50/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 51/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 52/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 53/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 54/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 55/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 56/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 57/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 58/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 59/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 60/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 61/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 62/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 63/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 02/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 03/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 04/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 05/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 06/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 07/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 08/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 09/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 10/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 11/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 12/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 13/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 14/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 15/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 16/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 17/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 18/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 19/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 20/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 21/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 22/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 23/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 24/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 25/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 26/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 27/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 28/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 29/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 30/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 31/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 32/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 33/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 34/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 35/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 36/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 37/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 38/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 39/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 40/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 41/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 42/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 43/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 44/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 45/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 46/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 47/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 48/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 49/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 50/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 51/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 52/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 53/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 54/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 55/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 56/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 57/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 58/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 59/0 : 0[0] -> 1[0] [send] via NET/IB/0
+rank0-host:3678758:3678758 [0] NCCL INFO Channel 60/0 : 0[0] -> info: rank 0 of 2: every rank agrees on the model, its 2 expert shares and the build
+[New Thread 0xfffd730d4100 (LWP 3678779)]
+[New Thread 0xfffd720c4100 (LWP 3678780)]
+[New Thread 0xfffd710b4100 (LWP 3678781)]
+[New Thread 0xfffd5bd3d100 (LWP 3678782)]
+[New Thread 0xfffd5ad2d100 (LWP 3678783)]
+[New Thread 0xfffd59d1d100 (LWP 3678784)]
+[New Thread 0xfffd4ff42100 (LWP 3678785)]
+[New Thread 0xfffd4ef32100 (LWP 3678786)]
+[Thread 0xfffd730d4100 (LWP 3678779) exited]
+[Thread 0xfffd720c4100 (LWP 3678780) exited]
+[Thread 0xfffd4ff42100 (LWP 3678785) exited]
+[Thread 0xfffd710b4100 (LWP 3678781) exited]
+[Thread 0xfffd4ef32100 (LWP 3678786) exited]
+[Thread 0xfffd59d1d100 (LWP 3678784) exited]
+[Thread 0xfffd5ad2d100 (LWP 3678783) exited]
+[Thread 0xfffd5bd3d100 (LWP 3678782) exited]
+info: checkpoint digest: 0.0 GiB read in 18.8 s, 88/88 cached files
+[New Thread 0xfffd4ef32100 (LWP 3679401)]
+[New Thread 0xfffd4ff42100 (LWP 3680316)]
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 39.98 GiB; 1 stream at once, the engine's own at a 16384-token window (0.40 GiB, in the model's), 0 more taking 0 pages of 512 rows (0.00 GiB) as they need them, 264 MiB fixed each, of 53.6 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, no prompt cache; own glue kernels
+[tensorfold] serving nemotron-3.5-super-vl at http://127.0.0.1:8897/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 16384; loaded in 69.0s)
+[tensorfold] thinking on (the chat template's default): replies reason in reasoning_content before the answer in content, and max_tokens counts both. --no-thinking turns it off; a request can send chat_template_kwargs {"enable_thinking": false}
+[New Thread 0xfffd730d4100 (LWP 3680317)]
+[New Thread 0xfffd720c4100 (LWP 3680319)]
+[tensorfold] 127.0.0.1 "GET /health HTTP/1.1" 200 -
+[Thread 0xfffd720c4100 (LWP 3680319) exited]
+[New Thread 0xfffd720c4100 (LWP 3680327)]
+[tensorfold] 127.0.0.1 "GET /health HTTP/1.1" 200 -
+[Thread 0xfffd720c4100 (LWP 3680327) exited]
+[New Thread 0xfffd720c4100 (LWP 3680914)]
+[tensorfold] 127.0.0.1 "GET /v1/models HTTP/1.1" 200 -
+[Thread 0xfffd720c4100 (LWP 3680914) exited]
+[New Thread 0xfffd720c4100 (LWP 3680915)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-27cdfa67ce546e01e9f227940357f33b prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=31 accepted=375/414
+[Thread 0xfffd720c4100 (LWP 3680915) exited]
+[New Thread 0xfffd720c4100 (LWP 3680929)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-f4a69a7590b165f5cb7430ca5c5584a1 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=31 accepted=375/414
+[Thread 0xfffd720c4100 (LWP 3680929) exited]
+[New Thread 0xfffd720c4100 (LWP 3680934)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-afff9284fdda5abc394a6fb0a848007d prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=31 accepted=375/414
+[Thread 0xfffd720c4100 (LWP 3680934) exited]
+[New Thread 0xfffd720c4100 (LWP 3680957)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-f6f1f017fa76c171d74b22298d95c9ba prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=31 accepted=375/414
+[Thread 0xfffd720c4100 (LWP 3680957) exited]
+[New Thread 0xfffd720c4100 (LWP 3680973)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-5ebc07f1a0ab60f2d3ab278a86e5f5ac prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+[Thread 0xfffd720c4100 (LWP 3680973) exited]
+[New Thread 0xfffd720c4100 (LWP 3681027)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-1eeccecbd77985d49ee3f6d019d57d31 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+[Thread 0xfffd720c4100 (LWP 3681027) exited]
+[New Thread 0xfffd720c4100 (LWP 3681911)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-5f4c54332ff6792070c461ed30395d56 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+[Thread 0xfffd720c4100 (LWP 3681911) exited]
+[New Thread 0xfffd720c4100 (LWP 3682023)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-d68d4bf9780f877fd6563ea0ea635663 prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+[Thread 0xfffd720c4100 (LWP 3682023) exited]
+[New Thread 0xfffd720c4100 (LWP 3685255)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-5a4588f308769bdc3ed571dedd64f227 prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=106 accepted=149/254
+[Thread 0xfffd720c4100 (LWP 3685255) exited]
+[New Thread 0xfffd720c4100 (LWP 3708443)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-8e4b7fef2fc823162a070234d5415349 prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=106 accepted=149/254
+[Thread 0xfffd720c4100 (LWP 3708443) exited]
+[New Thread 0xfffd720c4100 (LWP 3708462)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-e1efc8a9c64c2052de1f4137899f4422 prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=106 accepted=149/254
+[Thread 0xfffd720c4100 (LWP 3708462) exited]
+[New Thread 0xfffd720c4100 (LWP 3708492)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-c9f804930c95babfa0ea14e9ac759376 prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=106 accepted=149/254
+[Thread 0xfffd720c4100 (LWP 3708492) exited]
+[New Thread 0xfffd720c4100 (LWP 3708511)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-2a471533a785b6e50b4d809776b19e6d prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+[Thread 0xfffd720c4100 (LWP 3708511) exited]
+[New Thread 0xfffd720c4100 (LWP 3708548)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-ee785f11380624445c006c2f3249079a prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=56 accepted=200/273
+[Thread 0xfffd720c4100 (LWP 3708548) exited]
+[New Thread 0xfffd720c4100 (LWP 3708819)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-2db9556b2666628e507e6b3e6fff72b1 prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=56 accepted=200/273
+[Thread 0xfffd720c4100 (LWP 3708819) exited]
+[New Thread 0xfffd720c4100 (LWP 3708820)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-0b87422f3287497969744e0f2f7ecb45 prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=56 accepted=200/273
+[Thread 0xfffd720c4100 (LWP 3708820) exited]
+[New Thread 0xfffd720c4100 (LWP 3708836)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-52f264cd0f450cb822d9fbdea549a1e3 prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=56 accepted=200/273
+[Thread 0xfffd720c4100 (LWP 3708836) exited]
+[New Thread 0xfffd720c4100 (LWP 3708855)]
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+
+Thread 1 "tensorfold-nati" received signal SIGINT, Interrupt.
+0x0000fffff7e61d6c in __futex_abstimed_wait_common64 (private=128, cancel=true, abstime=0x0, op=265, expected=3680317, futex_word=0xfffd730d41d0) at ./nptl/futex-internal.c:57
+warning: 57	./nptl/futex-internal.c: No such file or directory
+
+Thread 43 (Thread 0xfffd720c4100 (LWP 3708855) "tensorfold-nati"):
+#0  0x00000000028df8b8 in os.linux.aarch64.syscall4 (number=futex, arg1=281464005187064, arg2=128, arg3=123, arg4=281464005185360) at <zig-0.17.0>/lib/std/os/linux/aarch64.zig:62
+#1  os.linux.futex_4arg (uaddr=0xfffd720bd5f8, futex_op=..., val=123, timeout=0xfffd720bcf50) at <zig-0.17.0>/lib/std/os/linux.zig:1193
+#2  Io.Threaded.Thread.futexWaitInner (ptr=<optimized out>, expect=123, uncancelable=<optimized out>, timeout_ns=...) at <zig-0.17.0>/lib/std/Io/Threaded.zig:991
+#3  0x00000000024c09bc in Io.Threaded.Thread.futexWait (ptr=<optimized out>, expect=<optimized out>) at <zig-0.17.0>/lib/std/Io/Threaded.zig:941
+#4  Io.Threaded.futexWait (userdata=<optimized out>, ptr=<optimized out>, expected=<optimized out>, timeout=...) at <zig-0.17.0>/lib/std/Io/Threaded.zig:2523
+#5  0x00000000024aed7c in Io.futexWaitTimeout__func_1402 (ptr=<optimized out>, expected=<optimized out>, timeout=...) at <zig-0.17.0>/lib/std/Io.zig:1692
+#6  Io.Condition.waitTimeout (cond=0xfffd720bd5f4, io=..., mutex=0xfffd720bd5f0, timeout=...) at <zig-0.17.0>/lib/std/Io.zig:1831
+#7  0x000000000282357c in chat.Generation.loop__func_11048 (g=0xfffd720bd9d0) at zig/src/server/chat.zig:387
+#8  0x0000000002822d7c in chat.generate__func_11046 (srv=0xffdf8bf2bb10, cx=0xfffd720be5b0, prepared=..., sink=..., gone=...) at zig/src/server/chat.zig:214
+#9  0x0000000002834988 in openai.Run.stream (r=0xfffd720be458) at zig/src/server/openai.zig:518
+#10 openai.run (srv=<optimized out>, a=..., out=..., gone=..., is_chat=<optimized out>, raw=...) at zig/src/server/openai.zig:244
+#11 0x0000000002833ac8 in openai.post (srv=0xffdf8bf2bb10, conn=0xfffd720c1580, a=..., is_chat=<optimized out>) at zig/src/server/openai.zig:50
+#12 0x00000000027cab44 in server.Server.connection (srv=<optimized out>, accepted=...) at zig/src/server/server.zig:302
+#13 0x00000000027c809c in Thread.callFn__func_10429 (args=...) at <zig-0.17.0>/lib/std/Thread.zig:422
+#14 Thread.PosixThreadImpl.spawn__func_10426.Instance.entryFn (raw_arg=<optimized out>) at <zig-0.17.0>/lib/std/Thread.zig:753
+#15 0x0000fffff7e6582c in start_thread (arg=0xfffd730d4840) at ./nptl/pthread_create.c:447
+#16 0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 22 (Thread 0xfffd730d4100 (LWP 3680317) "tensorfold-nati"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=0xfffd730d1778, nfds=1, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x00000000027c7158 in posix.poll (timeout=200) at <zig-0.17.0>/lib/std/posix.zig:1011
+#2  listener.Listener.accept () at zig/src/server/listener.zig:49
+#3  server.Server.serve (srv=<optimized out>) at zig/src/server/server.zig:267
+#4  Thread.callFn__func_10420 () at <zig-0.17.0>/lib/std/Thread.zig:422
+#5  Thread.PosixThreadImpl.spawn__func_10416.Instance.entryFn (raw_arg=0x93141f0) at <zig-0.17.0>/lib/std/Thread.zig:753
+#6  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#7  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 21 (Thread 0xfffd4ff42100 (LWP 3680316) "tensorfold-nati"):
+#0  0x0000ffffe83e8e04 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#1  0x0000ffffe81eeebc in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#2  0x0000ffffe8228f44 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#3  0x0000ffffe8ee3d2c in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#4  0x0000ffffe8ee4148 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#5  0x0000ffffe81f9cdc in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#6  0x0000ffffe82aa234 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#7  0x0000ffffe8eae82c in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#8  0x0000ffffe8346584 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#9  0x0000ffffe833f254 in cuStreamSynchronize () from /lib/aarch64-linux-gnu/libcuda.so.1
+#10 0x00000000026b365c in copy_source.synchronizeStream (d=0xffffee75bfe8, stream=0x3223b00) at zig/src/cuda/copy_source.zig:285
+#11 0x000000000266d9c4 in stream.Stream.synchronize () at zig/src/cuda/stream.zig:30
+#12 cuda_lanes.Cuda.verifyFn (ptr=<optimized out>) at zig/src/families/nemotron/cuda_lanes.zig:436
+#13 0x00000000025c9460 in backend.Backend.verify () at zig/src/core/lanes/backend.zig:155
+#14 engine.Engine.familyRound (e=0xffdf8bf2ab20, s=0xffdf8abe9788, copied=...) at zig/src/core/lanes/engine.zig:205
+#15 0x00000000025caafc in engine.Engine.step (e=<optimized out>) at zig/src/core/lanes/engine.zig:145
+#16 0x00000000025cfe4c in lane_host.LaneHost.run (h=0xffdf8bf2a480) at zig/src/core/lane_host.zig:583
+#17 0x00000000025bdee0 in Thread.callFn__func_4102 () at <zig-0.17.0>/lib/std/Thread.zig:422
+#18 Thread.PosixThreadImpl.spawn__func_4099.Instance.entryFn (raw_arg=0x403acf70) at <zig-0.17.0>/lib/std/Thread.zig:753
+#19 0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#20 0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 20 (Thread 0xfffd4ef32100 (LWP 3679401) "tensorfold-nati"):
+#0  0x0000fffff7e61d6c in __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0x2ab09a8) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0x2ab09a8) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2ab09a8, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000fffff7e6e100 in do_futex_wait (sem=sem@entry=0x2ab09a8, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000fffff7e6e1c0 in __new_sem_wait_slow64 (sem=0x2ab09a8, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000ffffe82af8e4 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#6  0x0000ffffe82bd928 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#7  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#8  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 11 (Thread 0xfffd738e4100 (LWP 3678774) "tensorfold-nati"):
+#0  0x0000fffff7eb5c0c in __GI_sched_yield () at ../sysdeps/unix/syscall-template.S:120
+#1  0x0000fffd8f0fb410 in __gthread_yield () at /usr/include/c++/8/aarch64-redhat-linux/bits/gthr-default.h:692
+#2  std::this_thread::yield () at /usr/include/c++/8/thread:357
+#3  ncclProxyProgress (proxyState_=0x9311de0) at proxy.cc:1003
+#4  0x0000ffffe4261ae0 in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#5  0x0000fffff7e6582c [PAC] in start_thread (arg=0xfffdd0b7f840) at ./nptl/pthread_create.c:447
+#6  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 10 (Thread 0xfffd8c9cf100 (LWP 3678773) "tensorfold-nati"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=fds@entry=0xfffd8c9ce738, nfds=nfds@entry=1, timeout=timeout@entry=500) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffd8f0fa6d8 in ncclProxyServiceUDS (_args=0x9311de0) at proxy.cc:2072
+#2  0x0000ffffe4261ae0 in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#3  0x0000fffff7e6582c [PAC] in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#4  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 9 (Thread 0xfffdd0b7f100 (LWP 3678772) "tensorfold-nati"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=0xfffd6c009e40, nfds=nfds@entry=2, timeout=timeout@entry=500) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffd8f1009d0 in ncclProxyService (_args=0x9311de0) at proxy.cc:1862
+#2  0x0000ffffe4261ae0 in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#3  0x0000fffff7e6582c [PAC] in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#4  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 8 (Thread 0xfffdd2b21100 (LWP 3678771) "tensorfold-nati"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=0xfffd88000b70, nfds=4, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffd8f254274 in rasThreadMain () at ras/ras.cc:666
+#2  0x0000ffffe4261ae0 in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#3  0x0000fffff7e6582c [PAC] in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#4  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 7 (Thread 0xfffdd2311100 (LWP 3678770) "tensorfold-nati"):
+#0  0x0000fffff7ec1148 in __GI___libc_read (nbytes=16, buf=0xfffdd23105f8, fd=38) at ../sysdeps/unix/sysv/linux/read.c:26
+#1  __GI___libc_read (fd=38, buf=0xfffdd23105f8, nbytes=16) at ../sysdeps/unix/sysv/linux/read.c:24
+#2  0x0000ffffee7a5650 in ibv_get_async_event () from /lib/aarch64-linux-gnu/libibverbs.so
+#3  0x0000fffd8f186290 [PAC] in wrap_ibv_get_async_event (context=<optimized out>, event=event@entry=0xfffdd2310710) at misc/ibvwrap.cc:140
+#4  0x0000fffd8f1f1bc8 in ncclIbAsyncThreadMain (args=0xfffd9f4b0c40 <ncclIbDevs>) at transport/net_ib/common.cc:170
+#5  0x0000ffffe4261ae0 in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#6  0x0000fffff7e6582c [PAC] in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#7  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 5 (Thread 0xfffdd3b31100 (LWP 3678766) "tensorfold-nati"):
+#0  0x0000fffff7ec1148 in __GI___libc_read (nbytes=64, buf=0xfffdd3b30788, fd=35) at ../sysdeps/unix/sysv/linux/read.c:26
+#1  __GI___libc_read (fd=35, buf=0xfffdd3b30788, nbytes=64) at ../sysdeps/unix/sysv/linux/read.c:24
+#2  0x00000000026a36d8 in tp_watch.watch () at zig/src/cuda/tp_watch.zig:148
+#3  Thread.callFn__func_6504 () at <zig-0.17.0>/lib/std/Thread.zig:422
+#4  Thread.PosixThreadImpl.spawn__func_6501.Instance.entryFn (raw_arg=0x43b9da0) at <zig-0.17.0>/lib/std/Thread.zig:753
+#5  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#6  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 4 (Thread 0xffffe7f9f100 (LWP 3678765) "cuda-EvtHandlr"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=0xfffdcc000bd0, nfds=9, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000ffffe82cec70 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#2  0x0000ffffe837cd70 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#3  0x0000ffffe82bd928 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#4  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#5  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 3 (Thread 0xffffe70fd100 (LWP 3678761) "cuda00001800007"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=0x299f210, nfds=3, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000ffffe82cec70 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#2  0x0000ffffe837cd70 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#3  0x0000ffffe82bd928 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#4  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#5  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 2 (Thread 0xfffff4e45100 (LWP 3678760) "tensorfold-nati"):
+#0  0x00000000028df8b8 in os.linux.aarch64.syscall4 (number=futex, arg1=281474976706324, arg2=128, arg3=0, arg4=0) at <zig-0.17.0>/lib/std/os/linux/aarch64.zig:62
+#1  os.linux.futex_4arg (uaddr=0xffffffffef14, futex_op=..., val=0, timeout=0x0) at <zig-0.17.0>/lib/std/os/linux.zig:1193
+#2  Io.Threaded.Thread.futexWaitInner (ptr=<optimized out>, expect=0, uncancelable=<optimized out>, timeout_ns=...) at <zig-0.17.0>/lib/std/Io/Threaded.zig:991
+#3  0x00000000028df7f8 in Io.Threaded.Thread.futexWaitUncancelable (ptr=0xffffffffef14, expect=128, timeout_ns=<error reading variable: Cannot access memory at address 0x0>) at <zig-0.17.0>/lib/std/Io/Threaded.zig:937
+#4  0x00000000024c1b40 in Io.Threaded.condWait (cond=0xffffffffef10, mutex=0xffffffffef0c) at <zig-0.17.0>/lib/std/Io/Threaded.zig:19749
+#5  Io.Threaded.worker (t=0xffffffffeac0) at <zig-0.17.0>/lib/std/Io/Threaded.zig:1807
+#6  Thread.callFn__func_1543 () at <zig-0.17.0>/lib/std/Thread.zig:422
+#7  Thread.PosixThreadImpl.spawn__func_1539.Instance.entryFn (raw_arg=0x29642a0) at <zig-0.17.0>/lib/std/Thread.zig:753
+#8  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#9  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 1 (Thread 0xfffff7d3e020 (LWP 3678758) "tensorfold-nati"):
+#0  0x0000fffff7e61d6c in __futex_abstimed_wait_common64 (private=128, cancel=true, abstime=0x0, op=265, expected=3680317, futex_word=0xfffd730d41d0) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=128, abstime=0x0, clockid=0, expected=3680317, futex_word=0xfffd730d41d0) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffd730d41d0, expected=3680317, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=128) at ./nptl/futex-internal.c:139
+#3  0x0000fffff7e67218 in __pthread_clockjoin_ex (threadid=281464022057216, thread_return=0x0, clockid=0, abstime=0x0, block=<optimized out>) at ./nptl/pthread_join_common.c:102
+#4  0x00000000026b1ca8 in Thread.PosixThreadImpl.join () at <zig-0.17.0>/lib/std/Thread.zig:799
+#5  Thread.join () at <zig-0.17.0>/lib/std/Thread.zig:371
+#6  0x00000000027c5550 in serve.run (gpa=..., io=..., args=..., s=...) at zig/src/server/serve.zig:182
+#7  0x0000000002489c9c in main.main (init=...) at zig/src/server/main.zig:133
+#8  0x000000000248abd8 in start.callMain () at <zig-0.17.0>/lib/std/start.zig:827
+#9  start.callMainWithArgs () at <zig-0.17.0>/lib/std/start.zig:729
+#10 start.main (c_argc=13, c_argv=0xfffffffff6b8, c_envp=<optimized out>) at <zig-0.17.0>/lib/std/start.zig:754
+Exception ignored in: <module 'threading' from '/usr/lib/python3.12/threading.py'>
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/threading.py", line 1573, in _shutdown
+    def _shutdown():
+    
+KeyboardInterrupt: 

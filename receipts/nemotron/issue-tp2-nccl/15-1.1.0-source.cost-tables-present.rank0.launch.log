@@ -1,0 +1,11 @@
+== serve 15-1.1.0-source.cost-tables-present.rank0 2026-10-19T11:06:29+08:00 on rank0-host: zone 79 C, load 10.82
+binary tensorfold-native
+04167a172c847952737a4b401fb5945b74d598a51312ed19f4e6ddd974015088  tensorfold-native
+HOME=<new empty directory> TF_NEMOTRON_RANK=0 TF_NEMOTRON_WORLD=2 NCCL_COMM_ID=192.0.2.1:29741 NCCL_DEBUG=INFO LD_LIBRARY_PATH=/opt/nccl-2.28.9  NCCL_SOCKET_IFNAME=enp1s0f0np0 NCCL_IB_HCA==rocep1s0f0 HOME=<home holding cost tables from a one-GPU start> gdb -q -batch -x stall.gdb --args tensorfold-native serve /models/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 --host 127.0.0.1 --port 8897 --name nemotron-3.5-super-vl --parallel 1 --prompt-cache-gib 0
+MemAvailable before: 111.0 GiB
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 39.98 GiB; 1 stream at once, the engine's own at a 16384-token window (0.40 GiB, in the model's), 0 more taking 0 pages of 512 rows (0.00 GiB) as they need them, 264 MiB fixed each, of 54.9 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, no prompt cache; own glue kernels
+[tensorfold] serving nemotron-3.5-super-vl at http://127.0.0.1:8897/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 16384; loaded in 21.7s)
+ready after 24 s; MemAvailable 67.1 GiB
+bench: 'usage'
+client exit 1; heat waits in server log: 0
+== done 2026-10-19T11:26:19+08:00

@@ -1,0 +1,25 @@
+== serve 13-1.1.0-no-tp-graphs.rank0 2026-10-19T12:17:33+08:00 on rank0-host: zone 73 C, load 10.42
+binary tensorfold-native
+af6ba0621211e4ee56e4e2d11540aaf671e2f83b68f09e30034fae160ada0568  tensorfold-native
+HOME=<new empty directory> TF_NEMOTRON_RANK=0 TF_NEMOTRON_WORLD=2 NCCL_COMM_ID=192.0.2.1:29741 NCCL_DEBUG=INFO LD_LIBRARY_PATH=/opt/nccl-2.28.9  NCCL_PROXY_DUMP_SIGNAL=10 NCCL_SOCKET_IFNAME=enp1s0f0np0 NCCL_IB_HCA==rocep1s0f0  gdb -q -batch -x stall.gdb --args tensorfold-native serve /models/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 --host 127.0.0.1 --port 8897 --name nemotron-3.5-super-vl --parallel 1 --prompt-cache-gib 0
+MemAvailable before: 111.9 GiB
+#20 cuda_mtp.Head.level (h=0xfff2864fc620, rows=1, j=21, v=subset) at zig/src/families/nemotron/cuda_mtp.zig:297
+#21 0x0000000002454a24 in cuda_mtp.Head.launch (h=0xfff2864fc620, j=21, v=<optimized out>) at zig/src/families/nemotron/cuda_mtp.zig:366
+#22 0x0000000002454eac in cuda_costs.timeAll.W.draft (n=25) at zig/src/families/nemotron/cuda_costs.zig:149
+#23 cuda_profile_window.prepare__func_820 () at zig/src/families/nemotron/cuda_profile_window.zig:9
+#24 cuda_profile_window.time__func_819 () at zig/src/families/nemotron/cuda_profile_window.zig:15
+#25 cuda_costs.timeAll.W.time (w=..., i=25) at zig/src/families/nemotron/cuda_costs.zig:168
+#26 0x00000000024551a4 in cost_rule.fastest__func_818 (ctx=..., i=25) at zig/src/core/lanes/cost_rule.zig:15
+#27 0x0000000002455ab4 in cost_rule.measureWidths__func_817 (windows=..., keep=false) at zig/src/core/lanes/cost_rule.zig:70
+#28 cuda_costs.timeAll (gpa=..., io=..., e=<optimized out>, h=<optimized out>, raw=<optimized out>) at zig/src/families/nemotron/cuda_costs.zig:204
+#29 0x0000000002458a5c in cuda_costs.measure (gpa=..., h=0xfff2864fc620) at zig/src/families/nemotron/cuda_costs.zig:71
+#30 cuda_lanes.Cuda.measure (self=0xfff2864fe4f8) at zig/src/families/nemotron/cuda_lanes.zig:181
+#31 cuda_native.open (gpa=..., io=..., ctx=0xfffffffeb438, o=...) at zig/src/families/nemotron/cuda_native.zig:136
+#32 0x0000000002465c2c in cuda.openWith__func_66 (problem=0xffffffff7090) at zig/src/native/cuda.zig:312
+#33 cuda.open (a=..., gpa=..., io=..., o=..., problem=0xffffffff7090) at zig/src/native/cuda.zig:194
+#34 0x000000000246895c in engines.open (a=..., gpa=..., io=..., args=..., problem=0xffffffff7090) at zig/src/server/engines.zig:33
+#35 startup.both__func_911 (io=..., load_args=..., open_args=...) at zig/src/server/startup.zig:14
+#36 0x0000000002489084 in main.main (init=...) at zig/src/server/main.zig:118
+#37 0x000000000248ac18 in start.callMain () at <zig-0.17.0>/lib/std/start.zig:827
+#38 start.callMainWithArgs () at <zig-0.17.0>/lib/std/start.zig:729
+#39 start.main (c_argc=13, c_argv=0xfffffffff6d8, c_envp=<optimized out>) at <zig-0.17.0>/lib/std/start.zig:754

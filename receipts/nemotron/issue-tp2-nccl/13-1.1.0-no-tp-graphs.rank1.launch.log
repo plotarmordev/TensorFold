@@ -1,0 +1,11 @@
+== test 13-1.1.0-no-tp-graphs.rank1 2026-10-19T12:17:23+08:00 on rank1-host: zone 60 C, load 0.71
+binary tensorfold-native
+af6ba0621211e4ee56e4e2d11540aaf671e2f83b68f09e30034fae160ada0568  tensorfold-native
+TF_NEMOTRON_RANK=1 TF_NEMOTRON_WORLD=2 NCCL_COMM_ID=192.0.2.1:29741 NCCL_DEBUG=INFO LD_LIBRARY_PATH=/opt/nccl-2.28.9  NCCL_PROXY_DUMP_SIGNAL=10 NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA==rocep1s0f1 gdb -q -batch -x stall.gdb --args tensorfold-native serve /models/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4
+exit 0
+#19 startup.both__func_911 (io=..., load_args=..., open_args=...) at zig/src/server/startup.zig:14
+#20 0x0000000002489084 in main.main (init=...) at zig/src/server/main.zig:118
+#21 0x000000000248ac18 in start.callMain () at <zig-0.17.0>/lib/std/start.zig:827
+#22 start.callMainWithArgs () at <zig-0.17.0>/lib/std/start.zig:729
+#23 start.main (c_argc=3, c_argv=0xfffffffff7b8, c_envp=<optimized out>) at <zig-0.17.0>/lib/std/start.zig:754
+== done 2026-10-19T12:24:09+08:00

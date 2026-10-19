@@ -1,0 +1,51 @@
+== bars.py tables/1.1.0-01.bin
+draft 5: bar 0.544 (prior 0.58)
+draft 6: bar 0.567 (prior 0.55)
+draft 7: bar 0.528 (prior 0.50)
+== bars.py tables/1.1.0-05.bin
+draft 5: bar 0.547 (prior 0.58)
+draft 6: bar 0.569 (prior 0.55)
+draft 7: bar 0.525 (prior 0.50)
+== bars.py tables/timing-1.0.12-04.bin
+draft 5: bar 0.442 (prior 0.58)
+draft 6: bar 0.473 (prior 0.55)
+draft 7: bar 0.483 (prior 0.50)
+== sim.py tables/1.1.0-01.bin {4,8} 1.0 {none,frontier}
+c4 accept 1.0 none overhead 0: 72.0 rounds a request, 4.54 drafts a stream a round, model 11.06 s a request
+c4 accept 1.0 frontier overhead 0: 53.0 rounds a request, 6.53 drafts a stream a round, model 9.68 s a request
+c8 accept 1.0 none overhead 0: 101.0 rounds a request, 2.95 drafts a stream a round, model 17.59 s a request
+c8 accept 1.0 frontier overhead 0: 101.0 rounds a request, 2.95 drafts a stream a round, model 17.59 s a request
+== sim.py tables/1.1.0-01.bin 4 1.0 none 400 1 {8,20}
+c4 accept 1.0 none overhead 8: 66.0 rounds a request, 5.05 drafts a stream a round, model 11.19 s a request
+c4 accept 1.0 none overhead 20: 60.0 rounds a request, 5.65 drafts a stream a round, model 11.41 s a request
+== sim.py tables/1.1.0-05.bin {4,8} 1.0 {none,frontier}
+c4 accept 1.0 none overhead 0: 73.0 rounds a request, 4.47 drafts a stream a round, model 11.20 s a request
+c4 accept 1.0 frontier overhead 0: 53.0 rounds a request, 6.53 drafts a stream a round, model 9.74 s a request
+c8 accept 1.0 none overhead 0: 101.0 rounds a request, 2.95 drafts a stream a round, model 17.65 s a request
+c8 accept 1.0 frontier overhead 0: 101.0 rounds a request, 2.95 drafts a stream a round, model 17.65 s a request
+== sim.py tables/1.1.0-05.bin 4 1.0 none 400 1 {8,20}
+c4 accept 1.0 none overhead 8: 66.0 rounds a request, 5.05 drafts a stream a round, model 11.25 s a request
+c4 accept 1.0 none overhead 20: 60.0 rounds a request, 5.65 drafts a stream a round, model 11.47 s a request
+== sim.py tables/timing-1.0.12-04.bin {4,8} 1.0 {none,frontier}
+c4 accept 1.0 none overhead 0: 61.0 rounds a request, 5.54 drafts a stream a round, model 10.58 s a request
+c4 accept 1.0 frontier overhead 0: 53.0 rounds a request, 6.53 drafts a stream a round, model 9.90 s a request
+c8 accept 1.0 none overhead 0: 101.0 rounds a request, 2.95 drafts a stream a round, model 17.88 s a request
+c8 accept 1.0 frontier overhead 0: 101.0 rounds a request, 2.95 drafts a stream a round, model 17.88 s a request
+== sim.py tables/timing-1.0.12-04.bin 4 1.0 none 400 1 {8,20}
+c4 accept 1.0 none overhead 8: 58.0 rounds a request, 5.88 drafts a stream a round, model 10.81 s a request
+c4 accept 1.0 none overhead 20: 56.0 rounds a request, 6.12 drafts a stream a round, model 11.28 s a request
+== sim.py tables/1.1.0-01.bin 4 1.0 {every8,landed}
+c4 accept 1.0 every8 overhead 0: 63.0 rounds a request, 5.33 drafts a stream a round, model 10.42 s a request
+c4 accept 1.0 landed overhead 0: 59.0 rounds a request, 5.76 drafts a stream a round, model 10.31 s a request
+== sim.py tables/1.1.0-05.bin 4 1.0 {every8,landed}
+c4 accept 1.0 every8 overhead 0: 63.0 rounds a request, 5.33 drafts a stream a round, model 10.49 s a request
+c4 accept 1.0 landed overhead 0: 59.0 rounds a request, 5.76 drafts a stream a round, model 10.38 s a request
+== sim.py tables/timing-1.0.12-04.bin 4 1.0 {every8,landed}
+c4 accept 1.0 every8 overhead 0: 58.0 rounds a request, 5.88 drafts a stream a round, model 10.32 s a request
+c4 accept 1.0 landed overhead 0: 55.0 rounds a request, 6.25 drafts a stream a round, model 10.25 s a request
+== sim.py tables/1.1.0-01.bin 2 1.0 {none,frontier}
+c2 accept 1.0 none overhead 0: 72.0 rounds a request, 4.54 drafts a stream a round, model 8.29 s a request
+c2 accept 1.0 frontier overhead 0: 32.0 rounds a request, 11.47 drafts a stream a round, model 5.90 s a request
+== sim.py tables/timing-1.0.12-04.bin 2 1.0 {none,frontier}
+c2 accept 1.0 none overhead 0: 72.0 rounds a request, 4.54 drafts a stream a round, model 8.73 s a request
+c2 accept 1.0 frontier overhead 0: 32.0 rounds a request, 11.47 drafts a stream a round, model 6.09 s a request

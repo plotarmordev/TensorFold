@@ -1,0 +1,31 @@
+diff --git a/zig/src/families/nemotron/cuda_engine.zig b/zig/src/families/nemotron/cuda_engine.zig
+index 3da77d80..4a5cf581 100644
+--- a/zig/src/families/nemotron/cuda_engine.zig
++++ b/zig/src/families/nemotron/cuda_engine.zig
+@@ -232,12 +232,14 @@ pub const Engine = struct {
+     fn capture(e: *Engine, windows: bool) !void {
+         try e.reset();
+         try e.stream.synchronize();
++        if (e.tp != null) return; // diagnostic: every rank job eager, no NCCL call replayed from a graph
+         e.serial = try e.record(.{ .window = .{ .rows = 1, .feed = true } });
+         if (windows) try e.captureWindows();
+     }
+ 
+     /// The verify windows of the bound sequence's draw mode (greedy or sampled), each one graph.
+     pub fn captureWindows(e: *Engine) !void {
++        if (e.tp != null) return;
+         const set = &e.windows[@intFromBool(e.sampling != null)];
+         for (1..state.windowRows(e.c) + 1) |r| set[r] = try e.record(.{ .window = .{ .rows = r, .feed = false } });
+     }
+diff --git a/zig/src/families/nemotron/cuda_mtp.zig b/zig/src/families/nemotron/cuda_mtp.zig
+index b67e1fd4..edf343de 100644
+--- a/zig/src/families/nemotron/cuda_mtp.zig
++++ b/zig/src/families/nemotron/cuda_mtp.zig
+@@ -319,6 +319,7 @@ pub const Head = struct {
+ 
+     /// MTPHead.capture: levels 0 and 1 at every kept-row count, later levels at one row, in the draw mode, per head.
+     pub fn capture(h: *Head) !void {
++        if (h.e.tp != null) return; // diagnostic: as Engine.capture
+         const rows = state.windowRows(h.e.c);
+         for ([_]Vocab{ .subset, .full }) |v| {
+             if (v == .full and h.e.w.draft_coverage == null) continue;

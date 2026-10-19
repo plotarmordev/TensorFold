@@ -1,0 +1,17 @@
+== serve 17-1.1.0-release.nccl-2.32.3.rank0 2026-10-19T12:53:51+08:00 on rank0-host: zone 73 C, load 10.61
+binary /opt/tensorfold-1.1.0-linux-aarch64/bin/tensorfold-native
+4a6ffec3ca4bfd50ecd3f2948c1ca7d11b62b40269bb9decddd0768558965b3a  /opt/tensorfold-1.1.0-linux-aarch64/bin/tensorfold-native
+HOME=<new empty directory> TF_NEMOTRON_RANK=0 TF_NEMOTRON_WORLD=2 NCCL_COMM_ID=192.0.2.1:29741 NCCL_DEBUG=INFO LD_LIBRARY_PATH=/opt/nccl-2.28.9 LD_LIBRARY_PATH=/opt/nccl-2.32.3 NCCL_SOCKET_IFNAME=enp1s0f0np0 NCCL_IB_HCA==rocep1s0f0  gdb -q -batch -x stall.gdb --args /opt/tensorfold-1.1.0-linux-aarch64/bin/tensorfold-native serve /models/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 --host 127.0.0.1 --port 8897 --name nemotron-3.5-super-vl --parallel 1 --prompt-cache-gib 0
+MemAvailable before: 111.9 GiB
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 39.98 GiB; 1 stream at once, the engine's own at a 16384-token window (0.40 GiB, in the model's), 0 more taking 0 pages of 512 rows (0.00 GiB) as they need them, 264 MiB fixed each, of 53.3 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, no prompt cache; own glue kernels
+[tensorfold] serving nemotron-3.5-super-vl at http://127.0.0.1:8897/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 16384; loaded in 58.6s)
+ready after 61 s; MemAvailable 65.3 GiB
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+count         drafted         115.96 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+count         "draft": false   22.73 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+prose         drafted          38.81 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+code          drafted          61.56 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+client exit 0; heat waits in server log: 0
+== done 2026-10-19T13:02:22+08:00

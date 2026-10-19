@@ -1,0 +1,208 @@
+# One stream (bench.py decode: warmup + 3 measured, median of the server's decode tok/s; 400 tokens count, 256 prose/code)
+# c1 holds, alternated, each running the client twice; then each request's server line (tokens, rounds, accepted/drafted)
+01 1.1.0  count         drafted          96.38 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+01 1.1.0  count         "draft": false   21.17 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+01 1.1.0  prose         drafted          34.03 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+01 1.1.0  code          drafted          52.24 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+01 1.1.0  count         drafted          96.34 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+01 1.1.0  count         "draft": false   21.17 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+01 1.1.0  prose         drafted          34.02 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+01 1.1.0  code          drafted          52.23 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=59 accepted=197/252
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=59 accepted=197/252
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=59 accepted=197/252
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=59 accepted=197/252
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=255 accepted=0/0
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+01 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+01 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=59 accepted=197/252
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=59 accepted=197/252
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=59 accepted=197/252
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=59 accepted=197/252
+01 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=255 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  count         drafted          94.47 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+02 1.1.0+overlap+timing-1.0.12  count         "draft": false   21.09 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+02 1.1.0+overlap+timing-1.0.12  prose         drafted          33.99 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+02 1.1.0+overlap+timing-1.0.12  code          drafted          50.75 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+02 1.1.0+overlap+timing-1.0.12  count         drafted          94.41 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+02 1.1.0+overlap+timing-1.0.12  count         "draft": false   21.09 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+02 1.1.0+overlap+timing-1.0.12  prose         drafted          33.98 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+02 1.1.0+overlap+timing-1.0.12  code          drafted          50.76 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/379
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/379
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/379
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/379
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/234
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/234
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/234
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/234
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=255 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/379
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/379
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/379
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/379
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/234
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/234
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/234
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/234
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+02 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=255 accepted=0/0
+03 1.1.0  count         drafted          96.66 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+03 1.1.0  count         "draft": false   21.15 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+03 1.1.0  prose         drafted          34.03 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+03 1.1.0  code          drafted          51.79 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+03 1.1.0  count         drafted          96.65 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+03 1.1.0  count         "draft": false   21.15 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+03 1.1.0  prose         drafted          34.03 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+03 1.1.0  code          drafted          51.78 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=60 accepted=196/252
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=60 accepted=196/252
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=60 accepted=196/252
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=60 accepted=196/252
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=255 accepted=0/0
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=29 accepted=370/379
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+03 1.1.0  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/236
+03 1.1.0  done tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=60 accepted=196/252
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=60 accepted=196/252
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=60 accepted=196/252
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=60 accepted=196/252
+03 1.1.0  done tokens=256 sha=3d4d30129aeb finish=length rounds=255 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  count         drafted          93.83 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+04 1.1.0+overlap+timing-1.0.12  count         "draft": false   21.06 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+04 1.1.0+overlap+timing-1.0.12  prose         drafted          33.84 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+04 1.1.0+overlap+timing-1.0.12  code          drafted          50.52 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+04 1.1.0+overlap+timing-1.0.12  count         drafted          93.82 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+04 1.1.0+overlap+timing-1.0.12  count         "draft": false   21.05 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+04 1.1.0+overlap+timing-1.0.12  prose         drafted          33.84 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+04 1.1.0+overlap+timing-1.0.12  code          drafted          50.52 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/378
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/378
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/378
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/378
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/235
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/235
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/235
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/235
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=255 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/378
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/378
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/378
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=30 accepted=369/378
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=400 sha=1b3d78d3b1bf finish=length rounds=399 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/235
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/235
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/235
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=109 accepted=146/235
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=714948031877 finish=length rounds=255 accepted=0/0
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=61 accepted=195/257
+04 1.1.0+overlap+timing-1.0.12  done tokens=256 sha=3d4d30129aeb finish=length rounds=255 accepted=0/0
+
+# The same client once at the end of each bisect hold
+01 1.1.0  count         drafted          96.33 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+01 1.1.0  count         "draft": false   21.16 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+01 1.1.0  prose         drafted          34.05 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+01 1.1.0  code          drafted          52.25 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+05 1.1.0  count         drafted          95.65 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+05 1.1.0  count         "draft": false   21.10 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+05 1.1.0  prose         drafted          33.83 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+05 1.1.0  code          drafted          51.95 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+07 1.1.0  count         drafted          95.71 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+07 1.1.0  count         "draft": false   21.15 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+07 1.1.0  prose         drafted          33.90 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+07 1.1.0  code          drafted          52.11 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+09 1.1.0  count         drafted          95.60 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+09 1.1.0  count         "draft": false   21.13 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+09 1.1.0  prose         drafted          33.88 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+09 1.1.0  code          drafted          51.38 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+12 1.1.0  count         drafted          95.57 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+12 1.1.0  count         "draft": false   21.11 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+12 1.1.0  prose         drafted          33.83 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+12 1.1.0  code          drafted          51.95 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+14 1.1.0  count         drafted          96.05 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+14 1.1.0  count         "draft": false   21.15 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+14 1.1.0  prose         drafted          33.97 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+14 1.1.0  code          drafted          52.15 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+04 1.1.0+timing-1.0.12  count         drafted          94.23 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+04 1.1.0+timing-1.0.12  count         "draft": false   21.11 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+04 1.1.0+timing-1.0.12  prose         drafted          33.91 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+04 1.1.0+timing-1.0.12  code          drafted          50.67 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false

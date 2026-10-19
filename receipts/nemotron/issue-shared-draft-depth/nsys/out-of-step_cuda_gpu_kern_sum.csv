@@ -1,0 +1,49 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+30.6,2894950752,6864,421758.6,154672.0,52960,1433760,405483.3,tf_ck4_down_f32_few
+30.0,2837531360,6864,413393.3,151088.0,52000,1540896,393651.0,tf_ck4_up_relu2_few
+10.7,1010703168,2624,385176.5,338448.0,302432,2404512,306412.2,tf_ck8_32
+5.9,555350112,3584,154952.6,182304.0,72960,432768,46413.5,tf_ck8_32c
+5.4,512915104,885,579565.1,344416.0,299360,2306176,340222.2,tf_ck8_16
+4.8,450356192,2880,156373.7,159280.0,97504,323520,14404.6,tf_nemo_scan_segs
+3.0,286292384,5312,53895.4,48512.0,39008,351392,30833.1,"void tf_qmmf::qmmf_kernel<(int)4, (int)32, (int)64, (int)1, (int)4, (int)4, (bool)0, (bool)1, (bool)0>(const __nv_bfloat16 *, const unsigned char *, const unsigned char *, float, void *, float *, int, int, int, int, int, int, int)"
+2.7,256696928,2631,97566.3,56768.0,33952,570912,77286.9,"void tf_qmmf::qmmf_kernel<(int)4, (int)16, (int)64, (int)1, (int)4, (int)4, (bool)0, (bool)1, (bool)0>(const __nv_bfloat16 *, const unsigned char *, const unsigned char *, float, void *, float *, int, int, int, int, int, int, int)"
+1.3,125814048,2560,49146.1,48640.0,47424,288576,5550.8,tf_nemo_router
+1.1,108734592,728,149360.7,169984.0,72000,197280,44484.4,tf_ck8_16c
+0.7,68854048,13728,5015.6,3520.0,1472,39488,3603.5,tf_ck_quant4
+0.6,59596896,3432,17365.1,19072.0,7424,78496,4142.4,tf_super_combine
+0.4,39468864,3432,11500.3,9824.0,9408,74272,4613.5,tf_super_topk_few
+0.4,35814176,2880,12435.5,12320.0,8448,27168,1513.4,tf_nemo_conv_segs
+0.3,27627200,1034,26718.8,27024.0,7776,67328,10033.9,tf_nemo_attn_chunk
+0.2,23144224,5256,4403.4,5856.0,1280,10656,1657.9,tf_topk_f32_choose_digit_kernel
+0.2,21780480,7918,2750.8,2656.0,1760,22368,778.2,tf_add_rms_rows_bf16h
+0.2,20587808,872,23609.9,23264.0,19872,57504,3292.9,tf_nemo_router_rows
+0.2,17453600,576,30301.4,29984.0,12288,114752,11806.9,tf_nemo_attn_chunk_segs
+0.1,11819456,1552,7615.6,7776.0,2720,32352,3296.1,"tf_experts::plan_kernel(const int *, int, int, int, int *, int *, int *)"
+0.1,11639168,3080,3779.0,3808.0,2272,25536,1012.0,tf_nemo_group_rmsnorm
+0.1,11598752,7821,1483.0,1248.0,896,22560,700.2,tf_ck_quant8
+0.1,9267360,5256,1763.2,1696.0,1440,38208,833.5,tf_topk_f32_histogram_kernel
+0.1,7448608,1314,5668.7,5600.0,5312,32128,913.4,tf_topk_f32_compact_kernel
+0.1,6500448,293,22185.8,21504.0,6688,76000,8671.6,tf_nemo_attn_chunk_pf
+0.1,6461888,3432,1882.8,1856.0,992,37568,804.3,tf_super_moe_out
+0.1,6328288,1880,3366.1,3328.0,3264,31360,835.3,"tf_experts::plan_rank(const int *, int, int, int *, int *)"
+0.1,6120704,1314,4658.1,4544.0,4480,15264,425.5,tf_nemo_keyed_greedy
+0.0,4549728,290,15688.7,15520.0,14816,31296,1279.6,tf_argmax_rows_i32_kernel
+0.0,4466112,1880,2375.6,2368.0,2272,12096,291.3,"tf_experts::plan_offsets(int, int, int, int *, int *, int *)"
+0.0,4075616,1327,3071.3,2880.0,2624,18304,934.2,tf_nemo_attn_merge
+0.0,3969600,160,24810.0,24800.0,22240,32736,1071.4,"void tf_scan_rows::scan_kernel<(bool)0>(const __nv_bfloat16 *, const __nv_bfloat16 *, float *, const float *, const float *, const float *, __nv_bfloat16 *, int, int, int, int, int, int, int, int, float, float, tf_scan_rows::Snaps)"
+0.0,2993088,1363,2196.0,1664.0,1216,28192,1728.8,tf_nemo_kv_write
+0.0,2899904,1314,2206.9,2080.0,1920,17920,745.0,tf_topk_f32_count_kernel
+0.0,2514432,576,4365.3,4352.0,3776,8160,270.2,tf_nemo_kv_write_segs
+0.0,2275168,1880,1210.2,1184.0,1088,38816,1002.9,"tf_experts::plan_scatter(const int *, int, int, const int *, const int *, int *)"
+0.0,2267104,576,3935.9,3584.0,2880,7104,835.3,tf_nemo_attn_merge_segs
+0.0,2152288,1314,1638.0,1632.0,1504,4768,134.4,tf_topk_f32_prefix_kernel
+0.0,1967488,1314,1497.3,1440.0,1216,14464,553.9,tf_bf16_to_f32_kernel
+0.0,1881664,1314,1432.0,1344.0,1056,6624,630.9,tf_lookup_ids_kernel
+0.0,1801984,361,4991.6,3456.0,3168,46752,3833.5,tf_nemo_concat_norms
+0.0,1735040,651,2665.2,1920.0,1312,20928,2050.2,tf_nemo_embed16
+0.0,1601248,40,40031.2,38624.0,37344,93184,8655.7,tf_nemo_scan
+0.0,631200,160,3945.0,3168.0,2688,45472,3561.0,tf_nemo_conv_rows
+0.0,405792,40,10144.8,9488.0,8864,13408,1197.5,tf_nemo_conv
+0.0,280000,32,8750.0,8416.0,8192,14048,1098.2,tf_strided_copy_kernel
+0.0,243040,32,7595.0,6304.0,6144,35552,5186.9,"void tf_prefill_attention::pattn_kernel<(int)128, (int)8, (int)8, (int)8>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, int, float, const int *, long long)"
+0.0,188768,160,1179.8,1152.0,928,2016,143.8,tf_nemo_conv_commit

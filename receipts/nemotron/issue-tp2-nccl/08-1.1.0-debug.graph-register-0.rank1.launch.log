@@ -1,0 +1,11 @@
+== test 08-1.1.0-debug.graph-register-0.rank1 2026-10-19T11:28:04+08:00 on rank1-host: zone 59 C, load 0.41
+binary tensorfold-native
+3c233f908b20a5f42479aa0a1b898c8fabd5cb07c3c5d6e909ce1730ffc11a61  tensorfold-native
+TF_NEMOTRON_RANK=1 TF_NEMOTRON_WORLD=2 NCCL_COMM_ID=192.0.2.1:29741 NCCL_DEBUG=INFO LD_LIBRARY_PATH=/opt/nccl-2.28.9 NCCL_GRAPH_REGISTER=0 NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA==rocep1s0f1 tensorfold-native serve /models/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4
+exit 1
+rank1-host:2556567:2556567 [0] NCCL INFO Channel 02/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2556567:2556567 [0] NCCL INFO Channel 03/0 : 1[0] -> 0[0] [send] info: rank 1 of 2: every rank agrees on the model, its 2 expert shares and the build
+info: rank 1 of 2: 40 MoE layers and the MTP head's of share 1 (the checkpoint's math) in 23.4 s, 31.52 GiB on the device; serving rank 0's jobs
+info: checkpoint digest: 0.0 GiB read in 11.4 s, 88/88 cached files
+error: rank 1: another rank's process ended (its line closed); this rank stops instead of waiting on it
+== done 2026-10-19T11:34:39+08:00

@@ -1,0 +1,25 @@
+== serve 05-1.1.0-local-b.rank0 2026-10-19T10:27:37+08:00 on rank0-host: zone 74 C, load 10.49
+binary tensorfold-native
+e3c965bba0c86c1728f330fb0001fc3993b8cb0a2906cdcf52ad63133b610bdc  tensorfold-native
+HOME=<new empty directory> TF_NEMOTRON_RANK=0 TF_NEMOTRON_WORLD=2 NCCL_COMM_ID=192.0.2.1:29741 NCCL_DEBUG=INFO LD_LIBRARY_PATH=/opt/nccl-2.28.9 NCCL_SOCKET_IFNAME=enp1s0f0np0 NCCL_IB_HCA==rocep1s0f0 gdb -q -batch -x stall.gdb --args tensorfold-native serve /models/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 --host 127.0.0.1 --port 8897 --name nemotron-3.5-super-vl --parallel 1 --prompt-cache-gib 0
+MemAvailable before: 111.3 GiB
+#1  0x0000ffffe81eeebc in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#2  0x0000ffffe8228f44 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#3  0x0000ffffe8ee3d2c in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#4  0x0000ffffe8ee4148 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#5  0x0000ffffe81f9cdc in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#6  0x0000ffffe8249600 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#7  0x0000ffffe830d85c in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#8  0x0000ffffe82fd644 in cuEventSynchronize () from /lib/aarch64-linux-gnu/libcuda.so.1
+#9  0x000000000244f7b8 in ?? ()
+#10 0x000000000244f960 in ?? ()
+#11 0x00000000024502c4 in ?? ()
+#12 0x0000000002453f70 in ?? ()
+#13 0x0000000002462cbc in ?? ()
+#14 0x00000000024659ec in ?? ()
+#15 0x0000000002485ec0 in ?? ()
+#16 0x0000000002487a1c in ?? ()
+#17 0x0000fffff7e084c4 in __libc_start_call_main (main=main@entry=0x24873c8, argc=argc@entry=13, argv=argv@entry=0xfffffffff718) at ../sysdeps/nptl/libc_start_call_main.h:58
+#18 0x0000fffff7e08598 in __libc_start_main_impl (main=0x24873c8, argc=13, argv=0xfffffffff718, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=<optimized out>) at ../csu/libc-start.c:360
+#19 0x00000000023cdc58 in ?? ()
+Backtrace stopped: not enough registers or memory available to unwind further

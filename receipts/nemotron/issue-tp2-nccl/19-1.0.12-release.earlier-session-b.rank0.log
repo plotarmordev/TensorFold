@@ -1,0 +1,62 @@
+rank0-host:1549832:1549832 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+rank0-host:1549832:1549832 [0] NCCL INFO Bootstrap: Using enp1s0f0np0:192.0.2.1<0>
+rank0-host:1549832:1549832 [0] NCCL INFO NCCL_COMM_ID set by environment to 192.0.2.1:29741
+rank0-host:1549832:1549832 [0] NCCL INFO cudaDriverVersion 13000
+rank0-host:1549832:1549832 [0] NCCL INFO NCCL version 2.28.9+cuda13.0
+rank0-host:1549832:1549832 [0] NCCL INFO NCCL_COMM_ID set by environment to 192.0.2.1:29741
+rank0-host:1549832:1549832 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so
+rank0-host:1549832:1549832 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f0np0
+rank0-host:1549832:1549832 [0] NCCL INFO NCCL_IB_HCA set to =rocep1s0f0
+rank0-host:1549832:1549832 [0] NCCL INFO NET/IB : Using [0]rocep1s0f0:1/RoCE [RO]; OOB enp1s0f0np0:192.0.2.1<0>
+rank0-host:1549832:1549832 [0] NCCL INFO Initialized NET plugin IB
+rank0-host:1549832:1549832 [0] NCCL INFO Assigned NET plugin IB to comm
+rank0-host:1549832:1549832 [0] NCCL INFO Assigned GIN plugin GIN_IB_GDAKI to comm
+rank0-host:1549832:1549832 [0] NCCL INFO Using network IB
+rank0-host:1549832:1549832 [0] NCCL INFO ncclCommInitRank comm 0x36b053d0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init START
+rank0-host:1549832:1549832 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+rank0-host:1549832:1549832 [0] NCCL INFO Bootstrap timings total 0.036699 (create 0.000026, send 0.000095, recv 0.034741, ring 0.000130, delay 0.000000)
+rank0-host:1549832:1549832 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-19).
+rank0-host:1549832:1549832 [0] NCCL INFO comm 0x36b053d0 rank 0 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 00/08 : 0 1
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 01/08 : 0 1
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 02/08 : 0 1
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 03/08 : 0 1
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 04/08 : 0 1
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 05/08 : 0 1
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 06/08 : 0 1
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 07/08 : 0 1
+rank0-host:1549832:1549832 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1 [2] 1/-1/-1->0->-1 [3] 1/-1/-1->0->-1 [4] -1/-1/-1->0->1 [5] -1/-1/-1->0->1 [6] -1/-1/-1->0->1 [7] -1/-1/-1->0->1
+rank0-host:1549832:1549832 [0] NCCL INFO P2P Chunksize set to 131072
+rank0-host:1549832:1549832 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+rank0-host:1549832:1549832 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+rank0-host:1549832:1549843 [0] NCCL INFO [Proxy Service] Device 0 CPU core 9
+rank0-host:1549832:1549844 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 19
+rank0-host:1549832:1549832 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so
+rank0-host:1549832:1549832 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+rank0-host:1549832:1549832 [0] NCCL INFO 8 coll channels, 8 collnet channels, 0 nvls channels, 8 p2p channels, 2 p2p channels per peer
+rank0-host:1549832:1549832 [0] NCCL INFO CC Off, workFifoBytes 1048576
+rank0-host:1549832:1549832 [0] NCCL INFO ncclCommInitRank comm 0x36b053d0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init COMPLETE
+rank0-host:1549832:1549832 [0] NCCL INFO Init timings - ncclCommInitRank: rank 0 nranks 2 total 0.22 (kernels 0.14, alloc 0.04, bootstrap 0.04, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.01, rest 0.00)
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 02/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 03/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+rank0-host:1549832:1549832 [0] NCCL INFO Channel 04/0 : 1[0info: rank 0 of 2: every rank agrees on the model, its 2 expert shares and the build
+info: checkpoint bytes hashed: 69.9 GiB in 46.0 s, every byte of 88 files
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 42.37 GiB; 1 stream at once, 0.35 GiB each at a 16384-token window, of 60.2 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, no prompt cache; own glue kernels
+[tensorfold] serving super at http://127.0.0.1:8092/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 16384; loaded in 47.9s)
+[tensorfold] thinking on (the chat template's default): replies reason in reasoning_content before the answer in content, and max_tokens counts both. --no-thinking turns it off; a request can send chat_template_kwargs {"enable_thinking": false}
+[tensorfold] 127.0.0.1 "GET /v1/models HTTP/1.1" 200 -
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-5e5483d0104756078ce7feaad3cf694d prompt=78 cached=0 thinking=False effort=none tokens=256 sha=ba84af333e22 finish=length rounds=43 accepted=212/275
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-64b51d5c7eaeeec99057479ef6dde0d9 prompt=58 cached=0 thinking=False effort=none tokens=256 sha=3d4d30129aeb finish=length rounds=59 accepted=197/257
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-4013ad7d23ddd494efc751a44a76a58b prompt=41 cached=0 thinking=False effort=none tokens=256 sha=714948031877 finish=length rounds=108 accepted=147/237
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-0bedd0775dc8a6fa23fe2352b24bb7c8 prompt=42 cached=0 thinking=False effort=none tokens=256 sha=3755fae05889 finish=length rounds=30 accepted=232/438
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-c8a2d7629f586ce897381c017f72a5db prompt=50 cached=0 thinking=False effort=none tokens=400 sha=1b3d78d3b1bf finish=length rounds=31 accepted=368/386
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -
+[tensorfold] done chatcmpl-f03c2d4a3607b1b6a51c48595d26394e prompt=8186 cached=0 thinking=False effort=none tokens=256 sha=857f11a3163c finish=length rounds=50 accepted=208/697
+[tensorfold] 127.0.0.1 "POST /v1/chat/completions HTTP/1.1" 200 -

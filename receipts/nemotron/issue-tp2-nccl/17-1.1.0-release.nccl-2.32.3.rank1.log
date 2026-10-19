@@ -1,0 +1,210 @@
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+[New Thread 0xfffff4e46100 (LWP 2641028)]
+[New Thread 0xffffe20d6100 (LWP 2641029)]
+[New Thread 0xffffebfa6100 (LWP 2641033)]
+[New Thread 0xfffdcba31100 (LWP 2641392)]
+[New Thread 0xffffe0b22100 (LWP 2641393)]
+[New Thread 0xfffd7ca2f100 (LWP 2641394)]
+[New Thread 0xfffd745ed100 (LWP 2641395)]
+[New Thread 0xfffd73ddd100 (LWP 2641396)]
+rank1-host:2641026:2641026 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+rank1-host:2641026:2641026 [0] NCCL INFO Bootstrap: Using enp1s0f1np1:192.0.2.2<0>
+rank1-host:2641026:2641026 [0] NCCL INFO NCCL_COMM_ID set by environment to 192.0.2.1:29741
+rank1-host:2641026:2641026 [0] NCCL INFO cudaDriverVersion 13000
+rank1-host:2641026:2641026 [0] NCCL INFO NCCL version 2.32.3+cuda13.4
+rank1-host:2641026:2641026 [0] NCCL INFO NCCL git version unknown unknown
+rank1-host:2641026:2641026 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so
+rank1-host:2641026:2641026 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f1np1
+rank1-host:2641026:2641026 [0] NCCL INFO NCCL_IB_HCA set to =rocep1s0f1
+rank1-host:2641026:2641026 [0] NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE [RO]; OOB enp1s0f1np1:192.0.2.2<0>
+rank1-host:2641026:2641026 [0] NCCL INFO Initialized NET plugin IB
+rank1-host:2641026:2641026 [0] NCCL INFO Assigned NET plugin IB to comm
+rank1-host:2641026:2641026 [0] NCCL INFO RMA/Plugin: Could not find: libnccl-rma.so
+rank1-host:2641026:2641026 [0] NCCL INFO RMA/Plugin: Initialized plugin 
+rank1-host:2641026:2641026 [0] NCCL INFO RMA/Plugin: Assigned plugin RMA_IB_PROXY to comm
+rank1-host:2641026:2641026 [0] NCCL INFO GIN/Plugin: Could not find: libnccl-gin.so
+rank1-host:2641026:2641026 [0] NCCL INFO Using network IB
+rank1-host:2641026:2641026 [0] NCCL INFO Loaded NVML from libnvidia-ml.so.1
+rank1-host:2641026:2641026 [0] NCCL INFO [Rank 1] ncclCommInitRank comm 0x7a20910 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init START
+rank1-host:2641026:2641026 [0] NCCL INFO Socket handshake magic 0x564ab9f2fc4b9d6c (built-in default)
+rank1-host:2641026:2641026 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+rank1-host:2641026:2641026 [0] NCCL INFO Bootstrap timings total 0.014489 (create 0.000038, send 0.000291, recv 0.011960, ring 0.000452, delay 0.000000)
+rank1-host:2641026:2641026 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-19).
+rank1-host:2641026:2641026 [0] NCCL INFO Rank 1: 1 Net devices
+rank1-host:2641026:2641026 [0] NCCL INFO Rank 1: 0 CollNet devices
+rank1-host:2641026:2641026 [0] NCCL INFO comm 0x7a20910 rank 1 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+rank1-host:2641026:2641026 [0] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] -1/-1/-1->1->0 [2] -1/-1/-1->1->0 [3] -1/-1/-1->1->0 [4] -1/-1/-1->1->0 [5] -1/-1/-1->1->0 [6] -1/-1/-1->1->0 [7] -1/-1/-1->1->0 [8] -1/-1/-1->1->0 [9] -1/-1/-1->1->0 [10] -1/-1/-1->1->0 [11] -1/-1/-1->1->0 [12] -1/-1/-1->1->0 [13] -1/-1/-1->1->0 [14] -1/-1/-1->1->0 [15] -1/-1/-1->1->0 [16] -1/-1/-1->1->0 [17] -1/-1/-1->1->0 [18] -1/-1/-1->1->0 [19] -1/-1/-1->1->0 [20] -1/-1/-1->1->0 [21] -1/-1/-1->1->0 [22] -1/-1/-1->1->0 [23] -1/-1/-1->1->0 [24] -1/-1/-1->1->0 [25] -1/-1/-1->1->0 [26] -1/-1/-1->1->0 [27] -1/-1/-1->1->0 [28] -1/-1/-1->1->0 [29] -1/-1/-1->1->0 [30] -1/-1/-1->1->0 [31] -1/-1/-1->1->0 [32] 0/-1/-1->1->-1 [33] 0/-1/-1->1->-1 [34] 0/-1/-1->1->-1 [35] 0/-1/-1->1->-1 [36] 0/-1/-1->1->-1 [37] 0/-1/-1->1->-1 [38] 0/-1/-1->1->-1 [39] 0/-1/-1->1->-1 [40] 0/-1/-1->1->-1 [41] 0/-1/-1->1->-1 [42] 0/-1/-1->1->-1 [43] 0/-1/-1->1->-1 [44] 0/-1/-1->1->-1 [45] 0/-1/-1->1->-1 [46] 0/-1/-1->1->-1 [47] 0/-1/-1->1->-1 [48] 0/-1/-1->1->-1 [49] 0/-1/-1->1->-1 [50] 0/-1/-1->1->-1 [51] 0/-1/-
+rank1-host:2641026:2641026 [0] NCCL INFO P2P Chunksize set to 262144
+rank1-host:2641026:2641026 [0] NCCL INFO Tuning P2P operations with maxP2pPeers = 2
+rank1-host:2641026:2641026 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+rank1-host:2641026:2641026 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+rank1-host:2641026:2641395 [0] NCCL INFO [Proxy Service] Device 0 CPU core 18
+rank1-host:2641026:2641395 [0] NCCL INFO proxy listening socket at 192.0.2.2<55723>
+rank1-host:2641026:2641396 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 18
+rank1-host:2641026:2641026 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so
+sp[New Thread 0xfffd735cd100 (LWP 2641397)]
+rank1-host:2641026:2641026 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+rank1-host:2641026:2641026 [0] NCCL INFO 64 coll channels, 64 collnet channels, 0 nvls channels, 64 p2p channels, 1 p2p channels per peer
+rank1-host:2641026:2641026 [0] NCCL INFO symmetricSupport 0, cuMemEnable 1, globalGinSupport 0, cuMemGdrSupport 0, contiguousRanksPerHost 1, crossNicSupport 1
+rank1-host:2641026:2641026 [0] NCCL INFO ncclCommInitRank comm 0x7a20910 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init COMPLETE
+rank1-host:2641026:2641026 [0] NCCL INFO Init timings - ncclCommInitRank: rank 1 nranks 2 total 0.33 (kernels 0.24, alloc 0.04, bootstrap 0.01, allgathers 0.00, topo 0.01, graphs 0.00, connections 0.03, rest 0.00)
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 02/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 03/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 04/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 05/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 06/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 07/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 08/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 09/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 10/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 11/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641397 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 12
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 12/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 13/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 14/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 15/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 16/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 17/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 18/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 19/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 20/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 21/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 22/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 23/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 24/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 25/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 26/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 27/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 28/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 29/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 30/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 31/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 32/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 33/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 34/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 35/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 36/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 37/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 38/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 39/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 40/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 41/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 42/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 43/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 44/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 45/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 46/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 47/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 48/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 49/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 50/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 51/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 52/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 53/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 54/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 55/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 56/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 57/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 58/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 59/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 60/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 61/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 62/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 63/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 02/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 03/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 04/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 05/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 06/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 07/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 08/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 09/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 10/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 11/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 12/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 13/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 14/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 15/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 16/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 17/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 18/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 19/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 20/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 21/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 22/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 23/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 24/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 25/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 26/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 27/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 28/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 29/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 30/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 31/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 32/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 33/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 34/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 35/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 36/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 37/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 38/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 39/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 40/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 41/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 42/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 43/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 44/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 45/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 46/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 47/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 48/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 49/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 50/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 51/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 52/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 53/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 54/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 55/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 56/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 57/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 58/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 59/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 60/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Channel 61/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2641026:2641026 [0] NCCL INFO Chinfo: rank 1 of 2: every rank agrees on the model, its 2 expert shares and the build
+[New Thread 0xfffd72dbd100 (LWP 2641398)]
+[New Thread 0xfffd71dad100 (LWP 2641399)]
+[New Thread 0xfffd5bd3d100 (LWP 2641400)]
+[New Thread 0xfffd5ad2d100 (LWP 2641401)]
+[New Thread 0xfffd59d1d100 (LWP 2641402)]
+[New Thread 0xfffd4ff42100 (LWP 2641403)]
+[New Thread 0xfffd4ef32100 (LWP 2641404)]
+[New Thread 0xfffd4df22100 (LWP 2641405)]
+[Thread 0xfffd5bd3d100 (LWP 2641400) exited]
+[Thread 0xfffd72dbd100 (LWP 2641398) exited]
+[Thread 0xfffd4ff42100 (LWP 2641403) exited]
+[Thread 0xfffd5ad2d100 (LWP 2641401) exited]
+[Thread 0xfffd71dad100 (LWP 2641399) exited]
+[Thread 0xfffd4ef32100 (LWP 2641404) exited]
+[Thread 0xfffd59d1d100 (LWP 2641402) exited]
+[Thread 0xfffd4df22100 (LWP 2641405) exited]
+info: rank 1 of 2: 40 MoE layers and the MTP head's of share 1 (the checkpoint's math) in 25.0 s, 31.52 GiB on the device; serving rank 0's jobs
+info: checkpoint digest: 0.0 GiB read in 11.3 s, 88/88 cached files
+error: rank 1: another rank's process ended (its line closed); this rank stops instead of waiting on it
+[Thread 0xfffd735cd100 (LWP 2641397) exited]
+[Thread 0xfffd73ddd100 (LWP 2641396) exited]
+[Thread 0xfffd745ed100 (LWP 2641395) exited]
+[Thread 0xfffd7ca2f100 (LWP 2641394) exited]
+[Thread 0xffffe0b22100 (LWP 2641393) exited]
+[Thread 0xfffdcba31100 (LWP 2641392) exited]
+[Thread 0xffffebfa6100 (LWP 2641033) exited]
+[Thread 0xffffe20d6100 (LWP 2641029) exited]
+[Thread 0xfffff7d3e020 (LWP 2641026) exited]
+[Thread 0xfffff4e46100 (LWP 2641028) exited]
+[New process 2641026]
+[Inferior 1 (process 2641026) exited with code 01]

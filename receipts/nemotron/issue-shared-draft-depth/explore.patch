@@ -1,0 +1,105 @@
+From 40afdfa348e78c69a33d1dfaf55606c2e6012252 Mon Sep 17 00:00:00 2001
+From: plotarmordev <299844489+plotarmordev@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 03:29:30 +0800
+Subject: [PATCH] lanes: the first depth no round has verified is priced as the
+ one before it, not by its prior
+
+Rule.budgets sizes a shared round's drafts by each stream's acceptance estimates, and observeDepth moves only the
+depths a round verified, so a depth past the granted ones keeps its prior forever: shared rounds never probe. The depth
+then sits where the price of one more row crosses a prior step, and any change in the cost table moves it a whole
+draft. On Super, every count draft lands at c4 (3939/3939), yet 1.1.0's table (480ad61f, 9a6bc0c6) grants 5 drafts
+a stream (71 rounds a 400-token reply) and 1.0.12's timing 6 (59): the sixth draft's prior, 0.55, falls between the
+two tables' bars. A stream's first unverified depth now takes the estimate of the depth before it when that is
+higher, so the rounds verify it and its own hits or misses price it from then on. Lone Super streams decode with
+cuda_drafts' confidence rule and do not read these estimates.
+---
+ zig/src/core/lanes/depth.zig | 62 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 62 insertions(+)
+
+diff --git a/zig/src/core/lanes/depth.zig b/zig/src/core/lanes/depth.zig
+index 6f842e2d..c329af73 100644
+--- a/zig/src/core/lanes/depth.zig
++++ b/zig/src/core/lanes/depth.zig
+@@ -17,6 +17,7 @@ pub const Constants = struct {
+ pub const State = struct {
+     p: []f64,
+     rounds: u64 = 0,
++    verified: usize = 0, // depths some round has verified (observeDepth)
+     plain: ?u64 = null,
+     wait: ?u64 = null,
+     ms: ?Table = null, // plain_guard: the stream's own round times
+@@ -92,6 +93,11 @@ pub const Rule = struct {
+             const at: usize = @intCast(j);
+             p[at] += r.k.depth_rate * (hit - p[at]);
+         }
++        const st = &who.state.*.?;
++        st.verified = @max(st.verified, @as(usize, @intCast(j)));
++        const v = st.verified;
++        // shared rounds never probe deeper: the first unverified depth is priced as the one before, not by its prior
++        if (v > 0 and v < p.len) p[v] = @max(p[v], p[v - 1]);
+     }
+ 
+     /// Round times by depth: the stream's own under `plain_guard`, else greedy rounds' for a greedy stream.
+@@ -361,3 +367,59 @@ test "a shared round's drafts come out the same whichever depths its overhead wa
+     }
+     try std.testing.expectEqualSlices(i64, &got[0], &got[1]);
+ }
++
++/// A 32-row shared table: 46 ms and 4.75 a row to 16 rows, 4 ms for the 17th, then `above` a row (Super's shape).
++fn superTable(gpa: Allocator, above: f64) !Table {
++    var t: Table = .{};
++    errdefer t.deinit(gpa);
++    var ms: f64 = 46.0;
++    for (1..33) |w| {
++        if (w > 1) ms += if (w <= 16) 4.75 else if (w == 17) 4.0 else above;
++        try t.put(gpa, @intCast(w), ms);
++    }
++    return t;
++}
++
++/// Each stream's drafts after `rounds` shared rounds of 32 rows at most, every round keeping `lands` drafts at most.
++fn sharedDepths(gpa: Allocator, shared: *const Table, rounds: usize, lands: i64, out: []i64) !void {
++    const empty: Table = .{};
++    const No = struct {
++        fn copy(_: *anyopaque, _: *const Who) bool {
++            return false;
++        }
++    };
++    var unused: u8 = 0;
++    const probe: Probe = .{ .ptr = &unused, .copy = No.copy };
++    const prior = [_]f64{ 0.8, 0.72, 0.68, 0.62, 0.58, 0.55, 0.5, 0.5 }; // Super's draft_prior
++    var rule: Rule = .{ .gpa = gpa, .prior = &prior, .most_drafts = 31, .family_costs = &empty, .shared_costs = shared, .mtp_step_ms = 3.6, .plain_guard = false, .node_probabilities = false, .batch_rows = 32, .batched_heads = true };
++    defer rule.deinit();
++    var states: [8]?State = @splat(null);
++    defer for (&states) |*s| if (s.*) |*x| x.deinit(gpa);
++    var whos: [8]Who = undefined;
++    for (whos[0..out.len], states[0..out.len]) |*w, *s| w.* = .{ .state = s, .draft_room = 1000, .finished = false, .forced = false };
++    for (0..rounds) |_| {
++        try rule.budgets(whos[0..out.len], probe, false, out);
++        for (whos[0..out.len], out) |w, d| try rule.observeDepth(w, d, @min(d, lands));
++    }
++}
++
++test "streams whose every draft lands fill a shared round however its rows past 16 are priced" {
++    const gpa = std.testing.allocator;
++    // 1.1.0's timing adds about 3 ms a row past 16, 1.0.12's about 2.6: on the prior alone, 5 drafts against 6
++    for ([_]f64{ 3.0, 2.6 }) |above| {
++        var shared = try superTable(gpa, above);
++        defer shared.deinit(gpa);
++        var got: [4]i64 = undefined;
++        try sharedDepths(gpa, &shared, 40, std.math.maxInt(i64), &got);
++        try std.testing.expectEqualSlices(i64, &.{ 7, 7, 7, 7 }, &got);
++    }
++}
++
++test "a depth that never lands is priced by its own misses once a shared round has verified it" {
++    const gpa = std.testing.allocator;
++    var shared = try superTable(gpa, 3.0);
++    defer shared.deinit(gpa);
++    var got: [2]i64 = undefined;
++    try sharedDepths(gpa, &shared, 60, 3, &got);
++    try std.testing.expectEqualSlices(i64, &.{ 3, 3 }, &got);
++}
+-- 
+2.43.0
+

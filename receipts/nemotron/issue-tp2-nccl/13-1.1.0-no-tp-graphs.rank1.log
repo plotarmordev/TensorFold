@@ -1,0 +1,175 @@
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+[New Thread 0xfffff4e46100 (LWP 2602125)]
+[New Thread 0xffffe70fd100 (LWP 2602126)]
+[New Thread 0xffffe7f9f100 (LWP 2602130)]
+[New Thread 0xfffddbfbf100 (LWP 2602322)]
+[New Thread 0xffffe4b82100 (LWP 2602323)]
+[New Thread 0xfffdda01f100 (LWP 2602324)]
+[New Thread 0xfffdd980f100 (LWP 2602325)]
+[New Thread 0xfffdd4e11100 (LWP 2602326)]
+[New Thread 0xfffd80a50100 (LWP 2602327)]
+rank1-host:2602123:2602123 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+rank1-host:2602123:2602123 [0] NCCL INFO Bootstrap: Using enp1s0f1np1:192.0.2.2<0>
+rank1-host:2602123:2602123 [0] NCCL INFO NCCL_COMM_ID set by environment to 192.0.2.1:29741
+rank1-host:2602123:2602123 [0] NCCL INFO cudaDriverVersion 13000
+rank1-host:2602123:2602123 [0] NCCL INFO NCCL version 2.28.9+cuda13.0
+rank1-host:2602123:2602123 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so
+rank1-host:2602123:2602123 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f1np1
+rank1-host:2602123:2602123 [0] NCCL INFO NCCL_IB_HCA set to =rocep1s0f1
+rank1-host:2602123:2602123 [0] NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE [RO]; OOB enp1s0f1np1:192.0.2.2<0>
+rank1-host:2602123:2602123 [0] NCCL INFO Initialized NET plugin IB
+rank1-host:2602123:2602123 [0] NCCL INFO Assigned NET plugin IB to comm
+rank1-host:2602123:2602123 [0] NCCL INFO Assigned GIN plugin GIN_IB_GDAKI to comm
+rank1-host:2602123:2602123 [0] NCCL INFO Using network IB
+rank1-host:2602123:2602123 [0] NCCL INFO ncclCommInitRank comm 0x447d5b0 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init START
+rank1-host:2602123:2602123 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+rank1-host:2602123:2602123 [0] NCCL INFO Bootstrap timings total 0.002768 (create 0.000036, send 0.000647, recv 0.000862, ring 0.000032, delay 0.000000)
+rank1-host:2602123:2602123 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-19).
+rank1-host:2602123:2602123 [0] NCCL INFO comm 0x447d5b0 rank 1 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+rank1-host:2602123:2602123 [0] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] -1/-1/-1->1->0 [2] -1/-1/-1->1->0 [3] -1/-1/-1->1->0 [4] 0/-1/-1->1->-1 [5] 0/-1/-1->1->-1 [6] 0/-1/-1->1->-1 [7] 0/-1/-1->1->-1
+rank1-host:2602123:2602123 [0] NCCL INFO P2P Chunksize set to 131072
+rank1-host:2602123:2602123 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+rank1-host:2602123:2602123 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+rank1-host:2602123:2602325 [0] NCCL INFO [Proxy Service] Device 0 CPU core 18
+rank1-host:2602123:2602326 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 18
+rank1-host:2602123:2602123 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so
+rank1-host:2602123:2602123 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+rank1-host:2602123:2602123 [0] NCCL INFO 8 coll channels, 8 collnet channels, 0 nvls channels, 8 p2p channels, 2 p2p channels per peer
+rank1-host:2602123:2602123 [0] NCCL INFO ncclCommInitRank comm 0x447d5b0 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init COMPLETE
+rank1-host:2602123:2602123 [0] NCCL INFO Init timings - ncclCommInitRank: rank 1 nranks 2 total 0.21 (kernels 0.16, alloc 0.04, bootstrap 0.00, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.00, rest 0.00)
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2602123:2602327 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 13
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 02/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2602123:2602327 [0] NCCL INFO NCCL_PROXY_DUMP_SIGNAL set by environment to 10.
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 03/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 04/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 05/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 06/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 07/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [send] via NET/IB/0
+rank1-host:2602123:2602123 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [send] via NET/IB/0info: rank 1 of 2: every rank agrees on the model, its 2 expert shares and the build
+[New Thread 0xfffd6fe7d100 (LWP 2602328)]
+[New Thread 0xfffd6ee6d100 (LWP 2602329)]
+[New Thread 0xfffd6de5d100 (LWP 2602330)]
+[New Thread 0xfffd63f42100 (LWP 2602331)]
+[New Thread 0xfffd62f32100 (LWP 2602332)]
+[New Thread 0xfffd61f22100 (LWP 2602333)]
+[New Thread 0xfffd3ffbf100 (LWP 2602334)]
+[New Thread 0xfffd3efaf100 (LWP 2602335)]
+[Thread 0xfffd6fe7d100 (LWP 2602328) exited]
+[Thread 0xfffd3ffbf100 (LWP 2602334) exited]
+[Thread 0xfffd61f22100 (LWP 2602333) exited]
+[Thread 0xfffd6de5d100 (LWP 2602330) exited]
+[Thread 0xfffd6ee6d100 (LWP 2602329) exited]
+[Thread 0xfffd62f32100 (LWP 2602332) exited]
+[Thread 0xfffd63f42100 (LWP 2602331) exited]
+[Thread 0xfffd3efaf100 (LWP 2602335) exited]
+info: rank 1 of 2: 40 MoE layers and the MTP head's of share 1 (the checkpoint's math) in 23.2 s, 31.52 GiB on the device; serving rank 0's jobs
+info: checkpoint digest: 0.0 GiB read in 11.4 s, 88/88 cached files
+
+Thread 1 "tensorfold-nati" received signal SIGINT, Interrupt.
+0x0000fffff7eb5c0c in __GI_sched_yield () at ../sysdeps/unix/syscall-template.S:120
+warning: 120	../sysdeps/unix/syscall-template.S: No such file or directory
+
+Thread 10 (Thread 0xfffd80a50100 (LWP 2602327) "tensorfold-nati"):
+#0  0x0000fffff7e61d6c in __futex_abstimed_wait_common64 (private=128, cancel=true, abstime=0x0, op=265, expected=0, futex_word=0xfffd73fff184) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=128, abstime=0x0, clockid=0, expected=0, futex_word=0xfffd73fff184) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffd73fff184, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=128) at ./nptl/futex-internal.c:139
+#3  0x0000fffff7e649f0 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xfffd73fff128, cond=0xfffd73fff158) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xfffd73fff158, mutex=mutex@entry=0xfffd73fff128) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000fffd931e3d88 in ncclProxyGetPostedOps (proxyState=proxyState@entry=0x5a3c5c0, added=added@entry=0xfffd80a4f838) at proxy.cc:797
+#6  0x0000fffd931e4da8 in ncclProxyProgress (proxyState_=0x5a3c5c0) at proxy.cc:979
+#7  0x0000fffff7e6582c in start_thread (arg=0xfffdd980f840) at ./nptl/pthread_create.c:447
+#8  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 9 (Thread 0xfffdd4e11100 (LWP 2602326) "tensorfold-nati"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=fds@entry=0xfffdd4e10758, nfds=nfds@entry=1, timeout=timeout@entry=500) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffd931e40b8 in ncclProxyServiceUDS (_args=0x5a3c5c0) at proxy.cc:1817
+#2  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#3  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 8 (Thread 0xfffdd980f100 (LWP 2602325) "tensorfold-nati"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=fds@entry=0xfffdd980c3c8, nfds=nfds@entry=74, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffd931e9fc4 in ncclProxyService (_args=0x5a3c5c0) at proxy.cc:1645
+#2  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#3  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 7 (Thread 0xfffdda01f100 (LWP 2602324) "tensorfold-nati"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=0xfffd7c000b70, nfds=4, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffd9329c220 in rasThreadMain () at ras/ras.cc:621
+#2  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#3  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 6 (Thread 0xffffe4b82100 (LWP 2602323) "tensorfold-nati"):
+#0  0x0000fffff7ec1148 in __GI___libc_read (nbytes=16, buf=0xffffe4b81798, fd=36) at ../sysdeps/unix/sysv/linux/read.c:26
+#1  __GI___libc_read (fd=36, buf=0xffffe4b81798, nbytes=16) at ../sysdeps/unix/sysv/linux/read.c:24
+#2  0x0000ffffee7a5650 in ibv_get_async_event () from /lib/aarch64-linux-gnu/libibverbs.so
+#3  0x0000fffd93230828 [PAC] in wrap_ibv_get_async_event (context=<optimized out>, event=event@entry=0xffffe4b81840) at misc/ibvwrap.cc:135
+#4  0x0000fffd93262d88 in ncclIbAsyncThreadMain (args=0xfffd9e661080 <ncclIbDevs>) at transport/net_ib.cc:210
+#5  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#6  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 5 (Thread 0xfffddbfbf100 (LWP 2602322) "tensorfold-nati"):
+#0  0x0000fffff7ec1148 in __GI___libc_read (nbytes=64, buf=0xfffddbfbe788, fd=34) at ../sysdeps/unix/sysv/linux/read.c:26
+#1  __GI___libc_read (fd=34, buf=0xfffddbfbe788, nbytes=64) at ../sysdeps/unix/sysv/linux/read.c:24
+#2  0x00000000026a3718 in tp_watch.watch () at zig/src/cuda/tp_watch.zig:148
+#3  Thread.callFn__func_6504 () at <zig-0.17.0>/lib/std/Thread.zig:422
+#4  Thread.PosixThreadImpl.spawn__func_6501.Instance.entryFn (raw_arg=0x32239a0) at <zig-0.17.0>/lib/std/Thread.zig:753
+#5  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#6  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 4 (Thread 0xffffe7f9f100 (LWP 2602130) "cuda-EvtHandlr"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=0xfffdd0000bd0, nfds=9, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000ffffe82cec70 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#2  0x0000ffffe837cd70 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#3  0x0000ffffe82bd928 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#4  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#5  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 3 (Thread 0xffffe70fd100 (LWP 2602126) "cuda00001800007"):
+#0  0x0000fffff7ec0adc in __GI___poll (fds=0x299f000, nfds=3, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000ffffe82cec70 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#2  0x0000ffffe837cd70 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#3  0x0000ffffe82bd928 in ?? () from /lib/aarch64-linux-gnu/libcuda.so.1
+#4  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#5  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 2 (Thread 0xfffff4e46100 (LWP 2602125) "tensorfold-nati"):
+#0  0x00000000028df8f8 in os.linux.aarch64.syscall4 (number=futex, arg1=281474976706580, arg2=128, arg3=0, arg4=0) at <zig-0.17.0>/lib/std/os/linux/aarch64.zig:62
+#1  os.linux.futex_4arg (uaddr=0xfffffffff014, futex_op=..., val=0, timeout=0x0) at <zig-0.17.0>/lib/std/os/linux.zig:1193
+#2  Io.Threaded.Thread.futexWaitInner (ptr=<optimized out>, expect=0, uncancelable=<optimized out>, timeout_ns=...) at <zig-0.17.0>/lib/std/Io/Threaded.zig:991
+#3  0x00000000028df838 in Io.Threaded.Thread.futexWaitUncancelable (ptr=0xfffffffff014, expect=128, timeout_ns=<error reading variable: Cannot access memory at address 0x0>) at <zig-0.17.0>/lib/std/Io/Threaded.zig:937
+#4  0x00000000024c1b80 in Io.Threaded.condWait (cond=0xfffffffff010, mutex=0xfffffffff00c) at <zig-0.17.0>/lib/std/Io/Threaded.zig:19749
+#5  Io.Threaded.worker (t=0xffffffffebc0) at <zig-0.17.0>/lib/std/Io/Threaded.zig:1807
+#6  Thread.callFn__func_1543 () at <zig-0.17.0>/lib/std/Thread.zig:422
+#7  Thread.PosixThreadImpl.spawn__func_1539.Instance.entryFn (raw_arg=0x29642a0) at <zig-0.17.0>/lib/std/Thread.zig:753
+#8  0x0000fffff7e6582c in start_thread (arg=0xfffff7d3e760) at ./nptl/pthread_create.c:447
+#9  0x0000fffff7ecba0c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 1 (Thread 0xfffff7d3e020 (LWP 2602123) "tensorfold-nati"):
+#0  0x0000fffff7eb5c0c in __GI_sched_yield () at ../sysdeps/unix/syscall-template.S:120
+#1  0x0000fffd931e5170 in ncclLocalOpAppend (comm=<optimized out>, proxyOp=proxyOp@entry=0x5b310b0, proxyConn=<optimized out>, proxyConn=<optimized out>) at proxy.cc:499
+#2  0x0000fffd931e52a8 in SaveProxy (comm=comm@entry=0x447d5b0, type=<optimized out>, peer=<optimized out>, op=op@entry=0x5b310b0, connIndex=connIndex@entry=1, justInquire=justInquire@entry=0x0, channel=<optimized out>, channel=<optimized out>) at proxy.cc:580
+#3  0x0000fffd931eb6d8 in ncclProxySaveOp (comm=0x447d5b0, op=0x5b310b0, justInquire=0x0) at proxy.cc:712
+#4  0x0000fffd931ba2b0 in uploadProxyOps (comm=comm@entry=0x447d5b0, plan=plan@entry=0x5b312d8) at enqueue.cc:1293
+#5  0x0000fffd931ba8c4 in hostStreamPlanTask (plan=0x5b312d8, comm=0x447d5b0) at enqueue.cc:1311
+#6  hostStreamPlanTask (comm=0x447d5b0, plan=0x5b312d8) at enqueue.cc:1307
+#7  0x0000fffd931c0964 in ncclLaunchKernelAfter_NoCuda (comm=comm@entry=0x447d5b0, plan=<optimized out>) at enqueue.cc:1670
+#8  0x0000fffd931c9370 in doLaunches (head=<optimized out>) at group.cc:315
+#9  groupLaunch (job_=job_@entry=0x5cad990, simInfo=simInfo@entry=0x0) at group.cc:605
+#10 0x0000fffd931ca464 in ncclGroupEndInternal (simInfo=simInfo@entry=0x0) at group.cc:743
+#11 0x0000fffd931c4908 in ncclEnqueueCheck (info=info@entry=0xfffffffe0370) at enqueue.cc:2655
+#12 0x0000fffd931b8104 in ncclSend (sendbuff=0xfffcf245ea00, count=106496, datatype=ncclUint8, peer=0, comm=0x447d5b0, stream=0x3223b80) at collectives.cc:202
+#13 0x000000000241c028 in tp_group.Group.send (g=0xfffffffe04f0, ptr=281461861509632, bytes=0, peer=0) at zig/src/cuda/tp_group.zig:56
+#14 cuda_worker.serve (gpa=..., io=<error reading variable: Cannot access memory at address 0x58>, ctx=0x1) at zig/src/families/nemotron/cuda_worker.zig:189
+#15 0x000000000245739c in cuda_native.open (gpa=..., io=..., ctx=0xffffee75c230, o=...) at zig/src/families/nemotron/cuda_native.zig:103
+#16 0x0000000002465c2c in cuda.openWith__func_66 (problem=0xffffffff7170) at zig/src/native/cuda.zig:312
+#17 cuda.open (a=..., gpa=..., io=..., o=..., problem=0xffffffff7170) at zig/src/native/cuda.zig:194
+#18 0x000000000246895c in engines.open (a=..., gpa=..., io=..., args=..., problem=0xffffffff7170) at zig/src/server/engines.zig:33
+#19 startup.both__func_911 (io=..., load_args=..., open_args=...) at zig/src/server/startup.zig:14
+#20 0x0000000002489084 in main.main (init=...) at zig/src/server/main.zig:118
+#21 0x000000000248ac18 in start.callMain () at <zig-0.17.0>/lib/std/start.zig:827
+#22 start.callMainWithArgs () at <zig-0.17.0>/lib/std/start.zig:729
+#23 start.main (c_argc=3, c_argv=0xfffffffff7b8, c_envp=<optimized out>) at <zig-0.17.0>/lib/std/start.zig:754
