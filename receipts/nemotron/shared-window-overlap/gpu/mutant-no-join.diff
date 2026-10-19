@@ -1,0 +1,13 @@
+--- a/zig/src/families/nemotron/cuda_latent.zig
++++ b/zig/src/families/nemotron/cuda_latent.zig
+@@ -418,10 +418,6 @@ pub fn run(f: *const fwd.Forward, m: W.MoE, rows: usize) !void {
+         try go(fns.combine, o.s, .{ rows, (c.latent + 255) / 256, 1 }, 256, 0, &a);
+     }
+     try o.linear().decode(o.s, lt.out, .{ .x = b.comb, .part = o.part }, b.delta, rows);
+-    if (side) |sd| { // the shared rows' first reader is the add below
+-        try o.s.wait(sd.join);
+-        try f.mark(.shared_wait);
+-    }
+     var z: cuda.Args = .{};
+     z.add(b.delta);
+     z.add(sh);

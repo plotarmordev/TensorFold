@@ -1,0 +1,11 @@
+== test shared-fork-mutant 2026-10-18T23:59:59+08:00 on <gb10-b>: zone 77 C, load 1.04
+binary <mutant-build>/bin/tf-cuda-test
+d257ba2bf4adee10a095d11cb8a50b77d71afded1941b59a6c7190a3d1ae76ed  <mutant-build>/bin/tf-cuda-test
+<mutant-build>/bin/tf-cuda-test shared-fork <checkpoint>
+exit 1
+  word 1: 7fff7fff (nan) for bdf2bdbd (-1.1852596e-1)
+  word 2: 7fff7fff (nan) for be6c3dda (-2.307047e-1)
+  word 3: 7fff7fff (nan) for 3f063e62 (5.243894e-1)
+FAIL shared-fork (checkpoint): layer 0 at 1 rows: first difference at byte 0, 2048 of 2048 words differ
+FAIL shared-fork: TestFailed
+== done 2026-10-19T00:00:22+08:00

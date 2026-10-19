@@ -1,0 +1,57 @@
+<gb10-b>:2214759:2214759 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+<gb10-b>:2214759:2214759 [0] NCCL INFO Bootstrap: Using enp1s0f1np1:<rank0-addr><0>
+<gb10-b>:2214759:2214759 [0] NCCL INFO NCCL_COMM_ID set by environment to <rank0-addr>:29741
+<gb10-b>:2214759:2214759 [0] NCCL INFO cudaDriverVersion 13000
+<gb10-b>:2214759:2214759 [0] NCCL INFO NCCL version 2.28.9+cuda13.0
+<gb10-b>:2214759:2214759 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so
+<gb10-b>:2214759:2214759 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f1np1
+<gb10-b>:2214759:2214759 [0] NCCL INFO NCCL_IB_HCA set to =rocep1s0f1
+<gb10-b>:2214759:2214759 [0] NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE [RO]; OOB enp1s0f1np1:<rank0-addr><0>
+<gb10-b>:2214759:2214759 [0] NCCL INFO Initialized NET plugin IB
+<gb10-b>:2214759:2214759 [0] NCCL INFO Assigned NET plugin IB to comm
+<gb10-b>:2214759:2214759 [0] NCCL INFO Assigned GIN plugin GIN_IB_GDAKI to comm
+<gb10-b>:2214759:2214759 [0] NCCL INFO Using network IB
+<gb10-b>:2214759:2214759 [0] NCCL INFO ncclCommInitRank comm 0x334ddf00 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init START
+<gb10-b>:2214759:2214759 [0] NCCL INFO RAS client listening socket at <loopback><28028>
+<gb10-b>:2214759:2214759 [0] NCCL INFO Bootstrap timings total 0.082350 (create 0.000036, send 0.000970, recv 0.080389, ring 0.000104, delay 0.000000)
+<gb10-b>:2214759:2214759 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-19).
+<gb10-b>:2214759:2214759 [0] NCCL INFO comm 0x334ddf00 rank 1 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] -1/-1/-1->1->0 [2] -1/-1/-1->1->0 [3] -1/-1/-1->1->0 [4] 0/-1/-1->1->-1 [5] 0/-1/-1->1->-1 [6] 0/-1/-1->1->-1 [7] 0/-1/-1->1->-1
+<gb10-b>:2214759:2214759 [0] NCCL INFO P2P Chunksize set to 131072
+<gb10-b>:2214759:2214759 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+<gb10-b>:2214759:2214759 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+<gb10-b>:2214759:2242637 [0] NCCL INFO [Proxy Service] Device 0 CPU core 18
+<gb10-b>:2214759:2242638 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 18
+<gb10-b>:2214759:2214759 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so
+<gb10-b>:2214759:2214759 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+<gb10-b>:2214759:2214759 [0] NCCL INFO 8 coll channels, 8 collnet channels, 0 nvls channels, 8 p2p channels, 2 p2p channels per peer
+<gb10-b>:2214759:2214759 [0] NCCL INFO ncclCommInitRank comm 0x334ddf00 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0xd115f78ed4ac395b - Init COMPLETE
+<gb10-b>:2214759:2214759 [0] NCCL INFO Init timings - ncclCommInitRank: rank 1 nranks 2 total 0.28 (kernels 0.16, alloc 0.03, bootstrap 0.08, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.00, rest 0.00)
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 02/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 03/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 04/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+<gb10-b>:2214759:2242652 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 13
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 05/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 06/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 07/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [send] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [send] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 02/0 : 1[0] -> 0[0] [send] via NET/IBinfo: rank 1 of 2: every rank agrees on the model, its 2 expert shares and the build
+info: rank 1 of 2: 40 MoE layers and the MTP head's of share 1 (the checkpoint's math) in 308.2 s, 31.52 GiB on the device; serving rank 0's jobs
+info: checkpoint digest: 0.0 GiB read in 11.1 s, 88/88 cached files
+info: rank 1: rank 0 ended after 3080 jobs; leaving
+/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 03/0 : 1[0] -> 0[0] [send] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 04/0 : 1[0] -> 0[0] [send] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 05/0 : 1[0] -> 0[0] [send] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 06/0 : 1[0] -> 0[0] [send] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 07/0 : 1[0] -> 0[0] [send] via NET/IB/0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 0
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 04/1 : 0[0] -> 1[0] [receive] via NET/IB/0/Shared
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 05/1 : 0[0] -> 1[0] [receive] via NET/IB/0/Shared
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 04/1 : 1[0] -> 0[0] [send] via NET/IB/0/Shared
+<gb10-b>:2214759:2214759 [0] NCCL INFO Channel 05/1 : 1[0] -> 0[0] [send] via NET/IB/0/Shared
+<gb10-b>:2214759:2214759 [0] NCCL INFO comm 0x334ddf00 rank 1 nranks 2 cudaDev 0 busId f01000 - Destroy COMPLETE
+<gb10-b>:2214759:2214759 [0] NCCL INFO ENV/Plugin: Closing env plugin ncclEnvDefault

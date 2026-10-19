@@ -1,0 +1,2 @@
+PASS shared-fork (checkpoint): 1558 (layer, rows) cases, lone and shared, the forked delta byte-equal to the one-stream delta
+PASS shared-fork (full): 1558 (layer, rows) cases, lone and shared, the forked delta byte-equal to the one-stream delta

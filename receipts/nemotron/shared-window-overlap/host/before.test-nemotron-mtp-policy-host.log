@@ -1,0 +1,20 @@
+33d0db58172efe1f05a30e02d7006827547cfa2b  M zig/src/families/nemotron/cuda_forward.zig 
+test-nemotron-mtp-policy-host
++- run test 9 pass, 1 fail (10 total)
+error: 'nemotron_mtp_policy_host.test.mtp policy: shared latent windows keep the side stream on one GPU and two ranks keep one stream' failed:
+       <zig>/lib/std/testing.zig:584:14: 0x11cecf3 in expect (test)
+           if (!ok) return error.TestUnexpectedResult;
+                    ^
+       <tree>/zig/nemotron_mtp_policy_host.zig:218:38: 0x11d0fc7 in test.mtp policy: shared latent windows keep the side stream on one GPU and two ranks keep one stream (test)
+           for ([_]usize{ 1, 2, 4, 8 }) |n| try std.testing.expect(f.routedWindow(parts[0..n]).side != null);
+                                            ^
+failed command: /tmp/zc.pPrYr3/o/81dbd9cc286bd2da45440347f582b8f4/test --cache-dir=/tmp/zc.pPrYr3 --seed=0x647e59b1 --listen=-
+
+Build Summary: 3/5 steps succeeded (1 failed); 9/10 tests passed (1 failed)
+test-nemotron-mtp-policy-host transitive failure
++- run test 9 pass, 1 fail (10 total)
+   +- compile test debug native success 3s MaxRSS:533M
+      +- WriteFile draft_ids.txt success
+      +- options success
+
+exit=1

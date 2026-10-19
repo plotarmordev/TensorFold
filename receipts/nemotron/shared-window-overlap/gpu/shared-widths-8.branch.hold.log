@@ -1,0 +1,11 @@
+== test shared-widths-8 2026-10-19T00:02:55+08:00 on <gb10-b>: zone 69 C, load 0.52
+binary <branch-build>/bin/tensorfold
+993cfbbb96033f5af6c24c41404693d549364d522c9bbdd47ce63715f68630bc  <branch-build>/bin/tensorfold
+<branch-build>/bin/tensorfold shared-widths <checkpoint> <ids>/prompts-ids.json --streams 8 --max-tokens 400
+exit 0
+rows 28 a stream: 70 kept rows, 0 differ
+rows 30 a stream: 30 kept rows, 0 differ
+rows 31 a stream: 15 kept rows, 0 differ
+rows 32 a stream: 32 kept rows, 0 differ
+PASS shared widths, 8 streams: 3192 of 3192 kept rows equal serial (400 tokens a stream, 132 shared windows)
+== done 2026-10-19T00:06:24+08:00

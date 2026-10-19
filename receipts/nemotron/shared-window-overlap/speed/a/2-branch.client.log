@@ -1,0 +1,26 @@
+count  c2  wave    91.86 tok/s  decode   92.49 tok/s  first-text median   199.9 ms  worst   319.7 ms  6/6 equal alone  alone 98.23 tok/s 1b3d78d3b1bf
+count  c4  wave   167.21 tok/s  decode  168.24 tok/s  first-text median   361.6 ms  worst   491.8 ms  12/12 equal alone  alone 97.80 tok/s 1b3d78d3b1bf
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+count  c8  wave   245.70 tok/s  decode  246.67 tok/s  first-text median   536.5 ms  worst  2838.7 ms  24/24 equal alone  alone 98.11 tok/s 1b3d78d3b1bf
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+prose  c2  wave    61.60 tok/s  decode   61.85 tok/s  first-text median   154.7 ms  worst   225.9 ms  6/6 equal alone  alone 35.74 tok/s dd34e675a960
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+prose  c4  wave   106.49 tok/s  decode  106.82 tok/s  first-text median   266.7 ms  worst   402.9 ms  12/12 equal alone  alone 35.70 tok/s dd34e675a960
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+prose  c8  wave   150.86 tok/s  decode  151.10 tok/s  first-text median   396.8 ms  worst   754.5 ms  24/24 equal alone  alone 35.65 tok/s dd34e675a960
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+1 streams    52.75 tok/s aggregate  2/2 replies equal to the prompt alone
+2 streams    47.32 tok/s aggregate  4/4 replies equal to the prompt alone
+4 streams    66.16 tok/s aggregate  8/8 replies equal to the prompt alone
+8 streams    90.70 tok/s aggregate  16/16 replies equal to the prompt alone

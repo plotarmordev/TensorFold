@@ -1,0 +1,48 @@
+count  c4  wave   202.21 tok/s  decode  203.89 tok/s  first-text median   216.6 ms  worst   501.7 ms  12/12 equal alone  alone 95.85 tok/s 1b3d78d3b1bf
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+count  c8  wave   291.45 tok/s  decode  293.01 tok/s  first-text median   394.3 ms  worst   856.8 ms  24/24 equal alone  alone 95.84 tok/s 1b3d78d3b1bf
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+prose  c4  wave   101.30 tok/s  decode  105.77 tok/s  first-text median   840.3 ms  worst   978.3 ms  12/12 equal alone  alone 34.92 tok/s dd34e675a960
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+prose  c8  wave   147.11 tok/s  decode  148.31 tok/s  first-text median   548.8 ms  worst   865.0 ms  24/24 equal alone  alone 34.92 tok/s dd34e675a960
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+code   c4  wave   150.54 tok/s  decode  153.59 tok/s  first-text median   373.7 ms  worst   971.0 ms  12/12 equal alone  alone 54.98 tok/s 44f32c6d6e44
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+code   c8  wave   257.28 tok/s  decode  261.51 tok/s  first-text median   552.4 ms  worst   877.7 ms  24/24 equal alone  alone 54.98 tok/s 44f32c6d6e44
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+count         drafted          95.82 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+count         "draft": false   21.21 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+prose         drafted          33.98 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+code          drafted          52.13 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false

@@ -1,0 +1,37 @@
+count  c2  wave    90.25 tok/s  decode   90.87 tok/s  first-text median   199.8 ms  worst   318.6 ms  6/6 equal alone  alone 98.39 tok/s 1b3d78d3b1bf
+count  c4  wave   164.88 tok/s  decode  165.88 tok/s  first-text median   361.5 ms  worst   491.9 ms  12/12 equal alone  alone 98.14 tok/s 1b3d78d3b1bf
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+count  c8  wave   241.82 tok/s  decode  242.73 tok/s  first-text median   534.7 ms  worst   841.3 ms  24/24 equal alone  alone 98.10 tok/s 1b3d78d3b1bf
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+prose  c2  wave    55.80 tok/s  decode   55.99 tok/s  first-text median   155.8 ms  worst   227.2 ms  6/6 equal alone  alone 35.46 tok/s dd34e675a960
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+prose  c4  wave   103.42 tok/s  decode  103.77 tok/s  first-text median   271.2 ms  worst   500.2 ms  12/12 equal alone  alone 35.47 tok/s dd34e675a960
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+prose  c8  wave   146.59 tok/s  decode  146.81 tok/s  first-text median   449.3 ms  worst   760.7 ms  24/24 equal alone  alone 35.44 tok/s dd34e675a960
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+1 streams    52.73 tok/s aggregate  2/2 replies equal to the prompt alone
+2 streams    46.97 tok/s aggregate  4/4 replies equal to the prompt alone
+4 streams    64.85 tok/s aggregate  8/8 replies equal to the prompt alone
+8 streams    89.42 tok/s aggregate  16/16 replies equal to the prompt alone

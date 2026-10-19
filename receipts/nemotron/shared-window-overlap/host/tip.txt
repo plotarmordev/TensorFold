@@ -1,0 +1,26 @@
+33d0db58172efe1f05a30e02d7006827547cfa2b (fresh --cache-dir for every step)
+== zig build test-kernel-contract
+exit=0
+Build Summary: 9/9 steps succeeded; 43/43 tests passed
+== zig build test
+exit=0
+[default] (warn): lane host: a round failed (PlannerFull): every admitted stream fails
+failed command: /tmp/zc.nrXSBN/o/e0be6bc73ea2ebec97ffccd1e76b715e/test --cache-dir=/tmp/zc.nrXSBN --seed=0xe4769b13 --listen=-
+Build Summary: 152/152 steps succeeded; 2413/2422 tests passed (9 skipped)
+== zig build test-golden
+exit=0
+306/319 equal to the frozen Python answers, 0 unexpected differences
+Build Summary: 4/4 steps succeeded
+== zig build fuzz-cortheon
+exit=0
+Build Summary: 3/3 steps succeeded; 8/8 tests passed
+== zig build test-nemotron-mtp-policy-host
+exit=0
+Build Summary: 5/5 steps succeeded; 10/10 tests passed
+== zig build compile-cuda-tests
+exit=0
+Build Summary: 8/8 steps succeeded
+== zig fmt --check zig build.zig
+exit=0
+== python3 tools/zig/lean_check.py
+2625 files, 503 problems

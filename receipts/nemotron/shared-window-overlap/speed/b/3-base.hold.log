@@ -1,0 +1,57 @@
+== serve base 2026-10-19T02:59:19+08:00 on <gb10-b>: zone 60 C, load 0.32
+binary <base-build>/native/bin/tensorfold-native
+04167a172c847952737a4b401fb5945b74d598a51312ed19f4e6ddd974015088  <base-build>/native/bin/tensorfold-native
+HOME=<fresh-home>   <base-build>/native/bin/tensorfold-native serve <checkpoint> --host <loopback> --port 8897 --name nemotron-3.5-super-vl --context 131072 --parallel auto --vision --thinking
+MemAvailable before: 117.3 GiB
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 74.18 GiB; 8 streams at once, the engine's own at a 131072-token window (1.39 GiB, in the model's), 7 more taking 1799 pages of 512 rows (7.91 GiB) as they need them, 264 MiB fixed each, of 27.3 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, prompt states on device: a prompt cache of 49 snapshot slots (7.8 GiB) and 8.2 GiB of copied rows; own glue kernels
+[tensorfold] serving nemotron-3.5-super-vl at http://<loopback>:8897/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 131072; loaded in 71.7s)
+ready after 72 s; MemAvailable 21.7 GiB
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+count  c4  wave   163.34 tok/s  decode  164.35 tok/s  first-text median   372.8 ms  worst   504.8 ms  12/12 equal alone  alone 95.80 tok/s 1b3d78d3b1bf
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+count  c8  wave   239.00 tok/s  decode  239.94 tok/s  first-text median   546.3 ms  worst   859.4 ms  24/24 equal alone  alone 95.77 tok/s 1b3d78d3b1bf
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+prose  c4  wave   101.83 tok/s  decode  102.15 tok/s  first-text median   271.6 ms  worst  2401.1 ms  12/12 equal alone  alone 34.84 tok/s dd34e675a960
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+prose  c8  wave   144.68 tok/s  decode  144.89 tok/s  first-text median   455.6 ms  worst   771.0 ms  24/24 equal alone  alone 34.83 tok/s dd34e675a960
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+code   c4  wave   123.97 tok/s  decode  124.52 tok/s  first-text median   316.9 ms  worst   508.6 ms  12/12 equal alone  alone 54.95 tok/s 44f32c6d6e44
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+code   c8  wave   214.15 tok/s  decode  214.88 tok/s  first-text median   500.8 ms  worst   872.2 ms  24/24 equal alone  alone 54.88 tok/s 44f32c6d6e44
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 87 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+count         drafted          95.71 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+count         "draft": false   21.15 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+prose         drafted          33.90 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+code          drafted          52.11 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+client exit 0; heat waits in server log: 5
+== done 2026-10-19T03:11:26+08:00

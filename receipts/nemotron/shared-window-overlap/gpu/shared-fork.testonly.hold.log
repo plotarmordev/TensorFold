@@ -1,0 +1,7 @@
+== test shared-fork-testonly 2026-10-18T23:54:53+08:00 on <gb10-b>: zone 58 C, load 0.68
+binary <testonly-build>/bin/tf-cuda-test
+e44e328b24070bde182da92945e5eb79533ddf5e5a0c905efba2b3ba6cffbd0d  <testonly-build>/bin/tf-cuda-test
+<testonly-build>/bin/tf-cuda-test shared-fork <checkpoint>
+exit 1
+FAIL shared-fork: SharedWindowWithoutSideStream
+== done 2026-10-18T23:55:16+08:00

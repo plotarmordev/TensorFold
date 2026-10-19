@@ -1,0 +1,4 @@
+00:00:04 gpu=70C zone=76C load=1.04 avail=101GiB swap_growth=0MiB
+00:00:09 gpu=69C zone=74C load=1.03 avail=84GiB swap_growth=0MiB
+00:00:14 gpu=68C zone=77C load=0.95 avail=67GiB swap_growth=0MiB
+00:00:19 gpu=67C zone=79C load=0.87 avail=48GiB swap_growth=0MiB

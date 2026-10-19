@@ -1,0 +1,8 @@
+== test shared-fork 2026-10-18T23:36:22+08:00 on <gb10-b>: zone 75 C, load 3.66
+binary <branch-build>/bin/tf-cuda-test
+d3e12ff9784c127181a35bb5aba18b7161a2cb19ec2d8d5f2d5b72bb6b0c0e13  <branch-build>/bin/tf-cuda-test
+<branch-build>/bin/tf-cuda-test shared-fork <checkpoint>
+exit 0
+PASS shared-fork (checkpoint): 1558 (layer, rows) cases, lone and shared, the forked delta byte-equal to the one-stream delta
+PASS shared-fork (full): 1558 (layer, rows) cases, lone and shared, the forked delta byte-equal to the one-stream delta
+== done 2026-10-18T23:38:04+08:00

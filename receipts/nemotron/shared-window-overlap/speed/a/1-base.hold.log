@@ -1,0 +1,43 @@
+== serve base 2026-10-19T05:00:54+08:00 on <gb10-a>: zone 60 C, load 0.88
+binary <base-build>/native/bin/tensorfold-native
+04167a172c847952737a4b401fb5945b74d598a51312ed19f4e6ddd974015088  <base-build>/native/bin/tensorfold-native
+HOME=<fresh-home>   <base-build>/native/bin/tensorfold-native serve <checkpoint> --host <loopback> --port 8897 --name nemotron-3.5-super-vl --context 131072 --parallel auto --vision --thinking
+MemAvailable before: 117.8 GiB
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 74.18 GiB; 8 streams at once, the engine's own at a 131072-token window (1.39 GiB, in the model's), 7 more taking 1799 pages of 512 rows (7.91 GiB) as they need them, 264 MiB fixed each, of 27.8 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, prompt states on device: a prompt cache of 49 snapshot slots (7.8 GiB) and 8.2 GiB of copied rows; own glue kernels
+[tensorfold] serving nemotron-3.5-super-vl at http://<loopback>:8897/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 131072; loaded in 74.2s)
+ready after 76 s; MemAvailable 21.5 GiB
+count  c2  wave   112.35 tok/s  decode  113.38 tok/s  first-text median   126.3 ms  worst   171.1 ms  6/6 equal alone  alone 98.28 tok/s 1b3d78d3b1bf
+count  c4  wave   164.64 tok/s  decode  165.64 tok/s  first-text median   363.0 ms  worst   493.3 ms  12/12 equal alone  alone 97.91 tok/s 1b3d78d3b1bf
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+count  c8  wave   241.77 tok/s  decode  242.71 tok/s  first-text median   539.8 ms  worst   843.1 ms  24/24 equal alone  alone 98.05 tok/s 1b3d78d3b1bf
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+prose  c2  wave    59.95 tok/s  decode   60.18 tok/s  first-text median   155.7 ms  worst   227.4 ms  6/6 equal alone  alone 35.43 tok/s dd34e675a960
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 85 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+prose  c4  wave   103.33 tok/s  decode  103.64 tok/s  first-text median   268.1 ms  worst   405.7 ms  12/12 equal alone  alone 35.16 tok/s dd34e675a960
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+prose  c8  wave   146.41 tok/s  decode  146.63 tok/s  first-text median   448.0 ms  worst   765.2 ms  24/24 equal alone  alone 35.33 tok/s dd34e675a960
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 86 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+cooling: 88 °C > TF_HEAT_LOW 75 °C
+1 streams    52.35 tok/s aggregate  2/2 replies equal to the prompt alone
+2 streams    46.87 tok/s aggregate  4/4 replies equal to the prompt alone
+4 streams    65.52 tok/s aggregate  8/8 replies equal to the prompt alone
+8 streams    90.51 tok/s aggregate  16/16 replies equal to the prompt alone
+client exit 0; heat waits in server log: 4
+== done 2026-10-19T05:13:10+08:00

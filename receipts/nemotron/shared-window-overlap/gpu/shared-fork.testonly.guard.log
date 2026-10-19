@@ -1,0 +1,4 @@
+23:54:58 gpu=57C zone=65C load=0.79 avail=100GiB swap_growth=0MiB
+23:55:03 gpu=58C zone=65C load=0.81 avail=83GiB swap_growth=0MiB
+23:55:08 gpu=59C zone=68C load=0.90 avail=66GiB swap_growth=0MiB
+23:55:13 gpu=58C zone=68C load=0.99 avail=49GiB swap_growth=0MiB

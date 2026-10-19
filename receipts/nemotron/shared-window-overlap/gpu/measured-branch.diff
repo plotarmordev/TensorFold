@@ -1,0 +1,329 @@
+diff --git a/zig/nemotron_mtp_policy_host.zig b/zig/nemotron_mtp_policy_host.zig
+index 38ea543d..7801dc5e 100644
+--- a/zig/nemotron_mtp_policy_host.zig
++++ b/zig/nemotron_mtp_policy_host.zig
+@@ -202,24 +202,22 @@ test "mtp policy: the inherited policy works through 31 drafts and a resumed sha
+     };
+ }
+ 
+-test "mtp policy: shared latent windows avoid per-layer side events while lone graphs retain overlap" {
++test "mtp policy: shared latent windows keep the side stream on one GPU and two ranks keep one stream" {
+     var f: nemo.Forward = undefined;
+     f.c.latent = 512;
+     f.side = .{ .s = undefined, .fork = undefined, .join = undefined };
+     f.tp = null;
+     f.route = .{};
+     var buffers: nemo.state.Buffers = undefined;
+-    const Seg = @typeInfo(@TypeOf(f.segs)).pointer.child;
+-    var parts: [4]Seg = undefined;
+-    for (&parts, 0..) |*p, i| p.* = .{ .b = &buffers, .row0 = i * 8, .rows = 8, .sampled = false, .slot = @intCast(i), .untaught = i == 2 };
++    var parts: [8]nemo.Seg = undefined;
++    for (&parts, 0..) |*p, i| p.* = .{ .b = &buffers, .row0 = i * 4, .rows = 4, .sampled = false, .slot = @intCast(i), .untaught = i == 2 };
+     const shared = f.routedWindow(&parts);
+-    try std.testing.expect(shared.side == null);
+     try std.testing.expect(shared.untaught);
+-    try std.testing.expectEqual(@as(usize, 4), shared.segs.len);
+-    try std.testing.expectEqual(@as(u32, 4), shared.route.count);
+-    try std.testing.expect(f.routedWindow(parts[0..1]).side != null);
++    try std.testing.expectEqual(@as(usize, 8), shared.segs.len);
++    try std.testing.expectEqual(@as(u32, 8), shared.route.count);
++    for ([_]usize{ 1, 2, 4, 8 }) |n| try std.testing.expect(f.routedWindow(parts[0..n]).side != null);
+     f.tp = @ptrFromInt(4096);
+-    try std.testing.expect(f.routedWindow(parts[0..1]).side == null);
++    for ([_]usize{ 1, 2, 4, 8 }) |n| try std.testing.expect(f.routedWindow(parts[0..n]).side == null);
+     f.tp = null;
+     f.c.latent = 0;
+     try std.testing.expect(f.routedWindow(&parts).side != null);
+diff --git a/zig/src/families/nemotron/cuda.zig b/zig/src/families/nemotron/cuda.zig
+index c221b283..2a8c19a4 100644
+--- a/zig/src/families/nemotron/cuda.zig
++++ b/zig/src/families/nemotron/cuda.zig
+@@ -7,6 +7,7 @@ pub const weights = @import("cuda_weights.zig");
+ pub const kernels = @import("cuda_kernels.zig");
+ pub const state = @import("cuda_state.zig");
+ pub const Forward = @import("cuda_forward.zig").Forward;
++pub const Seg = @import("cuda_forward.zig").Seg;
+ pub const Walk = @import("cuda_forward.zig").Walk;
+ pub const Marks = @import("cuda_forward.zig").Marks;
+ pub const Class = @import("cuda_forward.zig").Class;
+diff --git a/zig/src/families/nemotron/cuda_forward.zig b/zig/src/families/nemotron/cuda_forward.zig
+index 6859cb47..2375e7ac 100644
+--- a/zig/src/families/nemotron/cuda_forward.zig
++++ b/zig/src/families/nemotron/cuda_forward.zig
+@@ -140,7 +140,7 @@ pub const Forward = struct {
+     pub fn routedWindow(f: *const Forward, segs: []const Seg) Forward {
+         var routed = f.*;
+         routed.segs = segs;
+-        if (f.c.latent > 0 and (segs.len > 1 or f.tp != null)) routed.side = null;
++        if (f.c.latent > 0 and f.tp != null) routed.side = null;
+         routed.untaught = for (segs) |s| {
+             if (s.untaught) break true;
+         } else false;
+diff --git a/zig/src/families/nemotron/cuda_mtp.zig b/zig/src/families/nemotron/cuda_mtp.zig
+index b67e1fd4..2a850624 100644
+--- a/zig/src/families/nemotron/cuda_mtp.zig
++++ b/zig/src/families/nemotron/cuda_mtp.zig
+@@ -17,6 +17,7 @@ const host_drafts = meta_words; // pinned layout: meta, drafts, confidences, the
+ const host_probs = host_drafts + max_chain;
+ const host_tokens = host_probs + max_chain;
+ const host_metas = host_tokens + state.pass_rows; // a meta row a stream for `chains`
++const host_chances = host_metas + streams * meta_words; // `chains`' confidences, max_chain a stream in turn
+ 
+ /// The output rows a draft level reads: the draft vocabulary's (the draft head), or the target's whole head.
+ pub const Vocab = @import("cuda_mtp_projection.zig").Vocab;
+@@ -40,6 +41,9 @@ pub const Part = struct {
+ /// A stream's rows in a head forward: where they start, how many, its meta row, its head caches and its head.
+ pub const Span = struct { row0: usize, rows: usize, meta: u64, k_cache: u64, v_cache: u64, vocab: Vocab, table: u64 = 0 };
+ 
++/// A stream's confidences the last `chains` copied to the host: its sequence's device row, and how many.
++const Chances = struct { probs: u64, levels: usize };
++
+ pub const Head = struct {
+     // Host fixtures replace only the network transform; projection, chain scheduling and sample dispatch stay real.
+     pub var test_network: if (@import("builtin").is_test) ?*const fn (*Head, []const Span, bool) anyerror!void else void = if (@import("builtin").is_test) null else {};
+@@ -80,6 +84,8 @@ pub const Head = struct {
+     pos: usize = 0,
+     keep: usize = 0,
+     levels: usize = 0,
++    chances: [streams]Chances = undefined, // the last `chains`' streams, in their pinned rows' order
++    chance_count: usize = 0, // 0 once any other draft follows them
+     has_buf: bool = false,
+     has_pinned: bool = false,
+     has_copied: bool = false,
+@@ -135,7 +141,7 @@ pub const Head = struct {
+             at += std.mem.alignForward(usize, s, 256);
+         }
+         try h.buf.fill8(0, e.stream.handle); // on the engine's stream: the legacy one would race its first uploads
+-        h.pinned = try cuda.HostBuffer.alloc(e.ctx.d, (host_metas + S * meta_words) * 4);
++        h.pinned = try cuda.HostBuffer.alloc(e.ctx.d, (host_chances + S * max_chain) * 4);
+         h.has_pinned = true;
+         h.copied = try cuda.Event.init(e.ctx.d, false);
+         h.has_copied = true;
+@@ -346,6 +352,7 @@ pub const Head = struct {
+         h.pos += keep;
+         h.keep = keep;
+         h.levels = 0;
++        h.chance_count = 0;
+     }
+ 
+     /// begin again for the `keep` rows the head last began (another driver resumes the stream): its meta rewritten.
+@@ -396,6 +403,7 @@ pub const Head = struct {
+                 return x.depth > y.depth;
+             }
+         }.deeper);
++        h.chance_count = 0;
+         try h.copied.synchronize();
+         const host = h.pinned.slice(u32)[host_metas..][0 .. parts.len * meta_words];
+         for (parts, 0..) |p, k| {
+@@ -431,6 +439,22 @@ pub const Head = struct {
+                 try h.sample(h.logits + k * n * 2, p.rule, meta + 4, p.ids + j * 4, p.probs + (j - 1) * 4, j, p.vocab);
+             }
+         }
++        // every stream's confidences to the host behind one event: the round's reads wait once, not once a stream
++        for (parts, h.chances[0..parts.len], 0..) |p, *x, k| {
++            try o.download(std.mem.sliceAsBytes(h.pinned.slice(f32)[host_chances + k * max_chain ..][0..p.depth]), p.probs);
++            x.* = .{ .probs = p.probs, .levels = p.depth };
++        }
++        try h.copied.record(e.stream);
++        h.chance_count = parts.len;
++    }
++
++    /// The bound sequence's first `levels` confidences, if the last `chains` drafted them and no draft came since.
++    pub fn batched(h: *Head, levels: usize) !?[]const f32 {
++        for (h.chances[0..h.chance_count], 0..) |x, k| if (x.probs == h.probs and levels <= x.levels) {
++            try h.copied.synchronize(); // the round's first read waits for the copies, the rest find them done
++            return h.pinned.slice(f32)[host_chances + k * max_chain ..][0..levels];
++        };
++        return null;
+     }
+ 
+     /// Draft j's confidence: its share of the head's top-k, at temperature 1 or the request's (waits for level j).
+@@ -450,6 +474,7 @@ pub const Head = struct {
+         const e = h.e;
+         try e.ops().upload(h.logits, logits);
+         const j = offset + 1;
++        h.chance_count = 0;
+         try h.sample(h.logits, if (e.sampling != null) e.b.rule else null, h.meta + 4, e.b.ids + j * 4, h.probs + (j - 1) * 4, j, .subset);
+         var tok: [1]u32 = undefined;
+         var prob: [1]f32 = undefined;
+diff --git a/zig/src/families/nemotron/cuda_mtp_policy.zig b/zig/src/families/nemotron/cuda_mtp_policy.zig
+index 06e11424..5e73e76e 100644
+--- a/zig/src/families/nemotron/cuda_mtp_policy.zig
++++ b/zig/src/families/nemotron/cuda_mtp_policy.zig
+@@ -9,7 +9,9 @@ const Gpu = struct {
+     pub fn bind(b: anytype, seq: anytype) void {
+         b.e.bind(seq);
+     }
++    /// A shared round's streams read the copy their batched draft made; a lone draft's, its own row.
+     pub fn download(b: anytype, raw: []f32) !void {
++        if (try b.head.?.batched(raw.len)) |copied| return @memcpy(raw, copied);
+         try b.e.ops().download(std.mem.sliceAsBytes(raw), b.head.?.probs);
+         try b.e.stream.synchronize();
+     }
+diff --git a/zig/src/families/nemotron/cuda_subset_batch_test.zig b/zig/src/families/nemotron/cuda_subset_batch_test.zig
+index 5e99addd..0c3643d3 100644
+--- a/zig/src/families/nemotron/cuda_subset_batch_test.zig
++++ b/zig/src/families/nemotron/cuda_subset_batch_test.zig
+@@ -146,6 +146,7 @@ const Scratch = struct {
+         var h: Head = undefined;
+         h.e = e;
+         h.pos = 0;
++        h.chance_count = 0;
+         h.pinned = .{ .d = d, .bytes = std.mem.sliceAsBytes(&s.pinned) };
+         h.copied = .{ .d = d, .handle = @ptrFromInt(1) };
+         for (&h.ready) |*event| event.* = h.copied;
+@@ -243,6 +244,7 @@ test "restored head: 15 and 16 token transitions reach mixed shrinking real chai
+     b.lanes = .empty;
+     defer b.lanes.deinit(t.allocator);
+     b.pinned = h.pinned;
++    b.mtp_confidence = 0.5;
+     const covered = @as([16]u32, @splat(1));
+     const uncovered = @as([15]u32, @splat(1)) ++ [_]u32{97};
+     const cases = .{
+@@ -295,6 +297,20 @@ test "restored head: 15 and 16 token transitions reach mixed shrinking real chai
+         try b.backend().vtable.held.?(b.backend().ptr, &n, &neighbor_batch);
+         try t.expectEqualSlices(u32, &solo, &batch);
+         try t.expectEqualSlices(u32, &neighbor_solo, &neighbor_batch);
++        // the policy reads both streams from the batch's one copy, not from their device rows (rewritten here)
++        const half: u32 = @bitCast(@as(f32, 0.5));
++        @memset(&own.probs, half);
++        @memset(&other.probs, half);
++        var chances: [3]f64 = undefined;
++        try t.expect(try b.backend().vtable.probabilities.?(b.backend().ptr, &s, &chances));
++        try t.expectEqualSlices(f64, &.{ 1, 1, 1 }, &chances);
++        try t.expect(try b.backend().vtable.probabilities.?(b.backend().ptr, &n, chances[0..2]));
++        try t.expectEqualSlices(f64, &.{ 1, 1 }, chances[0..2]);
++        try t.expect(try b.backend().vtable.probabilities.?(b.backend().ptr, &n, &chances)); // past its drafts: its row
++        try t.expectEqualSlices(f64, &.{ 0.5, 0.25, 0.125 }, &chances);
++        try h.begin(0); // any later draft leaves the copy behind
++        try t.expect(try b.backend().vtable.probabilities.?(b.backend().ptr, &s, &chances));
++        try t.expectEqualSlices(f64, &.{ 0.5, 0.25, 0.125 }, &chances);
+         try t.expectEqualSlices(usize, &.{ 2, 2, 1 }, &Frame.live);
+         try t.expectEqual(@as(usize, 5), Frame.samples);
+         try t.expectEqual(@as(usize, 0), Frame.errors);
+diff --git a/zig/tests/cuda/main.zig b/zig/tests/cuda/main.zig
+index 6f984ad7..3bf4ded7 100644
+--- a/zig/tests/cuda/main.zig
++++ b/zig/tests/cuda/main.zig
+@@ -134,7 +134,7 @@ const usage =
+     \\  prompt-cuts MODEL IDS_FILE   a prompt keeping states inside chunks and at their ends (background passes too), and resumed from each, equals one uncut pass
+     \\  prompt-segments MODEL IDS_FILE   a prompt run as 2 to 4 staggered segments a call equals one uncut pass, byte for byte
+     \\  cached-plans-tp2 MODEL IDS_FILE   rank-zero cached plans and prompt resumes with the existing expert rank
+-    \\  shared-fork MODEL         the latent MoE's shared expert on the side stream (held back) against one stream, byte for byte
++    \\  shared-fork MODEL         the latent MoE's shared expert on the side stream (held back), lone and in shared windows of 2/4/8 streams, against one stream, byte for byte
+     \\  recapture MODEL           graphs captured again while another sequence is bound: both keep their sampling rules
+     \\  paged MODEL IDS_FILE      a paged sequence against the own one: prompt pass, decode, resumes across page edges
+     \\  grouped-plan <dir>        the shared expert plan against experts.route's bytes (oracle/grouped_plan.py)
+diff --git a/zig/tests/cuda/shared_fork.zig b/zig/tests/cuda/shared_fork.zig
+index ae527657..21bc2018 100644
+--- a/zig/tests/cuda/shared_fork.zig
++++ b/zig/tests/cuda/shared_fork.zig
+@@ -6,19 +6,19 @@ const nemotron = @import("nemotron");
+ const check = @import("check.zig");
+ 
+ const hold_bytes = 256 << 20;
++const shared_streams = [_]usize{ 2, 4, 8 };
+ 
+ /// MODEL in both precisions: every latent MoE layer at 1 to max_rows rows, forked against one stream, byte for byte.
+ pub fn run(gpu: check.Gpu, model: []const u8) !void {
+     for ([_]nemotron.Precision{ .checkpoint, .full }) |p| try layers(gpu, model, p);
+ }
+ 
+-/// Each layer's delta with the side stream held back by copies before its fork, against the one-stream delta.
++/// Each layer, lone at every width and shared by 2, 4 and 8 streams, side stream held back, against one stream.
+ fn layers(gpu: check.Gpu, model: []const u8, precision: nemotron.Precision) !void {
+     const gpa = gpu.gpa;
+     const e = try nemotron.Engine.init(gpa, gpu.io, gpu.ctx, model, null, .{ .context = 4096, .graphs = false, .precision = precision });
+     defer e.deinit();
+     const c = e.c;
+-    const b = &e.b;
+     var plain = e.forward(null);
+     plain.side = null;
+     const forked = e.forward(null);
+@@ -29,7 +29,6 @@ fn layers(gpu: check.Gpu, model: []const u8, precision: nemotron.Precision) !voi
+     if (e.w.mtp) |m| try moes.append(gpa, m.moe);
+     var hold = try cuda.DeviceBuffer.alloc(e.ctx.d, hold_bytes);
+     defer hold.free();
+-    const held: nemotron.kernels.Ops = .{ .k = &e.k, .s = side.s };
+     const most = nemotron.state.windowRows(c);
+     const x = try gpa.alloc(u16, most * c.hidden);
+     defer gpa.free(x);
+@@ -38,24 +37,63 @@ fn layers(gpu: check.Gpu, model: []const u8, precision: nemotron.Precision) !voi
+     const got = try gpa.alloc(u8, want.len);
+     defer gpa.free(got);
+     var prng = std.Random.DefaultPrng.init(0x5eed_f04c);
+-    const rng = prng.random();
++    const t: Trial = .{ .e = e, .plain = &plain, .held = .{ .k = &e.k, .s = side.s }, .hold = hold.ptr, .x = x, .want = want, .got = got, .rng = prng.random() };
++    var segs: [nemotron.engine.max_streams]nemotron.Seg = undefined;
++    var what: [96]u8 = undefined;
+     var cases: usize = 0;
+-    for (moes.items, 0..) |moe, layer| for (1..most + 1) |rows| {
+-        for (x[0 .. rows * c.hidden]) |*v| v.* = @truncate(@as(u32, @bitCast((rng.float(f32) - 0.5) * 4.0)) >> 16);
+-        try e.ops().upload(b.y, std.mem.sliceAsBytes(x[0 .. rows * c.hidden]));
++    for (moes.items, 0..) |moe, layer| {
++        for (1..most + 1) |rows| {
++            try t.same(&forked, moe, rows, try std.fmt.bufPrint(&what, "shared-fork ({t}): layer {d} at {d} rows", .{ precision, layer, rows }));
++            cases += 1;
++        }
++        for (shared_streams) |n| for ([_]usize{ n, most }) |rows| {
++            const window = forked.routedWindow(split(&segs, &e.b, n, rows));
++            if (window.side == null) return error.SharedWindowWithoutSideStream;
++            try t.same(&window, moe, rows, try std.fmt.bufPrint(&what, "shared-fork ({t}): layer {d}, {d} streams of {d} rows", .{ precision, layer, n, rows }));
++            cases += 1;
++        };
++    }
++    check.pass("shared-fork ({t}): {d} (layer, rows) cases, lone and shared, the forked delta byte-equal to the one-stream delta", .{ precision, cases });
++}
++
++/// `rows` rows over `n` streams' segments in turn, as Engine.verifyShared lays a shared window out.
++fn split(segs: []nemotron.Seg, b: *const nemotron.state.Buffers, n: usize, rows: usize) []const nemotron.Seg {
++    var row0: usize = 0;
++    for (segs[0..n], 0..) |*s, k| {
++        const r = rows / n + @intFromBool(k < rows % n);
++        s.* = .{ .b = b, .row0 = row0, .rows = r, .sampled = false };
++        row0 += r;
++    }
++    return segs[0..n];
++}
++
++const Trial = struct {
++    e: *nemotron.Engine,
++    plain: *const nemotron.Forward,
++    held: nemotron.kernels.Ops, // the side stream: copies across `hold` keep it behind the main stream at each fork
++    hold: u64,
++    x: []u16,
++    want: []u8,
++    got: []u8,
++    rng: std.Random,
++
++    /// One layer on random rows: `forked`'s delta byte-equal to the one-stream delta.
++    fn same(t: Trial, forked: *const nemotron.Forward, moe: nemotron.weights.MoE, rows: usize, what: []const u8) !void {
++        const e = t.e;
++        const c = e.c;
++        const b = &e.b;
++        for (t.x[0 .. rows * c.hidden]) |*v| v.* = @truncate(@as(u32, @bitCast((t.rng.float(f32) - 0.5) * 4.0)) >> 16);
++        try e.ops().upload(b.y, std.mem.sliceAsBytes(t.x[0 .. rows * c.hidden]));
+         const len = rows * c.hidden * 2;
+-        try nemotron.latent.run(&plain, moe, rows);
+-        try e.ops().download(want[0..len], b.delta);
++        try nemotron.latent.run(t.plain, moe, rows);
++        try e.ops().download(t.want[0..len], b.delta);
+         // the one-stream pass left the right shared rows behind: a sum that skips the join must read NaN instead
+         const shared_rows = b.ymoe + @as(u64, rows * c.top_k * c.ownShares()) * c.latent * 4;
+         try e.ops().fill32(shared_rows, 0x7fc00000, rows * c.ownShares() * c.hidden);
+-        for (0..8) |_| try held.copy(hold.ptr + hold_bytes / 2, hold.ptr, hold_bytes / 2);
+-        try nemotron.latent.run(&forked, moe, rows);
+-        try e.ops().download(got[0..len], b.delta);
++        for (0..8) |_| try t.held.copy(t.hold + hold_bytes / 2, t.hold, hold_bytes / 2);
++        try nemotron.latent.run(forked, moe, rows);
++        try e.ops().download(t.got[0..len], b.delta);
+         try e.stream.synchronize();
+-        var what: [64]u8 = undefined;
+-        try check.sameBytes(try std.fmt.bufPrint(&what, "shared-fork ({t}): layer {d} at {d} rows", .{ precision, layer, rows }), got[0..len], want[0..len]);
+-        cases += 1;
+-    };
+-    check.pass("shared-fork ({t}): {d} (layer, rows) cases, the forked delta byte-equal to the one-stream delta", .{ precision, cases });
+-}
++        try check.sameBytes(what, t.got[0..len], t.want[0..len]);
++    }
++};

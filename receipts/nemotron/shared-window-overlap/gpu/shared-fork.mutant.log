@@ -1,0 +1,6 @@
+  word 0: 7fff7fff (nan) for bf483f7b (-7.8221864e-1)
+  word 1: 7fff7fff (nan) for bdf2bdbd (-1.1852596e-1)
+  word 2: 7fff7fff (nan) for be6c3dda (-2.307047e-1)
+  word 3: 7fff7fff (nan) for 3f063e62 (5.243894e-1)
+FAIL shared-fork (checkpoint): layer 0 at 1 rows: first difference at byte 0, 2048 of 2048 words differ
+FAIL shared-fork: TestFailed
