@@ -1,0 +1,40 @@
+base d46d17a784758b8a8b66badde1f728f36bdc9541 
+tip e2357b582f041a0352a8f34f97a2f1e0c7150bfc 
+== [tip] zig build test-kernel-contract
+exit=0
+Build Summary: 9/9 steps succeeded; 43/43 tests passed
+== [tip] zig build test
+exit=0
+libwebp 1.6.0 not found: WebP pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+Build Summary: 152/152 steps succeeded; 2413/2422 tests passed (9 skipped)
+== [tip] zig build test-golden
+exit=0
+306/319 equal to the frozen Python answers, 0 unexpected differences
+Build Summary: 4/4 steps succeeded
+== [tip] zig build fuzz-cortheon
+exit=0
+Build Summary: 3/3 steps succeeded; 8/8 tests passed
+== [base] zig build test
+exit=0
+libwebp 1.6.0 not found: WebP pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+Build Summary: 152/152 steps succeeded; 2413/2422 tests passed (9 skipped)
+== [base] zig fmt --check zig build.zig
+exit=0
+== [base] python3 tools/zig/lean_check.py
+2625 files, 503 problems
+== [tip] zig fmt --check zig build.zig
+exit=0
+== [tip] python3 tools/zig/lean_check.py
+2625 files, 503 problems
+== lean_new base -> tip
+exit=0
+lean: 503 problems, 503 on the base, 0 new
+== [tip] zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix <out>
+exit=0
+Build Summary: 170/170 steps succeeded
+== [tip] zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dfatbins=<out>/fatbin --prefix <out>
+exit=0
+Build Summary: 7/7 steps succeeded
+ef8e8562d9a4a687e0af052d02ab5372ae854c848186c33be135a2f2617da342  native/bin/tensorfold-native

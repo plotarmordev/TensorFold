@@ -1,0 +1,16 @@
+cooling: 78 °C > TF_HEAT_LOW 75 °C
+cooling: 84 °C > TF_HEAT_LOW 75 °C
+cooling: 84 °C > TF_HEAT_LOW 75 °C
+cooling: 84 °C > TF_HEAT_LOW 75 °C
+cooling: 84 °C > TF_HEAT_LOW 75 °C
+cooling: 82 °C > TF_HEAT_LOW 75 °C
+cooling: 82 °C > TF_HEAT_LOW 75 °C
+cooling: 83 °C > TF_HEAT_LOW 75 °C
+1 images  run 1  TTFT 2.290 s  cached 0  token_sha256 541bca2d52751d8bb9c44b2af53ce8ff2dfb93745d8cb6bdb740442dad9735ec
+1 images  run 2  TTFT 2.298 s  cached 0  token_sha256 541bca2d52751d8bb9c44b2af53ce8ff2dfb93745d8cb6bdb740442dad9735ec
+1 images  run 3  TTFT 2.293 s  cached 0  token_sha256 541bca2d52751d8bb9c44b2af53ce8ff2dfb93745d8cb6bdb740442dad9735ec
+1 images  median TTFT 2.293 s  stable  token_sha256 541bca2d52751d8bb9c44b2af53ce8ff2dfb93745d8cb6bdb740442dad9735ec
+4 images  run 1  TTFT 15.054 s  cached 0  token_sha256 ef22b44ea1d731737c2d2a757d671d03b1269563d6bb505944e58608ecd444c4
+4 images  run 2  TTFT 15.043 s  cached 0  token_sha256 ef22b44ea1d731737c2d2a757d671d03b1269563d6bb505944e58608ecd444c4
+4 images  run 3  TTFT 15.107 s  cached 0  token_sha256 ef22b44ea1d731737c2d2a757d671d03b1269563d6bb505944e58608ecd444c4
+4 images  median TTFT 15.054 s  stable  token_sha256 ef22b44ea1d731737c2d2a757d671d03b1269563d6bb505944e58608ecd444c4
