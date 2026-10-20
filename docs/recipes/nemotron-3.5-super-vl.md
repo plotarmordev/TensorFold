@@ -30,8 +30,8 @@ A stream drafts on the subset while the last 16 tokens of its context, its promp
 and on the full head otherwise; other streams do not change its choice. Each head has its own captured graphs and
 its own measured level cost beside the window costs both share, and shared rounds are priced at the full head's.
 The target still verifies proposals with its unchanged full-vocabulary head.
-Shared rounds size each stream's drafts by the head's confidences for the chain it last held, squared as the lone
-rule prices them, so streams together draft about as deep as each would alone.
+Without `--mtp-confidence`, shared rounds trim each stream's held drafts by the head's confidences, squared as the
+lone rule prices them, and price the stream's next depth on that chain.
 For CUDA MTP streams, `--mtp-drafts` caps MTP depth (at most 31 for Super) and `--mtp-confidence` sets a
 cumulative-confidence threshold from 0 to 1 instead of the cost-based cutoff. A zero draft cap disables
 drafting. The same controls apply in lone and shared rounds, including resumes and handoff.

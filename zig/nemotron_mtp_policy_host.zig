@@ -151,19 +151,46 @@ test "mtp policy: production probability read binds each stream before a complet
     try std.testing.expectEqual(@as(usize, 4), b.copies);
 }
 
-const Sure = struct {
-    fn probabilities(_: *anyopaque, _: *lanes.Stream, out: []f64) !bool {
+/// The head in Super's shared-round runs: sure of every draft, unsure every third read per stream, or declining.
+const Chances = enum { sure, varying, declined };
+const Super = struct { drafted: bool = true, shared: bool = true, neighbor: bool = true, sampled: bool = false, resumed: bool = false, handoff: bool = false, chances: Chances = .sure };
+/// A run's reads of the head's chances (`held`: the drafts it asks about) and verified windows, in order.
+const Event = struct { subject: bool, read: bool, held: usize = 0, high: bool = false, drafts: usize = 0 };
+const Trace = struct {
+    var events: [1024]Event = undefined;
+    var n: usize = 0;
+    var reads: [2]usize = .{ 0, 0 };
+
+    fn add(e: Event) void {
+        events[n] = e;
+        n += 1;
+    }
+    fn probabilities(_: *anyopaque, s: *lanes.Stream, out: []f64) !bool {
+        const subject = std.mem.eql(u8, s.id, "subject");
+        const k = reads[@intFromBool(subject)];
+        reads[@intFromBool(subject)] += 1;
+        // varying: the subject is unsure every third read, the neighbor on another phase
+        const high = chances != .varying or (k + @intFromBool(!subject)) % 3 != 2;
+        add(.{ .subject = subject, .read = true, .held = out.len, .high = high });
         var chance: f64 = 1;
-        for (out) |*v| {
-            chance *= 0.99;
+        for (out, 0..) |*v, j| {
+            chance *= if (high) 0.99 else if (j == 0) 0.5 else 0.05;
             v.* = chance;
         }
-        return true;
+        return chances != .declined;
     }
+    fn verify(ptr: *anyopaque, windows: []const be.Window, out: []be.Verified) !void {
+        for (windows) |w| add(.{ .subject = std.mem.eql(u8, w.stream.id, "subject"), .read = false, .drafts = w.held + w.tokens.len });
+        const target: *Fake = @ptrCast(@alignCast(ptr));
+        try target.backend().vtable.verify(ptr, windows, out);
+    }
+    var chances: Chances = .sure;
 };
-/// The subject's reply beside a neighbor in rounds the actual Super facts set up, its head sure of its drafts.
-fn superShared(drafted: bool) ![]u32 {
-    Record.most = 0;
+/// Both replies of a run in rounds the actual Super facts set up (no floor), and its trace in `Trace`.
+fn superRun(o: Super) ![2][]u32 {
+    Trace.n = 0;
+    Trace.reads = .{ 0, 0 };
+    Trace.chances = o.chances;
     const e = try a.create(nemo.Engine);
     defer a.destroy(e);
     e.* = undefined;
@@ -172,7 +199,7 @@ fn superShared(drafted: bool) ![]u32 {
     var head: nemo.Head = undefined;
     var b: nemo.Lanes = undefined;
     b.e = e;
-    b.head = if (drafted) &head else null;
+    b.head = if (o.drafted) &head else null;
     b.copy_drafts = false;
     b.mtp_drafts = null;
     b.mtp_confidence = null;
@@ -181,35 +208,115 @@ fn superShared(drafted: bool) ![]u32 {
     for (b.costs[0..32], 1..) |*c, w| c.* = .{ .width = @intCast(w), .ms = 46.0 + 4.0 * @as(f64, @floatFromInt(w)) };
     var cfg = try lanes.Config.init(a, b.facts(), 32, 31);
     defer cfg.deinit(a);
+    cfg.shared_chances = cfg.shared_chances and o.shared;
     var target: Fake = .{ .gpa = a };
     defer target.deinit();
     const original = target.backend();
     var vt = original.vtable.*;
-    vt.probabilities = Sure.probabilities;
-    vt.verify = Record.verify;
+    vt.probabilities = Trace.probabilities;
+    vt.verify = Trace.verify;
     var clock: lanes.fake.FixedClock = .{};
     var core = lanes.Engine.init(a, &cfg, .{ .ptr = original.ptr, .vtable = &vt }, clock.clock());
     defer core.deinit();
-    var subject = try lanes.Stream.init(a, .{ .id = "subject", .prompt = &prompt, .max_new = 80, .eos = &.{}, .drafts = drafted });
+    var kept: std.ArrayList(u32) = .empty;
+    defer kept.deinit(a);
+    try kept.appendSlice(a, prompt[0..4]);
+    const sampling: ?lanes.Sampling = if (o.sampled) .{ .seed = 87, .temperature = 0.7 } else null;
+    var subject = try lanes.Stream.init(a, .{ .id = "subject", .prompt = &prompt, .max_new = 80, .eos = &.{}, .drafts = o.drafted, .sampling = sampling, .reuse = if (o.resumed) .{ .saved = &kept, .at = 4 } else .{} });
     defer subject.deinit(a);
-    var neighbor = try lanes.Stream.init(a, .{ .id = "neighbor", .prompt = &.{ 4, 6, 8, 12, 14 }, .max_new = 80, .eos = &.{}, .drafts = drafted });
+    var neighbor = try lanes.Stream.init(a, .{ .id = "neighbor", .prompt = &.{ 4, 6, 8, 12, 14 }, .max_new = 80, .eos = &.{}, .drafts = o.drafted, .sampling = sampling });
     defer neighbor.deinit(a);
     try core.addStream(&subject);
-    try core.addStream(&neighbor);
+    if (o.neighbor) try core.addStream(&neighbor);
     var steps: usize = 0;
     while (core.activeCount() > 0) : (steps += 1) {
         if (steps > 200) return error.DidNotFinish;
         try core.step();
+        if (o.handoff and steps == 1 and !subject.finished) {
+            try std.testing.expect(core.detach(&subject));
+            try core.adopt(&subject);
+        }
     }
-    return a.dupe(u32, subject.emitted());
+    return .{ try a.dupe(u32, subject.emitted()), try a.dupe(u32, neighbor.emitted()) };
+}
+fn freeBoth(r: [2][]u32) void {
+    for (r) |x| a.free(x);
+}
+/// The widest window a stream verified in a run.
+fn widest(subject: bool) usize {
+    var most: usize = 0;
+    for (Trace.events[0..Trace.n]) |x| if (!x.read and x.subject == subject) {
+        most = @max(most, x.drafts);
+    };
+    return most;
 }
 test "mtp policy: Super's shared rounds draft as deep as the head's chances pay for, its replies unchanged" {
-    const plain = try superShared(false);
-    defer a.free(plain);
-    const got = try superShared(true);
-    defer a.free(got);
-    try std.testing.expectEqualSlices(u32, plain, got);
-    try std.testing.expect(Record.most >= 12); // the priors alone price three or four drafts a stream
+    const plain = try superRun(.{ .drafted = false });
+    defer freeBoth(plain);
+    const got = try superRun(.{});
+    defer freeBoth(got);
+    for (plain, got) |p, g| try std.testing.expectEqualSlices(u32, p, g);
+    try std.testing.expect(widest(true) >= 12); // the priors alone price three or four drafts a stream
+}
+test "mtp policy: each stream's next shared depth follows its own latest chances, never an earlier read" {
+    const plain = try superRun(.{ .drafted = false });
+    defer freeBoth(plain);
+    const got = try superRun(.{ .chances = .varying });
+    defer freeBoth(got);
+    for (plain, got) |p, g| try std.testing.expectEqualSlices(u32, p, g);
+    var deep = [2]usize{ 0, 0 };
+    var unsure = [2]usize{ 0, 0 };
+    var last: [2]?Event = .{ null, null };
+    for (Trace.events[0..Trace.n], 0..) |x, i| {
+        const s = @intFromBool(x.subject);
+        if (!x.read) continue;
+        // the next round's request: one draft after an unsure chain, deep again after a sure one
+        if (last[s]) |before| {
+            if (!before.high) try std.testing.expect(x.held <= 1);
+            if (before.high) deep[s] = @max(deep[s], x.held);
+        }
+        // this round's trim: an unsure chain verifies its first draft alone
+        if (!x.high) for (Trace.events[i + 1 .. Trace.n]) |y| if (!y.read and y.subject == x.subject) {
+            try std.testing.expect(y.drafts <= 1);
+            unsure[s] += 1;
+            break;
+        };
+        last[s] = x;
+    }
+    for (deep, unsure) |d, u| try std.testing.expect(d >= 8 and u > 0);
+}
+test "mtp policy: Super's shared chances keep sampled, resumed and handed-over replies equal to undrafted" {
+    for ([_]bool{ false, true }) |sampled| for ([_]bool{ false, true }) |resumed| for ([_]bool{ false, true }) |handoff| {
+        const plain = try superRun(.{ .drafted = false, .sampled = sampled, .resumed = resumed, .handoff = handoff });
+        defer freeBoth(plain);
+        const got = try superRun(.{ .sampled = sampled, .resumed = resumed, .handoff = handoff, .chances = .varying });
+        defer freeBoth(got);
+        try std.testing.expect(Trace.reads[0] > 0 and Trace.reads[1] > 0); // the shared no-floor path ran
+        for (plain, got) |p, g| try std.testing.expectEqualSlices(u32, p, g);
+    };
+}
+test "mtp policy: shared chances off, declined or alone leave the prior depth rule as it was" {
+    const off = try superRun(.{ .shared = false });
+    defer freeBoth(off);
+    try std.testing.expectEqual(@as(usize, 0), Trace.reads[0] + Trace.reads[1]);
+    var before: [1024]Event = undefined;
+    const count = Trace.n;
+    @memcpy(before[0..count], Trace.events[0..count]);
+    const declined = try superRun(.{ .chances = .declined });
+    defer freeBoth(declined);
+    try std.testing.expect(Trace.reads[0] > 0);
+    var windows: usize = 0;
+    for (Trace.events[0..Trace.n]) |x| if (!x.read) {
+        while (before[windows].read) windows += 1;
+        try std.testing.expectEqual(before[windows].subject, x.subject);
+        try std.testing.expectEqual(before[windows].drafts, x.drafts);
+        windows += 1;
+    };
+    try std.testing.expectEqual(count, windows);
+    for (off, declined) |p, g| try std.testing.expectEqualSlices(u32, p, g);
+    const alone = try superRun(.{ .neighbor = false });
+    defer freeBoth(alone);
+    try std.testing.expectEqual(@as(usize, 0), Trace.reads[0] + Trace.reads[1]); // a lone stream keeps its own rule
 }
 
 test "mtp policy: explicit cap leaves copy capacity independent and invalid confidence is refused" {
