@@ -1,0 +1,128 @@
+From 592610353b1d0b2e16a069a0f22e28ff35e56ae1 Mon Sep 17 00:00:00 2001
+From: plotarmordev <299844489+plotarmordev@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 09:12:15 +0800
+Subject: [PATCH 2/2] nemotron cuda: an encode hook on Vision, and a host test
+ that a request encodes each image once
+
+`Vision.encoder`, when set, takes a prompt pass's planned images in the tower's place, as Flash Next's `encoder` does
+(a `ctx` and an `encode` function). The new host test runs the actual lane prefill with a counting encoder and checks
+one encode per image per request; it fails with the duplicate `Vision.begin` that #1057 removed.
+---
+ zig/src/families/nemotron/cuda.zig            |  1 +
+ zig/src/families/nemotron/cuda_vision.zig     |  8 ++++
+ .../nemotron/cuda_vision_lanes_test.zig       | 45 +++++++++++++++++++
+ .../families/nemotron/cuda_vision_test.zig    |  1 +
+ 4 files changed, 55 insertions(+)
+ create mode 100644 zig/src/families/nemotron/cuda_vision_lanes_test.zig
+
+diff --git a/zig/src/families/nemotron/cuda.zig b/zig/src/families/nemotron/cuda.zig
+index 4c8667fe..221d8075 100644
+--- a/zig/src/families/nemotron/cuda.zig
++++ b/zig/src/families/nemotron/cuda.zig
+@@ -62,6 +62,7 @@ test {
+ 
+ test {
+     _ = @import("cuda_vision_test.zig");
++    _ = @import("cuda_vision_lanes_test.zig");
+ }
+ 
+ test {
+diff --git a/zig/src/families/nemotron/cuda_vision.zig b/zig/src/families/nemotron/cuda_vision.zig
+index 495ee05d..a7b00df8 100644
+--- a/zig/src/families/nemotron/cuda_vision.zig
++++ b/zig/src/families/nemotron/cuda_vision.zig
+@@ -9,6 +9,12 @@ pub const video = radio.video;
+ /// What a request may hold: image tokens in all (the rows buffer), and images.
+ pub const Limits = struct { image_tokens: u32, max_images: u32, video_tokens: u32 = 0 };
+ 
++/// Takes a prompt pass's images in the tower's place, so a host test can count them without a GPU.
++pub const Encoder = struct {
++    ctx: *anyopaque,
++    encode: *const fn (ctx: *anyopaque, s: cuda.Stream, images: []const lanes.stream.Image, spans: []const radio.Span, rows: *const radio.Rows) anyerror!void,
++};
++
+ pub const Vision = struct {
+     gpa: std.mem.Allocator,
+     io: std.Io,
+@@ -19,6 +25,7 @@ pub const Vision = struct {
+     limits: Limits,
+     mark_ids: [3]u32, // the placeholder and its wrapper: text that spells one stays text
+     spans: []radio.Span = &.{}, // the prompt pass in progress
++    encoder: ?Encoder = null, // null: the tower
+ 
+     /// The checkpoint's tower and a rows buffer for `limits`; null with `problem` when it cannot take images.
+     pub fn init(gpa: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []const u8, limits: Limits, problem: *[]const u8) !?*Vision {
+@@ -64,6 +71,7 @@ pub const Vision = struct {
+         if (images.len == 0) return;
+         v.spans = try radio.plan(v.gpa, images, @intCast(from));
+         if (radio.rows.total(v.spans) > v.rows.limit) return error.ImageRows;
++        if (v.encoder) |x| return x.encode(x.ctx, s, images, v.spans, &v.rows);
+         try v.tower.encode(s, images, v.spans, &v.rows);
+     }
+ 
+diff --git a/zig/src/families/nemotron/cuda_vision_lanes_test.zig b/zig/src/families/nemotron/cuda_vision_lanes_test.zig
+new file mode 100644
+index 00000000..dd273242
+--- /dev/null
++++ b/zig/src/families/nemotron/cuda_vision_lanes_test.zig
+@@ -0,0 +1,45 @@
++//! The actual lane prompt pass with a counting encoder: each request sends each of its images through the tower once.
++const std = @import("std");
++const cuda = @import("cuda");
++const lanes = @import("lanes");
++const radio = @import("radio");
++const vision = @import("cuda_vision.zig");
++const Engine = @import("cuda_engine.zig").Engine;
++const Cuda = @import("cuda_lanes.zig").Cuda;
++const a = std.testing.allocator;
++
++const Count = struct {
++    passes: usize = 0,
++    images: usize = 0,
++
++    fn encode(ctx: *anyopaque, _: cuda.Stream, _: []const lanes.stream.Image, spans: []const radio.Span, _: *const radio.Rows) anyerror!void {
++        const c: *Count = @ptrCast(@alignCast(ctx));
++        c.passes += 1;
++        c.images += spans.len;
++    }
++};
++
++test "a lane prompt pass encodes each image of a request once" {
++    for ([_]usize{ 1, 3 }) |n| {
++        var count: Count = .{};
++        var v: vision.Vision = .{ .gpa = a, .io = undefined, .cfg = undefined, .tower = undefined, .rows = .{ .d = undefined, .buf = undefined, .hidden = 1, .limit = 64 }, .marks = undefined, .limits = undefined, .mark_ids = undefined, .encoder = .{ .ctx = &count, .encode = Count.encode } };
++        var e: Engine = .{ .gpa = a, .io = undefined, .ctx = undefined, .stream = undefined, .k = undefined, .w = undefined, .b = undefined, .c = undefined, .max_len = 4096, .pinned = undefined, .history = undefined };
++        // the own sequence (no device memory), too short for the prompt: the pass stops before its first chunk
++        e.serial = .{ .d = undefined, .handle = null };
++        e.own = .{ .arena = null, .ptr = @splat(0), .cap = 1 };
++        e.bound = &e.own;
++        e.vision = &v;
++        var b: Cuda = .{ .gpa = a, .e = &e, .head = null, .pinned = undefined, .rows_out = undefined, .rows_dev = 0, .prompt_out = undefined, .prompt_dev = 0 };
++        defer b.lanes.deinit(a);
++        var images: [3]lanes.stream.Image = undefined;
++        for (images[0..n], 0..) |*img, i| img.* = .{ .pixels = &.{}, .gh = 4, .gw = 4, .tokens = 4, .at = @intCast(1 + i * 6) };
++        const prompt: [20]u32 = @splat(1);
++        var s = try lanes.Stream.init(a, .{ .id = "images", .prompt = prompt[0 .. 6 * n + 2], .max_new = 4, .images = images[0..n] });
++        defer s.deinit(a);
++        for (1..3) |request| {
++            try std.testing.expectError(error.ContextFull, b.backend().prefill(&s));
++            try std.testing.expectEqual(request, count.passes);
++            try std.testing.expectEqual(request * n, count.images);
++        }
++    }
++}
+diff --git a/zig/src/families/nemotron/cuda_vision_test.zig b/zig/src/families/nemotron/cuda_vision_test.zig
+index ffc7e5db..da23f065 100644
+--- a/zig/src/families/nemotron/cuda_vision_test.zig
++++ b/zig/src/families/nemotron/cuda_vision_test.zig
+@@ -8,6 +8,7 @@ test "low independent image and video budgets reach the actual tower boundary" {
+         var v: vision.Vision = undefined;
+         v.gpa = std.testing.allocator;
+         v.spans = &.{};
++        v.encoder = null;
+         defer v.end();
+         v.rows = .{ .d = undefined, .buf = undefined, .hidden = 4096, .limit = try vision.reservation(.{ .image_tokens = c[0], .video_tokens = c[1], .max_images = 4 }, true) };
+         v.tower.c.text_hidden = 1;
+-- 
+2.43.0
+

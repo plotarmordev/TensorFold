@@ -1,0 +1,17 @@
+test-modelopt-host
++- run test 10 pass, 1 fail (11 total)
+r__func_967 (test)
+                return error.TestExpectedEqual;
+                ^
+<zig>/lib/std/testing.zig:57:5: 0x11c4fc7 in expectEqual (test)
+    return expectEqualInner(T, expected, actual);
+    ^
+<checkout>/zig/src/families/nemotron/cuda_vision_lanes_test.zig:41:13: 0x11c506b in test.a lane prompt pass encodes each image of a request once (test)
+            try std.testing.expectEqual(request, count.passes);
+            ^
+error: 'cuda_vision_lanes_test.test.a lane prompt pass encodes each image of a request once' failed:
+       expected 1, found 2
+       <zig>/lib/std/testing.zig:93:17: 0x11c3c37 in expectEqualInne
+failed command: <cache>/o/5452de1a74c2d98b4b0c257a0983383e/test --cache-dir=<cache> --seed=0x1d7df409 --listen=-
+
+Build Summary: 3/5 steps succeeded (1 failed); 10/11 tests passed (1 failed)

@@ -1,0 +1,17 @@
+4dc5ddf3ec8e7c2c153bbcbc1306eb1725a96c93faaf28402a9344e8de1d5b54  ./host/base.lean.txt
+ef9c490960d0175b99a4df59ab97c1eeebd6a871c1adc157d4e60b7c357580e6  ./host/base.test.log
+979797671d2fc2e233aaead515861d968f3d12d51007f6bd1578b2e5527ea61c  ./host/gates.txt
+b575525ed6c7cd5239d981ee82f947cf4b66c81a93372c7da02d7c77adbd38ff  ./host/lean-new.txt
+d4b47952e5eaa21988f87296daf29ba07adb5e50e3db40a40639281480611ca1  ./host/mutant.new-test.log
+a179188d22919807c1d06aff19abfd315a6976b6a1d4bce6a6de53ba33d316ee  ./host/tip.fatbins.log
+c1f2efa425ed265d101730405813bdae4b3383e11e0504c17e04b055e6335f39  ./host/tip.fuzz-cortheon.log
+7bd170d8c8ea8f498ea7e9c133a3a0f57937787f54b445275728cf8cfa20161e  ./host/tip.lean.txt
+bd4cdda46d248efddfb2f14c3a99cf8e2e0664cf8c6a13b811a315014ee5ab78  ./host/tip.native.log
+8840946ccc65a6d0d0ce2b1065c67d968185eaa269c2eae998f36c7dd0637f4c  ./host/tip.new-test.log
+2f082a4282951a72af1e87a5fb69c020e0e8c2826b1c342b461fc3c744bcc446  ./host/tip.test-golden.log
+af77dfd5852dfcbca7bd7b3330270cc7a9c1fdff5a5a2b45c7a4c3fbf9d1cd9f  ./host/tip.test-kernel-contract.log
+25884266133914dd2713084f870b5107196c45fb991dd616dadffc421dec05ef  ./host/tip.test.log
+dbe5dac4fd2cd8101d63bf25dddbf8b7850fd4daeb8fc718eb7b5d9326f8ebec  ./patches/0001-nemotron-cuda-a-prompt-pass-with-images-runs-the-RAD.patch
+f33ad8ab54b1010ca3e0f2c5469d49c679577ec51af4986eae8dceadda723281  ./patches/0002-nemotron-cuda-an-encode-hook-on-Vision-and-a-host-te.patch
+3e6d4f9a84d27ddd3ad3c52fa11c0d4900e1f742a14c7502cb2aa3927394ee23  ./README.md
+61eafdd97de712579d9ce2f272350afa9bf163db9c6187610eb2498f9dc4da51  ./scripts/gates.sh

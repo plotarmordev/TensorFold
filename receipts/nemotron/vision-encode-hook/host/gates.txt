@@ -1,0 +1,64 @@
+base d1018b318fb51981c4a18f12e40269a4d3ee9713 
+tip 592610353b1d0b2e16a069a0f22e28ff35e56ae1 
+mutant 592610353b1d0b2e16a069a0f22e28ff35e56ae1 M  zig/src/families/nemotron/cuda_lanes.zig 
+== [mutant] git diff (the #1057 fix reverted)
+diff --git a/zig/src/families/nemotron/cuda_lanes.zig b/zig/src/families/nemotron/cuda_lanes.zig
+index 492846b3..1479ab00 100644
+--- a/zig/src/families/nemotron/cuda_lanes.zig
++++ b/zig/src/families/nemotron/cuda_lanes.zig
+@@ -309,6 +309,8 @@ pub const Cuda = struct {
+             e.prompt_rows = .{ .k = k, .rows = rows, .logits = if (self.prompt_logits) |b| b.ptr else e.b.logits, .picks = words[picks_at..][0..rows], .picks_dev = self.prompt_dev + picks_at * 4, .out = words[0..picks_at], .out_dev = self.prompt_dev, .stride = row_words, .ctx = &sink, .call = PromptSink.take };
+         }
+         defer e.prompt_rows = null;
++        if (s.images.len > 0) try (e.vision orelse return error.NoVision).begin(e.stream, s.images, from);
++        defer if (e.vision) |v| v.end();
+         var tap: TapSink = .{ .self = self, .taps = &gop.value_ptr.taps };
+         tap.taps.prompt.clearRetainingCapacity();
+         tap.taps.from = from;
+== [mutant] zig build test-modelopt-host -Dmodelopt-host-filter=a lane prompt pass encodes each image of a request once
+exit=1
+    return expectEqualInner(T, expected, actual);
+       expected 1, found 2
+Build Summary: 3/5 steps succeeded (1 failed); 10/11 tests passed (1 failed)
+== [tip] zig build test-modelopt-host -Dmodelopt-host-filter=a lane prompt pass encodes each image of a request once
+exit=0
+Build Summary: 5/5 steps succeeded; 11/11 tests passed
+== [tip] zig build test-kernel-contract
+exit=0
+Build Summary: 11/11 steps succeeded; 65/65 tests passed
+== [tip] zig build test
+exit=0
+libwebp 1.6.0 not found: WebP pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+Build Summary: 211/211 steps succeeded; 2960/2974 tests passed (14 skipped)
+== [tip] zig build test-golden
+exit=0
+306/319 equal to server goldens, 0 unexpected differences
+26/26 equal to server goldens, 0 unexpected differences
+Build Summary: 5/5 steps succeeded
+== [tip] zig build fuzz-cortheon
+exit=0
+Build Summary: 3/3 steps succeeded; 11/11 tests passed
+== [base] zig build test
+exit=0
+libwebp 1.6.0 not found: WebP pixel cases skipped
+libjpeg-turbo 3.1.4.1 not found: JPEG pixel cases skipped
+Build Summary: 211/211 steps succeeded; 2959/2973 tests passed (14 skipped)
+== [base] zig fmt --check zig build.zig
+exit=0
+== [base] python3 tools/zig/lean_check.py
+3339 files, 444 problems
+== [tip] zig fmt --check zig build.zig
+exit=0
+== [tip] python3 tools/zig/lean_check.py
+3340 files, 444 problems
+== lean_new base -> tip
+exit=0
+lean: 444 problems, 444 on the base, 0 new
+== [tip] zig build fatbins -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 --prefix <out>
+exit=0
+Build Summary: 182/182 steps succeeded
+== [tip] zig build native -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dfatbins=<out>/fatbin --prefix <out>
+exit=0
+Build Summary: 7/7 steps succeeded
+c5d657c8ea813c171c4a96c1c5a4a50355e2fd54e65d6e6078e30841589c162e  native/bin/tensorfold-native
