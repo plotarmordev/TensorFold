@@ -36,6 +36,7 @@ pub const Plan = struct {
     grammar_from: u32 = 0, // the first row the grammar drafted itself (0: none)
     recalled: bool = false, // the copy came from Recall's record
     graft_recalled: []const bool = &.{}, // each row from branch_from: a Recall candidate grafted it
+    chances: []const f64 = &.{}, // the head's chances of its held drafts, read for a shared round (before its trim)
 
     pub fn count(p: Plan) usize {
         return p.held + p.tokens.len;
@@ -218,7 +219,7 @@ pub fn allocate(e: *Engine, plans: []Plan) !void {
     const a = e.arena.allocator();
     const fixed = try a.alloc(u32, plans.len);
     const probs = try a.alloc([]const f64, plans.len);
-    for (plans, fixed, probs) |p, *fx, *pr| {
+    for (plans, fixed, probs) |*p, *fx, *pr| {
         const n = p.count();
         if (p.kind == .forced or n == 0) {
             fx.* = 1 + @as(u32, @intCast(if (p.kind == .forced) n else 0));
@@ -228,9 +229,11 @@ pub fn allocate(e: *Engine, plans: []Plan) !void {
             pr.* = try alloc.chainProbabilities(a, &.{e.cfg.copy_rate}, n);
         } else {
             fx.* = 1;
-            const chances = try nodeChances(e, p.stream, n);
+            const chances = if (plans.len > 1) try sharedChances(e, p.*) else null;
+            p.chances = chances orelse &.{};
+            const all = chances orelse try nodeChances(e, p.stream, n);
             const controls = @import("mtp_policy.zig").Controls{ .cap = e.cfg.most_drafts, .floor = e.cfg.draft_confidence };
-            pr.* = if (p.kind == .head and e.cfg.draft_confidence != null) chances[0..controls.prefix(chances)] else chances;
+            pr.* = if (p.kind == .head and e.cfg.draft_confidence != null) all[0..controls.prefix(all)] else all;
         }
     }
     const untimed: @import("table.zig").Table = .{};
@@ -299,6 +302,14 @@ pub fn nodeChances(e: *Engine, s: *Stream, n: usize) ![]const f64 {
     }
     if (e.cfg.draft_confidence != null) return error.NoDraftProbabilities;
     return alloc.chainProbabilities(a, try e.rule.rates(who(s)), n);
+}
+
+/// The head's chance for each draft of a held chain in a shared round, when the family reads them for shared rounds.
+fn sharedChances(e: *Engine, p: Plan) !?[]const f64 {
+    if (!e.cfg.shared_chances or e.cfg.node_probabilities or p.kind != .head or p.held != p.count()) return null;
+    const chances = e.backend.vtable.probabilities orelse return null;
+    const out = try e.arena.allocator().alloc(f64, p.held);
+    return if (try chances(e.backend.ptr, p.stream, out)) out else null;
 }
 
 /// Structured output: the rows an accepted path can use, each row's bits, and the grammar's drafts after a lone chain.

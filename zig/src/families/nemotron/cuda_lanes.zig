@@ -165,6 +165,7 @@ pub const Cuda = struct {
             .drafts = @intCast(self.draftControls().limit(width - 1)),
             .draft_confidence = self.mtp_confidence,
             .draft_probabilities = self.mtp_confidence != null,
+            .shared_chances = drafting, // shared rounds size drafts by the held chain's confidences, as lone rounds do
             .draft_streams = drafting, // a shared round's heads draft in one batch (Head.chains)
             .window_costs = self.costs[0..self.cost_count],
             .mtp_step_ms = self.mtp_ms,

@@ -273,7 +273,10 @@ pub const Engine = struct {
             if (e.cfg.family_mtp and p.stream.drafts) try heads.append(a, i);
         }
         const whos = try a.alloc(depth.Who, heads.items.len);
-        for (whos, heads.items) |*w, i| w.* = win.who(plans[i].stream);
+        for (whos, heads.items) |*w, i| {
+            w.* = win.who(plans[i].stream);
+            w.chances = plans[i].chances;
+        }
         const budgets = try a.alloc(i64, heads.items.len);
         const sampled = win.anySampled(plans);
         try e.rule.budgets(whos, win.probe(e), sampled, budgets);

@@ -36,6 +36,7 @@ pub const Who = struct {
     granted: ?u32 = null,
     stream: ?*anyopaque = null,
     sampled: bool = false, // keyed draws: host work a row that a greedy round does not have
+    chances: []const f64 = &.{}, // the head's chances of the chain its last shared round held, when read
 };
 
 /// Whether a copied continuation is ahead of a stream (the round loop proposes; Python `_copy_proposal`).
@@ -223,7 +224,8 @@ pub const Rule = struct {
         defer for (probs[0..made]) |p| r.gpa.free(p);
         for (whos, most, probs) |w, *m, *p| {
             m.* = @min(@as(i64, r.most_drafts), @max(1, w.draft_room - 1));
-            p.* = try alloc.chainProbabilities(r.gpa, try r.rates(w), @intCast(m.*));
+            const learned = try r.rates(w);
+            p.* = if (w.chances.len > 0) try alloc.continued(r.gpa, w.chances, @intCast(m.*)) else try alloc.chainProbabilities(r.gpa, learned, @intCast(m.*));
             made += 1;
         }
         const ones = try r.gpa.alloc(u32, whos.len);
@@ -360,4 +362,38 @@ test "a shared round's drafts come out the same whichever depths its overhead wa
         try rule.budgets(&whos, probe, false, out);
     }
     try std.testing.expectEqualSlices(i64, &got[0], &got[1]);
+}
+
+test "a shared round drafts a stream as deep as the chances of the chain it held pay for, past its priors" {
+    const gpa = std.testing.allocator;
+    var shared: Table = .{};
+    defer shared.deinit(gpa);
+    for (1..33) |w| try shared.put(gpa, @intCast(w), 46.0 + 4.0 * @as(f64, @floatFromInt(w)));
+    const empty: Table = .{};
+    const No = struct {
+        fn copy(_: *anyopaque, _: *const Who) bool {
+            return false;
+        }
+    };
+    var unused: u8 = 0;
+    const probe: Probe = .{ .ptr = &unused, .copy = No.copy };
+    var sure: [12]f64 = undefined;
+    var reach: f64 = 1.0;
+    for (&sure) |*c| {
+        reach *= 0.99;
+        c.* = reach;
+    }
+    const held = [_][]const f64{ &.{}, &sure, &.{ 0.9, 0.18 } };
+    var got: [3][2]i64 = undefined;
+    for (held, &got) |chances, *out| {
+        var rule: Rule = .{ .gpa = gpa, .prior = &.{ 0.8, 0.72, 0.68, 0.62, 0.58, 0.55, 0.5, 0.5 }, .most_drafts = 31, .family_costs = &empty, .shared_costs = &shared, .mtp_step_ms = 3.6, .plain_guard = false, .node_probabilities = false, .batch_rows = 32, .batched_heads = true };
+        defer rule.deinit();
+        var states: [2]?State = .{ null, null };
+        defer for (&states) |*s| if (s.*) |*x| x.deinit(gpa);
+        var whos = [_]Who{ .{ .state = &states[0], .draft_room = 100, .finished = false, .forced = false, .chances = chances }, .{ .state = &states[1], .draft_room = 100, .finished = false, .forced = false } };
+        try rule.budgets(&whos, probe, false, out);
+    }
+    try std.testing.expectEqualSlices(i64, &.{ 3, 3 }, &got[0]); // both on their priors
+    try std.testing.expect(got[1][0] > sure.len and got[1][1] <= got[0][1]);
+    try std.testing.expectEqual(@as(i64, 1), got[2][0]); // a chain whose second draft seldom lands stops at one
 }

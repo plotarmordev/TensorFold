@@ -143,9 +143,73 @@ test "mtp policy: production probability read binds each stream before a complet
     try std.testing.expect(try nemo.mtp_policy.read(&b, &s1, &out, Ops));
     try std.testing.expectEqualSlices(f64, &.{ 0.5, 0.25, 0.125, 0.0625 }, &out);
     try std.testing.expectEqual(@as(usize, 3), b.copies);
+    b.mtp_confidence = null; // no floor: the chances shared rounds price, at the lone rule's calibration
+    try std.testing.expect(try nemo.mtp_policy.read(&b, &s2, &out, Ops));
+    for ([_]f64{ 0.5625, 0.31640625, 0.177978515625, 0.1001129150390625 }, out) |want, got| try std.testing.expectApproxEqAbs(want, got, 1e-15);
+    b.head = null;
+    try std.testing.expect(!try nemo.mtp_policy.read(&b, &s1, &out, Ops));
+    try std.testing.expectEqual(@as(usize, 4), b.copies);
+}
+
+const Sure = struct {
+    fn probabilities(_: *anyopaque, _: *lanes.Stream, out: []f64) !bool {
+        var chance: f64 = 1;
+        for (out) |*v| {
+            chance *= 0.99;
+            v.* = chance;
+        }
+        return true;
+    }
+};
+/// The subject's reply beside a neighbor in rounds the actual Super facts set up, its head sure of its drafts.
+fn superShared(drafted: bool) ![]u32 {
+    Record.most = 0;
+    const e = try a.create(nemo.Engine);
+    defer a.destroy(e);
+    e.* = undefined;
+    e.c.latent = 512;
+    e.c.bolt = false;
+    var head: nemo.Head = undefined;
+    var b: nemo.Lanes = undefined;
+    b.e = e;
+    b.head = if (drafted) &head else null;
+    b.copy_drafts = false;
+    b.mtp_drafts = null;
     b.mtp_confidence = null;
-    try std.testing.expect(!try nemo.mtp_policy.read(&b, &s2, &out, Ops));
-    try std.testing.expectEqual(@as(usize, 3), b.copies);
+    b.mtp_ms = 3.6;
+    b.cost_count = 32;
+    for (b.costs[0..32], 1..) |*c, w| c.* = .{ .width = @intCast(w), .ms = 46.0 + 4.0 * @as(f64, @floatFromInt(w)) };
+    var cfg = try lanes.Config.init(a, b.facts(), 32, 31);
+    defer cfg.deinit(a);
+    var target: Fake = .{ .gpa = a };
+    defer target.deinit();
+    const original = target.backend();
+    var vt = original.vtable.*;
+    vt.probabilities = Sure.probabilities;
+    vt.verify = Record.verify;
+    var clock: lanes.fake.FixedClock = .{};
+    var core = lanes.Engine.init(a, &cfg, .{ .ptr = original.ptr, .vtable = &vt }, clock.clock());
+    defer core.deinit();
+    var subject = try lanes.Stream.init(a, .{ .id = "subject", .prompt = &prompt, .max_new = 80, .eos = &.{}, .drafts = drafted });
+    defer subject.deinit(a);
+    var neighbor = try lanes.Stream.init(a, .{ .id = "neighbor", .prompt = &.{ 4, 6, 8, 12, 14 }, .max_new = 80, .eos = &.{}, .drafts = drafted });
+    defer neighbor.deinit(a);
+    try core.addStream(&subject);
+    try core.addStream(&neighbor);
+    var steps: usize = 0;
+    while (core.activeCount() > 0) : (steps += 1) {
+        if (steps > 200) return error.DidNotFinish;
+        try core.step();
+    }
+    return a.dupe(u32, subject.emitted());
+}
+test "mtp policy: Super's shared rounds draft as deep as the head's chances pay for, its replies unchanged" {
+    const plain = try superShared(false);
+    defer a.free(plain);
+    const got = try superShared(true);
+    defer a.free(got);
+    try std.testing.expectEqualSlices(u32, plain, got);
+    try std.testing.expect(Record.most >= 12); // the priors alone price three or four drafts a stream
 }
 
 test "mtp policy: explicit cap leaves copy capacity independent and invalid confidence is refused" {

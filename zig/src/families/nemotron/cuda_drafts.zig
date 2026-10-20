@@ -246,9 +246,12 @@ pub const Drafter = struct {
     }
 };
 
-/// The depth rule `run` and a lone served stream draft by: greedy calibration power 2, as deep as the costs' widths.
+/// Greedy calibration (app._rules): the head's running confidence to this power is its chain's chance of landing.
+pub const calibration = 2.0;
+
+/// The depth rule `run` and a lone served stream draft by: the greedy calibration, as deep as the costs' widths.
 pub fn depthRule(c: core.draft_depth.Costs) DepthRule {
-    return DepthRule.init(c, c.rows - 1, null, 2.0);
+    return DepthRule.init(c, c.rows - 1, null, calibration);
 }
 
 test "a copy's room grows with what the last copy kept, from 15 tokens to the window's drafts" {

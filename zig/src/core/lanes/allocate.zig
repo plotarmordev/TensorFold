@@ -83,6 +83,20 @@ pub fn chainProbabilities(gpa: Allocator, rates: []const f64, count: usize) ![]f
     return out;
 }
 
+/// A held chain's chances to `count` nodes, continued past its depth at its last level's chance. Caller frees.
+pub fn continued(gpa: Allocator, held: []const f64, count: usize) ![]f64 {
+    const out = try gpa.alloc(f64, count);
+    const n = @min(held.len, count);
+    @memcpy(out[0..n], held[0..n]);
+    const last = if (held.len < 2) held[0] else if (held[held.len - 2] > 0) held[held.len - 1] / held[held.len - 2] else 0;
+    var reach = held[held.len - 1];
+    for (out[n..]) |*o| {
+        reach *= last;
+        o.* = reach;
+    }
+    return out;
+}
+
 /// Costs for 1..rows: timed widths as measured, interpolated between them, the widest's ms a row past it.
 pub fn extendCosts(gpa: Allocator, costs: []const Cost, rows: u32) !Table {
     var out: Table = .{};
@@ -194,4 +208,20 @@ test "extendCosts interpolates and extrapolates" {
     try std.testing.expectEqual(@as(?f64, 4.0), t.get(1));
     try std.testing.expectEqual(@as(?f64, 6.0), t.get(3));
     try std.testing.expectEqual(@as(?f64, 12.0), t.get(6));
+}
+
+test "a held chain goes on at its last level's chance, and a chain that reached zero stays there" {
+    const gpa = std.testing.allocator;
+    const longer = try continued(gpa, &.{ 0.9, 0.81, 0.405 }, 5);
+    defer gpa.free(longer);
+    for ([_]f64{ 0.9, 0.81, 0.405, 0.2025, 0.10125 }, longer) |want, got| try std.testing.expectApproxEqAbs(want, got, 1e-12);
+    const shorter = try continued(gpa, &.{ 0.9, 0.81, 0.405 }, 2);
+    defer gpa.free(shorter);
+    try std.testing.expectEqualSlices(f64, &.{ 0.9, 0.81 }, shorter);
+    const one = try continued(gpa, &.{0.5}, 3);
+    defer gpa.free(one);
+    try std.testing.expectEqualSlices(f64, &.{ 0.5, 0.25, 0.125 }, one);
+    const gone = try continued(gpa, &.{ 0.5, 0, 0 }, 4);
+    defer gpa.free(gone);
+    try std.testing.expectEqualSlices(f64, &.{ 0.5, 0, 0, 0 }, gone);
 }
