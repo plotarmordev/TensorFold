@@ -138,9 +138,13 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     q35.addImport("core", mods.core);
     q35.addImport("qwen35", mods.qwen35);
     b.installArtifact(b.addExecutable(.{ .name = "tf-qwen35-cuda", .root_module = q35 }));
-    const d3_tool = b.createModule(.{ .root_source_file = b.path("zig/src/families/drama3/generate.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "core", .module = mods.core }, .{ .name = "drama3", .module = @import("drama3_host.zig").module(b, target, optimize, cuda, mods.core) } } });
+    const d3 = @import("drama3_host.zig").module(b, target, optimize, cuda, mods.core);
+    const d3_tool = b.createModule(.{ .root_source_file = b.path("zig/src/families/drama3/generate.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "core", .module = mods.core }, .{ .name = "drama3", .module = d3 } } });
     const d3_exe = b.addExecutable(.{ .name = "drama3-generate", .root_module = d3_tool });
     b.step("drama3-generate", "Drama generation and replay controls on CUDA").dependOn(&b.addInstallArtifact(d3_exe, .{}).step);
+    const d3_oracle = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/drama3_codec_oracle.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "drama3", .module = d3 }} });
+    const d3_oracle_exe = b.addExecutable(.{ .name = "drama3-codec-oracle", .root_module = d3_oracle });
+    b.step("drama3-codec-oracle", "The fp32 codec's whole decodes of the frozen codec gate's code prefixes; does not run a GPU").dependOn(&b.addInstallArtifact(d3_oracle_exe, .{}).step);
 }
 
 /// The GLM-5.3-Flash CUDA family over the runtime, the core, the lane core, canon's shares and core/heat.zig.
