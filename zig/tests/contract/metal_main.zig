@@ -180,12 +180,15 @@ pub fn main(init: std.process.Init) !u8 {
             try kernels.append(a, flash_list[flash_made - 1].kernel());
         }
     };
-    var d3norm: ?drama3_k.Norm = null;
-    defer if (d3norm) |*n| n.deinit();
-    if (wanted(o, drama3_k.spec().name)) {
-        d3norm = try drama3_k.Norm.init(a, device, queue);
-        try kernels.append(a, d3norm.?.kernel());
+    var d3_list: [std.enums.values(drama3_k.Which).len]drama3_k.Norm = undefined;
+    var d3_made: usize = 0;
+    defer for (d3_list[0..d3_made]) |*n| n.deinit();
+    for (std.enums.values(drama3_k.Which)) |w| {
+        if (!wanted(o, drama3_k.spec(w).name)) continue;
+        d3_list[d3_made] = try drama3_k.Norm.init(a, device, queue, w);
+        d3_made += 1;
     }
+    for (d3_list[0..d3_made]) |*n| try kernels.append(a, n.kernel());
     var topk: ?topk_k.TopK = null;
     defer if (topk) |*t| t.deinit();
     if (wanted(o, topk_k.spec().name)) {

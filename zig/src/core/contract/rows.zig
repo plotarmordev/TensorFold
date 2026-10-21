@@ -9,7 +9,8 @@ pub const Fill = enum { random, nonfinite, stress };
 /// The order a simulated accumulator adds terms in: one chain, contiguous halves, or 32 lanes then their halves.
 pub const Order = enum { sequential, pairwise, strided };
 
-pub const Op = enum { rms, softmax, sum, dot, max };
+/// add_rms: rms of the residual bf16(x + z) with gamma 1 + w, after the residual itself; gated: rms(x) w silu(z).
+pub const Op = enum { rms, softmax, sum, dot, max, add_rms, gated };
 
 /// One row's terms summed in `acc` (each add rounded to it) in `order`.
 pub fn sumIn(acc: c.Accum, order: Order, t: []const f64) f64 {
@@ -47,39 +48,54 @@ fn halves(acc: c.Accum, t: []const f64) f64 {
     return round(acc, halves(acc, t[0..mid]) + halves(acc, t[mid..]));
 }
 
-/// A row op's host inputs: x [rows, k] and w [k] as bf16 bits; rms and softmax write k outputs a row, the rest one.
+/// A row op's host inputs: x [rows, k], w [k] and (add_rms, gated) z [rows, k] as bf16 bits; outputs per `outputs`.
 pub const Rows = struct {
     a: std.mem.Allocator,
     op: Op,
     shape: c.Shape,
     x: []u16,
     w: []u16,
+    z: []u16,
     eps: f32 = 1e-6,
 
     pub fn init(a: std.mem.Allocator, op: Op, shape: c.Shape) !Rows {
         const x = try a.alloc(u16, shape.rows * shape.k);
         errdefer a.free(x);
-        return .{ .a = a, .op = op, .shape = shape, .x = x, .w = try a.alloc(u16, shape.k) };
+        const w = try a.alloc(u16, shape.k);
+        errdefer a.free(w);
+        const z = try a.alloc(u16, if (op == .add_rms or op == .gated) shape.rows * shape.k else 0);
+        return .{ .a = a, .op = op, .shape = shape, .x = x, .w = w, .z = z };
     }
 
     pub fn deinit(r: Rows) void {
         r.a.free(r.x);
         r.a.free(r.w);
+        r.a.free(r.z);
     }
 
+    /// rms, gated and softmax write k outputs a row, add_rms the residual rows then the norm rows, the rest one.
     pub fn outputs(r: Rows) usize {
-        return r.shape.rows * (if (r.op == .rms or r.op == .softmax) r.shape.k else 1);
+        return r.shape.rows * switch (r.op) {
+            .rms, .gated, .softmax => r.shape.k,
+            .add_rms => 2 * r.shape.k,
+            .sum, .dot, .max => 1,
+        };
     }
 
     pub fn fill(r: Rows, mode: Fill, seed: u64) void {
         var prng = std.Random.DefaultPrng.init(seed);
         const rng = prng.random();
         const k = r.shape.k;
-        for (r.w) |*v| v.* = c.toBf16(if (r.op == .dot) rng.float(f32) * 2 - 1 else 0.5 + rng.float(f32));
+        for (r.w) |*v| v.* = c.toBf16(switch (r.op) {
+            .dot => rng.float(f32) * 2 - 1,
+            .add_rms => rng.float(f32) - 0.5,
+            else => 0.5 + rng.float(f32),
+        });
         for (r.x, 0..) |*v, i| v.* = c.toBf16(switch (r.op) {
             .softmax => rng.float(f32) * 16 - 8,
             else => (rng.float(f32) * 2 - 1) * (if (i % 64 == 7) @as(f32, 20) else 1),
         });
+        for (r.z) |*v| v.* = c.toBf16(if (r.op == .gated) rng.float(f32) * 8 - 4 else rng.float(f32) * 2 - 1);
         if (mode == .stress) return r.stress(rng);
         if (mode != .nonfinite) return;
         const nan = c.toBf16(std.math.nan(f32));
@@ -96,15 +112,22 @@ pub const Rows = struct {
     fn stress(r: Rows, rng: std.Random) void {
         const k = r.shape.k;
         const h = k / 2;
+        const norm = r.op == .rms or r.op == .add_rms;
+        if (r.op == .gated) {
+            // squares of 128 to 255: four of them pass fp16's range; a 128-wide head's sum stays below 2^24
+            for (r.x) |*v| v.* = c.toBf16(@as(f32, @floatFromInt(128 + rng.uintLessThan(u32, 128))) * @as(f32, if (rng.boolean()) 1 else -1));
+            return;
+        }
+        @memset(r.z, 0);
         for (0..r.shape.rows) |row| {
             const x = r.x[row * k ..][0..k];
             for (0..h) |i| {
                 const v: f32 = @floatFromInt(1 + rng.uintLessThan(u32, 64));
                 const nudge: f32 = if (i < 8) 1 else 0;
-                x[i] = c.toBf16(if (r.op == .rms) v - 32 else v);
+                x[i] = c.toBf16(if (norm) v - 32 else v);
                 x[h + i] = c.toBf16(switch (r.op) {
                     .sum => nudge - v,
-                    .rms => @as(f32, @floatFromInt(rng.uintLessThan(u32, 65))) - 32,
+                    .rms, .add_rms => @as(f32, @floatFromInt(rng.uintLessThan(u32, 65))) - 32,
                     else => v + nudge,
                 });
             }
@@ -119,12 +142,28 @@ pub const Rows = struct {
         if (k % 2 == 1) r.w[k - 1] = 0;
     }
 
+    /// x, or the residual bf16(x + z) add_rms normalizes.
     fn xv(r: Rows, row: usize, i: usize) f64 {
-        return c.fromBf16(r.x[row * r.shape.k + i]);
+        const x = c.fromBf16(r.x[row * r.shape.k + i]);
+        if (r.op != .add_rms) return x;
+        return c.fromBf16(c.toBf16(@floatCast(x + c.fromBf16(r.z[row * r.shape.k + i]))));
     }
 
+    /// w, or add_rms's zero-centred gamma 1 + w.
     fn wv(r: Rows, i: usize) f64 {
-        return c.fromBf16(r.w[i]);
+        const w = c.fromBf16(r.w[i]);
+        return if (r.op == .add_rms) 1 + w else w;
+    }
+
+    /// gated's silu(z) for output i of row `row`.
+    fn gate(r: Rows, row: usize, i: usize) f64 {
+        const z = c.fromBf16(r.z[row * r.shape.k + i]);
+        return z / (1 + @exp(-z));
+    }
+
+    /// Where row `row`'s normed outputs start: add_rms writes all the residual rows first.
+    fn normAt(r: Rows, row: usize) usize {
+        return (if (r.op == .add_rms) r.shape.rows + row else row) * r.shape.k;
     }
 
     /// Row `row`'s summed terms (rms: squares, softmax: exp(x - max), dot: x w, sum: x) into `t`; max has none.
@@ -137,7 +176,7 @@ pub const Rows = struct {
         for (t, 0..) |*o, i| {
             const v = r.xv(row, i);
             o.* = switch (r.op) {
-                .rms => v * v,
+                .rms, .add_rms, .gated => v * v,
                 .softmax => @exp(v - top),
                 .dot => v * r.wv(i),
                 .sum => v,
@@ -161,7 +200,7 @@ pub const Rows = struct {
                 abs += @abs(v);
             }
             switch (r.op) {
-                .rms => {
+                .rms, .add_rms, .gated => {
                     const xs = try r.a.alloc(f64, k);
                     defer r.a.free(xs);
                     const ws = try r.a.alloc(f64, k);
@@ -170,8 +209,16 @@ pub const Rows = struct {
                         x.* = r.xv(row, i);
                         w.* = r.wv(i);
                     }
-                    norms_ref.rms(xs, ws, r.eps, want[row * k ..][0..k]);
-                    for (mag[row * k ..][0..k], want[row * k ..][0..k]) |*m, y| m.* = @abs(y) / 2; // y ~ ss^-1/2
+                    const y = want[r.normAt(row)..][0..k];
+                    norms_ref.rms(xs, ws, r.eps, y);
+                    if (r.op == .gated) for (y, 0..) |*v, i| {
+                        v.* *= r.gate(row, i);
+                    };
+                    for (mag[r.normAt(row)..][0..k], y) |*m, v| m.* = @abs(v) / 2; // y ~ ss^-1/2
+                    if (r.op == .add_rms) {
+                        @memcpy(want[row * k ..][0..k], xs);
+                        @memset(mag[row * k ..][0..k], 0);
+                    }
                 },
                 .softmax => for (0..k) |i| {
                     want[row * k + i] = @exp(r.xv(row, i) - top) / sum;
@@ -203,9 +250,12 @@ pub const Rows = struct {
             const top = r.terms(row, t);
             const s = sumIn(acc, order, t);
             switch (r.op) {
-                .rms => {
+                .rms, .add_rms, .gated => {
                     const inv = 1 / @sqrt(s / @as(f64, @floatFromInt(k)) + r.eps);
-                    for (0..k) |i| out[row * k + i] = r.xv(row, i) * inv * r.wv(i);
+                    for (0..k) |i| out[r.normAt(row) + i] = r.xv(row, i) * inv * r.wv(i) * (if (r.op == .gated) r.gate(row, i) else 1);
+                    if (r.op == .add_rms) for (0..k) |i| {
+                        out[row * k + i] = r.xv(row, i);
+                    };
                 },
                 .softmax => for (0..k) |i| {
                     out[row * k + i] = @exp(r.xv(row, i) - top) / s;
@@ -255,4 +305,48 @@ test "planted non-finites reach the reference: NaN, both infinities, and an infi
     try std.testing.expectEqual(c.Class.finite, c.classOf(want[2]));
     try std.testing.expectEqual(c.Class.pos_inf, c.classOf(want[3]));
     try std.testing.expectEqual(c.Class.finite, c.classOf(want[4]));
+}
+
+test "the norm stress rows: fp32 sums exact in every order, fp16 sums past their range" {
+    const a = std.testing.allocator;
+    for ([_]Op{ .rms, .add_rms, .gated }, [_]usize{ 2048, 2048, 128 }) |op, k| {
+        const r = try Rows.init(a, op, .{ .rows = 4, .n = k, .k = k });
+        defer r.deinit();
+        r.fill(.stress, 5);
+        const n = r.outputs();
+        const buf = try a.alloc(f64, 3 * n);
+        defer a.free(buf);
+        try r.reference(buf[0..n], buf[n .. 2 * n]);
+        for ([_]Order{ .sequential, .pairwise, .strided }) |o| {
+            try r.simulate(.f32, o, buf[2 * n ..]);
+            try std.testing.expectEqualSlices(f64, buf[0..n], buf[2 * n ..]);
+            try r.simulate(.f16, o, buf[2 * n ..]);
+            var most: f64 = 0; // the worst output's miss in half bf16 ulps of its value
+            for (buf[2 * n ..], buf[0..n]) |g, w| most = @max(most, @abs(g - w) / (0x1p-8 * @abs(w) + 0x1p-133));
+            try std.testing.expect(most >= 100);
+        }
+    }
+}
+
+test "the norm rows' non-finites: a NaN row, NaN where an infinity stands and zeros beside it" {
+    const a = std.testing.allocator;
+    const k = 128;
+    for ([_]Op{ .add_rms, .gated }) |op| {
+        const r = try Rows.init(a, op, .{ .rows = 5, .n = k, .k = k });
+        defer r.deinit();
+        r.fill(.nonfinite, 9);
+        const want = try a.alloc(f64, 2 * r.outputs());
+        defer a.free(want);
+        try r.reference(want[0..r.outputs()], want[r.outputs()..]);
+        const norm = struct {
+            fn at(x: Rows, w: []const f64, row: usize, i: usize) c.Class {
+                return c.classOf(w[x.normAt(row) + i]);
+            }
+        }.at;
+        for (0..k) |i| try std.testing.expectEqual(c.Class.nan, norm(r, want, 0, i));
+        try std.testing.expectEqual(c.Class.nan, norm(r, want, 1, k / 2));
+        try std.testing.expectEqual(@as(f64, 0), @abs(want[r.normAt(1)]));
+        for (0..k) |i| try std.testing.expectEqual(c.Class.finite, norm(r, want, 4, i));
+        if (op == .add_rms) try std.testing.expectEqual(c.Class.pos_inf, c.classOf(want[k + k / 2]));
+    }
 }

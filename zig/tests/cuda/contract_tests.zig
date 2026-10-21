@@ -211,9 +211,13 @@ pub fn run(gpu: check.Gpu) !void {
     try kernels.append(a, h3_topk.kernel());
     var d3_mod = try cuda.Module.load(gpu.d, kk.drama3);
     defer d3_mod.unload();
-    var d3_norm = try drama3_k.Norm.init(gpu, s, d3_mod);
-    defer d3_norm.deinit();
-    try kernels.append(a, d3_norm.kernel());
+    var d3_norms: [std.enums.values(drama3_k.Which).len]drama3_k.Norm = undefined;
+    for (std.enums.values(drama3_k.Which), &d3_norms) |w, *x| x.* = try drama3_k.Norm.init(gpu, s, d3_mod, w);
+    defer for (&d3_norms) |*x| x.deinit();
+    for (&d3_norms) |*x| try kernels.append(a, x.kernel());
+    var d3_gemv = try drama3_k.Gemv.init(gpu, s, d3_mod);
+    defer d3_gemv.deinit();
+    try kernels.append(a, d3_gemv.kernel());
     var ck: ?cuda.ck.Ck = null;
     var ck_reduce: ?cuda.ck.Ck = null; // no clusters: the FP8 slices meet in tf_ck8_reduce
     if (cap >= 120) {

@@ -2,6 +2,10 @@
 
 Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](RELEASE-NOTES-1.0.0.md) for the native binary's supported models and migration details.
 
+## Unreleased
+
+- The kernel contract runs gates 1 to 4 on more of Drama 3's kernels: `d3_add_rmsnorm` and `d3_gated_norm` on CUDA and Metal, and `d3_gemv` on CUDA, each against float64, beside `d3_rmsnorm`.
+
 ## 1.1.1
 
 - The app checks models through HTTPS Hub fake-IP proxies in both address families and honours one validated `HF_ENDPOINT` for checks and downloads. Network-policy refusals name the DNS address and proxy remedy (#1037). Thanks to @samwang0041-star.

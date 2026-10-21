@@ -16,8 +16,9 @@ The test of a kernel fills a `contract.spec.Spec` and hands the harness a few ho
 
 - Its float64 reference: the kernel's own formula in float64. The input families in `zig/src/core/contract/` cover the
   common cases: `affine` (MLX's affine-quantized projections), `dense` (dots against dequantized weights, in K
-  slices) and `rows` (RMS norm, softmax, sums, dots, maxima). Each builds inputs for every gate, computes the reference
-  and the magnitude of the terms each output sums, and can replay the sums in another accumulator.
+  slices) and `rows` (RMS norms with their residual-add and gated forms, softmax, sums, dots, maxima). Each builds
+  inputs for every gate, computes the reference and the magnitude of the terms each output sums, and can replay the
+  sums in another accumulator.
 - Its served envelope: the shapes the engine calls it at, and for each dimension its tile, the step a valid size
   moves by and the least valid size.
 - Its accumulator (`f32` for every kernel here) and the depth of its longest chain of roundings at a shape, plus any
@@ -99,13 +100,14 @@ MLX's formula keeps the infinity, because its codes enter the MMAs as q + 128 an
 
 ## Coverage
 
-Metal: softmax, RMS norm, bf16 top-k, the row projection (3, 4, 6 and 8 bits), affine_mm (4 and 8 bits), simd_qmm
-(4 bits) and simd_qmm_bits (3, 6 and 8 bits), and the lane projection (6-bit groups of 32 on every chip; 4- and 8-bit
-formats on the M5's tensor units, where its reg kernel must equal the cooperative one bit for bit), and tile_qmm's
-prompt tiles and their decode twin (4, 6 and 8 bits; the twin bit-equal to the tiles). Gate 5 also holds the rest of
-tile_qmm's pipelines and GLM-5.3-Flash's hc_expand_10.
-CUDA: the RMS norm rows (16-byte form and the fp32-out tree), Nemotron's router logits (and their 128-row tiles,
-bit-equal to them) and top-k, the latent top-k's decode form (bit-equal to `tf_super_topk`), the latent combine and
+Metal: softmax, RMS norm, Drama 3's RMS norms (plain, residual-add and gated), bf16 top-k, the row projection (3, 4,
+6 and 8 bits), affine_mm (4 and 8 bits), simd_qmm (4 bits) and simd_qmm_bits (3, 6 and 8 bits), and the lane projection
+(6-bit groups of 32 on every chip; 4- and 8-bit formats on the M5's tensor units, where its reg kernel must equal the
+cooperative one bit for bit), and tile_qmm's prompt tiles and their decode twin (4, 6 and 8 bits; the twin bit-equal to
+the tiles). Gate 5 also holds the rest of tile_qmm's pipelines and GLM-5.3-Flash's hc_expand_10.
+CUDA: the RMS norm rows (16-byte form and the fp32-out tree), Drama 3's RMS norms (plain, residual-add and gated) and
+decode GEMV, Nemotron's router logits (and their 128-row tiles, bit-equal to them) and top-k, the latent top-k's decode
+form (bit-equal to `tf_super_topk`), the latent combine and
 shared add over bf16 share sums (bit-equal to `tf_super_combine` and `tf_super_moe_out` over the fp32 shares), the
 Mamba scan of a verify window (its host twin's bytes), qmm_group's cluster tile, lane_gemv and its split-K form (both
 bit-equal to it), prompt16's FP4 tile with bf16 and fp32 out, qmmf's FP4 tiles with fp32 out (K slices met in a
