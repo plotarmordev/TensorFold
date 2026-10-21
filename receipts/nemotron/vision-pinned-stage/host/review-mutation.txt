@@ -1,0 +1,49 @@
+test-bolt-load-host
++- run test 2 pass, 1 crash (3 total)
+error: 'upload_test.test.RADIO upload reuses its pinned pixels without freeing between images' terminated with signal ABRT with stderr:
+       thread 915004 panic: reached unreachable code
+       $ZIG/lib/std/debug.zig:442:14: 0x1062e3f in assert (test)
+           if (!ok) unreachable; // assertion failure
+                    ^
+       zig/src/families/radio/upload_test.zig:53:43: 0x11bed87 in wait (test)
+               if (flight) |ptr| std.debug.assert(std.mem.eql(u8, held, ptr[0..held.len]));
+                                                 ^
+       zig/src/cuda/stream.zig:85:55: 0x11be02f in synchronize (test)
+               try self.d.check(self.d.api.cuEventSynchronize(self.handle), "cuEventSynchronize");
+                                                             ^
+       zig/src/cuda/copy_source.zig:360:50: 0x11a8727 in wait (test)
+               if (s.event_valid) try s.ev.?.synchronize() else try s.stream.?.synchronize();
+                                                        ^
+       zig/src/cuda/copy_source.zig:365:19: 0x11a8a33 in take (test)
+               try s.wait();
+                         ^
+       zig/src/families/radio/tower.zig:122:29: 0x11abc7b in features (test)
+               _ = try t.stage.take(s.d, pixels.len);
+                                   ^
+       zig/src/families/radio/upload_test.zig:108:57: 0x11ad7f3 in test.RADIO upload reuses its pinned pixels without freeing between images (test)
+               try t.expectError(error.NotReady, tower.features(stream, .{ .pixels = pixels, .gh = 128, .gw = 104, .tokens = 3328, .at = 0 }));
+                                                               ^
+       $ZIG/lib/compiler/test_runner.zig:143:68: 0x1175623 in mainServer (test)
+                       const status: TestResults.Status = if (test_fn.func()) |v| s: {
+                                                                          ^
+       $ZIG/lib/compiler/test_runner.zig:72:26: 0x1175c37 in main (test)
+               return mainServer(init) catch |err| panic("internal test runner failure: {t}", .{err});
+                                ^
+       $ZIG/lib/std/start.zig:789:88: 0x1173aff in callMain (test)
+           if (fn_info.param_types[0].? == std.process.Init.Minimal) return wrapMain(root.main(.{
+                                                                                              ^
+       ../sysdeps/nptl/libc_start_call_main.h:58:16: 0xeb683c9284c3 in __libc_start_call_main (../sysdeps/aarch64/libc-start.c)
+       ../csu/libc-start.c:360:3: 0xeb683c928597 in __libc_start_main_impl (../sysdeps/aarch64/libc-start.c)
+       ???:?:?: 0x105ed6f in ??? (???)
+failed command: ./.zig-cache/o/dd4529d12053eac31285ca25b819b733/test --cache-dir=./.zig-cache --seed=0x43915a98 --listen=-
+
+Build Summary: 5/7 steps succeeded (1 failed); 2/3 tests passed (1 crashed)
+test-bolt-load-host transitive failure
++- run test success 11ms MaxRSS:5M
+|  +- compile test debug native success 1s MaxRSS:381M
+|     +- options success
+|     +- WriteFile draft_ids.txt success
++- run test 2 pass, 1 crash (3 total)
+   +- compile test debug native success 2s MaxRSS:359M
+      +- options (reused)
+

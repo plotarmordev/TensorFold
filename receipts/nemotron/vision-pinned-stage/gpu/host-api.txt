@@ -1,0 +1,14 @@
+== trace-v0
+kernels 34387
+memcpy kind 1: 128958 copies, 76011157900 bytes
+memcpy kind 2: 9 copies, 36 bytes
+memcpy kind 8: 2898 copies, 119483510272 bytes
+before the images: cuMemFreeHost 68 calls, 1106.9 ms total, max 17.227 ms; cuMemHostAlloc 77 calls, 2231.1 ms total, max 35.992 ms
+from the images on: cuMemFreeHost 29 calls, 13089.5 ms total, max 872.879 ms; cuMemHostAlloc 20 calls, 629.4 ms total, max 34.384 ms
+== trace-vp
+kernels 34387
+memcpy kind 1: 128958 copies, 76011157900 bytes
+memcpy kind 2: 9 copies, 36 bytes
+memcpy kind 8: 2898 copies, 119483510272 bytes
+before the images: cuMemFreeHost 68 calls, 1107.1 ms total, max 17.168 ms; cuMemHostAlloc 78 calls, 2268.9 ms total, max 35.540 ms
+from the images on: cuMemFreeHost 10 calls, 24.2 ms total, max 10.181 ms

@@ -1,0 +1,16 @@
+Command: zig build test-bolt-load-host -Dbolt-load-filter='RADIO upload' -j1
+Executed through the serialized CPU build wrapper with nice -n 19.
+Base: d1018b318fb51981c4a18f12e40269a4d3ee9713.
+State: new regression plus ownership-field/init/deinit preparation; Tower.features still used the upstream scratch.uploadAsync call unchanged.
+
+Observed:
+test-bolt-load-host
++- run test 2 pass, 1 fail (3 total)
+error: 'upload_test.test.RADIO upload reuses its pinned pixels without freeing between images' failed:
+       expected 1, found 2
+       zig/src/families/radio/upload_test.zig:105:9
+               try t.expectEqual(@as(usize, 1), Fake.allocs);
+Build Summary: 5/7 steps succeeded (1 failed); 2/3 tests passed (1 failed)
+Exit: 1
+
+The fixture preallocates the tower's reserved buffer; the original temporary-upload path allocates another buffer on the first image instead of using it. The test stops before device arithmetic through a fake NotReady launch. No GPU was used.

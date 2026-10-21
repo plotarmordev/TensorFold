@@ -1,0 +1,25 @@
+label vg
+commit b4ae488c44461ea72d5e4da916f741a8b8a05f54
+b4ae488c44461ea72d5e4da916f741a8b8a05f54 perf(cuda): fuse RADIO bias and pointwise operations
+e9ec039d93c63923adcf0cee7b0aabf0d071ac27 nemotron cuda: a prompt pass with images runs the RADIO tower once, not twice
+flags -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dsm=121 -Dversion=1.1.1 
+0.17.0
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Wed_Aug_20_01:57:39_PM_PDT_2025
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+ docs/kernel-contract.md                  |   5 +-
+ zig/kernels/cuda/vit.cu                  |  23 ++++-
+ zig/src/core/contract.zig                |   1 +
+ zig/src/core/contract/registry.zig       |   1 +
+ zig/src/core/contract/vit_records.zig    |  18 ++++
+ zig/src/cuda/vit.zig                     |  22 +++++
+ zig/src/families/nemotron/cuda_lanes.zig |   2 -
+ zig/src/families/radio/tower.zig         |   9 +-
+ zig/tests/cuda/contract_tests.zig        |  13 +++
+ zig/tests/cuda/contract_vit_glue.zig     | 152 +++++++++++++++++++++++++++++++
+ 10 files changed, 231 insertions(+), 15 deletions(-)
+5c41d1a648cd44016138bb2e084a3b556be522aae22630b80e64068df3a55c4e  native/bin/tensorfold-native
+c8129813edfb5353de97ea5d01a90c842e1e2076264974845812f42179f29973  bin/tf-cuda-test
+155bac9074f089eb65762e90b17e991fbefacd2d04817720ebd06bf512b9bc21  bin/tensorfold

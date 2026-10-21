@@ -1,0 +1,12 @@
+cuobjdump: Build cuda_13.0.r13.0/compiler.36400806_0
+main vit.fatbin: ELF file    1: vit.1.sm_121.cubin sha256 dcd8660f7d8f534d3efe4b75cb099d0c9615e9ff0a1dcd1d2a714a8438eb5241
+vg vit.fatbin: ELF file    1: vit.1.sm_121.cubin sha256 2e492759813763775c2eed886125ce14d3065c16be9305e91eed59a63c18bbd2
+tf_vit_pointwise SASS sha256 main fd1b8dab60306c34b5792be1c9f925588182720845aded8a166212d77d568b2a vg fd1b8dab60306c34b5792be1c9f925588182720845aded8a166212d77d568b2a identical
+tf_vit_bias SASS sha256 main 23bebb6176c3e6b26031e037ca15aabea82839c1efaa39e08cc2a4fe8d53bf25 vg 23bebb6176c3e6b26031e037ca15aabea82839c1efaa39e08cc2a4fe8d53bf25 identical
+resource usage, vg vit.fatbin (sm_121):
+ Function tf_vit_bias_act:
+  REG:14 STACK:0 SHARED:0 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function tf_vit_pointwise:
+  REG:14 STACK:0 SHARED:0 LOCAL:0 CONSTANT[0]:932 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function tf_vit_bias:
+  REG:12 STACK:0 SHARED:0 LOCAL:0 CONSTANT[0]:924 TEXTURE:0 SURFACE:0 SAMPLER:0

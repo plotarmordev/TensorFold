@@ -1,0 +1,29 @@
+label vgp
+commit f6d8ba5ae1a34bbc230074da916b5004437c6b2e
+f6d8ba5ae1a34bbc230074da916b5004437c6b2e radio CUDA: reuse one pinned pixel stage for every image
+b7e05211c7f620c7f1992c0d70ca8f372c8d540e perf(cuda): fuse RADIO bias and pointwise operations
+baa109d807c73e59b04d17624f111cb403f56326 nemotron cuda: a prompt pass with images runs the RADIO tower once, not twice
+flags -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dsm=121 -Dversion=1.1.1 
+0.17.0
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Wed_Aug_20_01:57:39_PM_PDT_2025
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+ docs/kernel-contract.md                  |   5 +-
+ docs/runtime/cuda-copy-sources.md        |   4 +
+ zig/kernels/cuda/vit.cu                  |  23 ++++-
+ zig/src/core/contract.zig                |   1 +
+ zig/src/core/contract/registry.zig       |   1 +
+ zig/src/core/contract/vit_records.zig    |  18 ++++
+ zig/src/cuda/vit.zig                     |  22 +++++
+ zig/src/families/nemotron/cuda_lanes.zig |   2 -
+ zig/src/families/radio/radio.zig         |   1 +
+ zig/src/families/radio/tower.zig         |  19 ++--
+ zig/src/families/radio/upload_test.zig   | 116 +++++++++++++++++++++++
+ zig/tests/cuda/contract_tests.zig        |  13 +++
+ zig/tests/cuda/contract_vit_glue.zig     | 152 +++++++++++++++++++++++++++++++
+ 13 files changed, 361 insertions(+), 16 deletions(-)
+34fba74428d133856ec03b78dab14b5d29962eee8826d2da54fa86ed35a29cda  native/bin/tensorfold-native
+07db1aa4b8edbda8057eff8a2ae57b685a40a15c605dcc314ee14bda236299e9  bin/tf-cuda-test
+d2933c73d1f1e8e402c941e10d2a23d9c4754bbd015a2b7cbd5dfee333114272  bin/tensorfold

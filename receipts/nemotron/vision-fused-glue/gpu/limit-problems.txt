@@ -1,0 +1,157 @@
+Limit problems in glue-contract.log, by CUDA image (the first word of each detail line).
+static records ("<image> <kernel> on <sm>: no compiled usage recorded"): 877
+live launches ("FAIL limits live <image> <kernel>: ... (recorded 0, 0)"): 656
+total: 1533 (SUMMARY: 1533 limit problems)
+
+static: 600 in dsv4* images, 277 in other images
+   128  dsv41_x3gm
+    96  dsv41_lin2
+    60  qwen35
+    45  dsv41_linear
+    40  dsv41_router_gemv
+    32  dsv41_exl3_experts
+    30  act_rows
+    30  gdn_prep
+    30  qwen35_draft
+    27  dsv41_dense3
+    25  tree_round
+    24  dsv41_attn
+    19  dsv41_x3seg
+    18  dsv41_pfdense_k10
+    18  dsv41_pfdense_k12
+    18  dsv41_pfdense_k8
+    18  dsv41_x3ld_epi
+    17  dsv41_glue
+    15  dsv41_mhc
+    15  dsv41_x3ld
+    15  qk_rows
+    15  qwen35_keep
+    15  qwen35_kv8
+    15  sample
+    12  dsv41_x3gm3
+     9  dsv41_kvsplit
+     9  dsv41_pfdense_k16
+     8  dsv41_mhc_pf
+     8  dsv41_pfglue
+     7  affine4
+     6  dsv41_x3pf
+     5  dsv41_sampling
+     5  glm_glue
+     5  tf_q35_argmax_merge
+     5  tf_q35_argmax_slices
+     5  tf_q35_norm
+     5  tf_q35_sums
+     5  tf_topk_merge
+     5  tf_topk_slices
+     3  dsv41_pointwise
+     2  dsv41_l2pf
+     1  dsv41_engram_gate
+     1  dsv41_kv_glue
+     1  dsv41_l2pace
+     1  dsv41_router_glue
+     1  dsv41_topk
+     1  dsv41_topk_b
+     1  dsv41_topk_keys
+     1  dsv41_x3gm_plan
+
+live: 600 in dsv4* images, 56 in other images
+   128  dsv41_x3gm
+    96  dsv41_lin2
+    45  dsv41_linear
+    40  dsv41_router_gemv
+    32  dsv41_exl3_experts
+    27  dsv41_dense3
+    24  dsv41_attn
+    19  dsv41_x3seg
+    18  dsv41_pfdense_k10
+    18  dsv41_pfdense_k12
+    18  dsv41_pfdense_k8
+    18  dsv41_x3ld_epi
+    17  dsv41_glue
+    15  dsv41_mhc
+    15  dsv41_x3ld
+    12  dsv41_x3gm3
+    12  qwen35
+     9  dsv41_kvsplit
+     9  dsv41_pfdense_k16
+     8  dsv41_mhc_pf
+     8  dsv41_pfglue
+     6  act_rows
+     6  dsv41_x3pf
+     6  gdn_prep
+     6  qwen35_draft
+     5  dsv41_sampling
+     5  tree_round
+     3  dsv41_pointwise
+     3  qk_rows
+     3  qwen35_keep
+     3  qwen35_kv8
+     3  sample
+     2  affine4
+     2  dsv41_l2pf
+     1  dsv41_engram_gate
+     1  dsv41_kv_glue
+     1  dsv41_l2pace
+     1  dsv41_router_glue
+     1  dsv41_topk
+     1  dsv41_topk_b
+     1  dsv41_topk_keys
+     1  dsv41_x3gm_plan
+     1  glm_glue
+     1  tf_q35_argmax_merge
+     1  tf_q35_argmax_slices
+     1  tf_q35_norm
+     1  tf_q35_sums
+     1  tf_topk_merge
+     1  tf_topk_slices
+
+lines naming tf_vit_bias_act:
+  PASS nonfinite cuda vit tf_vit_bias_act none no residual
+  PASS repeat cuda vit tf_vit_bias_act none no residual
+  PASS shapes cuda vit tf_vit_bias_act none no residual
+  PASS sums cuda vit tf_vit_bias_act none no residual
+  PASS nonfinite cuda vit tf_vit_bias_act gelu_tanh no residual
+  PASS repeat cuda vit tf_vit_bias_act gelu_tanh no residual
+  PASS shapes cuda vit tf_vit_bias_act gelu_tanh no residual
+  PASS sums cuda vit tf_vit_bias_act gelu_tanh no residual
+  PASS nonfinite cuda vit tf_vit_bias_act gelu no residual
+  PASS repeat cuda vit tf_vit_bias_act gelu no residual
+  PASS shapes cuda vit tf_vit_bias_act gelu no residual
+  PASS sums cuda vit tf_vit_bias_act gelu no residual
+  PASS nonfinite cuda vit tf_vit_bias_act relu2 no residual
+  PASS repeat cuda vit tf_vit_bias_act relu2 no residual
+  PASS shapes cuda vit tf_vit_bias_act relu2 no residual
+  PASS sums cuda vit tf_vit_bias_act relu2 no residual
+  PASS nonfinite cuda vit tf_vit_bias_act none residual
+  PASS repeat cuda vit tf_vit_bias_act none residual
+  PASS shapes cuda vit tf_vit_bias_act none residual
+  PASS sums cuda vit tf_vit_bias_act none residual
+  PASS nonfinite cuda vit tf_vit_bias_act gelu_tanh residual
+  PASS repeat cuda vit tf_vit_bias_act gelu_tanh residual
+  PASS shapes cuda vit tf_vit_bias_act gelu_tanh residual
+  PASS sums cuda vit tf_vit_bias_act gelu_tanh residual
+  PASS nonfinite cuda vit tf_vit_bias_act gelu residual
+  PASS repeat cuda vit tf_vit_bias_act gelu residual
+  PASS shapes cuda vit tf_vit_bias_act gelu residual
+  PASS sums cuda vit tf_vit_bias_act gelu residual
+  PASS nonfinite cuda vit tf_vit_bias_act relu2 residual
+  PASS repeat cuda vit tf_vit_bias_act relu2 residual
+  PASS shapes cuda vit tf_vit_bias_act relu2 residual
+  PASS sums cuda vit tf_vit_bias_act relu2 residual
+  PASS nonfinite cuda vit tf_vit_bias_act none in-place residual
+  PASS repeat cuda vit tf_vit_bias_act none in-place residual
+  PASS shapes cuda vit tf_vit_bias_act none in-place residual
+  PASS sums cuda vit tf_vit_bias_act none in-place residual
+  PASS nonfinite cuda vit tf_vit_bias_act gelu_tanh in-place residual
+  PASS repeat cuda vit tf_vit_bias_act gelu_tanh in-place residual
+  PASS shapes cuda vit tf_vit_bias_act gelu_tanh in-place residual
+  PASS sums cuda vit tf_vit_bias_act gelu_tanh in-place residual
+  PASS nonfinite cuda vit tf_vit_bias_act gelu in-place residual
+  PASS repeat cuda vit tf_vit_bias_act gelu in-place residual
+  PASS shapes cuda vit tf_vit_bias_act gelu in-place residual
+  PASS sums cuda vit tf_vit_bias_act gelu in-place residual
+  PASS nonfinite cuda vit tf_vit_bias_act relu2 in-place residual
+  PASS repeat cuda vit tf_vit_bias_act relu2 in-place residual
+  PASS shapes cuda vit tf_vit_bias_act relu2 in-place residual
+  PASS sums cuda vit tf_vit_bias_act relu2 in-place residual
+  PASS limits live vit tf_vit_bias_act

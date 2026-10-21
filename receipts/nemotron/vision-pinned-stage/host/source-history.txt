@@ -1,0 +1,55 @@
+# Where the per-image pinned allocation comes from (read from source; commands and output as run in a clone of the repository)
+
+$ git log -1 --format="%h %s" e9bf05ff; git log -1 --format="%h %s" cc50aef4
+e9bf05ff cuda: one owner for temporary host-to-device copy sources, kept until its stream proves completion
+cc50aef4 cuda: temporary uploads reuse a completed pinned stage instead of allocating one a copy
+$ for c in e9bf05ff cc50aef4; do for t in v1.0.12 v1.1.0; do git merge-base --is-ancestor $c $t && echo "$c in $t" || echo "$c not in $t"; done; done
+e9bf05ff not in v1.0.12
+e9bf05ff in v1.1.0
+cc50aef4 not in v1.0.12
+cc50aef4 in v1.1.0
+
+$ git show d1018b31:zig/src/families/radio/tower.zig | grep -n "uploadAsync\|values > room"
+111:        if (img.pixels.len != values or values > room) return error.ImageShape;
+114:        try t.scratch.uploadAsync(b.acc - t.scratch.ptr, std.mem.sliceAsBytes(img.pixels), s.handle);
+$ git show d1018b31:zig/src/cuda/memory.zig | sed -n "200,203p"
+    pub fn uploadAsync(self: DeviceBuffer, offset: usize, bytes: []const u8, stream: abi.Stream) Error!void {
+        const dst = try self.span(offset, bytes.len);
+        if (bytes.len == 0) return;
+        try @import("copy_source.zig").enqueue(self.d, dst, bytes, .{ .d = self.d, .handle = stream });
+$ git show d1018b31:zig/src/cuda/copy_source.zig | sed -n '19,21p;113,120p;504,512p'
+/// Completed temporary stages kept for the next upload in their driver and context (none in tests unless one sets it).
+pub const SpareLimits = struct { count: usize = 64, bytes: usize = 64 << 20 };
+var spare_limits: SpareLimits = if (builtin.is_test) .{ .count = 0, .bytes = 0 } else .{};
+/// A completed temporary stage into the spares, its buffer and event kept and its charge still held; false if full.
+fn keepSpare(n: *Node) bool {
+    if (!n.reusable or n.data != .pinned or n.data.pinned.event == null) return false;
+    const len = n.data.pinned.bytes.len;
+    lock();
+    defer unlock();
+    if (n.failed or spare_count >= spare_limits.count or len > spare_limits.bytes - spare_bytes) return false;
+    var at = &head;
+fn asyncChunk(d: *const Driver, dst: u64, bytes: []const u8, stream: streams.Stream) @import("driver.zig").Error!void {
+    if (bytes.len == 0) return;
+    if (capture_scope.active(d, current_context)) return error.UnownedCaptureSource;
+    reap(d);
+    if (hasRetained(d, current_context)) try synchronizeContext(d);
+    if (takeSpare(d, bytes.len)) |n| return reissue(n, d, dst, bytes, stream);
+    var s: Stage = .{};
+    defer s.deinit();
+    const room = if (spare_limits.count == 0) bytes.len else std.math.ceilPowerOfTwo(usize, bytes.len) catch bytes.len;
+
+$ git show d1018b31:zig/src/cuda/copy_source.zig | sed -n '102,104p;495,499p'
+fn releaseTracked(n: *Node) void {
+    if (keepSpare(n)) return;
+    n.releaseData();
+pub fn enqueue(d: *const Driver, dst: u64, bytes: []const u8, stream: streams.Stream) @import("driver.zig").Error!void {
+    var at: usize = 0;
+    while (at < bytes.len) {
+        const n = @min(bytes.len - at, 64 << 20);
+        try asyncChunk(d, std.math.add(u64, dst, at) catch return error.Invalid, bytes[at..][0..n], stream);
+
+# Size for the measured image (2048 x 1664 at patch 16: 128 x 104 = 13,312 patches, 3 x 16 x 16 = 768 f32 values a patch)
+pixels: 13312 * 768 * 4 = 40894464 bytes; ceilPowerOfTwo: 67108864 bytes (64 MiB), the whole 64 MiB spare budget
+keepSpare refuses it whenever any other spare is held (len > bytes - spare_bytes). An upload of 32 MiB or less rounds
+to a smaller stage; only images that large were measured.

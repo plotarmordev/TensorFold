@@ -1,0 +1,20 @@
+label vp
+commit 5a4d65a182282315663027d94bbdb5d20518ec25
+5a4d65a182282315663027d94bbdb5d20518ec25 radio CUDA: reuse one pinned pixel stage for every image
+2bd8f126f83d9c6dcdf0a0f851e6233c38fb3b98 nemotron cuda: a prompt pass with images runs the RADIO tower once, not twice
+flags -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dsm=121 -Dversion=1.1.1 
+0.17.0
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Wed_Aug_20_01:57:39_PM_PDT_2025
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+ docs/runtime/cuda-copy-sources.md        |   4 ++
+ zig/src/families/nemotron/cuda_lanes.zig |   2 -
+ zig/src/families/radio/radio.zig         |   1 +
+ zig/src/families/radio/tower.zig         |  10 ++-
+ zig/src/families/radio/upload_test.zig   | 116 +++++++++++++++++++++++++++++++
+ 5 files changed, 130 insertions(+), 3 deletions(-)
+7df4fbe7672ca24889f289961af4c62f129a9875006ddc2515fba94785d56ca8  native/bin/tensorfold-native
+85cac5f83cbd0186a5d50a9e1c1a37e89a1fe9869b3005f8ddb71403bf13994e  bin/tf-cuda-test
+3f939a0f5ca5b33582f4dbcd89d9454313547946a1fe7fea379f705c46b63dfb  bin/tensorfold

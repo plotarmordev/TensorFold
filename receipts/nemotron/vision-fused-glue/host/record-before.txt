@@ -1,0 +1,10 @@
+Command: zig build test-kernel-contract -j1 --summary all (nice 19, CPU only)
+The revised live-registry test ran before updating the registered resource record.
+Failure: contract.vit_records.test.RADIO fused epilogue is in the live registry and fits every SM
+expected 15, found 28; field regs incorrect; field usage incorrect.
+Build Summary: 9/11 steps succeeded (1 failed); 65/66 tests passed (1 failed).
+Focused contract executable: 46 pass, 1 fail (47 total).
+
+CPU nvcc 13.0 production flags compiled the revised kernel for sm_80, sm_86, sm_89, sm_120, sm_121.
+Fused-kernel registers: 15, 16, 16, 14, 14 respectively; no stack frame or spills.
+cuobjdump -sass -fun tf_vit_pointwise on the pre-refactor and revised fatbins followed by diff -u exited successfully with no differences across all targets.

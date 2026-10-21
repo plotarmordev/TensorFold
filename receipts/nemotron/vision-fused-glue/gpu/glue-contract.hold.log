@@ -1,0 +1,11 @@
+== test glue-contract 2026-10-21T09:56:15+08:00 on <node>: zone 51 C, load 0.21
+binary <out>/vg/bin/tf-cuda-test
+c8129813edfb5353de97ea5d01a90c842e1e2076264974845812f42179f29973  <out>/vg/bin/tf-cuda-test
+  <out>/vg/bin/tf-cuda-test kernel-contract
+exit 1
+RED  limits live control: past its bounds: 512 threads launched, the driver allows 256; 10 registers, 0 + 0 shared bytes (recorded 10, 0)
+RED  limits live control: heavy at 1,024 threads: 1024 threads launched, the driver allows 384; 166 registers, 0 + 0 shared bytes (recorded 166, 0)
+SUMMARY 97 kernels: 97 pass gates 1-4, 0 fail, 0 known findings; 7 controls: 7 red as planted, 0 missed; 1533 limit problems; gates 390262 ms, limits 82626 ms
+FAIL kernel-contract: 0 gate failures, 0 controls missed, 1533 limit problems
+FAIL kernel-contract: TestFailed
+== done 2026-10-21T10:04:09+08:00

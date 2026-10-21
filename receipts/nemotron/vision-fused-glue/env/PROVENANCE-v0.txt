@@ -1,0 +1,15 @@
+label v0
+commit 732b0e31896f99333ee3fb2b042a0ac512807aa1
+732b0e31896f99333ee3fb2b042a0ac512807aa1 nemotron cuda: a prompt pass with images runs the RADIO tower once, not twice
+flags -Dtarget=aarch64-linux-gnu.2.28 -Dcpu=baseline -Doptimize=fast -Dstrip=true -Dsm=121 -Dversion=1.1.1 
+0.17.0
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Wed_Aug_20_01:57:39_PM_PDT_2025
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+ zig/src/families/nemotron/cuda_lanes.zig | 2 --
+ 1 file changed, 2 deletions(-)
+5e70f78f8029df2c257c997db0e5cc54c1ace12f807982d23efe980d9fdcef69  native/bin/tensorfold-native
+49e750dbe4bc9d0aad674aea64a3f4c911a46d6bda0aeb639fe0f010d5dc447c  bin/tf-cuda-test
+33804415bf06282bbb8327e5fec753743997990c678419dbe994b63a981753d7  bin/tensorfold

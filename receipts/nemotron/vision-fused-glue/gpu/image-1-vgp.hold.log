@@ -1,0 +1,25 @@
+== serve image-1-vgp 2026-10-21T11:49:53+08:00 on <node>: zone 59 C, load 0.57
+binary <out>/vgp/native/bin/tensorfold-native
+34fba74428d133856ec03b78dab14b5d29962eee8826d2da54fa86ed35a29cda  <out>/vgp/native/bin/tensorfold-native
+HOME=<home>   <out>/vgp/native/bin/tensorfold-native serve <checkpoint> --host <loopback> --port 8897 --name nemotron-3.5-super-vl --vision --vision-image-tokens 13312 --vision-max-images 4 --context 18432 --parallel 1 --prompt-cache-gib 0
+MemAvailable before: 117.7 GiB
+[tensorfold] CUDA sm_121 device 0 (NVIDIA GB10, memory shared with the host): model 73.10 GiB; 1 stream at once, the engine's own at a 18432-token window (0.42 GiB, in the model's), 0 more taking 0 pages of 512 rows (0.00 GiB) as they need them, 264 MiB fixed each, of 28.3 GiB left after a 12.2 GiB reserve; prompts in passes of up to 4096 rows, no prompt cache; own glue kernels
+[tensorfold] serving nemotron-3.5-super-vl at http://<loopback>:8897/v1 (sampling: temperature 1.0, top_p 0.95; drafts: on; context: 18432; loaded in 68.1s)
+ready after 69 s; MemAvailable 40.5 GiB
+cooling: 78 °C > TF_HEAT_LOW 75 °C
+cooling: 78 °C > TF_HEAT_LOW 75 °C
+cooling: 79 °C > TF_HEAT_LOW 75 °C
+cooling: 80 °C > TF_HEAT_LOW 75 °C
+cooling: 79 °C > TF_HEAT_LOW 75 °C
+cooling: 79 °C > TF_HEAT_LOW 75 °C
+cooling: 78 °C > TF_HEAT_LOW 75 °C
+1 images  run 1  TTFT 2.172 s  cached 0  token_sha256 541bca2d52751d8bb9c44b2af53ce8ff2dfb93745d8cb6bdb740442dad9735ec
+1 images  run 2  TTFT 2.183 s  cached 0  token_sha256 541bca2d52751d8bb9c44b2af53ce8ff2dfb93745d8cb6bdb740442dad9735ec
+1 images  run 3  TTFT 2.177 s  cached 0  token_sha256 541bca2d52751d8bb9c44b2af53ce8ff2dfb93745d8cb6bdb740442dad9735ec
+1 images  median TTFT 2.177 s  stable  token_sha256 541bca2d52751d8bb9c44b2af53ce8ff2dfb93745d8cb6bdb740442dad9735ec
+4 images  run 1  TTFT 13.870 s  cached 0  token_sha256 ef22b44ea1d731737c2d2a757d671d03b1269563d6bb505944e58608ecd444c4
+4 images  run 2  TTFT 13.874 s  cached 0  token_sha256 ef22b44ea1d731737c2d2a757d671d03b1269563d6bb505944e58608ecd444c4
+4 images  run 3  TTFT 13.867 s  cached 0  token_sha256 ef22b44ea1d731737c2d2a757d671d03b1269563d6bb505944e58608ecd444c4
+4 images  median TTFT 13.870 s  stable  token_sha256 ef22b44ea1d731737c2d2a757d671d03b1269563d6bb505944e58608ecd444c4
+client exit 0; heat waits in server log: 4
+== done 2026-10-21T11:52:27+08:00

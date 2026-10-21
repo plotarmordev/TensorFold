@@ -1,0 +1,12 @@
+count         drafted          99.33 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586  = "draft": false
+count         "draft": false   21.77 tok/s  stable  1b3d78d3b1bfd175bfbb3f1fa5d41e14ffdeee40c632012b7e7eb3948a570586
+prose         drafted          35.08 tok/s  stable  71494803187745a96c4e4a033c9573e5a7cd811003c12710bce059983133973f  = "draft": false
+code          drafted          53.88 tok/s  stable  3d4d30129aebb7a27153d4278f2f37404c858582bdb9d698a50b179a4cc7e042  = "draft": false
+image         drafted          71.85 tok/s  stable  98a5ff450d6e572660e160259aee6d74d305baf28e4633f9658be97afcf12415  = "draft": false
+multilingual  drafted          43.47 tok/s  stable  757c6ebb3cd489cbccde5d513adfc25ab6da91e09739c8d11bed2b3af4ae61ed  = "draft": false
+lang_en       drafted          35.63 tok/s  stable  44c9ab4037035f036d24de3ee187684f07fd1d26609e5e326a41a321efea3ba2  = "draft": false
+lang_es       drafted          36.41 tok/s  stable  bc0d0e830460631418bb889b280e234a8284f754fc4effc83fa1be16b3c93b63  = "draft": false
+lang_fr       drafted          34.00 tok/s  stable  da60dd14386b3366001f75114632a38f46262c15be3d891b187aaa87de4f80fe  = "draft": false
+lang_de       drafted          33.89 tok/s  stable  8c93dbb17a55769ed3304ee916b4a9cb397102491bace0b6f6731d0c30a1c38e  = "draft": false
+lang_it       drafted          37.56 tok/s  stable  0ca37a8469fc06faa5ddb88cd7e0f0ec0345a69fe44d20c9c9ed579797ed28dc  = "draft": false
+lang_ja       drafted          44.86 tok/s  stable  07f8403ff9649a39485260fc4691d7db6aabeda0870d6e3900df47230847d563  = "draft": false

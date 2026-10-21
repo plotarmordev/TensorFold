@@ -1,0 +1,11 @@
+== test glue-memcheck 2026-10-21T10:06:50+08:00 on <node>: zone 50 C, load 1.29
+binary <out>/vg/bin/tf-cuda-test
+c8129813edfb5353de97ea5d01a90c842e1e2076264974845812f42179f29973  <out>/vg/bin/tf-cuda-test
+ /usr/local/cuda/bin/compute-sanitizer --tool memcheck --error-exitcode 1 <out>/vg/bin/tf-cuda-test kernel-contract
+exit 1
+SUMMARY 97 kernels: 97 pass gates 1-4, 0 fail, 0 known findings; 7 controls: 7 red as planted, 0 missed; 1533 limit problems; gates 469217 ms, limits 238822 ms
+FAIL kernel-contract: 0 gate failures, 0 controls missed, 1533 limit problems
+FAIL kernel-contract: TestFailed
+========= Target application returned an error
+========= ERROR SUMMARY: 0 errors
+== done 2026-10-21T10:18:39+08:00

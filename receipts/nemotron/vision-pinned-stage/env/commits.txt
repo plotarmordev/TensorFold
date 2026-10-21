@@ -1,0 +1,29 @@
+# Submitted commits against the commits the GPU binaries were built from
+# columns: commit, parent, tree, git patch-id --stable of (parent..commit); the script is below
+
+## Builds, in the clean checkouts the receipts' binaries came from (env/PROVENANCE-*.txt name the same commits)
+732b0e31896f  parent d1018b318fb5  tree b54a75a47db7  patch-id 7d4a072143a73c5884c50640e070fee4c64a86a0
+2bd8f126f83d  parent d1018b318fb5  tree b54a75a47db7  patch-id 7d4a072143a73c5884c50640e070fee4c64a86a0
+e9ec039d93c6  parent d1018b318fb5  tree b54a75a47db7  patch-id 7d4a072143a73c5884c50640e070fee4c64a86a0
+baa109d807c7  parent d1018b318fb5  tree b54a75a47db7  patch-id 7d4a072143a73c5884c50640e070fee4c64a86a0
+5a4d65a18228  parent 2bd8f126f83d  tree 70b38cc481db  patch-id 25093e333c7d9e44c1482bc7a74e2b4dfc0a6a17
+b4ae488c4446  parent e9ec039d93c6  tree 6fc1de8ab50e  patch-id ff737e7cd08bd791bfcdb4bfd22fc2fe80714f15
+b7e05211c7f6  parent baa109d807c7  tree 6fc1de8ab50e  patch-id ff737e7cd08bd791bfcdb4bfd22fc2fe80714f15
+f6d8ba5ae1a3  parent b7e05211c7f6  tree 93642ea62b54  patch-id 25093e333c7d9e44c1482bc7a74e2b4dfc0a6a17
+# v0 = 732b0e31; vp = 5a4d65a1 (on 2bd8f126); vg = b4ae488c (on e9ec039d); vgp = f6d8ba5a (on b7e05211, on baa109d8)
+
+## Submitted, in the repository
+e2357b582f04  parent d46d17a78475  tree 639afacb44c2  patch-id 7d4a072143a73c5884c50640e070fee4c64a86a0
+25b565cc8cb5  parent d1018b318fb5  tree 03ab8a794ac0  patch-id 25093e333c7d9e44c1482bc7a74e2b4dfc0a6a17
+c8dc633c0421  parent d1018b318fb5  tree 2a07a5f1f31e  patch-id ff737e7cd08bd791bfcdb4bfd22fc2fe80714f15
+47ef12413384  parent d1018b318fb5  tree 2a07a5f1f31e  patch-id ff737e7cd08bd791bfcdb4bfd22fc2fe80714f15
+# e2357b58 = #1057 (on an older main, hence another tree); 25b565cc = pinned stage; 47ef1241 = fused glue (message
+# reworded from c8dc633c, the same tree); all four #1057 copies in the builds share one tree and #1057's patch-id.
+
+## Script
+#!/usr/bin/env bash
+# prints patch-ids and trees for the given commits, each with its parent as the diff base
+for c in "$@"; do
+    printf '%s  parent %s  tree %s  patch-id %s\n' "$(git rev-parse --short=12 "$c")" "$(git rev-parse --short=12 "$c^")" \
+        "$(git rev-parse --short=12 "$c^{tree}")" "$(git diff "$c^" "$c" | git patch-id --stable | cut -c1-40)"
+done
