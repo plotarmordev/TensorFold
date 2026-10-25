@@ -10,6 +10,7 @@ const openai = @import("openai.zig");
 const pyrepr = @import("pyrepr.zig");
 const reply_text = @import("reply_text.zig");
 const drama_prompt = @import("drama_prompt.zig");
+const speech_sampling = @import("speech_sampling.zig");
 const drama_voice = @import("drama_voice.zig");
 const drama_shift = @import("drama_shift.zig");
 const drama_allow = @import("drama_allow.zig");
@@ -35,7 +36,7 @@ pub const max_input_chars = 4096;
 const served_fields = [_][]const u8{ "model", "input", "voice", "speaker", "response_format" };
 
 /// The rest of the speech protocol's fields: synthesis modifiers and audio references this route does not honor.
-const modifier_fields = [_][]const u8{ "speed", "task_type", "language", "instructions", "ref_audio", "ref_text", "x_vector_only_mode", "stream_codec_output", "suppress_bootstrap_silence", "token_count", "duration_tokens", "initial_codec_chunk_frames", "max_new_tokens", "temperature", "top_p", "top_k", "repetition_penalty", "seed", "stage_params" };
+const modifier_fields = [_][]const u8{ "speed", "task_type", "language", "instructions", "ref_audio", "ref_text", "x_vector_only_mode", "stream_codec_output", "suppress_bootstrap_silence", "token_count", "duration_tokens", "initial_codec_chunk_frames", "max_new_tokens", "repetition_penalty", "stage_params" };
 
 pub const Format = enum {
     wav,
@@ -50,7 +51,7 @@ pub const Format = enum {
 };
 
 /// A synthesis's prompt and sources, or a long-form reply; `dropped`: `¶` marks not honoured; `stripped`: controls cut.
-const Plan = struct { prompt: []const u32, codes: []const drama_prompt.Codes, input: []const u8, references: []const drama_prompt.Reference, format: Format, stream: bool, long: ?speech_long.Long = null, dropped: usize = 0, stripped: ?usize = null };
+const Plan = struct { prompt: []const u32, codes: []const drama_prompt.Codes, input: []const u8, references: []const drama_prompt.Reference, sampling: speech_sampling.Options, format: Format, stream: bool, long: ?speech_long.Long = null, dropped: usize = 0, stripped: ?usize = null };
 
 pub fn post(srv: *Server, c: *Conn, a: Allocator) !void {
     const sp = srv.info.speech orelse {
@@ -94,8 +95,8 @@ fn checkFields(cx: *Cx, body: Value) errors.Refused!void {
             if (value == .null or (value == .string and std.mem.eql(u8, value.string, "audio"))) continue;
             if (value == .string and std.mem.eql(u8, value.string, "sse")) return cx.refuse("stream_format sse is not supported by this model");
             return cx.refuse("stream_format must be one of: audio, sse");
-        } else if (std.mem.eql(u8, key, "references")) {
-            // lowered with the voice, after the input's checks (drama_voice.lower)
+        } else if (std.mem.eql(u8, key, "references") or speech_sampling.isField(key)) {
+            // references and sampling are checked in prepare before submission
         } else if (listed(&modifier_fields, key)) {
             if (value != .null) return cx.fail(.request, "{s} is not supported by this model", .{key});
         } else return cx.fail(.request, "unknown speech request field: {s}", .{key});
@@ -114,6 +115,7 @@ fn responseFormat(cx: *Cx, value: []const u8) errors.Refused!Format {
 fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused!Plan {
     if (raw != .object) return cx.refuse("speech request body must be a JSON object");
     try checkFields(cx, raw);
+    const sampling = try speech_sampling.parse(cx, raw);
     const model = raw.strField("model") orelse return cx.fail(.request, "model is required: send {s}", .{srv.config.served_name});
     if (!listed(srv.config.model_ids, model))
         return cx.fail(.request, "model {s} is not served here: send {s}", .{ try pyrepr.repr(cx.a, .{ .string = model }), srv.config.served_name });
@@ -135,15 +137,15 @@ fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused
     const voice = raw.strField("voice") orelse raw.strField("speaker") orelse "default";
     const references = try drama_voice.lower(cx, input, raw.get("references") orelse .null, try voiceReferences(srv, cx, voice));
     if (references.len == 0) if (try drama_prompt.problem(cx.a, input)) |message| return cx.refuse(message);
-    if (srv.config.long_form) |options| if (try speech_long.plan(srv, cx, sp, marked, references, options)) |long|
-        return .{ .prompt = &.{}, .codes = &.{}, .input = input, .references = references, .format = format, .stream = stream, .long = long, .dropped = marked.dropped, .stripped = stripped };
+    if (srv.config.long_form) |options| if (try speech_long.plan(srv, cx, sp, marked, references, options, sampling)) |long|
+        return .{ .prompt = &.{}, .codes = &.{}, .input = input, .references = references, .sampling = sampling, .format = format, .stream = stream, .long = long, .dropped = marked.dropped, .stripped = stripped };
     const rows = drama_prompt.promptRows(cx.a, srv.text, input, references) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.Template => cx.other("the tokenizer cannot encode this prompt"),
     };
     if (rows.tokens.len > sp.max_prompt_tokens)
         return cx.fail(.request, drama_prompt.error_prefix ++ " a prompt of {d} rows exceeds the maximum allowed length of {d} rows", .{ rows.tokens.len, sp.max_prompt_tokens });
-    return .{ .prompt = rows.tokens, .codes = rows.codes, .input = input, .references = references, .format = format, .stream = stream, .dropped = marked.dropped, .stripped = stripped };
+    return .{ .prompt = rows.tokens, .codes = rows.codes, .input = input, .references = references, .sampling = sampling, .format = format, .stream = stream, .dropped = marked.dropped, .stripped = stripped };
 }
 
 /// What ``voice`` names: the built-in voice (none), --default-voice's for ``default``, else a --voices file's.
@@ -184,11 +186,11 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
             .codes = rows.codes,
             .pcm = audio,
             .result = &result,
-            .seed = api.seedFor(rows.tokens, speech_redraw.Redraws.salt(srv.config.seed_salt, k)),
+            .seed = plan.sampling.seedFor(rows.tokens, srv.config.seed_salt, k),
             .max_frames = sp.max_frames,
-            .temperature = drama_prompt.temperature,
-            .top_p = drama_prompt.top_p,
-            .top_k = drama_prompt.top_k,
+            .temperature = plan.sampling.temperature,
+            .top_p = plan.sampling.top_p,
+            .top_k = plan.sampling.top_k,
             .unconditioned = guided.unconditioned,
             .cfg_gamma = guided.gamma,
             .stream = plan.stream,
@@ -573,7 +575,6 @@ test "fields: unknown ones are refused even when null, modifiers when set" {
         .{ "{\"model\": \"m\", \"input\": \"hi\", \"stream\": \"yes\"}", "stream must be a boolean" },
         .{ "{\"model\": \"m\", \"input\": \"hi\", \"stream_format\": \"sse\"}", "stream_format sse is not supported by this model" },
         .{ "{\"model\": \"m\", \"input\": \"hi\", \"stream_format\": \"mp3\"}", "stream_format must be one of: audio, sse" },
-        .{ "{\"model\": \"m\", \"input\": \"hi\", \"temperature\": 0.7}", "temperature is not supported by this model" },
         .{ "{\"model\": \"m\", \"input\": \"hi\", \"ref_audio\": \"x.wav\"}", "ref_audio is not supported by this model" },
         .{ "{\"model\": \"m\", \"input\": 3}", "input must be a string" },
         .{ "{\"model\": null, \"input\": \"hi\"}", "model must be a string" },

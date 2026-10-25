@@ -4,6 +4,7 @@ const api = @import("engine_api");
 const errors = @import("errors.zig");
 const speech = @import("speech.zig");
 const speech_redraw = @import("speech_redraw.zig");
+const speech_sampling = @import("speech_sampling.zig");
 const drama_prompt = @import("drama_prompt.zig");
 const drama_long = @import("drama_long.zig");
 const drama_joins = @import("drama_joins.zig");
@@ -26,6 +27,7 @@ pub const Long = struct {
     references: []const Reference,
     history: u8,
     shift_pause_s: f32,
+    sampling: speech_sampling.Options,
 
     fn shifted(l: Long, i: usize) bool {
         return i < l.shifts.len and l.shifts[i];
@@ -37,14 +39,14 @@ const trailer = "X-Finish-Reason, X-Long-Form-Segments";
 const shift_trailer = trailer ++ ", X-Pause-Spans";
 
 /// The input's segments, cut at each of `marked`'s cuts, each refused now as a whole input would be; null: one reply.
-pub fn plan(srv: *Server, cx: *Cx, sp: api.SpeechInfo, marked: drama_shift.Marked, references: []const Reference, options: drama_long.Options) errors.Refused!?Long {
+pub fn plan(srv: *Server, cx: *Cx, sp: api.SpeechInfo, marked: drama_shift.Marked, references: []const Reference, options: drama_long.Options, sampling: speech_sampling.Options) errors.Refused!?Long {
     const input = marked.text;
     if (marked.cuts.len == 0 and (std.unicode.utf8CountCodepoints(input) catch unreachable) <= options.chars) return null;
     const split = try drama_shift.split(cx.a, marked, options.chars);
     const segments = split.segments;
     if (segments.len <= 1) return null;
     if (segments.len > drama_long.max_segments)
-        return cx.fail(.request, drama_prompt.error_prefix ++ " a long-form input in {d} segments of at most {d} characters exceeds the maximum of {d} segments", .{ segments.len, options.chars, drama_long.max_segments });
+        return cx.fail(.request, drama_prompt.error_prefix ++ " a long-form input in {d} segments targeting {d} characters exceeds the maximum of {d} segments", .{ segments.len, options.chars, drama_long.max_segments });
     for (segments) |segment| {
         if (try drama_prompt.problem(cx.a, segment)) |message| return cx.refuse(message);
         const rows = drama_prompt.promptRows(cx.a, srv.text, segment, references) catch |e| return switch (e) {
@@ -54,7 +56,7 @@ pub fn plan(srv: *Server, cx: *Cx, sp: api.SpeechInfo, marked: drama_shift.Marke
         if (rows.tokens.len > sp.max_prompt_tokens)
             return cx.fail(.request, drama_prompt.error_prefix ++ " a prompt of {d} rows exceeds the maximum allowed length of {d} rows", .{ rows.tokens.len, sp.max_prompt_tokens });
     }
-    return .{ .input = input, .segments = segments, .shifts = split.shifts, .references = references, .history = options.history, .shift_pause_s = options.shift_pause_s };
+    return .{ .input = input, .segments = segments, .shifts = split.shifts, .references = references, .history = options.history, .shift_pause_s = options.shift_pause_s, .sampling = sampling };
 }
 
 /// Speaks every segment into one reply: a WAV or PCM body, or a PCM stream from the first segment's first audio.
@@ -156,11 +158,11 @@ const Reply = struct {
                 .generated = r.generated[r.frames..][0..room],
                 .pcm = r.scratch[0 .. room * fl],
                 .result = &result,
-                .seed = api.seedFor(rows.tokens, speech_redraw.Redraws.salt(r.srv.config.seed_salt, k)),
+                .seed = r.long.sampling.seedFor(rows.tokens, r.srv.config.seed_salt, k),
                 .max_frames = @intCast(room),
-                .temperature = drama_prompt.temperature,
-                .top_p = drama_prompt.top_p,
-                .top_k = drama_prompt.top_k,
+                .temperature = r.long.sampling.temperature,
+                .top_p = r.long.sampling.top_p,
+                .top_k = r.long.sampling.top_k,
                 .unconditioned = guided.unconditioned,
                 .cfg_gamma = guided.gamma,
                 .stream = live,

@@ -39,14 +39,21 @@ pub fn boundary(left: []const u8, gap: []const u8, right: []const u8) Boundary {
         const at = lastStart(left[0..end]);
         const cp = std.unicode.utf8Decode(left[at..end]) catch break;
         switch (cp) {
-            '"', '\'', ')', ']', 0x201d, 0x2019, 0xbb => end = at,
+            '"', '\'', ')', ']', 0x201d, 0x2019, 0xbb, 0x300d, 0x300f, 0x3011, 0xff09 => end = at,
             0x2026 => return .ellipsis,
             '.' => return if (std.mem.endsWith(u8, left[0..end], "...")) .ellipsis else .sentence,
-            '!' => return .sentence,
+            '!', 0x3002, 0xff01, 0xff1b => return .sentence,
             else => break,
         }
     }
     return if (std.mem.indexOfAny(u8, gap, "\n\r") != null) .sentence else .clause;
+}
+
+test "CJK punctuation selects sentence, question and clause joins" {
+    for ([_][]const u8{ "\u{4f60}\u{597d}\u{3002}", "\u{4f60}\u{597d}\u{ff01}\u{300d}", "\u{4f60}\u{597d}\u{ff1b}" }) |left|
+        try std.testing.expectEqual(Boundary.sentence, boundary(left, "", "\u{4e16}\u{754c}"));
+    try std.testing.expectEqual(Boundary.topic, boundary("\u{4f60}\u{597d}\u{ff1f}\u{300d}", "", "\u{4e16}\u{754c}"));
+    try std.testing.expectEqual(Boundary.clause, boundary("\u{4f60}\u{597d}\u{ff0c}", "", "\u{4e16}\u{754c}"));
 }
 
 /// The start of the last code point of valid UTF-8 `text`.
