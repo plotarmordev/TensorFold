@@ -86,8 +86,9 @@ fn serve(d: *Draws, cfg: server.Config, deadline: ?[]const u8, request: []const 
     try s.open(d.engine(), cfg, first, request, 2000);
     // the body's read may move the bytes the head lies in
     const head = try d.a.dupe(u8, try s.readHead());
+    const rest = try s.readRest(); // drain before joining: the 16 kHz replies outgrow the socket's buffers
     s.route.join();
-    return .{ .s = s, .head = head, .body = try s.readRest() };
+    return .{ .s = s, .head = head, .body = rest };
 }
 
 fn config(register: speech_register.Policy, silence: speech_redraw.Policy) server.Config {

@@ -44,7 +44,7 @@ pub fn plan(srv: *Server, cx: *Cx, sp: api.SpeechInfo, marked: drama_shift.Marke
     const segments = split.segments;
     if (segments.len <= 1) return null;
     if (segments.len > drama_long.max_segments)
-        return cx.fail(.request, drama_prompt.error_prefix ++ " a long-form input in {d} segments of at most {d} characters exceeds the maximum of {d} segments", .{ segments.len, options.chars, drama_long.max_segments });
+        return cx.fail(.request, drama_prompt.error_prefix ++ " a long-form input in {d} segments targeting {d} characters exceeds the maximum of {d} segments", .{ segments.len, options.chars, drama_long.max_segments });
     for (segments) |segment| {
         if (try drama_prompt.problem(cx.a, segment)) |message| return cx.refuse(message);
         const rows = drama_prompt.promptRows(cx.a, srv.text, segment, references) catch |e| return switch (e) {

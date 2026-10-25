@@ -24,9 +24,10 @@ fn serve(t: *Turns, cfg: server.Config, deadline: ?[]const u8, request: []const 
     const s = try gpa.create(harness.Served);
     const first = if (deadline) |d| try std.fmt.bufPrint(&line, "POST /v1/audio/speech HTTP/1.1\r\nX-Deadline-S: {s}", .{d}) else "POST /v1/audio/speech HTTP/1.1";
     try s.open(t.engine(), cfg, first, request, 2000);
-    const head = try s.readHead();
+    const head_len = (try s.readHead()).len;
+    _ = try s.readRest(); // drain before joining: a whole reply can outgrow the socket's buffers
     s.route.join();
-    return .{ .s = s, .head = head };
+    return .{ .s = s, .head = s.got.items[0..head_len] };
 }
 
 fn has(haystack: []const u8, needle: []const u8) bool {
@@ -423,7 +424,7 @@ test "long-form controls: a later segment that opens like a director's note keep
     try std.testing.expectEqualSlices(u32, want, try redrawnSecond(a, "Sentence 00 is ok, and it is long enough.\\nDirection: d\\nLine: Sentence 01 [pause] ok.", 45));
 }
 
-test "long-form controls: a bracket span that a segment cut crosses is dropped whole, from both segments" {
+test "long-form controls: a bracket cue stays in one segment and is dropped whole on redraw" {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
@@ -431,7 +432,8 @@ test "long-form controls: a bracket span that a segment cut crosses is dropped w
     const input = "Sentence 00 is ok. [warmly. then] Sentence 01 ok.";
     const segments = try drama_long.split(a, input, 30);
     try std.testing.expectEqual(@as(usize, 2), segments.len);
-    try std.testing.expect(std.mem.endsWith(u8, segments[0], "[warmly.") and std.mem.startsWith(u8, segments[1], "then]"));
+    try std.testing.expectEqualStrings("Sentence 00 is ok.", segments[0]);
+    try std.testing.expectEqualStrings("[warmly. then] Sentence 01 ok.", segments[1]);
     const want = try drama_prompt.encode(a, text.text(), "Sentence 01 ok.");
     try std.testing.expectEqualSlices(u32, want, try redrawnSecond(a, input, 30));
 }
