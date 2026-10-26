@@ -174,3 +174,7 @@ test {
     _ = @import("request_provenance_test.zig");
     _ = @import("request_cost_test.zig");
 }
+
+test {
+    _ = @import("open_connections_route_test.zig");
+}
