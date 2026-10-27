@@ -106,6 +106,92 @@ State the hardware RAM class and context; a budget on a larger host is not a mea
 Use a single model process per test machine, the existing GPU lock and admission guard, and record load/cleanup boundaries.
 Never raise a shared machine's limits to get a test through without its owner's authorization.
 
+### Speed claims: an optional Grill A/B/A2 receipt
+
+Maintainers' own A/B measurements on Macs and GB10s decide whether a speed change lands.
+[The Grill](https://github.com/plotarmordev/thegrill) is one optional way to produce an A/B/A2 receipt, alongside the `tools/bench_*` instructions above; contributors need not install it.
+The receipt measures `main` at your branch point (A), your pull request (B), then the same `main` again (A2), on one machine with one checkpoint and the same serve flags.
+To use this route, install The Grill 0.11.0 with its [install guide](https://github.com/plotarmordev/thegrill/blob/a551fdf2b63059f56df6287e72ed573ca06cca2f/docs/performance/INSTALL.md), including the checksum and release receipt checks; it sets `GRILL_PERF`.
+Then run this from your pull request's checkout, with the model pulled and `origin` pointing at this repository; the block is Bash, not `sh`, because `FLAGS` is an array.
+On Linux, leave out `-Dcpu=apple_m1`.
+
+```bash
+WORK=$(mktemp -d)
+MODEL=mlx-community/Qwen3.5-2B-MLX-4bit QUANT="MLX 4-bit"
+FLAGS=(--context 8192 --no-thinking --prompt-cache-gib 0)
+PR=$PWD A=$(git merge-base origin/main HEAD) B=$(git rev-parse HEAD)
+git worktree add --detach "$WORK/main" "$A"
+(cd "$WORK/main" && zig build native -Dcpu=apple_m1 -Dversion=1.0.0)
+zig build native -Dcpu=apple_m1 -Dversion=1.0.0
+up() { "$1/zig-out/native/bin/tensorfold-native" serve "$MODEL" --name grill --port 18080 "${FLAGS[@]}" > "$WORK/server-$2.log" 2>&1 & SERVER=$!
+  until curl -fs http://127.0.0.1:18080/v1/models > /dev/null; do kill -0 $SERVER || return 1; sleep 1; done
+  curl -fs http://127.0.0.1:18080/v1/benchmark/manifest > "manifest-$2.json"; }
+down() { kill -TERM $SERVER; wait $SERVER; }
+mkdir -p "$WORK/receipt/attempt-1" && cd "$WORK/receipt/attempt-1"
+up "$WORK/main" A
+jq -n --arg m "$MODEL" --arg q "$QUANT" --arg r "TensorFold $A" --arg s "serve ${FLAGS[*]}" 'input as $f | $f.hardware as $h | {
+  model_revision: "\($m)@\($f.model.revision // "unknown") (\($q))", runtime: $r, settings: $s,
+  hardware: "\($h.gpus[0].name), \($h.gpus[0].cores // "unknown") GPU cores, \($h.system_memory_bytes // "unknown") bytes, \($h.cpu_model // "unknown")"}' manifest-A.json > a.json
+jq --arg r "TensorFold $B" '.runtime = $r' a.json > b.json
+"$GRILL_PERF" baseline --workload portable-v1 --client-placement same-host --endpoint http://127.0.0.1:18080/v1/chat/completions --local-http --model grill --deployment a.json --out A
+down; sleep 60; up "$PR" B
+"$GRILL_PERF" check A --change runtime --deployment b.json --out B
+down; sleep 60; up "$WORK/main" A2
+"$GRILL_PERF" check A --change none --deployment a.json --out A2
+down
+"$GRILL_PERF" compare A B --reference A2 | tee compare.txt
+"$GRILL_PERF" outputs A B | tee outputs.txt
+case "$(tar --version)" in
+  *GNU*) tar -czf ../attempt-1.tgz --owner=0 --group=0 --numeric-owner --sort=name --mtime=@0 A B A2 a.json b.json manifest-*.json compare.txt outputs.txt ;;
+  *) tar -czf ../attempt-1.tgz --uid 0 --gid 0 --uname '' --gname '' A B A2 a.json b.json manifest-*.json compare.txt outputs.txt ;;
+esac
+```
+
+For a later attempt, reuse the same `$WORK` and move its worktree with `git -C "$WORK/main" checkout --detach "$A"` instead of a second `git worktree add`; remove it at the end with `git worktree remove "$WORK/main"`.
+`FLAGS` is the README's serve line with prefix retention off; add only the flags your claim is about.
+For a new opt-in flag, serve all three runs from your build, so `a.json` and `b.json` both carry your pull request's commit as `runtime` and differ only in `settings`; add the flag to B's server and to `settings` in `b.json`, and use `--change settings`.
+Before measuring, fill in any field that came out `unknown` or `null` in `a.json` and `b.json`.
+A concurrency claim uses `--workload portable-c2-v1`, `portable-c4-v1` or `portable-c8-v1` and gives all three captures the same `--seconds` from the install guide's table.
+Keep both `sleep 60` lines: `check` accepts a shorter gap, but `compare` then refuses the three captures.
+A plain `tar -czf` records your local owner and group names, so the block above picks ownership-neutral flags by `tar --version`: GNU tar on Linux takes `--owner=0 --group=0 --numeric-owner`, plus `--sort=name --mtime=@0` for stable member order and timestamps, while `tar` on Apple Silicon is bsdtar and takes `--uid 0 --gid 0 --uname '' --gname ''`.
+
+Keep the attempt's private originals under `$WORK`. Before attaching, inspect the archive with `tar -tvzf ../attempt-1.tgz` and require only the expected relative receipt files, uid/gid 0 with no owner or group names, and no logs. Then extract it to a separate fresh directory and inspect every member's contents with the same private-data checklist; the archive listing does not show payload contents. Attach only when both checks find no credentials, username, private host, address or path.
+
+Attach the archive and paste `compare.txt`; the server logs stay out of the archive.
+`MEASURED FASTER` means B beat both A and A2; quote the smaller of the two changes.
+A script reads `"result": "IMPROVED"` from `compare --json`, not the exit code.
+`MEASURED SLOWER`, `INCONCLUSIVE` or an error means the receipt supports no speed claim.
+Attach every attempt, failed ones included; after updating the commits and builds as needed, a later attempt starts again from the `mkdir` line with the next number, reusing the same `$WORK`.
+On a checkpoint whose count prompt ends before 400 tokens, `portable-v1` cannot finish its captures; rerun all three with `--workload baseline-v2`, which fixes exactly 400 output tokens, and note the workload with the receipt.
+`baseline-v2` is defined in the Grill repo's [workload JSON](https://github.com/plotarmordev/thegrill/blob/a551fdf2b63059f56df6287e72ed573ca06cca2f/crates/grill-perf/examples/baseline-v2.json) and described in its [default scope and budget](https://github.com/plotarmordev/thegrill/blob/a551fdf2b63059f56df6287e72ed573ca06cca2f/docs/performance/README.md#default-scope-and-budget), not in the install guide.
+
+An abridged excerpt of a real receipt's `compare.txt`, from The Grill 0.11.0 on a DGX Spark (GB10), comparing the builds on either side of a CUDA window-cost change with `baseline-v2`.
+I ran the recipe on the change and its parent, but the window-cost table is only built when a drafter is attached, and this checkpoint served with none, so the changed path was never exercised; the receipt is `INCONCLUSIVE`, and I make no speed claim from it.
+The deployment lines are shortened (the deployment `model grill`, endpoint, CPU, client placement, the collector's source and `aarch64-unknown-linux-gnu` target, and prompt length left out), and the `Model:` line and the per-run `Baseline:`/`Candidate:` request and ceiling accounting are omitted, as is the `Report:` path; a real receipt pastes `compare.txt` whole.
+
+```text
+INCONCLUSIVE: no direction established; this does not mean equivalent performance
+Scope: structured C1 (one concurrent request), exactly 400 output tokens per request.
+Complete acquisitions: baseline 8/8; candidate 8/8
+Baseline deployment: model_revision mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3 (MLX 4-bit); runtime TensorFold aa6fbd89030b4ffa776cc5fd06a4fa916d293fc1; hardware NVIDIA GB10, 6144 GPU cores, 130663170048 bytes; settings serve --context 8192 --no-thinking --prompt-cache-gib 0; collector 0.11.0
+Candidate deployment: same, runtime TensorFold 14ae735699bd9becafd3a3e0c663680cb15ba486
+Reference: A2
+Candidate against the reference period: observed +0.29%; uncertainty range (model-based, nominal 95%) [-0.30%, +0.88%]
+Reference against the baseline period (baseline drift): observed +0.03%; uncertainty range (model-based, nominal 95%) [-0.59%, +0.66%]
+Selected declaration change: runtime
+Observed throughput change between capture periods: +0.33%
+Uncertainty range (model-based, nominal 95%) for the measured change: [-0.49%, +1.15%]
+candidate is not directional against both baseline capture periods
+Limits: a measured direction does not establish its cause or practical importance. These sequential measurements may be correlated or drift over time, making the uncertainty range too narrow. No guaranteed precision.
+Serving identity is declared, not attested.
+```
+
+Both ranges for B cross zero, so this receipt supports no speed claim; `outputs A B` reported 24 of 24 measured outputs identical.
+New code pushed after measuring needs a new receipt.
+The Grill measures request throughput on its count prompt, prompt processing included, so its receipt sits beside the decode speed from `tools/bench_openai.py` and does not replace it.
+Drafting stays on as shipped, and the count prompt favors it, so a drafting claim also keeps the prose and code numbers from `tools/bench_openai.py`.
+The hardware and settings in the receipt are your word, and maintainers may re-run it.
+
 ## Lean code and review
 
 Each module has one job, source files stay at or below 600 lines, and comments/docstrings are single lines of at most 120 columns.
