@@ -30,6 +30,9 @@ The API listens at `http://127.0.0.1:8080/v1` by default.
 It serves OpenAI chat completions, completions and Responses, plus Anthropic Messages.
 Use the model ID returned by `/v1/models`, or set one with `--name`.
 
+Drama speech at `/v1/audio/speech` accepts [request sampling controls](docs/speech-sampling.md)
+for temperature, top-p, top-k and exact 64-bit seeds, including streamed and long-form replies.
+
 ```sh
 curl -fsS http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \

@@ -236,7 +236,7 @@ fn pcm(comptime n: usize) [2 * frame * n]u8 {
     return bytes;
 }
 
-fn expectHeader(head: []const u8, line: []const u8) !void {
+pub fn expectHeader(head: []const u8, line: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, head, line) != null);
 }
 
@@ -265,8 +265,8 @@ test "audio published before the route reads it goes out as one chunk" {
     try s.start(&script, "HTTP/1.1", stream_body, 2000);
     defer s.deinit();
     _ = try s.readHead();
-    s.join(&script);
     const rest = try s.readRest();
+    s.join(&script);
     try std.testing.expect(std.mem.startsWith(u8, rest, "3000\r\n") and std.mem.endsWith(u8, rest, "\r\n0\r\n\r\n"));
     try std.testing.expectEqualStrings(&pcm(3), rest["3000\r\n".len .. rest.len - "\r\n0\r\n\r\n".len]);
 }
@@ -305,8 +305,8 @@ test "audio cut short by the frame limit or the silence guard ends the stream wi
         try s.start(&script, "HTTP/1.1", stream_body, 2000);
         defer s.deinit();
         try expectHeader(try s.readHead(), "Trailer: X-Finish-Reason\r\n");
-        s.join(&script);
         const rest = try s.readRest();
+        s.join(&script);
         var buf: [64]u8 = undefined;
         const end = try std.fmt.bufPrint(&buf, "\r\n0\r\nX-Finish-Reason: {s}\r\n\r\n", .{@tagName(reason)});
         try std.testing.expect(std.mem.startsWith(u8, rest, "2000\r\n") and std.mem.endsWith(u8, rest, end));

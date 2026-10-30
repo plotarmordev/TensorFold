@@ -14,16 +14,26 @@ const Reference = drama_prompt.Reference;
 
 const fixture = @embedFile("drama_voice_fixture.json");
 
-test "references are refused with the reference's messages, in its order" {
+test "references keep the pinned refusals except the two speaker-only cases this native extension accepts" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const doc = (try json.parse(a, fixture)).ok;
     const cases = doc.get("refusals").?.array;
     try std.testing.expect(cases.len >= 20);
+    var extended: usize = 0;
     for (cases) |case| {
         var cx: Cx = .{ .a = a };
         const got = drama_voice.lower(&cx, case.strField("input").?, case.get("references").?, &.{});
+        const name = case.strField("name").?;
+        if (std.mem.eql(u8, name, "other-speaker") or std.mem.eql(u8, name, "other-speaker-input")) {
+            try std.testing.expectStringStartsWith(case.strField("message").?, "Drama 3 request: only speaker 0");
+            const refs = try got;
+            try std.testing.expectEqual(@as(usize, 1), refs.len);
+            try std.testing.expectEqualStrings(case.get("references").?.array[0].strField("text").?, refs[0].text);
+            extended += 1;
+            continue;
+        }
         std.testing.expectError(error.Refused, got) catch |e| {
             std.debug.print("{s}: accepted\n", .{case.strField("name").?});
             return e;
@@ -33,6 +43,7 @@ test "references are refused with the reference's messages, in its order" {
             return e;
         };
     }
+    try std.testing.expectEqual(@as(usize, 2), extended);
 }
 
 test "the server's own refusals: audio it cannot encode, fields it would drop, text that is not UTF-8" {
@@ -72,10 +83,9 @@ test "a request's references come before its voice's; no references and no voice
     try std.testing.expectEqualStrings("voice", both[1].text);
     try std.testing.expectEqual(@as(usize, 1), (try drama_voice.lower(&cx, "hi", .null, &voice)).len);
     for ([_][]const u8{ "null", "[]" }) |none| try std.testing.expectEqual(@as(usize, 0), (try drama_voice.lower(&cx, "<|voice|>", (try json.parse(a, none)).ok, &.{})).len);
-    // the voice's transcript counts in the other-speaker check, as an uploaded voice's does
+    // A catalog's nonzero speaker is preserved, as an inline reference's is.
     const other = [_]Reference{.{ .text = "<|speaker:4|> voice", .frames = &frames }};
-    try std.testing.expectError(error.Refused, drama_voice.lower(&cx, "hi", .null, &other));
-    try std.testing.expectEqualStrings("Drama 3 request: only speaker 0 is supported; got speaker tags [4]", cx.message);
+    try std.testing.expectEqualStrings(other[0].text, (try drama_voice.lower(&cx, "hi", .null, &other))[0].text);
 }
 
 test "transcripts move a tag behind leading white space in front of it" {
@@ -246,7 +256,7 @@ test "voice files: regular NAME.json files only, names, consent and digests chec
         .{ .file = "default.json", .data = try voiceFile(a, "x", owner, true), .problem = "a voice name is" },
         .{ .file = "-x.json", .data = try voiceFile(a, "x", owner, true), .problem = "a voice name is" },
         .{ .file = "bad.json", .data = try voiceFile(a, "x", owner, false), .problem = "codes_sha256 does not match vq_codes" },
-        .{ .file = "tagged.json", .data = try voiceFile(a, "<|speaker:3|> x", owner, true), .problem = "only speaker 0 is supported" },
+        .{ .file = "tagged.json", .data = try voiceFile(a, "<|speaker:16|> x", owner, true), .problem = "speaker tags must be written" },
         .{ .file = "plain.json", .data = "nope", .problem = "not JSON" },
         .{ .file = "unsourced.json", .data = try voiceFile(a, "x", "", true), .problem = unsourced },
         .{ .file = "flat.json", .data = try voiceFile(a, "x", "\"owner\"", true), .problem = unsourced },

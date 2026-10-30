@@ -4,6 +4,7 @@ const api = @import("engine_api");
 const errors = @import("errors.zig");
 const speech = @import("speech.zig");
 const speech_redraw = @import("speech_redraw.zig");
+const speech_sampling = @import("speech_sampling.zig");
 const drama_prompt = @import("drama_prompt.zig");
 const drama_long = @import("drama_long.zig");
 const drama_joins = @import("drama_joins.zig");
@@ -26,9 +27,15 @@ pub const Long = struct {
     references: []const Reference,
     history: u8,
     shift_pause_s: f32,
+    sampling: speech_sampling.Options,
 
     fn shifted(l: Long, i: usize) bool {
         return i < l.shifts.len and l.shifts[i];
+    }
+
+    fn textFor(l: Long, a: std.mem.Allocator, i: usize, text: []const u8) ![]const u8 {
+        const start = @intFromPtr(l.segments[i].ptr) - @intFromPtr(l.input.ptr);
+        return drama_prompt.continued(a, text, l.input[0..start]);
     }
 };
 
@@ -37,24 +44,25 @@ const trailer = "X-Finish-Reason, X-Long-Form-Segments";
 const shift_trailer = trailer ++ ", X-Pause-Spans";
 
 /// The input's segments, cut at each of `marked`'s cuts, each refused now as a whole input would be; null: one reply.
-pub fn plan(srv: *Server, cx: *Cx, sp: api.SpeechInfo, marked: drama_shift.Marked, references: []const Reference, options: drama_long.Options) errors.Refused!?Long {
+pub fn plan(srv: *Server, cx: *Cx, sp: api.SpeechInfo, marked: drama_shift.Marked, references: []const Reference, options: drama_long.Options, sampling: speech_sampling.Options) errors.Refused!?Long {
     const input = marked.text;
     if (marked.cuts.len == 0 and (std.unicode.utf8CountCodepoints(input) catch unreachable) <= options.chars) return null;
     const split = try drama_shift.split(cx.a, marked, options.chars);
     const segments = split.segments;
     if (segments.len <= 1) return null;
     if (segments.len > drama_long.max_segments)
-        return cx.fail(.request, drama_prompt.error_prefix ++ " a long-form input in {d} segments of at most {d} characters exceeds the maximum of {d} segments", .{ segments.len, options.chars, drama_long.max_segments });
-    for (segments) |segment| {
+        return cx.fail(.request, drama_prompt.error_prefix ++ " a long-form input in {d} segments targeting {d} characters exceeds the maximum of {d} segments", .{ segments.len, options.chars, drama_long.max_segments });
+    const long: Long = .{ .input = input, .segments = segments, .shifts = split.shifts, .references = references, .history = options.history, .shift_pause_s = options.shift_pause_s, .sampling = sampling };
+    for (segments, 0..) |segment, i| {
         if (try drama_prompt.problem(cx.a, segment)) |message| return cx.refuse(message);
-        const rows = drama_prompt.promptRows(cx.a, srv.text, segment, references) catch |e| return switch (e) {
+        const rows = drama_prompt.promptRows(cx.a, srv.text, try long.textFor(cx.a, i, segment), references) catch |e| return switch (e) {
             error.OutOfMemory => error.OutOfMemory,
             error.Template => cx.other("the tokenizer cannot encode this prompt"),
         };
         if (rows.tokens.len > sp.max_prompt_tokens)
             return cx.fail(.request, drama_prompt.error_prefix ++ " a prompt of {d} rows exceeds the maximum allowed length of {d} rows", .{ rows.tokens.len, sp.max_prompt_tokens });
     }
-    return .{ .input = input, .segments = segments, .shifts = split.shifts, .references = references, .history = options.history, .shift_pause_s = options.shift_pause_s };
+    return long;
 }
 
 /// Speaks every segment into one reply: a WAV or PCM body, or a PCM stream from the first segment's first audio.
@@ -138,7 +146,7 @@ const Reply = struct {
     fn speak(r: *Reply, i: usize) bool {
         const fl: usize = r.sp.frame_length;
         const room = @min(r.sp.max_frames, drama_long.max_frames - r.frames);
-        var text = r.long.segments[i];
+        var text = r.long.textFor(r.cx.a, i, r.long.segments[i]) catch return r.end(.other, "out of memory");
         var rows = r.prompt(text) catch |e| return r.end(.other, if (e == error.OutOfMemory) "out of memory" else "the tokenizer cannot encode this prompt");
         // only the first segment streams as it is made: a later one's level and pause need all of it
         const live = r.stream and i == 0;
@@ -156,11 +164,11 @@ const Reply = struct {
                 .generated = r.generated[r.frames..][0..room],
                 .pcm = r.scratch[0 .. room * fl],
                 .result = &result,
-                .seed = api.seedFor(rows.tokens, speech_redraw.Redraws.salt(r.srv.config.seed_salt, k)),
+                .seed = r.long.sampling.seedFor(rows.tokens, r.srv.config.seed_salt, k),
                 .max_frames = @intCast(room),
-                .temperature = drama_prompt.temperature,
-                .top_p = drama_prompt.top_p,
-                .top_k = drama_prompt.top_k,
+                .temperature = r.long.sampling.temperature,
+                .top_p = r.long.sampling.top_p,
+                .top_k = r.long.sampling.top_k,
                 .unconditioned = guided.unconditioned,
                 .cfg_gamma = guided.gamma,
                 .stream = live,
@@ -193,7 +201,7 @@ const Reply = struct {
             // a stream has sent audio before its guard can trip, so only a whole reply is redrawn
             if (r.stream or r.redraws.policy.max == 0) break this;
             const cause = r.redraws.trip(this.reason, this.samples, r.sp.sample_rate, text) orelse break this;
-            if (next == null) next = r.redrawText(i, rows) orelse break this;
+            if (next == null) next = r.redrawText(i, text, rows) orelse break this;
             start_by = r.redraws.again(r.srv.io, r.id, started, cause) orelse break this;
             text = next.?.text;
             rows = next.?.rows;
@@ -210,9 +218,9 @@ const Reply = struct {
     }
 
     /// What redraws of segment `i` speak: its `rows`, or its plain text's (--silence-redraw-plain); null if neither.
-    fn redrawText(r: *Reply, i: usize, rows: drama_prompt.Rows) ?speech_redraw.Spoken {
+    fn redrawText(r: *Reply, i: usize, spoken: []const u8, rows: drama_prompt.Rows) ?speech_redraw.Spoken {
         const segment = r.long.segments[i];
-        if (!r.redraws.policy.plain) return .{ .text = segment, .rows = rows };
+        if (!r.redraws.policy.plain) return .{ .text = spoken, .rows = rows };
         const why_not = why: {
             const a = r.cx.a;
             // the whole input's controls, so one a cut crosses goes whole and only the input's own note head counts
@@ -222,8 +230,9 @@ const Reply = struct {
                 break :spans found;
             };
             const start = @intFromPtr(segment.ptr) - @intFromPtr(r.long.input.ptr);
-            const text = (speech_redraw.heard(a, r.long.input, spans, start, start + segment.len) catch break :why "out of memory") orelse return .{ .text = segment, .rows = rows };
-            if (speech_redraw.problem(a, text)) |message| break :why message;
+            const plain = (speech_redraw.heard(a, r.long.input, spans, start, start + segment.len) catch break :why "out of memory") orelse return .{ .text = spoken, .rows = rows };
+            if (speech_redraw.problem(a, plain)) |message| break :why message;
+            const text = r.long.textFor(a, i, plain) catch break :why "out of memory";
             const cue_free = r.prompt(text) catch break :why "the tokenizer cannot encode the segment without its cues";
             if (cue_free.tokens.len > r.sp.max_prompt_tokens) break :why "the segment without its cues does not fit the prompt";
             log.line("speech {s} long-form segment {d}: redraws speak it without its {s}", .{ r.id, i + 1, @tagName(r.redraws.policy.plain_scope) });

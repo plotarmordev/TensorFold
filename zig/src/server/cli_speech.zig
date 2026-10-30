@@ -47,7 +47,7 @@ pub fn flag(a: Allocator, out: *cli.Args, name: []const u8, v: []const u8, u: *c
     const is = std.mem.eql;
     if (is(u8, name, "--voices")) out.voices = v else if (is(u8, name, "--default-voice")) out.default_voice = v else if (is(u8, name, "--long-form")) out.long_form = true else if (is(u8, name, "--long-form-chars")) {
         const n = try cli.int(u, a, name, v);
-        if (n < 1 or n > 4096) return cli.fail(u, a, "argument --long-form-chars: characters a segment holds, from 1 to 4096: '{s}'", .{v});
+        if (n < 1 or n > 4096) return cli.fail(u, a, "argument --long-form-chars: target characters a segment holds, from 1 to 4096: '{s}'", .{v});
         out.long_form_chars = @intCast(n);
         out.long_form_set = true;
     } else if (is(u8, name, "--long-form-history")) {

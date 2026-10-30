@@ -121,6 +121,13 @@ test "the voice file loads with the codes it was written with, and a transcript 
     try std.testing.expectEqualStrings("a40ff3d5900fb7698b8c865041347cb49eccedc8f93945f89629ad104aaecce4", doc.strField("audio_sha256").?);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "\"Wie spät ist es?\"") != null);
     try std.testing.expect(std.mem.endsWith(u8, bytes, "]]}\n"));
-    try std.testing.expect(try voiceFile(a, "<|speaker:4|> hi", &codes, "RIFF", .{ .object = encoder }, &problem) == null);
-    try std.testing.expectEqualStrings("the voice file would not load: Drama 3 request: only speaker 0 is supported; got speaker tags [4]", problem);
+    for (0..16) |id| {
+        const text = try std.fmt.allocPrint(a, "\u{3000}<|speaker:{d}|> hi", .{id});
+        const tagged = (try voiceFile(a, text, &codes, "RIFF", .{ .object = encoder }, &problem)).?;
+        const ref = (try drama_voice.parseReference(a, tagged, &problem)).?;
+        try std.testing.expectEqualStrings(text, ref.text);
+        try std.testing.expectEqualSlices(drama_prompt.Codes, &codes, ref.frames);
+    }
+    try std.testing.expect(try voiceFile(a, "<|speaker:16|> hi", &codes, "RIFF", .{ .object = encoder }, &problem) == null);
+    try std.testing.expectStringStartsWith(problem, "the voice file would not load: Drama 3 request: text: speaker tags must be written");
 }

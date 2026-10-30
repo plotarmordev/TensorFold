@@ -26,6 +26,7 @@ const Draws = struct {
     refused: u8 = 0,
     prompts: [4][]const u32 = undefined,
     seeds: [4]u64 = undefined,
+    sampling: [4]scripted.Sampling = undefined,
 
     fn engine(d: *Draws) api.Engine {
         return .{ .ctx = d, .vtable = &.{ .info = info, .submit = submit, .cancel = cancel, .status = status, .memory = memory, .submit_speech = speech } };
@@ -45,6 +46,7 @@ const Draws = struct {
         d.refused = 0;
         d.prompts[d.seen] = d.a.dupe(u32, request.prompt) catch unreachable;
         d.seeds[d.seen] = request.seed;
+        d.sampling[d.seen] = .{ .temperature = request.temperature, .top_p = request.top_p, .top_k = request.top_k };
         d.seen += 1;
         @memcpy(request.pcm[0..draw.pcm.len], draw.pcm);
         if (request.stream) sink.event(sink.ctx, id, &.{ .audio = draw.pcm.len });
@@ -86,8 +88,9 @@ fn serve(d: *Draws, cfg: server.Config, deadline: ?[]const u8, request: []const 
     try s.open(d.engine(), cfg, first, request, 2000);
     // the body's read may move the bytes the head lies in
     const head = try d.a.dupe(u8, try s.readHead());
+    const rest = try s.readRest(); // drain before joining: the 16 kHz replies outgrow the socket's buffers
     s.route.join();
-    return .{ .s = s, .head = head, .body = try s.readRest() };
+    return .{ .s = s, .head = head, .body = rest };
 }
 
 fn config(register: speech_register.Policy, silence: speech_redraw.Policy) server.Config {
@@ -114,6 +117,25 @@ test "a jump trips one redraw at the next salt; the calmer redraw is sent, marke
     try std.testing.expectEqualSlices(u8, try body(a, calm), r.body);
     for (0..2) |k| try std.testing.expectEqual(api.seedFor(d.prompts[0], @intCast(k)), d.seeds[k]);
     try std.testing.expectEqualSlices(u32, d.prompts[0], d.prompts[1]);
+}
+
+test "speech sampling: silence then register redraws retain settings and increment the exact seed" {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const calm = try reply(a, 178);
+    var d: Draws = .{ .a = a, .draws = &.{ .{ .pcm = calm, .reason = .silence }, .{ .pcm = try reply(a, 240) }, .{ .pcm = calm } } };
+    const request = "{\"model\":\"m\",\"input\":\"One. Two.\",\"response_format\":\"pcm\",\"temperature\":0.5,\"top_p\":0.75,\"top_k\":8,\"seed\":9007199254740993}";
+    const r = try serve(&d, config(on, .{ .max = 1 }), null, request);
+    defer scripted.done(r.s);
+    try harness.expectHeader(r.head, "HTTP/1.1 200");
+    try harness.expectHeader(r.head, "X-Silence-Redraws: 1");
+    try harness.expectHeader(r.head, "X-Register-Redraws: 1");
+    try std.testing.expectEqual(@as(usize, 3), d.seen);
+    for (0..d.seen) |k| {
+        try std.testing.expectEqual(@as(u64, 9007199254740993) + k, d.seeds[k]);
+        try std.testing.expectEqualDeep(scripted.Sampling{ .temperature = 0.5, .top_p = 0.75, .top_k = 8 }, d.sampling[k]);
+    }
 }
 
 test "an untripped reply is drawn once and sent byte for byte as with the guard off, marked Trip 0 and Redraws 0" {
