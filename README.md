@@ -341,14 +341,22 @@ The supported environment variables are listed in `capabilities --json`, includi
 ## Build and contribute
 
 Use the Zig version pinned in `.zig-version`, currently 0.17.0.
-The `.metal` sources need Xcode's Metal compiler. Install full Xcode and its Metal Toolchain component
-(`xcodebuild -downloadComponent MetalToolchain`); the Command Line Tools alone fail every kernel compile with
-`unable to find utility "metal"`.
+`zig build native` needs Xcode's Metal compiler for the `.metal` sources. Install full Xcode and its Metal Toolchain
+component (`xcodebuild -downloadComponent MetalToolchain`); with the Command Line Tools alone it stops with
+`install Xcode`.
 
 ```sh
 zig build native -Dcpu=apple_m1
-zig build test test-golden -Dcpu=apple_m1
 ```
+
+One command runs the tests on macOS and Linux and exits non-zero on any failure:
+
+```sh
+zig build test test-golden
+```
+
+Without Xcode's Metal compiler it warns `skipping offline Metal shader checks` and runs everything else;
+tests that need Linux, CUDA or a Metal device skip themselves.
 
 Structured output and required tool calls need the release archive's `lib/` or `zig build grammar -Dxgrammar=DIR`; prepare DIR with `git clone --branch v0.2.8 --recurse-submodules https://github.com/mlc-ai/xgrammar` (use the native build's same `--prefix` for grammar).
 
