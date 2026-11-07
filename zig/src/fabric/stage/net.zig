@@ -192,7 +192,8 @@ test "stage net: a listener on loopback trades bytes, times out and sees the han
 }
 
 test "stage net: an unknown host is refused, and a connect with no listener times out" {
-    try std.testing.expectError(error.AddressUnresolved, listen("no-such-host.invalid", 0));
+    // An empty name: a fake-IP DNS proxy answers any real-looking one, even under .invalid.
+    try std.testing.expectError(error.AddressUnresolved, listen("", 0));
     try std.testing.expectError(error.WildcardAddress, listen("0.0.0.0", 0));
     const l = try listen("127.0.0.1", 0);
     const free = try port(l);
