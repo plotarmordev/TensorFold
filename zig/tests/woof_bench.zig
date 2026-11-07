@@ -1,4 +1,4 @@
-//! Woof over a speech bench corpus (JSON lines with "id" and "text"): one take per item at SEED, timings, OUT/<id>.wav.
+//! Woof over a speech bench corpus (JSON lines with "id" and "text"): one take per item at SEED in VOICE on THREADS.
 const std = @import("std");
 const woof = @import("woof");
 
@@ -25,9 +25,14 @@ pub fn main(init: std.process.Init) !void {
     const corpus = args.next() orelse return usage();
     const out_path = args.next() orelse return usage();
     const seed = try std.fmt.parseInt(u64, args.next() orelse "0", 10);
+    const voice_name = args.next() orelse "juno";
+    const threads = try std.fmt.parseInt(usize, args.next() orelse "0", 10);
     const load_start = Clock.Timestamp.now(io, .awake);
-    const m = try woof.Model.load(gpa, io, dir, null);
+    const m = try woof.Model.load(gpa, io, dir, null, threads);
     defer m.deinit();
+    const voice: u32 = for (m.voice_names, 0..) |v, i| {
+        if (std.mem.eql(u8, v, voice_name)) break @intCast(i);
+    } else return usage();
     const load_s = seconds(load_start.untilNow(io));
     const lines = try std.Io.Dir.cwd().readFileAlloc(io, corpus, gpa, .limited(1 << 20));
     defer gpa.free(lines);
@@ -38,6 +43,9 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(pcm);
     var total_s: f64 = 0;
     var audio_s: f64 = 0;
+    var firsts: std.ArrayList(f64) = .empty;
+    defer firsts.deinit(gpa);
+    const cpu_start = cpuSeconds();
     var it = std.mem.tokenizeScalar(u8, lines, '\n');
     while (it.next()) |line| {
         const item = try std.json.parseFromSlice(struct { id: []const u8, text: []const u8 }, gpa, line, .{ .ignore_unknown_fields = true });
@@ -45,19 +53,40 @@ pub fn main(init: std.process.Init) !void {
         const cps = try codepoints(gpa, item.value.text);
         defer gpa.free(cps);
         var first: First = .{ .io = io, .start = .now(io, .awake) };
-        const n = (try m.speak(cps, 0, seed, pcm, .{ .ctx = &first, .piece = First.piece })).samples;
+        const n = (try m.speak(cps, voice, seed, pcm, .{ .ctx = &first, .piece = First.piece })).samples;
         const took = seconds(first.start.untilNow(io));
         const audio = @as(f64, @floatFromInt(n)) / woof.sample_rate;
         total_s += took;
         audio_s += audio;
         try writeWav(gpa, io, out, item.value.id, pcm[0..n]);
         std.debug.print("{s}: first audio {d:.3} s, total {d:.3} s, audio {d:.2} s\n", .{ item.value.id, first.seconds.?, took, audio });
+        try firsts.append(gpa, first.seconds.?);
     }
+    if (firsts.items.len == 0) return usage();
+    const busy = (cpuSeconds() - cpu_start) / total_s;
     var usage_: std.c.rusage = undefined;
     _ = std.c.getrusage(std.c.rusage.SELF, &usage_);
     // ru_maxrss is bytes on macOS, KiB on Linux
     const rss_mib = @as(f64, @floatFromInt(usage_.maxrss)) / if (@import("builtin").os.tag == .macos) 1 << 20 else 1 << 10;
-    std.debug.print("load {d:.3} s, real-time factor {d:.4}, peak RSS {d:.1} MiB\n", .{ load_s, total_s / audio_s, rss_mib });
+    std.mem.sort(f64, firsts.items, {}, std.sort.asc(f64));
+    std.debug.print("load {d:.3} s, first audio p50 {d:.3} s p90 {d:.3} s, real-time factor {d:.4}, peak RSS {d:.1} MiB, threads {d}, cores busy {d:.2}\n", .{
+        load_s, quantile(firsts.items, 0.5), quantile(firsts.items, 0.9), total_s / audio_s, rss_mib, m.pool.size(), busy,
+    });
+}
+
+/// Linear between order statistics, as Python's statistics.quantiles(method="inclusive").
+fn quantile(sorted: []const f64, q: f64) f64 {
+    const at = q * @as(f64, @floatFromInt(sorted.len - 1));
+    const lo: usize = @intFromFloat(@floor(at));
+    const hi = @min(lo + 1, sorted.len - 1);
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (at - @floor(at));
+}
+
+fn cpuSeconds() f64 {
+    var u: std.c.rusage = undefined;
+    _ = std.c.getrusage(std.c.rusage.SELF, &u);
+    const us = (u.utime.sec + u.stime.sec) * 1_000_000 + u.utime.usec + u.stime.usec;
+    return @as(f64, @floatFromInt(us)) / 1e6;
 }
 
 fn seconds(d: Clock.Duration) f64 {
@@ -91,6 +120,6 @@ fn codepoints(gpa: std.mem.Allocator, s: []const u8) ![]u32 {
 }
 
 fn usage() error{Usage} {
-    std.debug.print("usage: tf-woof-bench WOOF_DIR CORPUS OUT [SEED]\n", .{});
+    std.debug.print("usage: tf-woof-bench WOOF_DIR CORPUS OUT [SEED] [VOICE] [THREADS (0: performance cores)]\n", .{});
     return error.Usage;
 }

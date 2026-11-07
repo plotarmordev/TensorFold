@@ -75,32 +75,50 @@ piece's length by a frame. The long text's third clause shows the same drift bet
 
 ## Mac figures
 
-An Apple M5 Ultra (256 GB), the 24-text English bench (`zig/tests/fixtures/woof/bench-en.jsonl`, Drama's
-`drama-bench-en-v1`: 8 short, 8 medium, 8 long; Juno, seed 0, one take each), against Woof's numpy runtime on one
-thread as its own bench runs it (its normalizer changes none of the 24 texts):
+**Headline: 1.4x faster than running Woof the normal way on the same Mac (Juno; 1.25x for Mira), with the audio the
+one-thread engine makes.** Threads change no sample; against numpy the audio drifts as the parity section says, with
+equal word errors. It rests on one Apple M5 Ultra (256 GB, 12 performance cores), the 24-text English bench
+(`zig/tests/fixtures/woof/bench-en.jsonl`, Drama's `drama-bench-en-v1`: 8 short, 8 medium, 8 long), seed 0, one
+take each, Juno and Mira, run back to back on an idle machine. "The normal way" is Woof's own `Woof()` call from its
+repo (numpy 2.5 on Apple's Accelerate, default threads, normalizer on; it changes none of the 24 texts). The lead comes
+from TensorFold using 12 cores where numpy keeps one busy: on one thread TensorFold is 2.5x slower than numpy (0.151 to
+0.060 Juno). Underdog ships no torch path for the two-voice model, so there is nothing else to race.
 
-| | TensorFold `woof` | Woof numpy |
-| --- | --- | --- |
-| First audio, median | 0.53 s | 0.23 s |
-| Real-time factor | 0.162 | 0.066 |
-| Peak memory (RSS) | 252 MiB | 400 MiB |
-| Word error rate (Whisper large-v3, 670 words) | 1.04% (7) | 1.04% (7) |
-| Speaker similarity to Juno's samples (ECAPA cosine) | 0.798 | 0.798 |
+| | TensorFold `woof`, Juno | Woof numpy, Juno | TensorFold `woof`, Mira | Woof numpy, Mira |
+| --- | --- | --- | --- | --- |
+| Real-time factor | **0.0426** | 0.0595 | **0.0547** | 0.0683 |
+| First audio, p50 | **0.147 s** | 0.191 s | **0.199 s** | 0.327 s |
+| First audio, p90 | **0.263 s** | 0.353 s | **0.499 s** | 0.792 s |
+| Peak memory (RSS) | **255 MiB** | 384 MiB | **255 MiB** | 372 MiB |
+| Threads (CPU seconds per wall second) | 12 (10.5) | Accelerate default (0.99) | 12 (10.6) | Accelerate default (1.01) |
+| Word errors (Whisper large-v3, 670 words) | 7 (1.04%) | 7 (1.04%) | 6 (0.90%) | 6 (0.90%) |
+| Speaker similarity to the voice's samples (ECAPA) | 0.798 | 0.798 | 0.817 | 0.819 |
+
+With `VECLIB_MAXIMUM_THREADS=1` numpy gives 0.0628 and 0.209 s for Juno: Accelerate's threads do not help these
+one-frame matvecs. TensorFold's samples are the same bits at 1 and 12 threads.
 
 ```bash
-zig build tf-woof-bench && zig-out/bin/tf-woof-bench WOOF_DIR zig/tests/fixtures/woof/bench-en.jsonl runs/tensorfold 0
-PYTHONPATH=WOOF_DIR python -c '
-import json, sys; from pathlib import Path; from underdog_woof import Woof
-tts, out = Woof(), Path("runs/numpy"); out.mkdir(parents=True, exist_ok=True)
-for l in open(sys.argv[1]): i = json.loads(l); tts.save(str(out / (i["id"] + ".wav")), tts(i["text"], seed=0))
-' zig/tests/fixtures/woof/bench-en.jsonl
+zig build tf-woof-bench && zig-out/bin/tf-woof-bench WOOF_DIR zig/tests/fixtures/woof/bench-en.jsonl runs/tensorfold 0 juno
+python tools/zig/woof_numpy_bench.py WOOF_DIR zig/tests/fixtures/woof/bench-en.jsonl runs/numpy --voice juno
 python tools/zig/woof_score.py scores.json runs/tensorfold runs/numpy --corpus zig/tests/fixtures/woof/bench-en.jsonl \
   --whisper WHISPER_LARGE_V3_DIR --ecapa SPKREC_ECAPA_VOXCELEB_DIR \
   --ref WOOF_DIR/samples/juno_0.wav --ref WOOF_DIR/samples/juno_1.wav --ref WOOF_DIR/samples/juno_2.wav
 ```
 
-`tf-woof-bench` writes each take to `OUT/<id>.wav` and prints first audio (the first piece spoken), the real-time
-factor and peak RSS; numpy's figures time the same loop over its pieces on one thread. `woof_score.py` gives the word
-error rate (Whisper large-v3) and speaker similarity (ECAPA against Juno's three samples), the scoring Woof's own bench
-uses. The engine is single-threaded fp32 with its own packed matvecs; this numpy links Apple's Accelerate, whose
-matmuls make it 2.4x faster per second of audio.
+Both benches write each take to `OUT/<id>.wav` and print first audio (the first piece spoken) p50 and p90, the
+real-time factor, peak RSS and CPU seconds per wall second; `tf-woof-bench` takes `[SEED] [VOICE] [THREADS]`, 0 threads
+meaning the performance cores, as the server runs. `woof_score.py` gives the word error rate (Whisper large-v3) and
+speaker similarity (ECAPA against the voice's three samples), the scoring Woof's own bench uses.
+
+Where the time goes, on one 145-frame piece (ms per 40 ms frame):
+
+| | Speech model | Decoder |
+| --- | --- | --- |
+| Woof numpy | 1.1 | 1.1 |
+| TensorFold, 1 thread | 2.5 | 2.6 |
+| TensorFold, 12 threads | 0.7 to 1.0 | 0.47 |
+
+On one thread Accelerate's matvecs beat the engine's NEON panels 2.3x per frame. The engine splits each matvec over a
+persistent pool by output panels (by 4-row blocks for the prompt and decoder), the speech attention by head and the
+decoder's ELU and GELU by runs, so every output sums in the same order as on one thread. Past 6 threads the speech model
+stops scaling; each of its frames is about 50 small jobs.

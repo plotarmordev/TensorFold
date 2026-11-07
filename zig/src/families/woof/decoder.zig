@@ -2,6 +2,7 @@
 const std = @import("std");
 const ops = @import("ops.zig");
 const Loader = @import("weights.zig").Loader;
+const Pool = @import("pool.zig").Pool;
 const Linear = ops.Linear;
 
 const latent = 32;
@@ -39,12 +40,12 @@ const Conv = struct {
     }
 
     /// out = conv(x) (+ res); x has n rows; win holds the state rows then x.
-    fn run(c: *Conv, x: []const f32, n: usize, win: []f32, out: []f32, res: ?[]const f32) void {
+    fn run(c: *Conv, pool: *Pool, x: []const f32, n: usize, win: []f32, out: []f32, res: ?[]const f32) void {
         const s = c.state.len;
         @memcpy(win[0..s], c.state);
         @memcpy(win[s..][0 .. n * c.cin], x[0 .. n * c.cin]);
         @memcpy(c.state, win[n * c.cin ..][0..s]);
-        ops.rows(c.w, win, c.cin, n, out, c.w.out, res);
+        ops.rows(pool, c.w, win, c.cin, n, out, c.w.out, res);
     }
 };
 
@@ -66,9 +67,9 @@ const ConvT = struct {
     }
 
     /// x (n, cin) -> out (n * stride, cout), using z (n, 2 * stride * cout).
-    fn run(c: *ConvT, x: []const f32, n: usize, z: []f32, out: []f32) void {
+    fn run(c: *ConvT, pool: *Pool, x: []const f32, n: usize, z: []f32, out: []f32) void {
         const half = c.stride * c.cout;
-        ops.rows(c.w, x, c.w.in, n, z, 2 * half, null);
+        ops.rows(pool, c.w, x, c.w.in, n, z, 2 * half, null);
         for (0..n) |r| {
             const o = out[r * half ..][0..half];
             const prev = if (r == 0) c.carry else z[(r - 1) * 2 * half + half ..][0..half];
@@ -129,12 +130,12 @@ pub const Decoder = struct {
     }
 
     /// Mono audio for `lat` (T latent frames, already de-normalized) into pcm (T * 960 samples).
-    pub fn run(dec: *Decoder, a: std.mem.Allocator, lat: []const [latent]f32, pcm: []f32) !void {
+    pub fn run(dec: *Decoder, pool: *Pool, a: std.mem.Allocator, lat: []const [latent]f32, pcm: []f32) !void {
         const t = lat.len;
         const h = try a.alloc(f32, t * dim);
         defer a.free(h);
-        ops.rows(dec.inp, std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(lat)), latent, t, h, dim, null);
-        try dec.transformer(a, h, t);
+        ops.rows(pool, dec.inp, std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(lat)), latent, t, h, dim, null);
+        try dec.transformer(pool, a, h, t);
         for ([_]*Conv{ &dec.first, &dec.last }) |c| @memset(c.state, 0);
         for (&dec.stages) |*s| {
             @memset(s.up.carry, 0);
@@ -145,34 +146,34 @@ pub const Decoder = struct {
         var at: usize = 0;
         while (at < t) : (at += chunk) {
             const n: usize = @min(chunk, t - at);
-            const y = dec.seanet(h[at * dim ..][0 .. n * dim], n);
+            const y = dec.seanet(pool, h[at * dim ..][0 .. n * dim], n);
             @memcpy(pcm[out..][0..y.len], y);
             out += y.len;
         }
     }
 
     /// One chunk: b[0] holds each stage's output, b[1] the window scratch, b[2] the residual branch's copy.
-    fn seanet(dec: *Decoder, x: []const f32, rows: usize) []const f32 {
+    fn seanet(dec: *Decoder, pool: *Pool, x: []const f32, rows: usize) []const f32 {
         const b = dec.bufs;
         var n = rows;
-        dec.first.run(x, n, b[1], b[0], null);
-        elu(b[0][0 .. n * 768]);
+        dec.first.run(pool, x, n, b[1], b[0], null);
+        ops.map(pool, b[0][0 .. n * 768], elu);
         for (&dec.stages) |*s| {
-            s.up.run(b[0], n, b[1], b[2]);
+            s.up.run(pool, b[0], n, b[1], b[2]);
             n *= s.up.stride;
             const c = s.up.cout;
             @memcpy(b[0][0 .. n * c], b[2][0 .. n * c]);
-            elu(b[2][0 .. n * c]);
-            s.res.a.run(b[2], n, b[1], b[2], null);
-            elu(b[2][0 .. n * c / 2]);
-            s.res.b.run(b[2], n, b[1], b[0], b[0]);
-            elu(b[0][0 .. n * c]);
+            ops.map(pool, b[2][0 .. n * c], elu);
+            s.res.a.run(pool, b[2], n, b[1], b[2], null);
+            ops.map(pool, b[2][0 .. n * c / 2], elu);
+            s.res.b.run(pool, b[2], n, b[1], b[0], b[0]);
+            ops.map(pool, b[0][0 .. n * c], elu);
         }
-        dec.last.run(b[0], n, b[1], b[2], null);
+        dec.last.run(pool, b[0], n, b[1], b[2], null);
         return b[2][0..n];
     }
 
-    fn transformer(dec: *Decoder, a: std.mem.Allocator, h: []f32, t: usize) !void {
+    fn transformer(dec: *Decoder, pool: *Pool, a: std.mem.Allocator, h: []f32, t: usize) !void {
         const y = try a.alloc(f32, t * dim);
         defer a.free(y);
         const big = try a.alloc(f32, t * 4 * dim);
@@ -185,7 +186,7 @@ pub const Decoder = struct {
         const scale: f32 = 1 / @sqrt(@as(f32, hd));
         for (dec.tf) |l| {
             norm(h, y, t, l.ln1);
-            ops.rows(l.qkv, y, dim, t, big, 3 * dim, null);
+            ops.rows(pool, l.qkv, y, dim, t, big, 3 * dim, null);
             for (0..t) |p| {
                 for (0..hd / 2) |j| {
                     const ang = @as(f32, @floatFromInt(p)) * dec.inv_freq[j];
@@ -208,11 +209,11 @@ pub const Decoder = struct {
                     z.* += w * v;
                 };
             };
-            ops.rows(l.o, att, dim, t, h, dim, h);
+            ops.rows(pool, l.o, att, dim, t, h, dim, h);
             norm(h, y, t, l.ln2);
-            ops.rows(l.fc1, y, dim, t, big, 4 * dim, null);
-            for (big[0 .. t * 4 * dim]) |*v| v.* = gelu(v.*);
-            ops.rows(l.fc2, big, 4 * dim, t, h, dim, h);
+            ops.rows(pool, l.fc1, y, dim, t, big, 4 * dim, null);
+            ops.map(pool, big[0 .. t * 4 * dim], gelu);
+            ops.rows(pool, l.fc2, big, 4 * dim, t, h, dim, h);
         }
     }
 };
@@ -226,10 +227,8 @@ fn norm(h: []const f32, y: []f32, t: usize, wb: [2][]const f32) void {
     }
 }
 
-fn elu(x: []f32) void {
-    for (x) |*v| if (v.* < 0) {
-        v.* = std.math.expm1(v.*);
-    };
+fn elu(x: f32) f32 {
+    return if (x < 0) std.math.expm1(x) else x;
 }
 
 /// GELU with Abramowitz-Stegun 7.1.26 erf (|error| <= 1.5e-7), as Woof's numpy runtime computes it.

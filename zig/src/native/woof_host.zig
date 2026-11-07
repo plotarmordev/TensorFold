@@ -164,7 +164,7 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
         problem.* = "Woof queues 1 through 16 speech requests; use --parallel in that range";
         return null;
     }
-    const model = woof.Model.load(gpa, io, o.dir, o.voices) catch |e| {
+    const model = woof.Model.load(gpa, io, o.dir, o.voices, 0) catch |e| {
         problem.* = try std.fmt.allocPrint(a, "the native Woof engine could not load the checkpoint ({s})", .{@errorName(e)});
         return null;
     };
