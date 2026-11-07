@@ -229,13 +229,13 @@ fn lfsDigest(oid: []const u8) ?[32]u8 {
     return parseHex(32, if (std.mem.startsWith(u8, oid, "sha256:")) oid[7..] else oid);
 }
 
-/// config.json's model_type, copied from the raw bytes' parse, and whether it is a DFlash2 drafter (`serve --drafter`).
+/// config.json's model_type as the engine registry names it (checkpoint_config.servedType), and whether it is a DFlash2 drafter (`serve --drafter`).
 fn configKind(a: Allocator, bytes: []const u8) struct { model_type: []const u8, drafter: bool } {
     var parsed = std.json.parseFromSlice(std.json.Value, a, bytes, .{}) catch return .{ .model_type = "unknown", .drafter = false };
     defer parsed.deinit();
     if (parsed.value != .object) return .{ .model_type = "unknown", .drafter = false };
     const t = parsed.value.object.get("model_type");
-    const model_type = if (t != null and t.? == .string) a.dupe(u8, t.?.string) catch "unknown" else "unknown";
+    const model_type = if (t != null and t.? == .string) a.dupe(u8, @import("checkpoint_config").servedType(t.?.string)) catch "unknown" else "unknown";
     return .{ .model_type = model_type, .drafter = parsed.value.object.get("dflash_config") != null };
 }
 
