@@ -125,10 +125,11 @@ pub fn requestPrompt(cx: *Cx, tokenizer: text_mod.Text, sp: api.SpeechInfo, inpu
     return made;
 }
 
-pub fn listing(a: Allocator, voices: []const Voice) !json.Value {
-    const data = try a.alloc(json.Value, voices.len + 1);
+/// The /v1/voices body: "default" first, then the named voices.
+pub fn listing(a: Allocator, names: []const []const u8) !json.Value {
+    const data = try a.alloc(json.Value, names.len + 1);
     data[0] = .{ .string = "default" };
-    for (voices, data[1..]) |voice, *slot| slot.* = .{ .string = voice.name };
+    for (names, data[1..]) |name, *slot| slot.* = .{ .string = name };
     const object = try json.newObject(a);
     try object.put(a, "voices", .{ .array = data });
     return .{ .object = object };

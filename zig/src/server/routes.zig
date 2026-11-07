@@ -75,8 +75,9 @@ pub fn unknown(conn: *Conn, a: Allocator) void {
 fn get(srv: *Server, conn: *Conn, a: Allocator) void {
     const route = auth.routePath(conn.path);
     if (std.mem.eql(u8, route, "/v1/voices")) {
-        if (srv.info.speech == null) return unknown(conn, a);
-        const value = @import("drama_voice.zig").listing(a, srv.voices) catch return;
+        const sp = srv.info.speech orelse return unknown(conn, a);
+        const names = if (sp.voices.len > 0) sp.voices else voiceNames(a, srv.voices) catch return;
+        const value = @import("drama_voice.zig").listing(a, names) catch return;
         return sendValue(conn, a, 200, value);
     }
     if (std.mem.eql(u8, route, "/memory") or std.mem.eql(u8, route, "/v1/memory"))
@@ -93,6 +94,12 @@ fn get(srv: *Server, conn: *Conn, a: Allocator) void {
     if (route.len == 0 or std.mem.eql(u8, route, "/health")) return status.health(srv, conn, a) catch {};
     if (std.mem.endsWith(u8, route, "/models")) return status.models(srv, conn, a) catch {};
     unknown(conn, a);
+}
+
+fn voiceNames(a: Allocator, voices: []const @import("drama_voice.zig").Voice) ![]const []const u8 {
+    const names = try a.alloc([]const u8, voices.len);
+    for (voices, names) |voice, *name| name.* = voice.name;
+    return names;
 }
 
 /// A refused route's body is read and dropped, so it cannot reach the next request on this connection.

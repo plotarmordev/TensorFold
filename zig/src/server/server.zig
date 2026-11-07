@@ -153,10 +153,16 @@ pub const Server = struct {
             return error.InvalidVisionMarkers;
         };
         if (config.voices_dir) |dir| {
-            if (srv.info.speech == null) return error.VoicesRequireSpeech;
-            srv.voices = try @import("drama_voice.zig").load(srv.arena.allocator(), io, dir);
+            const sp = srv.info.speech orelse return error.VoicesRequireSpeech;
+            // an engine that names its own voices gets the directory at open; none is loaded here
+            if (sp.voices.len == 0) srv.voices = try @import("drama_voice.zig").load(srv.arena.allocator(), io, dir);
         }
-        _ = try @import("drama_voice.zig").select(srv.voices, config.default_voice, "default");
+        const engine_voices = if (srv.info.speech) |sp| sp.voices else &.{};
+        if (engine_voices.len == 0) {
+            _ = try @import("drama_voice.zig").select(srv.voices, config.default_voice, "default");
+        } else if (!std.mem.eql(u8, config.default_voice, "default") and @import("speech.zig").indexOf(engine_voices, config.default_voice) == null) {
+            return error.UnknownDefaultVoice;
+        }
         if (!srv.info.text_generation) {
             if (config.cortheon) return error.CortheonRequiresTextGeneration;
             return srv;

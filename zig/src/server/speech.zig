@@ -43,7 +43,7 @@ pub const Format = enum {
     }
 };
 
-const Plan = struct { input: []const u8, prompt: []const u32, frames: ?[]const [11]i32 = null, refs: []const @import("drama_prompt").Reference = &.{}, seed: u64, format: Format, stream: bool, budget_s: ?f64 = null };
+const Plan = struct { input: []const u8, prompt: []const u32, frames: ?[]const [11]i32 = null, refs: []const @import("drama_prompt").Reference = &.{}, seed: u64, format: Format, stream: bool, voice: u32 = 0, budget_s: ?f64 = null };
 
 /// One whole take: its audio, why it ended, and whether it ended in a mid-utterance silence.
 const Take = struct { pcm: []f32, reason: api.Reason, silence_mid: bool = false, trip: bool = false, jump: ?f64 = null };
@@ -107,7 +107,10 @@ fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused
     const model = raw.strField("model") orelse return cx.fail(.request, "model is required: send {s}", .{srv.config.served_name});
     if (!listed(srv.config.model_ids, model))
         return cx.fail(.request, "model {s} is not served here: send {s}", .{ try pyrepr.repr(cx.a, .{ .string = model }), srv.config.served_name });
-    const input = try @import("drama_allow.zig").filter(cx.a, srv.config.allowed_controls, raw.strField("input") orelse return cx.refuse("input must be a non-empty string"));
+    const input = if (sp.voices.len > 0)
+        (raw.strField("input") orelse return cx.refuse("input must be a non-empty string"))
+    else
+        try @import("drama_allow.zig").filter(cx.a, srv.config.allowed_controls, raw.strField("input") orelse return cx.refuse("input must be a non-empty string"));
     if (!std.unicode.utf8ValidateSlice(input)) return cx.refuse("input must be valid UTF-8 text");
     if (reply_text.pyStrip(input).len == 0) return cx.refuse("input must be a non-empty string");
     if ((std.unicode.utf8CountCodepoints(input) catch unreachable) > max_input_chars)
@@ -116,6 +119,15 @@ fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused
     const stream = if (raw.get("stream")) |s| s == .bool and s.bool else false;
     if (stream and format != .pcm) return cx.refuse("stream=true requires response_format='pcm'");
     const voice = raw.strField("voice") orelse raw.strField("speaker") orelse "default";
+    if (sp.voices.len > 0) {
+        const named = if (voice.len == 0 or std.ascii.eqlIgnoreCase(voice, "default")) srv.config.default_voice else voice;
+        const index = if (std.mem.eql(u8, named, "default")) 0 else indexOf(sp.voices, named) orelse {
+            const name = try pyrepr.repr(cx.a, .{ .string = named });
+            return cx.fail(.request, "unknown voice {s}; see /v1/voices", .{name});
+        };
+        const prompt = try codepoints(cx.a, input);
+        return .{ .input = input, .prompt = prompt, .seed = api.seedFor(prompt, srv.config.seed_salt), .format = format, .stream = stream, .voice = index };
+    }
     const refs = @import("drama_voice.zig").select(srv.voices, srv.config.default_voice, voice) catch {
         const name = try pyrepr.repr(cx.a, .{ .string = voice });
         if (srv.config.voices_dir != null)
@@ -125,6 +137,21 @@ fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused
     if (try @import("drama_voice.zig").requestPrompt(cx, srv.text, sp, input, refs)) |made| return .{ .input = input, .prompt = made.prompt, .frames = made.frames, .refs = refs, .seed = api.seedFor(made.prompt, srv.config.seed_salt), .format = format, .stream = stream };
     const prompt = try promptOf(srv, cx, sp, input);
     return .{ .input = input, .prompt = prompt, .seed = api.seedFor(prompt, srv.config.seed_salt), .format = format, .stream = stream };
+}
+
+/// The index of `name` in an engine-owned voice catalog.
+pub fn indexOf(names: []const []const u8, name: []const u8) ?u32 {
+    for (names, 0..) |n, i| if (std.mem.eql(u8, n, name)) return @intCast(i);
+    return null;
+}
+
+/// The input's Unicode code points: the prompt of an engine that names its voices itself.
+fn codepoints(a: Allocator, input: []const u8) ![]const u32 {
+    const out = try a.alloc(u32, std.unicode.utf8CountCodepoints(input) catch unreachable);
+    var it = std.unicode.Utf8Iterator{ .bytes = input, .i = 0 };
+    var n: usize = 0;
+    while (it.nextCodepoint()) |cp| : (n += 1) out[n] = cp;
+    return out;
 }
 
 /// The prompt ids of a valid UTF-8 input, refused when it cannot be spoken or is too long.
@@ -163,7 +190,7 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
     const pcm = srv.gpa.alloc(f32, pcm_len) catch return fail(c, cx, id, metadata.*, .server, "out of memory");
     defer srv.gpa.free(pcm);
     var result: api.SpeechResult = .{};
-    const frames = plan.frames orelse rows(cx.a, plan.prompt) catch |e| return switch (e) {
+    const frames: []const [11]i32 = if (sp.voices.len > 0) &.{} else plan.frames orelse rows(cx.a, plan.prompt) catch |e| return switch (e) {
         error.OutOfMemory => fail(c, cx, id, metadata.*, .server, "out of memory"),
         error.InvalidToken => fail(c, cx, id, metadata.*, .request, "invalid speech token"),
     };
@@ -173,6 +200,7 @@ fn synthesize(srv: *Server, c: *Conn, cx: *Cx, id: []const u8, sp: api.SpeechInf
         .pcm = pcm,
         .result = &result,
         .seed = plan.seed,
+        .voice = plan.voice,
         .max_frames = sp.max_frames,
         .temperature = drama_prompt.temperature,
         .top_p = drama_prompt.top_p,

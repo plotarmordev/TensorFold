@@ -305,6 +305,8 @@ pub const Open = struct {
     master_port: u16 = 29551,
     /// --policy: the engine's policy as `key=value,...`; empty: its defaults.
     policy: []const u8 = "",
+    /// --voices: a speech family's extra voice catalog (engines that own their voices read it; null: none).
+    voices: ?[]const u8 = null,
     /// --vision: load the checkpoint's image tower (null: text only; an engine without one refuses).
     vision: ?VisionOpen = null,
 };

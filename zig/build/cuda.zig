@@ -194,6 +194,7 @@ fn engines(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
             .{ .name = "qwen35", .module = qwen35 },
             .{ .name = "kolibri1", .module = kolibri1Module(b, target, optimize, cuda, core, lanes) },
             .{ .name = "gemma4_cuda", .module = @import("gemma4_cuda.zig").module(b, target, optimize, cuda, core, lanes) },
+            .{ .name = "woof", .module = @import("woof.zig").module(b, target, optimize, core) },
         },
     });
     return .{ .api = api, .engines = mod };

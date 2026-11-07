@@ -37,13 +37,17 @@ pub const Script = struct {
     get_voices: bool = false,
     expected_rows: ?[]const [11]i32 = null,
     rows_equal: bool = false,
+    /// Voices the engine names itself (Woof); the route then sends code points and a voice index.
+    engine_voices: []const []const u8 = &.{},
+    voice: u32 = 0,
+    prompt: [8]u32 = undefined,
 
     fn engine(e: *Script) api.Engine {
         return .{ .ctx = e, .vtable = &.{ .info = info, .submit = submit, .cancel = cancel, .status = status, .memory = memory, .submit_speech = speech } };
     }
     fn info(ctx: *anyopaque) api.Info {
         const e: *Script = @ptrCast(@alignCast(ctx));
-        return .{ .text_generation = false, .speech = .{ .sample_rate = 44100, .frame_length = frame, .max_frames = e.max_frames, .max_prompt_tokens = 4096 } };
+        return .{ .text_generation = false, .speech = .{ .sample_rate = 44100, .frame_length = frame, .max_frames = e.max_frames, .max_prompt_tokens = 4096, .voices = e.engine_voices } };
     }
     fn speech(ctx: *anyopaque, id: api.Id, request: *const api.SpeechRequest, sink: api.Sink) api.SpeechSubmitError!void {
         const e: *Script = @ptrCast(@alignCast(ctx));
@@ -55,6 +59,8 @@ pub const Script = struct {
         }
         const take = e.takes;
         e.seeds[take] = request.seed;
+        e.voice = request.voice;
+        @memcpy(e.prompt[0..@min(8, request.prompt.len)], request.prompt[0..@min(8, request.prompt.len)]);
         e.takes += 1;
         if (e.inline_) return run(e, id, request, sink, take);
         e.thread = std.Thread.spawn(.{}, run, .{ e, id, request, sink, take }) catch return error.Busy;
@@ -554,4 +560,30 @@ test "voices: without configuration the default prompt rows stay unchanged" {
     s.join(&script);
     try std.testing.expect(script.rows_equal);
     try std.testing.expectEqualStrings(&pcm(1), try s.readRest());
+}
+
+test "engine voices: code-point prompt, catalog index, listing and an unknown name refused" {
+    const names = [_][]const u8{ "juno", "mira" };
+    var script: Script = .{ .steps = &.{frame}, .engine_voices = &names };
+    var s: Served = undefined;
+    try s.start(&script, "HTTP/1.1", "{\"model\":\"m\",\"input\":\"h\\u00e9\",\"voice\":\"mira\",\"response_format\":\"pcm\"}", 2000);
+    defer s.deinit();
+    try expectHeader(try s.readHead(), " 200 ");
+    s.join(&script);
+    try std.testing.expectEqual(@as(u32, 1), script.voice);
+    try std.testing.expectEqualSlices(u32, &.{ 'h', 0xe9 }, script.prompt[0..2]);
+    var unknown_script: Script = .{ .steps = &.{frame}, .engine_voices = &names };
+    var unknown: Served = undefined;
+    try unknown.start(&unknown_script, "HTTP/1.1", "{\"model\":\"m\",\"input\":\"hi\",\"voice\":\"tone\"}", 2000);
+    defer unknown.deinit();
+    try expectHeader(try unknown.readHead(), " 400 ");
+    unknown.join(&unknown_script);
+    try std.testing.expect(std.mem.indexOf(u8, try unknown.readRest(), "unknown voice 'tone'; see /v1/voices") != null);
+    var listing_script: Script = .{ .steps = &.{}, .engine_voices = &names, .get_voices = true };
+    var listing: Served = undefined;
+    try listing.start(&listing_script, "HTTP/1.1", "", 2000);
+    defer listing.deinit();
+    try expectHeader(try listing.readHead(), " 200 ");
+    listing.join(&listing_script);
+    try std.testing.expectEqualStrings("{\"voices\": [\"default\", \"juno\", \"mira\"]}", try listing.readRest());
 }
