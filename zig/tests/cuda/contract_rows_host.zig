@@ -25,7 +25,17 @@ fn copy(dst: ?*anyopaque, src: u64, n: usize) callconv(.c) cuda.abi.Result {
     @memcpy(out[0..n], bytes[0..n]);
     return 0;
 }
+fn contextDevice(out: *cuda.abi.Device) callconv(.c) cuda.abi.Result {
+    out.* = 0;
+    return 0;
+}
+fn deviceAttribute(out: *c_int, _: cuda.abi.DeviceAttribute, _: cuda.abi.Device) callconv(.c) cuda.abi.Result {
+    out.* = 0;
+    return 0;
+}
 fn output(d: *cuda.Driver, bytes: []u8) !rig.Rig {
+    d.api.cuCtxGetDevice = contextDevice;
+    d.api.cuDeviceGetAttribute = deviceAttribute;
     d.api.cuStreamSynchronize = sync;
     d.api.cuMemcpyDtoH_v2 = copy;
     var r: rig.Rig = .{ .gpu = .{ .d = d, .ctx = undefined, .gpa = std.testing.allocator, .io = undefined }, .s = .{ .d = d, .handle = null } };
@@ -47,7 +57,7 @@ fn legacyRow(symbol: []const u8) bool {
     }) |name| if (std.mem.eql(u8, symbol, name)) return true;
     return false;
 }
-test "all fifteen row launches are present and explicitly unmeasured" {
+test "all fifteen row launches have measured 13.0 resources" {
     var count: usize = 0;
     for (core.contract.registry.all_cuda) |r| {
         const image = r.launch.image;
@@ -55,8 +65,9 @@ test "all fifteen row launches are present and explicitly unmeasured" {
         // New launches in the same images have their own records; this check retains the original fifteen.
         if (!legacyRow(r.launch.symbol)) continue;
         count += 1;
-        for (r.usage) |u| try std.testing.expectEqual(@as(u32, 0), u.regs);
-        try std.testing.expectEqual(core.contract.limits.sms.len, try core.contract.registry.checkCuda(std.testing.allocator, &.{r}, true));
+        for (r.usage) |u| try std.testing.expect(u.regs > 0);
+        try std.testing.expectEqual(@as(usize, 0), try core.contract.registry.checkCuda(std.testing.allocator, &.{r}, true));
+        try std.testing.expectEqualDeep(core.contract.registry.none, core.contract.registry.usageFor(r, .{ .major = 13, .minor = 2 }));
     }
     try std.testing.expectEqual(@as(usize, 15), count);
 }

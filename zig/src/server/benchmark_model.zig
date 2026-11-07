@@ -97,8 +97,12 @@ fn hexDigest(a: Allocator, bytes: []const u8) ![]const u8 {
     return a.dupe(u8, &std.fmt.bytesToHex(d, .lower));
 }
 
-/// ``model_type``, else ``text_config.model_type``, when it is a non-empty string.
+/// ``model_type``, else ``text_config.model_type``, when it is a non-empty string, as the engine registry names it.
 pub fn modelType(config: Value) ?[]const u8 {
+    return @import("checkpoint_config").servedType(rawModelType(config) orelse return null);
+}
+
+fn rawModelType(config: Value) ?[]const u8 {
     if (config.get("model_type")) |t| if (t.truthy()) return t.str();
     const text = config.get("text_config") orelse return null;
     const t = text.get("model_type") orelse return null;

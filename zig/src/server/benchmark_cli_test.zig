@@ -333,10 +333,30 @@ test "a managed run starts its own serve, measures through it, stops it and save
     try std.testing.expectEqualStrings(server.buildBackend(), rt.get("backend").?.string);
     const m = v.get("model").?;
     try std.testing.expect(m.get("local").?.bool and m.get("repo_id").? == .null and std.mem.eql(u8, m.get("quantization").?.string, "mlx-4bit-g64"));
-    try std.testing.expect(v.get("settings").?.get("managed").?.bool and std.mem.eql(u8, v.get("settings").?.get("rank_count").?.int, "1"));
+    try std.testing.expect(v.get("settings").?.get("managed").?.bool and v.get("settings").?.get("rank_count").? == .null);
     try std.testing.expect(std.mem.indexOf(u8, try std.Io.Dir.cwd().readFileAlloc(std.testing.io, out, a, .limited(1 << 20)), "private-checkpoint") == null);
     const again = server.lockRun(std.testing.io, try r.path(".tensorfold/benchmarks"), &problem) orelse return error.TestUnexpectedResult;
     again.close(std.testing.io);
+}
+
+test "a qwen4_moe checkpoint passes the family gate as qwen4_exp and its receipt names that family" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var r = try Run.init(a, &tmp);
+    r.families = &.{.{ .model_type = "qwen4_exp", .formats = &.{} }};
+    const f = try managedWorld(a, false);
+    defer f.stop();
+    r.self_exe = try standIn(&r, f.port);
+    const ckpt = try r.path("private-checkpoint");
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = try std.fs.path.join(a, &.{ ckpt, "config.json" }), .data = "{\"model_type\": \"qwen4_moe\", \"quantization\": {\"bits\": 6, \"group_size\": 32}}" });
+    const out = try r.path("run.json");
+    try std.testing.expectEqual(@as(u8, 0), try r.command(&.{ ckpt, "--tokens", "4", "--reps", "1", "--temperatures", "0", "--output", out }));
+    var problem: []const u8 = "";
+    const v = (try receipt.load(a, std.testing.io, out, std.Io.Clock.real.now(std.testing.io).toMilliseconds(), &problem)).?;
+    try std.testing.expectEqualStrings("qwen4_exp", v.get("model").?.get("family").?.string);
 }
 
 test "Ctrl-C mid-run saves the receipt and exits 130; SIGTERM and SIGHUP stop the child and save nothing" {
