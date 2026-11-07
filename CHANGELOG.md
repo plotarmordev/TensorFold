@@ -5,15 +5,29 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 ## Unreleased
 
 - `zig build test test-golden` passes on a Mac without Xcode's Metal compiler: it warns once, embeds empty offline metallibs for the tests and still runs the Metal device checks; `native`, `drama3-generate`, `tf-metal-tests`, `tf-dispatch-bench` and `tf-kernel-exact` stop with `install Xcode`.
-- Drama3 CUDA replay waits for poison fills to finish before reset, prefill or decode reuses the buffers.
-- Register redraws that trip silence reenter the remaining silence retry pipeline before take selection, preserving the held audio and separate admission counts.
+
 - Qwen 4 day one: a `qwen4_moe` checkpoint (the expected Flash MoE tier) opens on the Flash Next Metal engine, and an MTP head declared only by `mtp_num_hidden_layers` is read as full-attention layers. [Day-one checklist](docs/recipes/qwen4-day-one.md) for pull, convert, fit, serve and measure on a Mac.
+
+- The engine API carries an optional image capability beside speech: `Info.image` states what an engine's image host serves and a defaulted `VTable.submit_image` hands back one encoded PNG a request through the caller's own list and allocator, so an engine without the entry is unchanged (#1573).
+
+- Build: `zig build compile-dsv41-server` and `dsv41-serve` build again: the DeepSeek server module gets the `lanes` module its `/v1/systemone` route reads (#2412). Thanks to @Defilan.
+
+- Tests: four host steps that no CI job runs build and pass again: `test-gemma4-affine-host` pins `affine_mm.metal`'s current bytes, the compile-only Metal contract runners import `masked_sources`, `compile-metal-residency-host` imports `kimi_k3`, and the GLM Metal fact tests give `facts()` a host device object instead of an undefined one, which crashed them at random (#2409, part of #2031).
+
+- Flash Next on CUDA with `TF_FLASHNEXT_KV_PAGES`: a shared round's grouped draft head reads and writes each stream's own pages, so paged streams' replies equal their runs alone again, and paged decode runs as fast as unpaged; default settings are unchanged (#2244). Thanks to @Arminova.
+
+- Tests: `zig build test-glm-snapshots-host` builds again: its copies module imports `core`, which `cuda_snaps.zig` reads for `TF_GLM_PROMPT_TAIL` since #2226 (#2403). Thanks to @Bizuayeu.
+
+- HIP: on RDNA 3.5 (gfx1150 to gfx1153) a prompt row gets the same bytes wherever its chunk starts. The 64-row prompt tile there now takes each key past a row's causal edge as +0, as RDNA 3.5's dot2 rounds a -0 lane apart from +0, so its prompt bits change, and gfx1151's prefill is up to 0.7% slower at 2k and 8k. Other chips keep main's prompt tile and bits, and gfx1201's prompt speed is main's within noise. On every chip, a non-finite value at a key past a row's edge now adds nothing to that row (#2357). Thanks to @laudney.
+
+- GLM CUDA at TP=2 and up: each rank names its startup phases (NCCL init, peer warm-up, weights, calibration, ready), prints NCCL's init device, version and log path, and warns once a minute while NCCL init or the warm-up is unfinished, with the transport seen so far. It only reports; transfers are unchanged (#2354, part of #2347).
 
 - Docs: the serve flags match the CLI: `--metrics-open` opens `/v1/metrics` too, `--learn-conversations` on CUDA serves the Qwen3.5 hybrids and Flash Next as well as Nemotron, Flash Next shares sessions under an explicit `--parallel` above one and refuses `--recall` only on a Mac, and the Metal Qwen3.5-2B keeps prompt states (#2367).
 
 - Internal: the kernel contract's nvcc 13.0 resource records match what nvcc 13.0.88 builds for 57 CUDA kernels (226 per-SM slots), so the five-SM limits gate passes on main; no kernel, flag or launch changes (#2390).
 
 - Flash Next on CUDA: a prompt-cache mark inside a prompt chunk is kept on the way through the pass instead of cutting the pass there, so a new short prompt's first token comes 19% sooner on a GB10, with replies unchanged; `TF_FLASHNEXT_KEEP_INPASS=0` cuts the pass at the mark as before (#1866). Thanks to @Arminova.
+- Tests: `tf-moss-image-blocks` gates MOSS-Image's transformer block by block against the publisher's float32 run, within twice the spread of torch bf16's device and CPU runs, on Metal and CUDA (#2294, part of #1529).
 
 - Cluster: MCDMA bring-up on real hosts, step 2a of #1594 (#2088). Thanks to @ThinkOffApp.
 
@@ -62,6 +76,9 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Internal: 9 more lean findings fixed in Metal kernel and server comments, with no change in behaviour (#2329).
 
 - Native DeepSeek V4 and V4.1 prompts follow the recorded encoder outputs, except where those outputs drop a tool's namespace, which we keep. Assistant thinking markers, blank-line text joins and tool schemas change; minimal keeps thinking on at budget 50 and xhigh uses 75. Developer instructions render as system, strict tools keep their existing grammar handling, listings and tool-call history keep qualified function names, and schemas retain namespace descriptions. Invalid user null content, malformed tool-call lists or calls without string id/name/arguments or type function, names outside 1-64 ASCII letters/digits/underscore/hyphen, tool replies without tool_call_id and non-function tool envelopes now return HTTP 400. Ultra keeps its existing refusal because no recorded case establishes a budget (#2141).
+- GLM-5.3-Flash on CUDA: a prompt step takes two chunks while no other stream decodes, each one's exchanges under the
+  other's sites, so prompts of 8K to 128K finish about 2% sooner at TP=2, with replies unchanged;
+  `TF_GLM_PROMPT_PAIR=0` turns it off (#1423).
 
 - TENSORFOLD_PHASE_METRICS=1 adds a bounded request queue-wait histogram and its vLLM alias to native metrics; it is off by default (#2139).
 
@@ -82,11 +99,13 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Internal: 42 more lean findings fixed in the tests' comments and the tools' docstrings, with no change in behaviour (#2315).
 
 - HIP: the decode round's residual-add and norm tail issues each row's loads before its branches, and a MoE tail loads its slots' rows together, with output bytes unchanged. On a gfx1151, one-stream decode is 2.7% faster on Qwen3.6-35B-A3B and 1.1% on the 27B. `tf_tail` is now under the kernel contract (#2247). Thanks to @AbrahamCete.
+- Qwen3.8-27B on Metal: a round's keep that fails part way (an allocation, a refused keep or path) returns its error instead of aborting the process on an unended command encoder, and after a failed allocation the round can keep again; `tf-qwen27-keep-error` fails each of the keep's allocations in turn and refuses a path after the encoder has ended (#2376). Thanks to @jschmied.
 
 - Docs: `docs/optimization-ledger.md` lists which speed and memory optimizations apply to which native family, and where each stands, with links to the PRs that measured them (#2232). Thanks to @jschmied.
 
 - Docs: the pull request pre-flight asks a PR that adds, finishes or drops a family's optimization to update that family's cell in the optimization ledger (#2243). Thanks to @jschmied.
 - Server: a refused `--api-key-file` logs the path it was given, the mode the file system reported and which test failed, once at startup and once when a reload is refused (#2365). Thanks to @Whq02.
+- CLI: `tensorfold models --json` prints the cached checkpoints as one document (`schema` 1, each checkpoint's `repo`, `family` and `model_type`); the lines are unchanged (#2364). Thanks to @Whq02.
 
 - Server: tool calls completed just before the thinking-close marker are returned when no answer follows, whole and
   streamed; calls followed by more reasoning or an answer stay in reasoning (#2313, fixes #2310). Thanks to @AdrianBinDC.
@@ -103,6 +122,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
   M5 reach their summary again (#2303, fixes #2301). Thanks to @BobClawblaw.
 
 - Build: `zig build server-cpu` (the CPU-only fake server and engine-less CLI the server tests install) compiles again; its server module gets `core`, as the Metal, CUDA and fuzz graphs give it (#2363). Thanks to @Whq02.
+
+- Serving: `serve` refuses, at start and by name, a `TENSORFOLD_PREFILL_SHARE` outside 0.01 to 1, a `TENSORFOLD_PREFILL_POLICY` other than `fcfs`, and `TENSORFOLD_PREFILL_TOKENS` or `TENSORFOLD_PREFILL_BUDGET` text that is not a whole number. The lane host used to read each one as its default without a word, so a share of 0 meant whole prompt steps (#2369).
 
 - Build: a plain `zig build` on Linux compiles again; the `tf-qwen35-cuda` tool passes the device flag that kept prompt states gained on 4 Nov (#2362). Thanks to @jschmied for the report.
 
@@ -127,6 +148,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Qwen3.8-27B and the other dense Qwen3.5 models on CUDA: streams run on KV pool pages of 256 positions by default, the engine's own stream too, so `--parallel` is now a cap rather than a reservation: a request can wait for pages instead of every stream holding a full-context window. `TF_QWEN_KV_PAGES=0` keeps a window each, as before. Qwen3.6-35B-A3B and the other MoE checkpoints stay on windows by default, with pages opt-in (`TF_QWEN_KV_PAGES=256`). Paged prompt attention stages a chunk's page ids in shared memory, a decode thread looks its page up once a page, and a paged prompt-cache save or restore copies one 2D block a page. Replies are the same tokens on pages and windows (#2011). Thanks to @jschmied.
 - Qwen3.5 and Qwen3.6 on CUDA: KV pool pages stay opt-in (`TF_QWEN_KV_PAGES=256`), dense and MoE alike; unset keeps a window each, as before, and `TF_QWEN_KV_PAGES_ALL` unset still leaves the engine's own stream a window. With pages set, `--parallel` is a cap rather than a reservation: a request can wait for pages instead of every stream holding a full-context window. Paged prompt attention stages a chunk's page ids in shared memory, a decode thread looks its page up once a page, and a paged prompt-cache save or restore copies one 2D block a page. Replies are the same tokens on pages and windows (#2011). Thanks to @jschmied.
 - Qwen3.5 and Qwen3.6 on CUDA: KV pool pages stay opt-in (`TF_QWEN_KV_PAGES=256`), dense and MoE alike; unset keeps a window each, as before, and `TF_QWEN_KV_PAGES_ALL` unset still leaves the engine's own stream a window. With pages set, `--parallel` is a cap rather than a reservation: a request can wait for pages instead of every stream holding a full-context window. Paged prompt attention stages a chunk's page ids in shared memory, a decode thread looks its page up once a page, and a paged prompt-cache save or restore copies one 2D block a page. Replies are the same tokens on pages and windows (#2011, part of #1943). Thanks to @jschmied.
+- Tests: the pull client's security tests build and run on Windows, on a portable fake hub, and CI runs them there
+  (#2284). Thanks to @ElderOrb.
 
 - Metal: a request's finished stats list its prompt pass widths (`tensorfold.prefill_widths`, one entry per completed
   target pass) on every Metal text family except Flash Next, whose engine reports none. Telemetry only (#2293).
