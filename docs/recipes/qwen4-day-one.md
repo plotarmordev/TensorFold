@@ -15,19 +15,27 @@ Any other tag stops at startup with "no backend for ...": report it with the con
 
 ## Checklist
 
-1. Update and build: `git pull`, then `zig build test test-golden` and `zig build test-qwen4-metal-sources test-qwen4-metal`.
-2. Pull the BF16 release with its revision: `hf download Qwen/<repo> --revision <sha> --local-dir ~/models/qwen4-hf`.
+1. Update, test and build the native binary; every command below runs that binary:
+
+   ```sh
+   git pull && zig build test test-golden test-qwen4-metal-sources test-qwen4-metal
+   zig build native -Dcpu=apple_m1
+   tf=$PWD/zig-out/native/bin/tensorfold-native
+   ```
+
+2. Pull the BF16 release with its revision: `$tf pull Qwen/<repo>@<sha>`, or `hf download Qwen/<repo> --revision <sha> --local-dir ~/models/qwen4-hf`.
    Read `model_type`, `num_experts`, `mtp_num_hidden_layers` (or `mtp`) and `quantization_config` from `config.json`.
-3. Fit before converting. Affine 6-bit in groups of 32 with BF16 scales and biases stores 7 bits a weight,
-   0.875 GB per billion parameters; add the n-gram tables (29.8 GiB on Flash Next), KV/state and the prompt cache.
-   Compare with `sysctl iogpu.wired_limit_mb`; raise it with `sudo sysctl iogpu.wired_limit_mb=<MiB>` when the plan names it.
-4. Convert the Flash tier to MLX affine 6-bit/group 32, the only width the Flash Next Metal kernels read, keeping
-   the `language_model.` names: `python -m mlx_vlm.convert --hf-path ~/models/qwen4-hf --mlx-path ~/models/qwen4-6bit -q --q-bits 6 --q-group-size 32`.
-   Check the output index still lists `mtp.*` or `language_model.mtp.*` tensors; a conversion without them serves without drafts.
-5. Check the plan: `tensorfold info ~/models/qwen4-6bit` prints the load and cold pack budgets,
-   `tensorfold plan ~/models/qwen4-6bit` the verdict against this Mac's memory. Do not serve a refused plan.
-6. Serve: `tensorfold serve ~/models/qwen4-6bit --name bench --context 32768 --temperature 0 --no-thinking`.
+3. Convert the Flash tier to MLX affine, keeping the `language_model.` names. 6-bit in groups of 32 is the recommended
+   width (Flash Next's qualified one); Metal also reads 2, 3, 4, 5 and 8 bits in groups of 32, 64 or 128:
+   `python -m mlx_vlm.convert --hf-path ~/models/qwen4-hf --mlx-path ~/models/qwen4-6bit -q --q-bits 6 --q-group-size 32`.
+   Check the output index lists the head's `mtp.*` or `language_model.mtp.*` tensors when `config.json` declares one:
+   the Flash Next Metal loader requires every declared head tensor, and a conversion that drops them is refused.
+4. Fit: `$tf info ~/models/qwen4-6bit` prints the `startup budget` and the `cold pack budget` (the first open, before a pack is cached).
+   Both must sit under the load ceiling: 70% of RAM (179.2 GiB on this Mac), capped by the GPU's recommended working set.
+   `FLASHNEXT_LOAD_LIMIT_GB` raises it to at most that working set; a larger limit can stall macOS under wired memory.
+   Over the ceiling, convert to fewer bits, or serve with `--ple-on-ssd` and `--ssd-experts GIB` ([residency](fluid-subgraph-residency.md)).
+5. Serve: `$tf serve ~/models/qwen4-6bit --name bench --context 32768 --temperature 0 --no-thinking`.
    The first open builds packs under `~/.cache/tensorfold/packs/`; a refusal names the config field or tensor to report.
-7. Measure: `python3 tools/bench_openai.py http://127.0.0.1:8080 bench --tokens 64 --reps 5 --temperatures 1.0,0 --output bench.json`,
-   once with drafts and once with `--no-drafts`, comparing greedy output hashes; then `tensorfold benchmark ~/models/qwen4-6bit`.
+6. Measure: `python3 tools/bench_openai.py http://127.0.0.1:8080 bench --tokens 64 --reps 5 --temperatures 1.0,0 --output bench.json`,
+   once with drafts and once with `--no-drafts`, comparing greedy output hashes; then stop the server and run `$tf benchmark ~/models/qwen4-6bit`.
    Record the checkpoint revision, converter version, engine commit, peak memory and launch command with the result.
