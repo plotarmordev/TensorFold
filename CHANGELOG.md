@@ -7,6 +7,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - `zig build test test-golden` passes on a Mac without Xcode's Metal compiler: it warns once, embeds empty offline metallibs for the tests and still runs the Metal device checks; `native`, `drama3-generate`, `tf-metal-tests`, `tf-dispatch-bench` and `tf-kernel-exact` stop with `install Xcode`.
 - Drama3 CUDA replay waits for poison fills to finish before reset, prefill or decode reuses the buffers.
 - Register redraws that trip silence reenter the remaining silence retry pipeline before take selection, preserving the held audio and separate admission counts.
+- Qwen 4 day one: a `qwen4_moe` checkpoint (the expected Flash MoE tier) opens on the Flash Next Metal engine, and an MTP head declared only by `mtp_num_hidden_layers` is read as full-attention layers. [Day-one checklist](docs/recipes/qwen4-day-one.md) for pull, convert, fit, serve and measure on a Mac.
 
 - Docs: the serve flags match the CLI: `--metrics-open` opens `/v1/metrics` too, `--learn-conversations` on CUDA serves the Qwen3.5 hybrids and Flash Next as well as Nemotron, Flash Next shares sessions under an explicit `--parallel` above one and refuses `--recall` only on a Mac, and the Metal Qwen3.5-2B keeps prompt states (#2367).
 
