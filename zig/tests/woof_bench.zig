@@ -80,7 +80,7 @@ fn writeWav(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, id: []const u8,
     for ([_]u32{ 16, 1 | (1 << 16), woof.sample_rate, woof.sample_rate * 2, 2 | (16 << 16) }) |v| try w.interface.writeInt(u32, v, .little);
     try w.interface.writeAll("data");
     try w.interface.writeInt(u32, data, .little);
-    // as Woof's write_wav: clip, scale by 32767, round half to even
+    // as Woof's write_wav: clip, scale by 32767, round (ties away from zero; numpy's go to even, off by one at most)
     for (pcm) |x| try w.interface.writeInt(i16, @intFromFloat(@round(std.math.clamp(x, -1, 1) * 32767)), .little);
     try w.interface.flush();
 }
