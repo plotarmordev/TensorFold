@@ -209,6 +209,12 @@ const LoadedText = union(enum) {
             .none => NoText.text(),
         };
     }
+    pub fn renderer(t: LoadedText) []const u8 {
+        return switch (t) {
+            .hf => |hf| hf.renderer(),
+            .none => "none: this checkpoint serves speech alone",
+        };
+    }
 };
 
 /// The ``model_text.Text`` of a checkpoint without a tokenizer: every entry fails or is empty.
