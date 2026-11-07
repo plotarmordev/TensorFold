@@ -1,6 +1,7 @@
 //! Woof's dense CPU arithmetic: weights in panels of 16 outputs, four rows a panel or one row four panels.
 const std = @import("std");
 const Pool = @import("pool.zig").Pool;
+const gpu = @import("gpu.zig");
 
 const lanes = 16;
 const V = @Vector(lanes, f32);
@@ -41,8 +42,9 @@ fn panels(out: usize) usize {
 /// Multiply-adds below which a part costs more to hand out than to run.
 const min_part = 16 * 1024;
 
-/// y[r][o] = x[r*x_stride..][0..in] . W[o] (+ b[o]) (+ res[r][o]); split by 4-row blocks or panels, one-thread sums.
+/// y[r][o] = x[r*x_stride..][0..in] . W[o] (+ b[o]) (+ res[r][o]); on the GPU when it can, else one-thread sums.
 pub fn rows(pool: *Pool, l: Linear, x: []const f32, x_stride: usize, n: usize, y: []f32, y_stride: usize, res: ?[]const f32) void {
+    if (gpu.enabled and n >= gpu.min_rows) if (pool.gpu) |g| if (g.rows(l, x, x_stride, n, y, y_stride, res)) return;
     const Job = struct {
         l: Linear,
         x: []const f32,
