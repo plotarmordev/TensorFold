@@ -68,3 +68,11 @@ test "Qwen 4's Flash MoE tier is served by the Flash Next family; other tags pas
     try std.testing.expectEqualStrings("qwen4_exp", servedType("qwen4_moe"));
     for ([_][]const u8{ "qwen4_exp", "qwen4", "qwen4_text", "qwen3_5_moe" }) |t| try std.testing.expectEqualStrings(t, servedType(t));
 }
+
+/// `dir` ships `name` (Woof's int8 checkpoint has no config.json; its weights file is the marker).
+pub fn hasFile(io: std.Io, dir: []const u8, name: []const u8) bool {
+    var d = std.Io.Dir.cwd().openDir(io, dir, .{}) catch return false;
+    defer d.close(io);
+    d.access(io, name, .{}) catch return false;
+    return true;
+}

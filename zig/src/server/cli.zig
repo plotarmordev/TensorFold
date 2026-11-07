@@ -568,6 +568,7 @@ pub fn request(a: Allocator, dir: []const u8, model_type: []const u8, args: Args
         .master = args.master,
         .master_port = args.master_port,
         .policy = args.policy,
+        .voices = args.voices,
         .vision = if (args.vision) .{ .image_tokens = args.vision_image_tokens, .image_tokens_set = args.vision_image_tokens_set, .max_images = args.vision_max_images, .max_videos = args.vision_max_videos, .video_tokens = args.vision_video_tokens } else null,
     });
 }

@@ -22,6 +22,7 @@ const titles = [_]struct { model_type: []const u8, title: []const u8 }{
     .{ .model_type = "minimax_m3_vl", .title = "MiniMax-M3.1-Flash" },
     .{ .model_type = "llama", .title = "Llama architecture (Nanbeige4.3-33B)" },
     .{ .model_type = "lfm2_moe", .title = "LFM2.5-24B-A2B" },
+    .{ .model_type = "woof", .title = "Underdog Woof" },
 };
 
 /// The family that serves `model_type` from the engine registry, or null when Zig cannot serve it (the 0.6 line may).
@@ -121,9 +122,13 @@ pub fn configInt(a: Allocator, io: std.Io, dir: []const u8, key: []const u8) ?u6
     return if (v == .integer and v.integer >= 0) @intCast(v.integer) else null;
 }
 
-/// config.json's model_type as the engine registry names it (checkpoint_config.servedType), "unknown" when unreadable.
+/// config.json's model_type as the registry names it; without one, Woof's weights make it "woof", else "unknown".
 pub fn modelType(a: Allocator, io: std.Io, dir: []const u8) []const u8 {
-    const text = @import("checkpoint_config").optional(a, io, dir) orelse return "unknown";
+    const text = @import("checkpoint_config").optional(a, io, dir) orelse {
+        // the family's weights_file; Woof's HF download ships no config.json
+        if (@import("checkpoint_config").hasFile(io, dir, "woof_int8.npz")) return "woof";
+        return "unknown";
+    };
     var parsed = std.json.parseFromSlice(std.json.Value, a, text, .{}) catch return "unknown";
     defer parsed.deinit();
     if (parsed.value != .object) return "unknown";

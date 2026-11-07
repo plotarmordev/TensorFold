@@ -194,7 +194,13 @@ pub const Server = struct {
             log.line("--vision: marker token {d} is not an added token in this tokenizer; image and video input cannot be served safely", .{id});
             return error.InvalidVisionMarkers;
         };
-        if (config.voices_dir) |dir| {
+        const engine_voices = if (srv.info.speech) |sp| sp.voices else &.{};
+        if (engine_voices.len > 0) {
+            // the server's own copy: an idle unload frees the engine's names while /v1/voices still lists them
+            const voices = try srv.arena.allocator().alloc(@import("drama_voice.zig").Voice, engine_voices.len);
+            for (engine_voices, voices) |name, *voice| voice.* = .{ .name = try srv.arena.allocator().dupe(u8, name), .references = &.{} };
+            srv.voices = voices;
+        } else if (config.voices_dir) |dir| {
             if (srv.info.speech == null) return error.VoicesRequireSpeech;
             srv.voices = try @import("drama_voice.zig").load(srv.arena.allocator(), io, dir);
         }

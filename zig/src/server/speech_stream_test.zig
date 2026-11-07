@@ -41,16 +41,20 @@ pub const Script = struct {
     get_voices: bool = false,
     expected_rows: ?[]const [11]i32 = null,
     rows_equal: bool = false,
+    /// Voices the engine names itself (Woof); the route then sends code points and a voice index.
+    engine_voices: []const []const u8 = &.{},
+    voice: u32 = 0,
+    prompt: [8]u32 = undefined,
     expected_unconditioned: []const [11]i32 = &.{},
     unconditioned_equal: bool = false,
     cfg_gamma: f32 = 1,
 
-    fn engine(e: *Script) api.Engine {
+    pub fn engine(e: *Script) api.Engine {
         return .{ .ctx = e, .vtable = &.{ .info = info, .submit = submit, .cancel = cancel, .status = status, .memory = memory, .submit_speech = speech } };
     }
     fn info(ctx: *anyopaque) api.Info {
         const e: *Script = @ptrCast(@alignCast(ctx));
-        return .{ .text_generation = false, .speech = .{ .sample_rate = 44100, .frame_length = frame, .max_frames = e.max_frames, .max_prompt_tokens = 4096 } };
+        return .{ .text_generation = false, .speech = .{ .sample_rate = 44100, .frame_length = frame, .max_frames = e.max_frames, .max_prompt_tokens = 4096, .voices = e.engine_voices } };
     }
     fn speech(ctx: *anyopaque, id: api.Id, request: *const api.SpeechRequest, sink: api.Sink) api.SpeechSubmitError!void {
         const e: *Script = @ptrCast(@alignCast(ctx));
@@ -65,6 +69,8 @@ pub const Script = struct {
         }
         const take = e.takes;
         e.seeds[take] = request.seed;
+        e.voice = request.voice;
+        @memcpy(e.prompt[0..@min(8, request.prompt.len)], request.prompt[0..@min(8, request.prompt.len)]);
         e.sampling[take] = .{ .temperature = request.temperature, .top_p = request.top_p, .top_k = request.top_k };
         e.reference_rows[take] = request.reference_rows;
         e.takes += 1;
@@ -109,7 +115,7 @@ pub const Bytes = struct {
     pub fn text(t: *Bytes) model_text.Text {
         return .{ .ctx = t, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = render, .template_source = templateSource } };
     }
-    fn encode(_: *anyopaque, a: std.mem.Allocator, input: []const u8, _: bool) model_text.Error![]u32 {
+    pub fn encode(_: *anyopaque, a: std.mem.Allocator, input: []const u8, _: bool) model_text.Error![]u32 {
         const ids = try a.alloc(u32, input.len);
         for (input, ids) |byte, *id| id.* = byte;
         return ids;
@@ -186,7 +192,7 @@ pub const Served = struct {
         s.* = .{ .srv = undefined, .client = pair[0], .route_fd = pair[1], .route = undefined, .write_ms = write_ms, .probe = probe };
         s.srv = try server.Server.init(gpa, std.testing.io, script.engine(), s.text.text(), config, null);
         if (probe) |p| p.srv = s.srv;
-        s.srv.voices = script.voices;
+        if (script.voices.len > 0) s.srv.voices = script.voices;
         if (script.output_full) s.srv.speech_inflight.store(s.srv.info.lanes, .release);
         var head: [256]u8 = undefined;
         const method_path = if (script.get_voices) "GET /v1/voices" else "POST /v1/audio/speech";
@@ -292,7 +298,7 @@ fn writeAll(fd: std.c.fd_t, data: []const u8) !void {
 
 pub const stream_body = "{\"model\":\"m\",\"input\":\"hi\",\"response_format\":\"pcm\",\"stream\":true}";
 /// `n` frames of 0.5, which quantizes to 16383 (0x3fff), as PCM16LE.
-fn pcm(comptime n: usize) [2 * frame * n]u8 {
+pub fn pcm(comptime n: usize) [2 * frame * n]u8 {
     var bytes: [2 * frame * n]u8 = undefined;
     for (0..frame * n) |i| bytes[2 * i ..][0..2].* = .{ 0xff, 0x3f };
     return bytes;
@@ -534,62 +540,4 @@ test "the mid header is absent with the guard off even if the engine reports a t
     _ = try s.readRest();
     s.join(&script);
     try std.testing.expect(absent);
-}
-
-test "voices: HTTP listing and reference rows use the family CLI builder" {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const family = @import("drama_prompt");
-    const codes = [_][10]i32{.{ 7, 1, 2, 3, 4, 5, 6, 7, 8, 9 }};
-    const refs = [_]family.Reference{.{ .transcript = "A small cloud passes.", .codes = &codes }};
-    const voices = [_]@import("drama_voice.zig").Voice{.{ .name = "tone", .references = &refs }};
-    const CliTokenizer = struct {
-        pub fn specialTokenId(_: @This(), _: []const u8) ?u32 {
-            return 1000;
-        }
-        pub fn encode(_: @This(), alloc: std.mem.Allocator, input: []const u8) ![]u32 {
-            var unused: u8 = 0;
-            return Bytes.encode(&unused, alloc, input, true);
-        }
-    };
-    const expected = try family.build(a, CliTokenizer{}, "hi", &refs);
-    var script: Script = .{ .steps = &.{frame}, .voices = &voices, .expected_rows = expected.frames };
-    var s: Served = undefined;
-    try s.start(&script, "HTTP/1.1", "{\"model\":\"m\",\"input\":\"hi\",\"voice\":\"tone\",\"response_format\":\"pcm\"}", 2000);
-    defer s.deinit();
-    try expectHeader(try s.readHead(), " 200 ");
-    s.join(&script);
-    try std.testing.expect(script.rows_equal);
-    try std.testing.expectEqual(expected.reference_rows, script.reference_rows[0]);
-    try std.testing.expectEqualStrings(&pcm(1), try s.readRest());
-    var listing_script: Script = .{ .steps = &.{}, .voices = &voices, .get_voices = true };
-    var listing: Served = undefined;
-    try listing.start(&listing_script, "HTTP/1.1", "", 2000);
-    defer listing.deinit();
-    try expectHeader(try listing.readHead(), " 200 ");
-    listing.join(&listing_script);
-    try std.testing.expectEqualStrings("{\"voices\": [\"default\", \"tone\"], \"details\": [{\"id\": \"tone\", \"description\": \"\"}]}", try listing.readRest());
-}
-
-test "voices: without configuration the default prompt rows stay unchanged" {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var bytes: Bytes = .{};
-    const tokens = try @import("drama_prompt.zig").encode(a, bytes.text(), "hi");
-    const rows = try a.alloc([11]i32, tokens.len);
-    for (rows, tokens) |*row, token| {
-        row.* = @splat(0);
-        row[0] = @intCast(token);
-    }
-    var script: Script = .{ .steps = &.{frame}, .expected_rows = rows };
-    var s: Served = undefined;
-    try s.start(&script, "HTTP/1.1", "{\"model\":\"m\",\"input\":\"hi\",\"response_format\":\"pcm\"}", 2000);
-    defer s.deinit();
-    try expectHeader(try s.readHead(), " 200 ");
-    s.join(&script);
-    try std.testing.expect(script.rows_equal);
-    try std.testing.expectEqual(@as(u32, 0), script.reference_rows[0]);
-    try std.testing.expectEqualStrings(&pcm(1), try s.readRest());
 }

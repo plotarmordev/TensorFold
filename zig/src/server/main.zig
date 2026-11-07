@@ -7,6 +7,7 @@ const hub = @import("hub.zig");
 const engines = @import("engines.zig");
 const serve = @import("serve.zig");
 const hf_text = @import("hf_text.zig");
+const model_text = @import("model_text.zig");
 const startup = @import("startup.zig");
 const slide_cli = @import("slide_cli.zig");
 const slide_key = @import("slide_key.zig");
@@ -131,7 +132,7 @@ pub fn main(init: std.process.Init) !u8 {
     var text_arena: std.heap.ArenaAllocator = .init(gpa); // the text's problem, written on its own thread
     defer text_arena.deinit();
     var text_problem: []const u8 = "";
-    const up = startup.both(io, loadText, .{ gpa, io, dir, args.chat_template, text_arena.allocator(), &text_problem }, engines.open, .{ a, gpa, io, dir, model_type, args, &problem }) catch |e| {
+    const up = startup.both(io, loadText, .{ gpa, io, dir, args.chat_template, model_type, text_arena.allocator(), &text_problem }, engines.open, .{ a, gpa, io, dir, model_type, args, &problem }) catch |e| {
         if (text_problem.len > 0) return fail(text_problem);
         if (problem.len > 0) return fail(problem); // an engine that failed after saying why
         return e;
@@ -144,8 +145,12 @@ pub fn main(init: std.process.Init) !u8 {
     defer closer.deinit();
     const served = hub.servedName(args.name, args.model, dir);
     problem = "";
-    record = recall_open.open(gpa, io, a, args, up.text, served, &problem) catch |e| {
-        return if (problem.len > 0) fail(problem) else e;
+    record = switch (up.text) {
+        .hf => |hf| recall_open.open(gpa, io, a, args, hf, served, &problem) catch |e| {
+            return if (problem.len > 0) fail(problem) else e;
+        },
+        // a speech-only checkpoint has no tokenizer Recall could key on
+        .none => if (args.recall) return fail("--recall needs a text tokenizer; this checkpoint serves speech alone") else null,
     };
     if (record) |r| if (!up.engine.engine.attachRecall(r)) return fail(not_lanes);
     return serve.run(gpa, io, args, .{
@@ -187,12 +192,72 @@ fn forgetFail(env: *const std.process.Environ.Map) u32 {
     return std.fmt.parseInt(u32, std.mem.trim(u8, v, " "), 10) catch 0;
 }
 
-/// HfText.load with every failure named in `problem`, so main tells the text's failure from the engine's.
-fn loadText(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, template: ?[]const u8, pa: std.mem.Allocator, problem: *[]const u8) !*hf_text.HfText {
-    return hf_text.HfText.load(gpa, io, dir, template, pa, problem) catch |e| {
+/// A speech-only checkpoint ships no tokenizer.json; ``none.text()`` refuses every text call, so routes see a refusal.
+const LoadedText = union(enum) {
+    hf: *hf_text.HfText,
+    none: NoText,
+
+    pub fn deinit(t: LoadedText) void {
+        switch (t) {
+            .hf => |hf| hf.deinit(),
+            .none => {},
+        }
+    }
+    pub fn text(t: LoadedText) model_text.Text {
+        return switch (t) {
+            .hf => |hf| hf.text(),
+            .none => NoText.text(),
+        };
+    }
+    pub fn renderer(t: LoadedText) []const u8 {
+        return switch (t) {
+            .hf => |hf| hf.renderer(),
+            .none => "none: this checkpoint serves speech alone",
+        };
+    }
+};
+
+/// The ``model_text.Text`` of a checkpoint without a tokenizer: every entry fails or is empty.
+const NoText = struct {
+    var state: NoText = .{};
+    fn text() model_text.Text {
+        return .{ .ctx = &state, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = render, .template_source = templateSource } };
+    }
+    fn encode(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: bool) model_text.Error![]u32 {
+        return error.Template;
+    }
+    fn decode(_: *anyopaque, _: std.mem.Allocator, _: []const u32) std.mem.Allocator.Error![]u8 {
+        return error.OutOfMemory;
+    }
+    fn tokenId(_: *anyopaque, _: []const u8) ?u32 {
+        return null;
+    }
+    fn tokenString(_: *anyopaque, _: std.mem.Allocator, _: u32) std.mem.Allocator.Error![]u8 {
+        return error.OutOfMemory;
+    }
+    fn vocabSize(_: *anyopaque) u32 {
+        return 0;
+    }
+    fn eosIds(_: *anyopaque) []const u32 {
+        return &.{};
+    }
+    fn render(_: *anyopaque, _: std.mem.Allocator, _: json.Value, _: model_text.RenderOptions, problem: *[]const u8) model_text.Error!model_text.Rendered {
+        problem.* = "this model does not support text generation";
+        return error.Template;
+    }
+    fn templateSource(_: *anyopaque) []const u8 {
+        return "";
+    }
+};
+
+/// HfText.load with every failure named in `problem`; a ``"woof"`` checkpoint has no tokenizer at all.
+fn loadText(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, template: ?[]const u8, mt: []const u8, pa: std.mem.Allocator, problem: *[]const u8) !LoadedText {
+    if (std.mem.eql(u8, mt, "woof")) return .{ .none = .{} };
+    const hf = hf_text.HfText.load(gpa, io, dir, template, pa, problem) catch |e| {
         if (problem.len == 0) problem.* = @errorName(e);
         return e;
     };
+    return .{ .hf = hf };
 }
 
 fn fail(message: []const u8) u8 {
@@ -201,7 +266,11 @@ fn fail(message: []const u8) u8 {
 }
 
 fn modelType(a: std.mem.Allocator, io: std.Io, dir: []const u8, problem: *[]const u8) ![]const u8 {
-    const bytes = (try @import("checkpoint_config").read(a, io, dir, problem)) orelse return "unknown";
+    const bytes = (try @import("checkpoint_config").read(a, io, dir, problem)) orelse {
+        // Woof's HF download ships no config.json: its weights file names the family.
+        if (@import("checkpoint_config").hasFile(io, dir, "woof_int8.npz")) return "woof";
+        return "unknown";
+    };
     const doc = std.json.parseFromSliceLeaky(std.json.Value, a, bytes, .{}) catch return "unknown";
     if (doc != .object) return "unknown";
     const t = doc.object.get("model_type") orelse return "unknown";
