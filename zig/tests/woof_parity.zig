@@ -15,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
     const texts_path = args.next() orelse return usage();
     const ref_dir = args.next() orelse return usage();
     const seed = try std.fmt.parseInt(u64, args.next() orelse "0", 10);
-    const m = try woof.Model.load(gpa, io, dir, null);
+    const m = try woof.Model.load(gpa, io, dir, null, 0);
     defer m.deinit();
     const texts = try std.Io.Dir.cwd().readFileAlloc(io, texts_path, gpa, .limited(1 << 20));
     defer gpa.free(texts);

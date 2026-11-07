@@ -1,5 +1,6 @@
 //! Woof's dense CPU arithmetic: weights in panels of 16 outputs, four rows a panel or one row four panels.
 const std = @import("std");
+const Pool = @import("pool.zig").Pool;
 
 const lanes = 16;
 const V = @Vector(lanes, f32);
@@ -37,14 +38,42 @@ fn panels(out: usize) usize {
     return std.math.divCeil(usize, out, lanes) catch unreachable;
 }
 
+/// Multiply-adds below which a part costs more to hand out than to run.
+const min_part = 16 * 1024;
+
 /// y[r][o] = x[r * x_stride ..][0..in] . W[o] (+ b[o]) (+ res[r][o]) for r < n, rows y_stride apart; res may be y.
-pub fn rows(l: Linear, x: []const f32, x_stride: usize, n: usize, y: []f32, y_stride: usize, res: ?[]const f32) void {
-    var r: usize = 0;
-    while (r + 4 <= n) : (r += 4) for (0..panels(l.out)) |p| tile(4, 1, l, x, x_stride, r, p, y, y_stride, res);
-    while (r < n) : (r += 1) {
-        var p: usize = 0;
-        while (p + 4 <= panels(l.out)) : (p += 4) tile(1, 4, l, x, x_stride, r, p, y, y_stride, res);
-        while (p < panels(l.out)) : (p += 1) tile(1, 1, l, x, x_stride, r, p, y, y_stride, res);
+/// Split over the pool by 4-row blocks, or by panels when rows are few: each output sums in the same order either way.
+pub fn rows(pool: *Pool, l: Linear, x: []const f32, x_stride: usize, n: usize, y: []f32, y_stride: usize, res: ?[]const f32) void {
+    const Job = struct {
+        l: Linear,
+        x: []const f32,
+        x_stride: usize,
+        n: usize,
+        y: []f32,
+        y_stride: usize,
+        res: ?[]const f32,
+        by_rows: bool,
+
+        fn run(j: @This(), part: usize, parts: usize) void {
+            const items = if (j.by_rows) j.n / 4 else panels(j.l.out);
+            const lo, const hi = .{ items * part / parts, items * (part + 1) / parts };
+            if (!j.by_rows) return span(j.l, j.x, j.x_stride, 0, j.n, lo, hi, j.y, j.y_stride, j.res);
+            span(j.l, j.x, j.x_stride, 4 * lo, if (part + 1 == parts) j.n else 4 * hi, 0, panels(j.l.out), j.y, j.y_stride, j.res);
+        }
+    };
+    const by_rows = n >= 4 * pool.size();
+    const parts = @min(pool.size(), if (by_rows) n / 4 else panels(l.out), @max(1, n * l.out * l.in / min_part));
+    pool.each(parts, Job{ .l = l, .x = x, .x_stride = x_stride, .n = n, .y = y, .y_stride = y_stride, .res = res, .by_rows = by_rows }, Job.run);
+}
+
+/// Rows r0..r1 times panels p0..p1.
+fn span(l: Linear, x: []const f32, x_stride: usize, r0: usize, r1: usize, p0: usize, p1: usize, y: []f32, y_stride: usize, res: ?[]const f32) void {
+    var r = r0;
+    while (r + 4 <= r1) : (r += 4) for (p0..p1) |p| tile(4, 1, l, x, x_stride, r, p, y, y_stride, res);
+    while (r < r1) : (r += 1) {
+        var p = p0;
+        while (p + 4 <= p1) : (p += 4) tile(1, 4, l, x, x_stride, r, p, y, y_stride, res);
+        while (p < p1) : (p += 1) tile(1, 1, l, x, x_stride, r, p, y, y_stride, res);
     }
 }
 
@@ -67,8 +96,8 @@ inline fn tile(comptime R: usize, comptime P: usize, l: Linear, x: []const f32, 
 }
 
 /// y = W x (+ b).
-pub fn vec(l: Linear, x: []const f32, y: []f32) void {
-    rows(l, x, l.in, 1, y, l.out, null);
+pub fn vec(pool: *Pool, l: Linear, x: []const f32, y: []f32) void {
+    rows(pool, l, x, l.in, 1, y, l.out, null);
 }
 
 pub fn dot(a: []const f32, b: []const f32) f32 {
@@ -98,6 +127,16 @@ pub fn layerNorm(x: []f32, eps: f32) void {
 
 pub fn silu(x: f32) f32 {
     return x / (1 + @exp(-x));
+}
+
+/// x[i] = f(x[i]), split over the pool in contiguous runs of at least 4096.
+pub fn map(pool: *Pool, x: []f32, comptime f: fn (f32) f32) void {
+    const Job = struct {
+        fn run(v: []f32, part: usize, parts: usize) void {
+            for (v[v.len * part / parts .. v.len * (part + 1) / parts]) |*e| e.* = f(e.*);
+        }
+    };
+    pool.each(@min(pool.size(), @max(1, x.len / 4096)), x, Job.run);
 }
 
 /// Softmax over s in place.
@@ -133,11 +172,14 @@ test "rows: packed panels equal plain dots over four-row blocks, tail rows and a
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const l = try Linear.pack(arena.allocator(), out, in, Strided{ .m = &w, .so = in, .si = 1 }, &bias);
+    var one: Pool = undefined;
+    try one.init(std.testing.allocator, std.testing.io, 1);
+    defer one.deinit(std.testing.allocator);
     var x: [6 * 8]f32 = undefined;
     for (&x, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 5)) * 0.5;
     var y: [6 * 40]f32 = undefined;
     for (&y, 0..) |*v, i| v.* = @floatFromInt(i);
-    rows(l, &x, 8, 6, &y, 40, &y);
+    rows(&one, l, &x, 8, 6, &y, 40, &y);
     for (0..6) |r| for (0..40) |o| {
         const at: f32 = @floatFromInt(r * 40 + o);
         if (o >= out) {
@@ -148,4 +190,34 @@ test "rows: packed panels equal plain dots over four-row blocks, tail rows and a
         for (0..in) |i| s += x[r * 8 + i] * w[o * in + i];
         try std.testing.expectApproxEqAbs(s + bias[o] + at, y[r * 40 + o], 1e-4);
     };
+}
+
+test "rows: a pool's split by panels (few rows) and by row blocks (a tail too) gives the one-thread bits" {
+    const out = 250;
+    const in = 200;
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const w = try arena.allocator().alloc(f32, out * in);
+    for (w, 0..) |*v, i| v.* = @sin(@as(f32, @floatFromInt(i)));
+    const l = try Linear.pack(arena.allocator(), out, in, Strided{ .m = w, .so = in, .si = 1 }, w[0..out]);
+    const x = try arena.allocator().alloc(f32, 41 * in);
+    for (x, 0..) |*v, i| v.* = @cos(@as(f32, @floatFromInt(i)) * 0.3);
+    var one: Pool = undefined;
+    try one.init(a, std.testing.io, 1);
+    defer one.deinit(a);
+    var three: Pool = undefined;
+    try three.init(a, std.testing.io, 3);
+    defer three.deinit(a);
+    for ([_]usize{ 1, 9, 41 }) |n| {
+        const want = try arena.allocator().alloc(f32, n * out);
+        const got = try arena.allocator().alloc(f32, n * out);
+        for (want, got, 0..) |*u, *v, i| {
+            u.* = @floatFromInt(i % 3);
+            v.* = u.*;
+        }
+        rows(&one, l, x, in, n, want, out, want);
+        rows(&three, l, x, in, n, got, out, got);
+        try std.testing.expectEqualSlices(u32, @ptrCast(want), @ptrCast(got));
+    }
 }

@@ -8,6 +8,7 @@ const text = @import("text.zig");
 const speech = @import("speech.zig");
 const Speech = speech.Speech;
 const Decoder = @import("decoder.zig").Decoder;
+const Pool = @import("pool.zig").Pool;
 
 const weights_file = "woof_int8.npz";
 pub const sample_rate: u32 = 24000;
@@ -39,6 +40,7 @@ pub const Model = struct {
     gpa: std.mem.Allocator,
     speech: Speech,
     decoder: Decoder,
+    pool: Pool,
     mean: []const f32,
     std: []const f32,
     voice_names: []const []const u8,
@@ -46,11 +48,12 @@ pub const Model = struct {
     latents: [][speech.latent]f32,
     takes: [2][]f32,
 
-    /// `dir`/woof_int8.npz, plus each `voices_dir`/NAME.npy (float32 (16, 448)) as voice NAME after the built-ins.
-    pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, voices_dir: ?[]const u8) !*Model {
+    /// `dir`/woof_int8.npz, plus each `voices_dir`/NAME.npy (float32 (16, 448)) as voice NAME after the built-ins;
+    /// `threads` run each frame's arithmetic (0: the performance cores), with the same samples at any count.
+    pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, voices_dir: ?[]const u8, threads: usize) !*Model {
         const m = try gpa.create(Model);
         errdefer gpa.destroy(m);
-        m.* = .{ .arena = .init(gpa), .gpa = gpa, .speech = undefined, .decoder = undefined, .mean = &.{}, .std = &.{}, .voice_names = &.{}, .voices = &.{}, .latents = &.{}, .takes = undefined };
+        m.* = .{ .arena = .init(gpa), .gpa = gpa, .speech = undefined, .decoder = undefined, .pool = undefined, .mean = &.{}, .std = &.{}, .voice_names = &.{}, .voices = &.{}, .latents = &.{}, .takes = undefined };
         errdefer m.arena.deinit();
         const a = m.arena.allocator();
         const path = try std.fs.path.join(gpa, &.{ dir, weights_file });
@@ -73,10 +76,12 @@ pub const Model = struct {
         m.voices = voices.items;
         m.latents = try a.alloc([speech.latent]f32, piece_frames);
         for (&m.takes) |*t| t.* = try a.alloc(f32, piece_frames * frame_length);
+        try m.pool.init(a, io, threads);
         return m;
     }
 
     pub fn deinit(m: *Model) void {
+        m.pool.deinit(m.arena.allocator());
         m.arena.deinit();
         m.gpa.destroy(m);
     }
@@ -106,12 +111,12 @@ pub const Model = struct {
         var best: ?struct { take: Take, slot: usize, len: usize } = null;
         var slot: usize = 0;
         for (0..1 + redraws) |_| {
-            const n = m.speech.generate(m.voices[voice], ids, rng, temperature, end_probability, m.latents);
+            const n = m.speech.generate(&m.pool, m.voices[voice], ids, rng, temperature, end_probability, m.latents);
             for (m.latents[0..n]) |*f| for (f, m.std, m.mean) |*z, s, u| {
                 z.* = z.* * s + u;
             };
             const wav = m.takes[slot][0 .. n * frame_length];
-            try m.decoder.run(a, m.latents[0..n], wav);
+            try m.decoder.run(&m.pool, a, m.latents[0..n], wav);
             const take = Take.judge(wav, chars);
             if (best == null or take.better(best.?.take)) {
                 best = .{ .take = take, .slot = slot, .len = wav.len };
@@ -185,7 +190,7 @@ test "take: all of a piece's frames is capped and redrawn; an end of speech with
 test "speak (TF_WOOF_DIR, seed 7): length once every take of a piece hit its cap, even before a piece that ends; else stop" {
     const dir = std.mem.span(std.c.getenv("TF_WOOF_DIR") orelse return error.SkipZigTest);
     const gpa = std.testing.allocator;
-    const m = try Model.load(gpa, std.testing.io, dir, null);
+    const m = try Model.load(gpa, std.testing.io, dir, null, 0);
     defer m.deinit();
     const pcm = try gpa.alloc(f32, 2 * piece_frames * frame_length);
     defer gpa.free(pcm);
@@ -221,4 +226,5 @@ test {
     _ = @import("rng.zig");
     _ = @import("text.zig");
     _ = @import("ops.zig");
+    _ = @import("pool.zig");
 }

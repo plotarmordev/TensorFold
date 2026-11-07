@@ -3,6 +3,7 @@ const std = @import("std");
 const ops = @import("ops.zig");
 const Loader = @import("weights.zig").Loader;
 const Randn = @import("rng.zig").Randn;
+const Pool = @import("pool.zig").Pool;
 const Linear = ops.Linear;
 
 pub const layers = 8;
@@ -38,6 +39,7 @@ pub const Speech = struct {
     xn: []f32,
     big: []f32,
     mid: []f32,
+    /// Per head, (max_len).
     scores: []f32,
 
     pub fn load(l: *Loader) !Speech {
@@ -72,7 +74,7 @@ pub const Speech = struct {
         s.xn = try a.alloc(f32, max_len * d);
         s.big = try a.alloc(f32, max_len * 2 * ff);
         s.mid = try a.alloc(f32, max_len * ff);
-        s.scores = try a.alloc(f32, max_len);
+        s.scores = try a.alloc(f32, heads * max_len);
         return s;
     }
 
@@ -85,13 +87,13 @@ pub const Speech = struct {
     }
 
     /// Layer i over rows s.x[0..n] at positions p0.., their K and V cached.
-    fn block(s: *Speech, i: usize, n: usize, p0: usize) void {
+    fn block(s: *Speech, pool: *Pool, i: usize, n: usize, p0: usize) void {
         const y = s.layer[i];
         const k_cache = s.kv[(2 * i) * max_len * d ..][0 .. max_len * d];
         const v_cache = s.kv[(2 * i + 1) * max_len * d ..][0 .. max_len * d];
         s.norm(n);
         const qkv = s.big;
-        ops.rows(y.qkv, s.xn, d, n, qkv, 3 * d, null);
+        ops.rows(pool, y.qkv, s.xn, d, n, qkv, 3 * d, null);
         for (0..n) |r| {
             const p = p0 + r;
             const row = qkv[r * 3 * d ..];
@@ -100,61 +102,74 @@ pub const Speech = struct {
             @memcpy(v_cache[p * d ..][0..d], row[2 * d ..][0..d]);
         }
         const att = s.xn;
-        const scale: f32 = 1 / @sqrt(@as(f32, dh));
-        for (0..n) |r| {
-            const p = p0 + r;
-            for (0..heads) |h| {
-                const q = qkv[r * 3 * d + h * dh ..][0..dh];
-                const sc = s.scores[0 .. p + 1];
-                for (sc, 0..) |*v, t| v.* = ops.dot(k_cache[t * d + h * dh ..][0..dh], q) * scale;
-                ops.softmax(sc);
-                const out = att[r * d + h * dh ..][0..dh];
-                @memset(out, 0);
-                for (sc, 0..) |w, t| for (out, v_cache[t * d + h * dh ..][0..dh]) |*o, v| {
-                    o.* += w * v;
-                };
-            }
-        }
-        ops.rows(y.o, att, d, n, s.x, d, s.x);
+        pool.each(@min(pool.size(), heads), Attend{ .scores = s.scores, .qkv = qkv, .k = k_cache, .v = v_cache, .att = att, .n = n, .p0 = p0 }, Attend.run);
+        ops.rows(pool, y.o, att, d, n, s.x, d, s.x);
         s.norm(n);
-        ops.rows(y.up, s.xn, d, n, s.big, 2 * ff, null);
+        ops.rows(pool, y.up, s.xn, d, n, s.big, 2 * ff, null);
         for (0..n) |r| {
             const gu = s.big[r * 2 * ff ..];
             for (s.mid[r * ff ..][0..ff], gu[0..ff], gu[ff..][0..ff]) |*m, g, u| m.* = ops.silu(g) * u;
         }
-        ops.rows(y.down, s.mid, ff, n, s.x, d, s.x);
+        ops.rows(pool, y.down, s.mid, ff, n, s.x, d, s.x);
     }
 
+    /// Causal attention of rows at p0.. over the cache, heads split over the pool's parts.
+    const Attend = struct {
+        scores: []f32,
+        qkv: []const f32,
+        k: []const f32,
+        v: []const f32,
+        att: []f32,
+        n: usize,
+        p0: usize,
+
+        fn run(j: Attend, part: usize, parts: usize) void {
+            const scale: f32 = 1 / @sqrt(@as(f32, dh));
+            for (heads * part / parts..heads * (part + 1) / parts) |h| for (0..j.n) |r| {
+                const p = j.p0 + r;
+                const q = j.qkv[r * 3 * d + h * dh ..][0..dh];
+                const sc = j.scores[h * max_len ..][0 .. p + 1];
+                for (sc, 0..) |*v, t| v.* = ops.dot(j.k[t * d + h * dh ..][0..dh], q) * scale;
+                ops.softmax(sc);
+                const out = j.att[r * d + h * dh ..][0..dh];
+                @memset(out, 0);
+                for (sc, 0..) |w, t| for (out, j.v[t * d + h * dh ..][0..dh]) |*o, v| {
+                    o.* += w * v;
+                };
+            };
+        }
+    };
+
     /// The flow condition of row x and its end logit.
-    fn cond(s: *Speech, x: []const f32, c: *[hw]f32) f32 {
+    fn cond(s: *Speech, pool: *Pool, x: []const f32, c: *[hw]f32) f32 {
         var xn: [d]f32 = undefined;
         const inv = ops.rmsInv(x, eps);
         for (&xn, x) |*y, v| y.* = v * inv;
         var out: [hw + 1]f32 = undefined;
-        ops.vec(s.ce, &xn, &out);
+        ops.vec(pool, s.ce, &xn, &out);
         for (c, out[0..hw]) |*y, v| y.* = ops.silu(v);
         return out[hw];
     }
 
     /// One flow step: z = noise + head(cond, noise).
-    fn head(s: *Speech, c: *const [hw]f32, noise: *const [latent]f32, z: *[latent]f32) void {
+    fn head(s: *Speech, pool: *Pool, c: *const [hw]f32, noise: *const [latent]f32, z: *[latent]f32) void {
         var a: [3 * hw * depth + 2 * hw]f32 = undefined;
-        ops.vec(s.ada, c, &a);
+        ops.vec(pool, s.ada, c, &a);
         var h: [hw]f32 = undefined;
-        ops.vec(s.h_inp, noise, &h);
+        ops.vec(pool, s.h_inp, noise, &h);
         var y: [hw]f32 = undefined;
         var u: [2 * hw]f32 = undefined;
         var o: [hw]f32 = undefined;
         for (s.blocks, 0..) |b, j| {
             const m = a[3 * hw * j ..];
             modulate(&y, &h, m);
-            ops.vec(b[0], &y, &u);
+            ops.vec(pool, b[0], &y, &u);
             for (&u) |*v| v.* = ops.silu(v.*);
-            ops.vec(b[1], &u, &o);
+            ops.vec(pool, b[1], &u, &o);
             for (&h, m[2 * hw ..][0..hw], o) |*x, g, v| x.* += g * v;
         }
         modulate(&y, &h, a[3 * hw * depth ..]);
-        ops.vec(s.h_out, &y, z);
+        ops.vec(pool, s.h_out, &y, z);
         for (z, noise) |*v, e| v.* += e;
     }
 
@@ -165,16 +180,16 @@ pub const Speech = struct {
     }
 
     /// Latent frames for one piece (ids from text.encode) into out; returns the count.
-    pub fn generate(s: *Speech, voice: []const f32, ids: []const u32, rng: *Randn, temp: f32, eos: f64, out: [][latent]f32) usize {
+    pub fn generate(s: *Speech, pool: *Pool, voice: []const f32, ids: []const u32, rng: *Randn, temp: f32, eos: f64, out: [][latent]f32) usize {
         const p0 = voice_rows + ids.len + 1;
         std.debug.assert(p0 < max_len);
         @memcpy(s.x[0 .. voice_rows * d], voice);
         for (ids, 0..) |id, r| @memcpy(s.x[(voice_rows + r) * d ..][0..d], s.text_emb[id * d ..][0..d]);
         @memcpy(s.x[(p0 - 1) * d ..][0..d], s.bos);
-        for (0..layers) |i| s.block(i, p0, 0);
+        for (0..layers) |i| s.block(pool, i, p0, 0);
         @memmove(s.x[0..d], s.x[(p0 - 1) * d ..][0..d]);
         var c: [hw]f32 = undefined;
-        var e = s.cond(s.x[0..d], &c);
+        var e = s.cond(pool, s.x[0..d], &c);
         const eos_logit = @log(eos / (1 - eos));
         const frames = @min(out.len, max_len - p0);
         var noise: [latent]f32 = undefined;
@@ -182,10 +197,10 @@ pub const Speech = struct {
             if (f > 3 and e > eos_logit) return f;
             rng.fill(&noise);
             for (&noise) |*v| v.* *= temp;
-            s.head(&c, &noise, &out[f]);
-            ops.vec(s.lat_in, &out[f], s.x[0..d]);
-            for (0..layers) |i| s.block(i, 1, p0 + f);
-            e = s.cond(s.x[0..d], &c);
+            s.head(pool, &c, &noise, &out[f]);
+            ops.vec(pool, s.lat_in, &out[f], s.x[0..d]);
+            for (0..layers) |i| s.block(pool, i, 1, p0 + f);
+            e = s.cond(pool, s.x[0..d], &c);
         }
         return frames;
     }
