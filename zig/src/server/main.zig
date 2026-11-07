@@ -205,7 +205,7 @@ fn modelType(a: std.mem.Allocator, io: std.Io, dir: []const u8, problem: *[]cons
     const doc = std.json.parseFromSliceLeaky(std.json.Value, a, bytes, .{}) catch return "unknown";
     if (doc != .object) return "unknown";
     const t = doc.object.get("model_type") orelse return "unknown";
-    return if (t == .string) t.string else "unknown";
+    return if (t == .string) @import("checkpoint_config").servedType(t.string) else "unknown";
 }
 
 /// The family's defaults, generation_config.json's sampling, then the serve flags (family_sampling.resolve).
