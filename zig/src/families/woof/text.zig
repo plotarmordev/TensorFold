@@ -130,6 +130,24 @@ fn conjunctionAt(s: []const u32, at: usize) bool {
     return false;
 }
 
+/// `pieces`, each one over `max` characters cut at its last space within `max`, else at `max`: a run the splitter
+/// cannot cut still fits one piece's frames.
+pub fn fit(a: std.mem.Allocator, pieces: []const []const u32, max: usize) ![]const []const u32 {
+    var out: std.ArrayList([]const u32) = .empty;
+    for (pieces) |piece| {
+        var rest = piece;
+        while (rest.len > max) {
+            var cut = max;
+            while (cut > 0 and !space(rest[cut])) cut -= 1;
+            if (cut == 0) cut = max;
+            try out.append(a, strip(rest[0..cut]));
+            rest = strip(rest[cut..]);
+        }
+        if (rest.len > 0) try out.append(a, rest);
+    }
+    return out.items;
+}
+
 /// The longest run, in seconds, of 40 ms frames under -50 dBFS between the first and last voiced frame.
 pub fn stall(pcm: []const f32, sample_rate: u32) f64 {
     const hop = 960;
@@ -187,6 +205,16 @@ test "encode: BOS, alphabet ids, unknown 2" {
     const ids = try encode(std.testing.allocator, &.{ ' ', 'a', '—', 0x4e2d });
     defer std.testing.allocator.free(ids);
     try std.testing.expectEqualSlices(u32, &.{ 1, 3, 4, 94, 2 }, ids);
+}
+
+test "fit: a piece over the limit cut at its last space within it, else at the limit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const got = try fit(a, &.{ try codepoints(a, "ab cd efg"), try codepoints(a, "abcdefg"), try codepoints(a, "abcd") }, 4);
+    const want = [_][]const u8{ "ab", "cd", "efg", "abcd", "efg", "abcd" };
+    try std.testing.expectEqual(want.len, got.len);
+    for (want, got) |w, g| try std.testing.expectEqualSlices(u32, try codepoints(a, w), g);
 }
 
 test "stall: the longest quiet run between voiced frames" {

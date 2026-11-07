@@ -17,8 +17,11 @@ pub const frame_length: u32 = 960;
 pub const max_frames: u32 = 12000;
 /// Frames one piece may take (the checkpoint's max_frames); fewer when its text fills the speech model's positions.
 const piece_frames = 750;
-/// Characters one piece may hold: its prefix (voice, BOS id, characters, speech BOS) must leave one position to speak.
-const piece_chars = speech.max_len - speech.voice_rows - 3;
+/// Characters one piece may hold: at the redraw check's slowest pace its speech fills no more than the piece's frames.
+const piece_chars: usize = @intFromFloat(@as(f64, piece_frames * frame_length / sample_rate) / max_seconds_per_char);
+comptime {
+    std.debug.assert(speech.voice_rows + piece_chars + 2 + piece_frames <= speech.max_len); // prefix, then every frame
+}
 const builtin_voices = [_][]const u8{ "juno", "mira" };
 
 /// The runtime's defaults: flow temperature, end probability, and the redraw check (seconds a character, longest
@@ -85,11 +88,10 @@ pub const Model = struct {
         var scratch = std.heap.ArenaAllocator.init(m.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
-        const pieces = try text.split(a, input);
+        const split = try text.split(a, input);
         var rng = Randn.init(seed);
         var at: usize = 0;
-        for (if (pieces.len == 0) &[_][]const u32{input} else pieces) |piece| {
-            if (piece.len > piece_chars) return error.PieceTooLong;
+        for (try text.fit(a, if (split.len == 0) &.{input} else split, piece_chars)) |piece| {
             const take = try m.bestTake(a, try text.encode(a, piece), piece.len, voice, &rng);
             if (take.len > pcm.len - at) return .{ .samples = at, .reason = .length };
             @memcpy(pcm[at..][0..take.len], take);
