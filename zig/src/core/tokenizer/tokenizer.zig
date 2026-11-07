@@ -1,8 +1,11 @@
-//! TensorFold's tokenizer for Hugging Face tokenizer.json files: encode equals tokenizers' encode(text, add_special_tokens=False).
+//! TensorFold tokenizer for HF tokenizer.json files: encode equals tokenizers' encode(text, add_special_tokens=False).
 const std = @import("std");
+pub const kimi_tiktoken = @import("tiktoken.zig");
 pub const unicode = @import("unicode.zig");
 const steps = @import("steps.zig");
+const regex = @import("regex.zig");
 const models = @import("model.zig");
+const qwen2_slow = @import("qwen2_slow.zig");
 const Allocator = std.mem.Allocator;
 pub const Memo = @import("memo.zig").Memo;
 pub const eos = @import("eos.zig");
@@ -13,6 +16,8 @@ pub const Kind = models.Kind;
 pub const Error = models.Error || std.json.ParseError(std.json.Scanner) || error{ UnsupportedAddedToken, BadRequestSpans, UnsafeNormalizedAddedTokenMask, UnsafeAddedTokenMask };
 pub const Span = [2]usize;
 pub const MaskWork = struct { spans: usize = 0, matcher: usize = 0 };
+// Small calls keep their scratch on the stack before spilling to the tokenizer allocator.
+const scratch_stack_bytes = 4096;
 
 pub const AddedToken = struct {
     id: u32,
@@ -149,6 +154,19 @@ pub const Tokenizer = struct {
         t.* = undefined;
     }
 
+    /// New Split regex, empty memo; call before the tokenizer is shared: an encode in flight keeps the old memo.
+    pub fn overrideSplit(t: *Tokenizer, pattern: []const u8) !void {
+        const pre = if (t.pre_tokenizer) |*p| p else return error.NoSplitRegex;
+        const split = firstSplit(pre) orelse return error.NoSplitRegex;
+        split.pattern = .{ .regex = try regex.Regex.compile(t.arena.?.allocator(), pattern) };
+        if (t.memo) |m| {
+            const gpa = m.gpa;
+            const cap = m.cap;
+            m.destroy();
+            t.memo = Memo.create(gpa, cap) catch null; // without a memo every encode tokenizes, which is only slower
+        }
+    }
+
     /// Id of a token written out whole, such as a chat template's special token.
     pub fn specialTokenId(t: *const Tokenizer, text: []const u8) ?u32 {
         return t.vocab.get(text);
@@ -162,7 +180,9 @@ pub const Tokenizer = struct {
 
     /// Token ids for `text`, without post-processor tokens; invalid UTF-8 reads as U+FFFD. Caller frees with `a`.
     pub fn encode(t: *const Tokenizer, a: Allocator, text: []const u8) Error![]u32 {
-        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        var stack: [scratch_stack_bytes]u8 = undefined;
+        var fallback = std.heap.BufferFirstAllocator.init(&stack, t.allocator);
+        var arena = std.heap.ArenaAllocator.init(fallback.allocator());
         defer arena.deinit();
         var ctx = steps.Context{ .a = arena.allocator(), .matcher = .{ .a = arena.allocator() } };
         var valid = text;
@@ -192,7 +212,9 @@ pub const Tokenizer = struct {
             if (p[0] < previous or p[0] >= p[1] or p[1] > text.len) return error.BadRequestSpans;
             previous = p[1];
         }
-        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        var stack: [scratch_stack_bytes]u8 = undefined;
+        var fallback = std.heap.BufferFirstAllocator.init(&stack, t.allocator);
+        var arena = std.heap.ArenaAllocator.init(fallback.allocator());
         defer arena.deinit();
         var ctx = steps.Context{ .a = arena.allocator(), .matcher = .{ .a = arena.allocator() } };
         const valid = try validMasked(ctx.a, text, spans);
@@ -249,7 +271,9 @@ pub const Tokenizer = struct {
 
     /// `encode` with no added token matched: text that spells one (a quoted marker) is ordinary text.
     pub fn encodePlain(t: *const Tokenizer, a: Allocator, text: []const u8) Error![]u32 {
-        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        var stack: [scratch_stack_bytes]u8 = undefined;
+        var fallback = std.heap.BufferFirstAllocator.init(&stack, t.allocator);
+        var arena = std.heap.ArenaAllocator.init(fallback.allocator());
         defer arena.deinit();
         var ctx = steps.Context{ .a = arena.allocator(), .matcher = .{ .a = arena.allocator() } };
         var valid = text;
@@ -381,7 +405,9 @@ pub const Tokenizer = struct {
 
     /// Text for `ids` through the decoder chain; unknown ids are skipped. Caller frees with `a`.
     pub fn decode(t: *const Tokenizer, a: Allocator, ids: []const u32, skip_special_tokens: bool) Error![]u8 {
-        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        var stack: [scratch_stack_bytes]u8 = undefined;
+        var fallback = std.heap.BufferFirstAllocator.init(&stack, t.allocator);
+        var arena = std.heap.ArenaAllocator.init(fallback.allocator());
         defer arena.deinit();
         var ctx = steps.Context{ .a = arena.allocator(), .matcher = .{ .a = arena.allocator() } };
         var tokens = try std.ArrayList([]const u8).initCapacity(ctx.a, ids.len);
@@ -400,18 +426,25 @@ pub const Tokenizer = struct {
         if (!d.tokenLocal()) return null;
         const piece = t.id_to_token.get(id) orelse return try a.dupe(u8, "");
         if (t.specials.contains(piece)) return try a.dupe(u8, piece);
-        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        var stack: [scratch_stack_bytes]u8 = undefined;
+        var fallback = std.heap.BufferFirstAllocator.init(&stack, t.allocator);
+        var arena = std.heap.ArenaAllocator.init(fallback.allocator());
         defer arena.deinit();
         var ctx = steps.Context{ .a = arena.allocator(), .matcher = .{ .a = arena.allocator() }, .raw_bytes = true };
         return try d.decode(a, &ctx, &.{piece});
     }
 };
 
-/// Loads `path/tokenizer.json`, or `path` itself when it names a .json file.
+/// Loads `path/tokenizer.json`, or `path` itself when it names a .json file; a Qwen2 slow export is converted.
 pub fn loadTokenizer(io: std.Io, a: Allocator, path: []const u8) !Tokenizer {
     const file = if (std.mem.endsWith(u8, path, ".json")) try a.dupe(u8, path) else try std.fmt.allocPrint(a, "{s}/tokenizer.json", .{path});
     defer a.free(file);
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, file, a, .limited(1 << 30));
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, file, a, .limited(1 << 30)) catch |e| {
+        if (e != error.FileNotFound or std.mem.endsWith(u8, path, ".json")) return e;
+        const converted = qwen2_slow.converted(io, a, path) catch |f| return if (f == error.FileNotFound) e else f;
+        defer a.free(converted);
+        return parse(a, converted);
+    };
     defer a.free(bytes);
     return parse(a, bytes);
 }
@@ -512,8 +545,8 @@ fn addTokens(t: *Tokenizer, keep: Allocator, scratch: Allocator, list: std.json.
         }
         var zero: usize = 0;
         const text = if (token.normalized and t.normalizer != null) try keep.dupe(u8, try t.normalizer.?.apply(&ctx, token.content, &zero)) else token.content;
-        // tokenizers matches and decodes a normalized added token by its normalized content.
-        try t.id_to_token.put(token.id, text);
+        // Normalization changes the matching key; the decoder retains the added token's original spelling.
+        try t.id_to_token.put(token.id, token.content);
         try (if (token.normalized) &t.normalized else &t.raw).insert(keep, text, @intCast(index));
     }
     if (tokens.items.len > 0) {
@@ -528,4 +561,15 @@ fn addTokens(t: *Tokenizer, keep: Allocator, scratch: Allocator, list: std.json.
 test {
     _ = @import("tokenizer_test.zig");
     _ = @import("masked_test.zig");
+    _ = @import("unicode_nfkc_test.zig");
+}
+
+/// The first Split whose pattern is a regex, in a pre-tokenizer or its sequence.
+fn firstSplit(p: *steps.PreTokenizer) ?*@FieldType(steps.PreTokenizer, "split") {
+    switch (p.*) {
+        .split => |*s| return if (s.pattern == .regex) s else null,
+        .sequence => |list| for (@constCast(list)) |*q| if (firstSplit(q)) |s| return s,
+        else => {},
+    }
+    return null;
 }

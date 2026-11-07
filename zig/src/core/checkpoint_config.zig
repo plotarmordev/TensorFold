@@ -42,6 +42,12 @@ fn failed(a: std.mem.Allocator, problem: *[]const u8, size: ?u64, cause: anyerro
     return cause;
 }
 
+/// The engine family a config's `model_type` is served by. Qwen 4's expected Flash MoE tag (`qwen4_moe`, after
+/// Qwen3.5's `qwen3_5_moe`) is the Flash Next architecture, so it shares `qwen4_exp`'s Metal engine, flags and memory plan.
+pub fn servedType(model_type: []const u8) []const u8 {
+    return if (std.mem.eql(u8, model_type, "qwen4_moe")) "qwen4_exp" else model_type;
+}
+
 test "issue 934: the shared config bound includes exactly 64 MiB" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -56,4 +62,9 @@ test "issue 934: the shared config bound includes exactly 64 MiB" {
     const bytes = (try read(a, std.testing.io, dir, &problem)).?;
     try std.testing.expectEqual(limit, bytes.len);
     try std.testing.expectEqualStrings("", problem);
+}
+
+test "Qwen 4's Flash MoE tier is served by the Flash Next family; other tags pass through" {
+    try std.testing.expectEqualStrings("qwen4_exp", servedType("qwen4_moe"));
+    for ([_][]const u8{ "qwen4_exp", "qwen4", "qwen4_text", "qwen3_5_moe" }) |t| try std.testing.expectEqualStrings(t, servedType(t));
 }
