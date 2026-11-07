@@ -182,6 +182,40 @@ test "take: all of a piece's frames is capped and redrawn; an end of speech with
     try std.testing.expect(ended.better(full) and !full.better(ended));
 }
 
+test "speak (TF_WOOF_DIR, seed 7): length once every take of a piece hit its cap, even before a piece that ends; else stop" {
+    const dir = std.mem.span(std.c.getenv("TF_WOOF_DIR") orelse return error.SkipZigTest);
+    const gpa = std.testing.allocator;
+    const m = try Model.load(gpa, std.testing.io, dir, null);
+    defer m.deinit();
+    const pcm = try gpa.alloc(f32, 2 * piece_frames * frame_length);
+    defer gpa.free(pcm);
+    const cap = piece_frames * frame_length;
+    const capped = comptime blk: { // "ha ha ... ha.": no draw ends it within the piece's frames
+        var s: [300]u8 = undefined;
+        for (0..100) |i| s[3 * i ..][0..3].* = "ha ".*;
+        s[299] = '.';
+        break :blk s;
+    };
+    const ended = "Your order ships on March third.";
+    const normal = try say(m, ended, pcm);
+    try std.testing.expect(normal.reason == .stop and normal.samples < cap);
+    const exhausted = try say(m, &capped, pcm);
+    try std.testing.expect(exhausted.reason == .length and exhausted.samples == cap);
+    const then_ended = try say(m, &capped ++ " " ++ ended, pcm);
+    try std.testing.expect(then_ended.reason == .length and then_ended.samples > cap);
+}
+
+fn say(m: *Model, ascii: []const u8, pcm: []f32) !Spoken {
+    var input: [512]u32 = undefined;
+    for (ascii, input[0..ascii.len]) |c, *x| x.* = c;
+    const go = struct {
+        fn on(_: *anyopaque, _: usize) bool {
+            return true;
+        }
+    }.on;
+    return m.speak(input[0..ascii.len], 0, 7, pcm, .{ .ctx = m, .piece = go });
+}
+
 test {
     _ = @import("npz.zig");
     _ = @import("rng.zig");

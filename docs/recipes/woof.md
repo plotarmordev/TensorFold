@@ -53,6 +53,7 @@ Like Woof's own `Woof()` call, the engine speaks text as given:
   40 ms frames, runs past 0.095 s a character, or hits the 30 s piece cap; the first clean take wins, else the best by
   (faults, longest quiet run, pace). A reply whose kept take for any piece hit that cap, so its speech was cut short,
   finishes with `length` rather than `stop`.
+  `TF_WOOF_DIR=WOOF_DIR zig build test` also runs that check on the checkpoint (about seven minutes, in Debug).
 - **Seeds.** The noise is torch's `manual_seed` + `randn` stream, so a seed draws what Woof's runtime draws. The server
   seeds each request from its input, as it does for Drama, or from the request's `seed`. Woof's flow temperature is
   fixed at 0.5, so `temperature`, `top_p` and `top_k` are refused.
