@@ -171,7 +171,7 @@ test "voices: synthetic parsing, attestation, bounds and selection" {
     try std.testing.expectEqual(refs.ptr, (try select(&voices, "default", "tone")).ptr);
     try std.testing.expectEqual(@as(usize, 0), (try select(&.{}, "default", "")).len);
     try std.testing.expectError(error.UnknownVoice, select(&voices, "default", "../tone"));
-    try std.testing.expectEqualStrings("{\"voices\": [\"default\", \"tone\"]}", try json.stringify(a, try listing(a, &voices), .{}));
+    try std.testing.expectEqualStrings("{\"voices\": [\"default\", \"tone\"]}", try json.stringify(a, try listing(a, &.{"tone"}), .{}));
     const doc = (try json.parse(a, fixture)).ok;
     _ = doc.object.swapRemove("source");
     try std.testing.expectError(error.MissingAttestation, parse(a, try json.stringify(a, doc, .{})));
