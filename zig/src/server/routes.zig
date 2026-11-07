@@ -84,9 +84,8 @@ pub fn unknown(conn: *Conn, a: Allocator) void {
 fn get(srv: *Server, conn: *Conn, a: Allocator) void {
     const route = auth.routePath(conn.path);
     if (std.mem.eql(u8, route, "/v1/voices")) {
-        const sp = srv.info.speech orelse return unknown(conn, a);
-        const voices = if (sp.voices.len > 0) engineVoices(a, sp.voices) catch return else srv.voices;
-        const value = @import("drama_voice.zig").listing(a, voices) catch return;
+        if (srv.info.speech == null) return unknown(conn, a);
+        const value = @import("drama_voice.zig").listing(a, srv.voices) catch return;
         return sendValue(conn, a, 200, value);
     }
     if (std.mem.eql(u8, route, "/memory") or std.mem.eql(u8, route, "/v1/memory"))
@@ -104,13 +103,6 @@ fn get(srv: *Server, conn: *Conn, a: Allocator) void {
     if (route.len == 0 or std.mem.eql(u8, route, "/health")) return status.health(srv, conn, a) catch {};
     if (std.mem.endsWith(u8, route, "/models")) return status.models(srv, conn, a) catch {};
     unknown(conn, a);
-}
-
-/// An engine-owned catalog in the listing's terms: names alone, no references or descriptions.
-fn engineVoices(a: Allocator, names: []const []const u8) ![]const @import("drama_voice.zig").Voice {
-    const voices = try a.alloc(@import("drama_voice.zig").Voice, names.len);
-    for (names, voices) |name, *voice| voice.* = .{ .name = name, .references = &.{} };
-    return voices;
 }
 
 /// A refused route's body is read and dropped, so it cannot reach the next request on this connection.

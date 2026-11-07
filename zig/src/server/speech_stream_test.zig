@@ -192,7 +192,7 @@ pub const Served = struct {
         s.* = .{ .srv = undefined, .client = pair[0], .route_fd = pair[1], .route = undefined, .write_ms = write_ms, .probe = probe };
         s.srv = try server.Server.init(gpa, std.testing.io, script.engine(), s.text.text(), config, null);
         if (probe) |p| p.srv = s.srv;
-        s.srv.voices = script.voices;
+        if (script.voices.len > 0) s.srv.voices = script.voices;
         if (script.output_full) s.srv.speech_inflight.store(s.srv.info.lanes, .release);
         var head: [256]u8 = undefined;
         const method_path = if (script.get_voices) "GET /v1/voices" else "POST /v1/audio/speech";
@@ -624,4 +624,41 @@ test "engine voices: code-point prompt, catalog index, listing and an unknown na
     try expectHeader(try listing.readHead(), " 200 ");
     listing.join(&listing_script);
     try std.testing.expectEqualStrings("{\"voices\": [\"default\", \"juno\", \"mira\"], \"details\": [{\"id\": \"juno\", \"description\": \"\"}, {\"id\": \"mira\", \"description\": \"\"}]}", try listing.readRest());
+}
+
+test "engine voices: the catalog outlives the engine's names, as across an idle unload and reload" {
+    const juno = try gpa.dupe(u8, "juno");
+    const mira = try gpa.dupe(u8, "mira");
+    const names = [_][]const u8{ juno, mira };
+    var script: Script = .{ .steps = &.{}, .engine_voices = &names };
+    var bytes: Bytes = .{};
+    const srv = try server.Server.init(gpa, std.testing.io, script.engine(), bytes.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+    defer srv.deinit();
+    for (names) |name| {
+        @memset(@constCast(name), 'x'); // the unload frees the engine's catalog
+        gpa.free(name);
+    }
+    try std.testing.expectEqual(@as(usize, 2), srv.voices.len);
+    try std.testing.expectEqualStrings("juno", srv.voices[0].name);
+    try std.testing.expectEqualStrings("mira", srv.voices[1].name);
+}
+
+test "engine voices: Drama's sampling fields are refused, the seed is kept" {
+    const names = [_][]const u8{"juno"};
+    for ([_][]const u8{ "temperature\":0", "top_p\":0.5", "top_k\":5" }) |field| {
+        var script: Script = .{ .steps = &.{frame}, .engine_voices = &names };
+        var body: [96]u8 = undefined;
+        var s: Served = undefined;
+        try s.start(&script, "HTTP/1.1", try std.fmt.bufPrint(&body, "{{\"model\":\"m\",\"input\":\"hi\",\"{s}}}", .{field}), 2000);
+        defer s.deinit();
+        try expectHeader(try s.readHead(), " 400 ");
+        s.join(&script);
+        try std.testing.expect(std.mem.indexOf(u8, try s.readRest(), "is not supported by this model") != null);
+    }
+    var script: Script = .{ .steps = &.{frame}, .engine_voices = &names };
+    var s: Served = undefined;
+    try s.start(&script, "HTTP/1.1", "{\"model\":\"m\",\"input\":\"hi\",\"seed\":7,\"temperature\":null,\"response_format\":\"pcm\"}", 2000);
+    defer s.deinit();
+    try expectHeader(try s.readHead(), " 200 ");
+    s.join(&script);
 }

@@ -128,8 +128,11 @@ fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused
     if (stream and format != .pcm) return cx.refuse("stream=true requires response_format='pcm'");
     const voice = raw.strField("voice") orelse raw.strField("speaker") orelse "default";
     if (sp.voices.len > 0) {
+        // the engine draws with its own fixed flow temperature: Drama's sampling would be accepted and ignored
+        for ([_][]const u8{ "temperature", "top_p", "top_k" }) |key|
+            if (raw.field(key) != null) return cx.fail(.request, "{s} is not supported by this model", .{key});
         const named = if (voice.len == 0 or std.ascii.eqlIgnoreCase(voice, "default")) srv.config.default_voice else voice;
-        const index = if (std.mem.eql(u8, named, "default")) 0 else indexOf(sp.voices, named) orelse {
+        const index = if (std.mem.eql(u8, named, "default")) 0 else indexOf(srv.voices, named) orelse {
             const name = try pyrepr.repr(cx.a, .{ .string = named });
             return cx.fail(.request, "unknown voice {s}; see /v1/voices", .{name});
         };
@@ -147,9 +150,9 @@ fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused
     return .{ .input = input, .prompt = prompt, .sampling = sampling, .format = format, .stream = stream };
 }
 
-/// The index of `name` in an engine-owned voice catalog.
-pub fn indexOf(names: []const []const u8, name: []const u8) ?u32 {
-    for (names, 0..) |n, i| if (std.mem.eql(u8, n, name)) return @intCast(i);
+/// The index of `name` in the server's copy of an engine-owned voice catalog.
+fn indexOf(voices: []const @import("drama_voice.zig").Voice, name: []const u8) ?u32 {
+    for (voices, 0..) |voice, i| if (std.mem.eql(u8, voice.name, name)) return @intCast(i);
     return null;
 }
 
