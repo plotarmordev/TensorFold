@@ -159,7 +159,7 @@ pub const flags = [_]Flag{
 };
 
 /// The variables this binary honours as the Python engine does, then the CUDA build's or the Metal build's.
-pub const env = [_][]const u8{ "TENSORFOLD_API_KEY", "TENSORFOLD_NO_LIVE", "TENSORFOLD_SEED_SALT", "TENSORFOLD_REQUEST_LOG", "TENSORFOLD_PHASE_METRICS", "TENSORFOLD_NO_UPDATE_CHECK", "TENSORFOLD_LIBPDFIUM", "TENSORFOLD_MAX_PDF_PAGES", "HF_HOME", "HF_HUB_CACHE", "HF_HUB_OFFLINE", "BRAVE_SEARCH_API_KEY" } ++
+pub const env = [_][]const u8{ "TENSORFOLD_API_KEY", "TENSORFOLD_NO_LIVE", "TENSORFOLD_SEED_SALT", "TENSORFOLD_REQUEST_LOG", "TENSORFOLD_PHASE_METRICS", "TENSORFOLD_LIBPDFIUM", "TENSORFOLD_MAX_PDF_PAGES", "HF_HOME", "HF_HUB_CACHE", "BRAVE_SEARCH_API_KEY" } ++
     (if (cuda_build) [_][]const u8{ "TF_CUDA_DEVICE", "TF_CUDA_SEGMENTS", "TENSORFOLD_CUDA_KERNELS", "TENSORFOLD_MEMORY_RESERVE_GIB", "TENSORFOLD_CUDA_MEMORY_LIMIT_GB", "TENSORFOLD_P2P_DIAGNOSTICS", "TENSORFOLD_P2P_PROBE" } else [_][]const u8{}) ++
     (if (builtin.os.tag == .macos) [_][]const u8{"TF_Q27_PROFILE"} else [_][]const u8{});
 pub const Args = struct {
@@ -339,6 +339,8 @@ pub fn parse(a: Allocator, argv: []const []const u8, u: *Usage) error{ Usage, Ou
     out.allowed_host = repeated.hosts.items;
     out.allowed_origin = repeated.origins.items;
     if (out.slide_drift_gate and !out.slide) return fail(u, a, "--slide-drift-gate needs --slide", .{});
+    var env_buf: [192]u8 = undefined; // a prefill variable the lane host would misread: refused here, by name
+    if (api.prefill_env.problem(&env_buf)) |why| return fail(u, a, "{s}", .{why});
     try spillWith(u, a, out);
     return out;
 }
