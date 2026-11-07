@@ -1,6 +1,4 @@
-"""Woof's numpy runtime over a speech bench corpus, timed as tf-woof-bench times the engine: OUT/<id>.wav, first audio
-(the first piece spoken), real-time factor, peak RSS and CPU seconds per wall second. VECLIB_MAXIMUM_THREADS caps its
-Accelerate threads."""
+"""Woof's numpy runtime over a bench corpus: OUT/<id>.wav, first audio, real-time factor, peak RSS, CPU seconds."""
 import argparse, json, resource, statistics, sys, time
 from pathlib import Path
 

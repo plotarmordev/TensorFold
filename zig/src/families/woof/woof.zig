@@ -48,8 +48,7 @@ pub const Model = struct {
     latents: [][speech.latent]f32,
     takes: [2][]f32,
 
-    /// `dir`/woof_int8.npz, plus each `voices_dir`/NAME.npy (float32 (16, 448)) as voice NAME after the built-ins;
-    /// `threads` run each frame's arithmetic (0: the performance cores), with the same samples at any count.
+    /// `dir`/woof_int8.npz + `voices_dir`/NAME.npy as voice NAME; `threads` run each frame, 0 for performance cores.
     pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, voices_dir: ?[]const u8, threads: usize) !*Model {
         const m = try gpa.create(Model);
         errdefer gpa.destroy(m);

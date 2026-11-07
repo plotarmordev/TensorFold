@@ -1,5 +1,4 @@
-//! Persistent workers for Woof's per-frame arithmetic: a job is split into parts, part 0 on the caller's thread.
-//! Workers spin between the speech loop's back-to-back jobs and sleep on a futex when idle.
+//! Woof's per-frame arithmetic workers: part 0 on the caller's thread, the rest on workers that sleep on a futex.
 const std = @import("std");
 const builtin = @import("builtin");
 

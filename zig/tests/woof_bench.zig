@@ -1,4 +1,4 @@
-//! Woof over a speech bench corpus (JSON lines with "id" and "text"): one take per item at SEED in VOICE on THREADS, timings, OUT/<id>.wav.
+//! Woof over a speech bench corpus (JSON lines with "id" and "text"): one take per item at SEED in VOICE on THREADS.
 const std = @import("std");
 const woof = @import("woof");
 

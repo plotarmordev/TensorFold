@@ -41,8 +41,7 @@ fn panels(out: usize) usize {
 /// Multiply-adds below which a part costs more to hand out than to run.
 const min_part = 16 * 1024;
 
-/// y[r][o] = x[r * x_stride ..][0..in] . W[o] (+ b[o]) (+ res[r][o]) for r < n, rows y_stride apart; res may be y.
-/// Split over the pool by 4-row blocks, or by panels when rows are few: each output sums in the same order either way.
+/// y[r][o] = x[r*x_stride..][0..in] . W[o] (+ b[o]) (+ res[r][o]); split by 4-row blocks or panels, one-thread sums.
 pub fn rows(pool: *Pool, l: Linear, x: []const f32, x_stride: usize, n: usize, y: []f32, y_stride: usize, res: ?[]const f32) void {
     const Job = struct {
         l: Linear,
