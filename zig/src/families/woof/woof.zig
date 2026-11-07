@@ -91,19 +91,22 @@ pub const Model = struct {
         const split = try text.split(a, input);
         var rng = Randn.init(seed);
         var at: usize = 0;
+        var reason: Reason = .stop;
         for (try text.fit(a, if (split.len == 0) &.{input} else split, piece_chars)) |piece| {
             const take = try m.bestTake(a, try text.encode(a, piece), piece.len, voice, &rng);
-            if (take.len > pcm.len - at) return .{ .samples = at, .reason = .length };
-            @memcpy(pcm[at..][0..take.len], take);
-            at += take.len;
+            if (take.pcm.len > pcm.len - at) return .{ .samples = at, .reason = .length };
+            @memcpy(pcm[at..][0..take.pcm.len], take.pcm);
+            at += take.pcm.len;
+            if (take.capped) reason = .length;
             if (!progress.piece(progress.ctx, at)) return .{ .samples = at, .reason = .cancelled };
         }
-        return .{ .samples = at, .reason = .stop };
+        return .{ .samples = at, .reason = reason };
     }
 
-    /// The first take that neither stalls nor runs long, else the best of 1 + redraws by (bad, stall, pace).
-    fn bestTake(m: *Model, a: std.mem.Allocator, ids: []const u32, chars: usize, voice: u32, rng: *Randn) ![]const f32 {
-        var best: ?struct { bad: u2, run: f64, pace: f64, slot: usize, len: usize } = null;
+    /// The first take that neither stalls nor runs long, else the best of 1 + redraws; `capped` when that take filled
+    /// the piece's frames without the end of speech.
+    fn bestTake(m: *Model, a: std.mem.Allocator, ids: []const u32, chars: usize, voice: u32, rng: *Randn) !struct { pcm: []const f32, capped: bool } {
+        var best: ?struct { take: Take, slot: usize, len: usize } = null;
         var slot: usize = 0;
         for (0..1 + redraws) |_| {
             const n = m.speech.generate(m.voices[voice], ids, rng, temperature, end_probability, m.latents);
@@ -112,24 +115,38 @@ pub const Model = struct {
             };
             const wav = m.takes[slot][0 .. n * frame_length];
             try m.decoder.run(a, m.latents[0..n], wav);
-            const run = text.stall(wav, sample_rate);
-            const pace = @as(f64, @floatFromInt(wav.len)) / sample_rate / @as(f64, @floatFromInt(@max(1, chars)));
-            const bad = @as(u2, @intFromBool(run >= stall_seconds)) + @intFromBool(pace > max_seconds_per_char or n >= piece_frames);
-            if (best == null or less(.{ bad, run, pace }, .{ best.?.bad, best.?.run, best.?.pace })) {
-                best = .{ .bad = bad, .run = run, .pace = pace, .slot = slot, .len = wav.len };
+            const take = Take.judge(wav, chars);
+            if (best == null or take.better(best.?.take)) {
+                best = .{ .take = take, .slot = slot, .len = wav.len };
                 slot = 1 - slot;
             }
-            if (bad == 0) break;
+            if (take.bad == 0) break;
         }
-        return m.takes[best.?.slot][0..best.?.len];
+        return .{ .pcm = m.takes[best.?.slot][0..best.?.len], .capped = best.?.take.capped };
     }
 };
 
-fn less(x: struct { u2, f64, f64 }, y: struct { u2, f64, f64 }) bool {
-    if (x[0] != y[0]) return x[0] < y[0];
-    if (x[1] != y[1]) return x[1] < y[1];
-    return x[2] < y[2];
-}
+/// The redraw check on one take: bad counts a stall, then a slow pace or all of the piece's frames used (`capped`).
+const Take = struct {
+    bad: u2,
+    run: f64,
+    pace: f64,
+    capped: bool,
+
+    fn judge(wav: []const f32, chars: usize) Take {
+        const run = text.stall(wav, sample_rate);
+        const pace = @as(f64, @floatFromInt(wav.len)) / sample_rate / @as(f64, @floatFromInt(@max(1, chars)));
+        const capped = wav.len >= piece_frames * frame_length;
+        return .{ .bad = @as(u2, @intFromBool(run >= stall_seconds)) + @intFromBool(pace > max_seconds_per_char or capped), .run = run, .pace = pace, .capped = capped };
+    }
+
+    /// Fewer faults, then the shorter stall, then the quicker pace.
+    fn better(x: Take, y: Take) bool {
+        if (x.bad != y.bad) return x.bad < y.bad;
+        if (x.run != y.run) return x.run < y.run;
+        return x.pace < y.pace;
+    }
+};
 
 fn catalog(a: std.mem.Allocator, io: std.Io, path: []const u8, names: *std.ArrayList([]const u8), voices: *std.ArrayList([]const f32)) !void {
     var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
@@ -155,6 +172,17 @@ fn catalog(a: std.mem.Allocator, io: std.Io, path: []const u8, names: *std.Array
         try names.append(a, name);
         try voices.append(a, v);
     }
+}
+
+test "take: all of a piece's frames is capped and redrawn; an end of speech within them completes" {
+    var tone: [piece_frames * frame_length]f32 = undefined;
+    for (&tone, 0..) |*x, i| x.* = 0.1 * @sin(@as(f32, @floatFromInt(i)) * 0.05);
+    // at 400 characters both paces are quick, so only the cap tells the takes apart
+    const full = Take.judge(&tone, 400);
+    try std.testing.expect(full.capped and full.bad == 1);
+    const ended = Take.judge(tone[0 .. (piece_frames - 1) * frame_length], 400);
+    try std.testing.expect(!ended.capped and ended.bad == 0);
+    try std.testing.expect(ended.better(full) and !full.better(ended));
 }
 
 test {
