@@ -1,5 +1,4 @@
-//! Woof's text side over Unicode code points: its character ids, its sentence and clause pieces (textsplit.py) and
-//! the stall measure its redraw check uses.
+//! Woof's text side over code points: character ids, sentence and clause pieces (textsplit.py), and the stall measure.
 const std = @import("std");
 
 const ascii = " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?;:'\"-()&/%$€£@#+=*_<>[]";
@@ -47,8 +46,7 @@ fn strip(s: []const u32) []const u32 {
     return s[lo..hi];
 }
 
-/// Pieces of `text`, owned by `a`: each sentence, and a sentence over clause_max cut at clauses merged greedily, then
-/// once before a conjunction near the middle of a piece still too long.
+/// Pieces of `text`: sentences, and one over clause_max cut at clauses merged greedily, then a conjunction.
 pub fn split(a: std.mem.Allocator, text: []const u32) ![]const []const u32 {
     var out: std.ArrayList([]const u32) = .empty;
     const t = strip(text);
@@ -130,8 +128,7 @@ fn conjunctionAt(s: []const u32, at: usize) bool {
     return false;
 }
 
-/// `pieces`, each one over `max` characters cut at its last space within `max`, else at `max`: a run the splitter
-/// cannot cut still fits one piece's frames.
+/// `pieces`, each over `max` characters cut at its last space within `max`, else at `max`: an uncuttable run fits.
 pub fn fit(a: std.mem.Allocator, pieces: []const []const u32, max: usize) ![]const []const u32 {
     var out: std.ArrayList([]const u32) = .empty;
     for (pieces) |piece| {

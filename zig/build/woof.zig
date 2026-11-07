@@ -23,8 +23,7 @@ pub fn addNative(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
     native.addImport("woof", module(b, target, optimize, core_module));
 }
 
-/// The family's own tests under `zig build test`, and its parity/bench programs in zig-out/bin.
-/// `core` here is the real root.zig (the host build owns no tensorfold module the shim could read).
+/// The family's tests under `zig build test` and its parity/bench programs in zig-out/bin; `core` is the real root.zig.
 pub fn targets(b: *std.Build, test_step: *std.Build.Step) void {
     const host = b.graph.host;
     const tokenizer = b.createModule(.{ .root_source_file = b.path("zig/src/core/tokenizer/tokenizer.zig"), .target = host, .optimize = .ReleaseSafe, .link_libc = true });

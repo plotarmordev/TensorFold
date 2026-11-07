@@ -1,6 +1,4 @@
-//! Woof over a speech bench corpus (JSON lines with "id" and "text"), as Woof's own bench measures its numpy runtime:
-//! one take per item at SEED, first audio (the first piece spoken), total time, audio length and peak RSS. Writes
-//! OUT/<id>.wav (16-bit) for scoring. Usage: tf-woof-bench WOOF_DIR CORPUS OUT [SEED]
+//! Woof over a speech bench corpus (JSON lines with "id" and "text"): one take per item at SEED, timings, OUT/<id>.wav.
 const std = @import("std");
 const woof = @import("woof");
 

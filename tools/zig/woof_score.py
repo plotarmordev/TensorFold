@@ -1,7 +1,4 @@
-"""Word error rate and speaker similarity of take folders (RUN/<id>.wav, as tf-woof-bench writes them) over the bench
-corpus: Whisper large-v3's transcript against each text through Whisper's English normalizer (word-level edit
-distance), and the ECAPA (spkrec-ecapa-voxceleb, 16 kHz) cosine of each take to the mean of the reference clips.
-Usage: woof_score.py OUT.json RUN [RUN ...] --corpus FILE --whisper DIR --ecapa DIR --ref WAV [--ref WAV ...]"""
+"""Word error rate and speaker similarity of take folders: Whisper edit distance and ECAPA cosine."""
 import argparse, json
 from pathlib import Path
 import numpy as np

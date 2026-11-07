@@ -1,5 +1,4 @@
-//! Woof's dense arithmetic on the CPU. Weights are packed in panels of 16 outputs so each step broadcasts one input
-//! value against a vector of weights: four rows a panel, or one row four panels, accumulate in registers.
+//! Woof's dense CPU arithmetic: weights in panels of 16 outputs, four rows a panel or one row four panels.
 const std = @import("std");
 
 const lanes = 16;
@@ -38,8 +37,7 @@ fn panels(out: usize) usize {
     return std.math.divCeil(usize, out, lanes) catch unreachable;
 }
 
-/// y[r][o] = x[r * x_stride ..][0..in] . W[o] (+ b[o]) (+ res[r][o]) for r < n; y and res rows are y_stride apart.
-/// res may be y: each output reads its residual just before it is written.
+/// y[r][o] = x[r * x_stride ..][0..in] . W[o] (+ b[o]) (+ res[r][o]) for r < n, rows y_stride apart; res may be y.
 pub fn rows(l: Linear, x: []const f32, x_stride: usize, n: usize, y: []f32, y_stride: usize, res: ?[]const f32) void {
     var r: usize = 0;
     while (r + 4 <= n) : (r += 4) for (0..panels(l.out)) |p| tile(4, 1, l, x, x_stride, r, p, y, y_stride, res);

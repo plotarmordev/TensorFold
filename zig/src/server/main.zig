@@ -192,7 +192,7 @@ fn forgetFail(env: *const std.process.Environ.Map) u32 {
     return std.fmt.parseInt(u32, std.mem.trim(u8, v, " "), 10) catch 0;
 }
 
-/// A speech-only checkpoint ships no tokenizer.json; ``none.text()`` refuses every text call so routes see an engine-side refusal instead of a load failure.
+/// A speech-only checkpoint ships no tokenizer.json; ``none.text()`` refuses every text call, so routes see a refusal.
 const LoadedText = union(enum) {
     hf: *hf_text.HfText,
     none: NoText,

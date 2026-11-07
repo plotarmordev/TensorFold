@@ -1,5 +1,4 @@
-//! torch.manual_seed(seed); torch.randn(n) on the CPU, as Woof's runtime draws its flow noise: mt19937 24-bit
-//! uniforms, then Box-Muller over each 16: out[j] = r cos, out[j + 8] = r sin, with u1 = 1 - u[j], u2 = u[j + 8].
+//! torch.manual_seed(seed); torch.randn(n) on the CPU: mt19937 24-bit uniforms, then Box-Muller over each 16.
 const std = @import("std");
 
 pub const Randn = struct {

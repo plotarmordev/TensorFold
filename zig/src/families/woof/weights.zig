@@ -1,5 +1,4 @@
-//! Woof's checkpoint tensors as fp32, dequantized once at load the way its numpy runtime does: speech linears are
-//! int8 rows times a per-row scale; decoder tensors are fp16 or int8 in groups of 32 along one axis.
+//! Checkpoint tensors as fp32, dequantized at load: speech linears int8 rows, per-row scale; decoder fp16 or int8.
 const std = @import("std");
 const npy = @import("core").npy;
 const Npz = @import("npz.zig").Npz;
@@ -44,8 +43,7 @@ pub const Loader = struct {
         return l.floats(out, name ++ ".b", args) catch |e| if (e == error.MissingTensor) null else e;
     }
 
-    /// A decoder tensor of `shape` stored int8 in groups of 32 along `axis` (q8 (shape[axis], rest), s (shape[axis],
-    /// groups)), as fp32 laid out (shape[axis], rest...) in l.tmp; the caller frees it.
+    /// A decoder tensor of `shape` stored int8 in groups of 32 along `axis`, as fp32 in l.tmp; the caller frees it.
     pub fn grouped(l: *Loader, shape: []const usize, axis: usize, comptime name: []const u8, args: anytype) ![]f32 {
         var n: usize = 1;
         for (shape) |d| n *= d;

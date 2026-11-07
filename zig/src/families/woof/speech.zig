@@ -1,5 +1,4 @@
-//! Woof's speech model: an 8-layer 448-wide causal transformer over a voice prefix, the text and BOS, then one
-//! latent frame a step from a 4-block one-step flow head conditioned on the last row; a logit ends the piece.
+//! Woof's speech model: 8-layer 448-wide causal transformer over voice prefix, text and BOS, one latent frame a step.
 const std = @import("std");
 const ops = @import("ops.zig");
 const Loader = @import("weights.zig").Loader;

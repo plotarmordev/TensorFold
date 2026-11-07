@@ -1,8 +1,4 @@
-//! Woof against its numpy runtime: speaks each line of TEXTS (seed SEED) and compares the samples with
-//! REF/<n>.f32 from tools/zig/woof_reference.py. The first second must agree within 2e-3 and the length within 4 frames.
-//! Past that the speech loop is chaotic: fp32 summation order alone (numpy against itself with its weights moved by
-//! 1e-7) can change a later frame by 1 and a piece's length by a frame, so no fixed seed gives equal samples there.
-//! Usage: tf-woof-parity WOOF_DIR TEXTS REF [SEED]
+//! Woof against its numpy runtime: speaks TEXTS (seed SEED) and compares with REF/<n>.f32 within 2e-3 for first second.
 const std = @import("std");
 const woof = @import("woof");
 

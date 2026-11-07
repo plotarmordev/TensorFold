@@ -1,6 +1,4 @@
-"""Woof's numpy runtime on the parity texts, for zig-out/bin/tf-woof-parity. Writes OUT/<n>.f32 (raw float32 mono 24 kHz)
-for each line of TEXTS, seeded <seed>, through the same pieces and redraw check the engine runs; the normalizer is off,
-as the engine speaks text as given. Usage: woof_reference.py WOOF_DIR TEXTS OUT [--seed N]"""
+"""Woof's numpy runtime for tf-woof-parity: writes OUT/<n>.f32 per TEXTS line, seeded, normalizer off."""
 import argparse, sys
 from pathlib import Path
 

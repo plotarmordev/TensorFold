@@ -1,5 +1,4 @@
-//! Underdog Woof (underdog.ai, Underdog Non-Commercial License 1.0): English text to 24 kHz speech on the CPU from
-//! its int8 checkpoint, with its voice prefixes, sentence pieces and redraw of a take that stalls or runs long.
+//! Underdog Woof (Underdog Non-Commercial License 1.0): English text to 24 kHz speech on the CPU from int8 checkpoint.
 const std = @import("std");
 const npy = @import("core").npy;
 const Npz = @import("npz.zig").Npz;
@@ -24,8 +23,7 @@ comptime {
 }
 const builtin_voices = [_][]const u8{ "juno", "mira" };
 
-/// The runtime's defaults: flow temperature, end probability, and the redraw check (seconds a character, longest
-/// mid-piece silence, extra takes).
+/// Runtime defaults: flow temperature, end probability, and the redraw check (seconds a character, silence, takes).
 const temperature: f32 = 0.5;
 const end_probability = 0.9;
 const max_seconds_per_char = 0.095;
@@ -103,8 +101,7 @@ pub const Model = struct {
         return .{ .samples = at, .reason = reason };
     }
 
-    /// The first take that neither stalls nor runs long, else the best of 1 + redraws; `capped` when that take filled
-    /// the piece's frames without the end of speech.
+    /// First take that neither stalls nor runs long, else the best of 1 + redraws; `capped` when it filled the frames.
     fn bestTake(m: *Model, a: std.mem.Allocator, ids: []const u32, chars: usize, voice: u32, rng: *Randn) !struct { pcm: []const f32, capped: bool } {
         var best: ?struct { take: Take, slot: usize, len: usize } = null;
         var slot: usize = 0;

@@ -1,5 +1,4 @@
-//! Woof's audio decoder (adapted from Kyutai's Mimi): a 2-layer windowed transformer over the latents, then a causal
-//! SEANet that upsamples 25 Hz to 24 kHz, run 8 latent frames at a time with each convolution's state carried over.
+//! Woof's audio decoder (Kyutai Mimi): a 2-layer windowed transformer over latents, then causal SEANet 25 Hz to 24 kHz.
 const std = @import("std");
 const ops = @import("ops.zig");
 const Loader = @import("weights.zig").Loader;
@@ -13,8 +12,7 @@ const window = 250;
 const chunk = 8;
 const eps = 1e-5;
 
-/// A pack source over a (cout, cin, k) conv weight. Conv: output o, input t * cin + i (its window row t).
-/// ConvT: output t * cout + o (tap t), input i.
+/// Pack source over a (cout, cin, k) conv weight: Conv output o, input t * cin + i; ConvT output t * cout + o, input i.
 const Taps = struct {
     raw: []const f32,
     cout: usize,

@@ -122,8 +122,7 @@ pub fn configInt(a: Allocator, io: std.Io, dir: []const u8, key: []const u8) ?u6
     return if (v == .integer and v.integer >= 0) @intCast(v.integer) else null;
 }
 
-/// config.json's model_type as the engine registry names it (checkpoint_config.servedType); a checkpoint without one
-/// that ships Woof's weights is "woof", else "unknown".
+/// config.json's model_type as the registry names it; without one, Woof's weights make it "woof", else "unknown".
 pub fn modelType(a: Allocator, io: std.Io, dir: []const u8) []const u8 {
     const text = @import("checkpoint_config").optional(a, io, dir) orelse {
         // the family's weights_file; Woof's HF download ships no config.json
