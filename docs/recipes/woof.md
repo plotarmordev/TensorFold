@@ -75,8 +75,9 @@ piece's length by a frame. The long text's third clause shows the same drift bet
 
 ## Mac figures
 
-**Headline: 1.4x faster than running Woof the normal way on the same Mac (Juno; 1.25x for Mira), with the same
-audio.** It rests on one Apple M5 Ultra (256 GB, 12 performance cores), the 24-text English bench
+**Headline: 1.4x faster than running Woof the normal way on the same Mac (Juno; 1.25x for Mira), with the audio the
+one-thread engine makes.** Threads change no sample; against numpy the audio drifts as the parity section says, with
+equal word errors. It rests on one Apple M5 Ultra (256 GB, 12 performance cores), the 24-text English bench
 (`zig/tests/fixtures/woof/bench-en.jsonl`, Drama's `drama-bench-en-v1`: 8 short, 8 medium, 8 long), seed 0, one
 take each, Juno and Mira, run back to back on an idle machine. "The normal way" is Woof's own `Woof()` call from its
 repo (numpy 2.5 on Apple's Accelerate, default threads, normalizer on; it changes none of the 24 texts). The lead comes

@@ -62,6 +62,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("{s}: first audio {d:.3} s, total {d:.3} s, audio {d:.2} s\n", .{ item.value.id, first.seconds.?, took, audio });
         try firsts.append(gpa, first.seconds.?);
     }
+    if (firsts.items.len == 0) return usage();
     const busy = (cpuSeconds() - cpu_start) / total_s;
     var usage_: std.c.rusage = undefined;
     _ = std.c.getrusage(std.c.rusage.SELF, &usage_);

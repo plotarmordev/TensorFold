@@ -21,16 +21,29 @@ pub const Pool = struct {
 
     /// `threads` in all, the caller's included: 0 picks the performance cores.
     pub fn init(p: *Pool, a: std.mem.Allocator, io: std.Io, threads: usize) !void {
+        return p.start(a, io, threads, std.Thread.spawn);
+    }
+
+    /// init with `spawn` in place of std.Thread.spawn, so a test can fail one; the workers already started then stop.
+    fn start(p: *Pool, a: std.mem.Allocator, io: std.Io, threads: usize, comptime spawn: anytype) !void {
         const n = @min(max_threads, if (threads == 0) performanceCores() else threads);
         p.* = .{ .io = io, .threads = try a.alloc(std.Thread, n - 1) };
-        for (p.threads, 1..) |*t, part| t.* = try std.Thread.spawn(.{}, work, .{ p, part });
+        errdefer a.free(p.threads);
+        for (p.threads, 1..) |*t, part| t.* = spawn(.{}, work, .{ p, part }) catch |e| {
+            p.stopAll(p.threads[0 .. part - 1]);
+            return e;
+        };
     }
 
     pub fn deinit(p: *Pool, a: std.mem.Allocator) void {
+        p.stopAll(p.threads);
+        a.free(p.threads);
+    }
+
+    fn stopAll(p: *Pool, started: []const std.Thread) void {
         p.stop = true;
         p.dispatch();
-        for (p.threads) |t| t.join();
-        a.free(p.threads);
+        for (started) |t| t.join();
     }
 
     pub fn size(p: *const Pool) usize {
@@ -105,4 +118,24 @@ test "pool: every part runs once per job, over back-to-back jobs and after the w
     p.each(3, &hits, Add.add);
     for (hits[0..3]) |h| try std.testing.expectEqual(1001, h.load(.monotonic));
     try std.testing.expectEqual(1000, hits[3].load(.monotonic));
+}
+
+test "pool: a failed spawn stops and joins the workers already started, and frees their array" {
+    const Fake = struct {
+        var calls: usize = 0;
+        var live: std.atomic.Value(u32) = .init(0);
+        fn spawn(config: std.Thread.SpawnConfig, comptime _: anytype, args: struct { *Pool, usize }) !std.Thread {
+            calls += 1;
+            if (calls == 3) return error.SystemResources;
+            _ = live.fetchAdd(1, .seq_cst);
+            return std.Thread.spawn(config, run, args);
+        }
+        fn run(p: *Pool, part: usize) void {
+            Pool.work(p, part);
+            _ = live.fetchSub(1, .seq_cst);
+        }
+    };
+    var p: Pool = undefined;
+    try std.testing.expectError(error.SystemResources, p.start(std.testing.allocator, std.testing.io, 4, Fake.spawn));
+    try std.testing.expectEqual(0, Fake.live.load(.seq_cst));
 }
