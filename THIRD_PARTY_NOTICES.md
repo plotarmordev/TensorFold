@@ -327,6 +327,18 @@ and its `codec.pth` are under the Fish Audio Community License Agreement v1.0: r
 commercial use below its revenue threshold, and no Hosted Service without a separate license from Fish Audio. Users
 obtain the checkpoint and accept that license themselves.
 
+## Underdog Woof
+
+`zig/src/families/woof/` implements the arithmetic of Underdog Woof's numpy runtime (`underdog_woof/runtime.py` and
+`textsplit.py`, Copyright 2026 Conway) without including its source; its torch-compatible noise stream repeats
+PyTorch's CPU `manual_seed` + `randn` (BSD-3-Clause). Woof's audio decoder is adapted from Kyutai's
+[Mimi](https://huggingface.co/kyutai/mimi) (CC-BY 4.0).
+
+TensorFold ships no Woof weights. [Underdog Woof](https://huggingface.co/ConwayResearch/Underdog-Woof) is under the
+Underdog Non-Commercial License 1.0: non-commercial use with credit ("Underdog Woof" or "underdog.ai" with published
+audio, "Voice by Underdog Woof" in an app that plays it), commercial use only under a licence from license@conway.tech.
+Users obtain the checkpoint and accept that license themselves.
+
 ## DeepSeek-V4.1 shared checkpoint forms
 
 The DeepSeek-V4.1 config and checkpoint planning combine @jayleaton’s chain (#727) and
