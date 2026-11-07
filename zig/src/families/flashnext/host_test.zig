@@ -111,6 +111,24 @@ test "FlashNext derived dimensions retain independent HC attention and recurrenc
     try std.testing.expectEqual(@as(u32, 127), c.eos[0]);
 }
 
+test "Qwen 4 Flash tier: qwen4_moe admits routed experts and a flat MTP head of full attention" {
+    const a = std.testing.allocator;
+    const tagged = try std.mem.replaceOwned(u8, a, toy, "\"model_type\":\"qwen4_exp\"", "\"model_type\":\"qwen4_moe\",\"mtp_num_hidden_layers\":1");
+    defer a.free(tagged);
+    var c = try family.config.parse(a, tagged);
+    defer c.deinit();
+    try std.testing.expectEqual(@as(usize, 8), c.experts);
+    try std.testing.expectEqual(@as(usize, 2), c.topk);
+    try std.testing.expectEqual(@as(usize, 1), c.mtp.layers);
+    try std.testing.expectEqual(family.config.Kind.sparse_attention, c.mtp.kinds[0]);
+    const listed = try std.mem.replaceOwned(u8, a, tagged, "\"mtp_num_hidden_layers\":1", "\"mtp\":{\"num_hidden_layers\":1,\"layer_types\":[\"full_attention\",\"linear_attention\"]}");
+    defer a.free(listed);
+    try std.testing.expectError(error.InvalidFlashMtp, family.config.parse(a, listed));
+    const dense = try std.mem.replaceOwned(u8, a, toy, "\"model_type\":\"qwen4_exp\"", "\"model_type\":\"qwen4\"");
+    defer a.free(dense);
+    try std.testing.expectError(error.NotFlashNext, family.config.parse(a, dense));
+}
+
 test "module quantization preserves false true and dictionary-default override semantics" {
     var c = try family.config.parse(std.testing.allocator, toy);
     defer c.deinit();

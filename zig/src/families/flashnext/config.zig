@@ -167,14 +167,14 @@ fn mtpConfig(text: std.json.ObjectMap) !Mtp {
     if (o.get("mtp_use_hidden_state_from_layer")) |v| {
         if (v != .null) m.source_layer = try integer(v);
     }
-    if (m.layers > 0) {
-        const types = o.get("layer_types") orelse return error.InvalidFlashMtp;
+    // Qwen3.5's flat `mtp_num_hidden_layers` names no layer types; its head layers are full attention (Mtp's default).
+    if (m.layers > 0) if (o.get("layer_types")) |types| {
         if (types != .array or types.array.items.len != m.layers) return error.InvalidFlashMtp;
         for (types.array.items, 0..) |v, i| {
             if (v != .string) return error.InvalidFlashMtp;
             m.kinds[i] = if (std.mem.eql(u8, v.string, "linear_attention")) .linear_attention else if (std.mem.eql(u8, v.string, "full_attention") or std.mem.eql(u8, v.string, "sparse_attention")) .sparse_attention else return error.InvalidFlashMtp;
         }
-    }
+    };
     return m;
 }
 
@@ -197,7 +197,8 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Config {
     const root = try object(parsed.value);
     const text = if (root.get("text_config")) |v| if (v == .object and v.object.count() > 0) v.object else root else root;
     const tag = root.get("model_type") orelse text.get("model_type") orelse return error.MissingFlashField;
-    if (tag != .string or !std.mem.eql(u8, tag.string, "qwen4_exp")) return error.NotFlashNext;
+    // Qwen 4's Flash MoE tier is expected under `qwen4_moe`, as Qwen3.5's was under `qwen3_5_moe`.
+    if (tag != .string or (!std.mem.eql(u8, tag.string, "qwen4_exp") and !std.mem.eql(u8, tag.string, "qwen4_moe"))) return error.NotFlashNext;
     const quant = try quantBlock(root, text);
     if (quant.get("quant_method")) |v| if (v != .null and (v != .string or (!std.mem.eql(u8, v.string, "mlx") and !std.mem.eql(u8, v.string, "affine")))) return error.UnsupportedAffineMode;
     const rope = if (text.get("rope_parameters")) |v| if (v == .null) std.json.ObjectMap.empty else try object(v) else std.json.ObjectMap.empty;
