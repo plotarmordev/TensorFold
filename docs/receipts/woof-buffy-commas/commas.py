@@ -1,7 +1,8 @@
-"""Buffy's text pass for Woof, rebuilt from its README's rules: a period ends each line, and every stretch between
-punctuation marks over LIMIT gets a comma, so Woof's splitter never falls back to cutting before a conjunction.
+"""Buffy's text pass for Woof, rebuilt from its README's rules: each non-blank line is its own unit ending in
+punctuation, and every stretch between punctuation marks over LIMIT gets a comma, so Woof's splitter never falls back
+to cutting before a conjunction.
 
-    python3 commas.py CORPUS OUT    # JSON lines with id and text; prints each item's stretches over CLAUSE_MAX
+    python3 commas.py CORPUS OUT    # JSON lines with id and text; a line a unit, ID.1, ID.2... when there are several
 """
 import argparse
 import json
@@ -23,17 +24,16 @@ RELATIVES = {"which", "whom", "whose"}
 NUMBERS = set("""zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen
     seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand million billion
     point oh""".split())
+MONEY = {"dollar", "dollars", "cent", "cents", "euro", "euros", "pound", "pounds", "pence", "penny"}
+AMOUNT = NUMBERS | MONEY
 NO_COMMA_AFTER = PREPOSITIONS | {"a", "an", "the", "this", "that", "these", "those", "my", "your", "his", "her", "its",
                                  "our", "their", "some", "any", "no", "every", "each", "of"}
 
 
-def end_lines(text):
-    """The non-blank lines joined, each ending in punctuation (a closing quote or bracket may follow it)."""
-    out = []
-    for line in filter(None, (" ".join(raw.split()) for raw in text.splitlines())):
-        core = line.rstrip(CLOSERS)
-        out.append(line if core.endswith(LINE_END) else core + "." + line[len(core):])
-    return " ".join(out)
+def end_line(line):
+    """`line` ending in punctuation (a closing quote or bracket may follow it)."""
+    core = line.rstrip(CLOSERS)
+    return line if core.endswith(LINE_END) else core + "." + line[len(core):]
 
 
 def cut(s):
@@ -44,8 +44,9 @@ def cut(s):
         space = at - 1
         if prev in NO_COMMA_AFTER or min(space, len(s) - space) < MIN_PART:
             continue
-        if word in NUMBERS and prev in NUMBERS | {"and"} or word == "and" and prev in NUMBERS and after in NUMBERS:
-            continue  # inside a spoken number: "two hundred and forty three"
+        if word in NUMBERS and prev in AMOUNT | {"and"} or word in MONEY and prev in NUMBERS \
+                or word == "and" and prev in AMOUNT and after in NUMBERS:
+            continue  # inside a spoken amount: "two hundred and forty three dollars and fifty cents"
         if word in JOINERS and not (word in RELATIVES and prev in PREPOSITIONS):
             penalty = 0
         elif word in PREPOSITIONS:
@@ -64,13 +65,17 @@ def fit(s):
     return s if at is None else fit(s[:at]) + ", " + fit(s[at + 1:])
 
 
-def preprocess(text):
-    text = end_lines(text)
+def fit_stretches(line):
     out, pos = [], 0
-    for m in MARK.finditer(text):
-        out += [fit(text[pos:m.start()]), m.group()]
+    for m in MARK.finditer(line):
+        out += [fit(line[pos:m.start()]), m.group()]
         pos = m.end()
-    return "".join(out) + fit(text[pos:])
+    return "".join(out) + fit(line[pos:])
+
+
+def preprocess(text):
+    """One unit a non-blank line, each spoken in its own engine call so a line break always ends a piece."""
+    return [fit_stretches(end_line(line)) for line in (" ".join(raw.split()) for raw in text.splitlines()) if line]
 
 
 def long_stretches(text):
@@ -86,7 +91,9 @@ if __name__ == "__main__":
     lines = []
     for line in args.corpus.read_text(encoding="utf-8").splitlines():
         item = json.loads(line)
-        text = preprocess(item["text"])
-        print(f"{item['id']}: {long_stretches(item['text'])} -> {long_stretches(text)} over {CLAUSE_MAX}: {text}")
-        lines.append(json.dumps({**item, "text": text}, ensure_ascii=False))
+        units = preprocess(item["text"])
+        print(f"{item['id']}: {long_stretches(item['text'])} -> {sum(map(long_stretches, units))} over {CLAUSE_MAX}")
+        for k, unit in enumerate(units, 1):
+            unit_id = item["id"] if len(units) == 1 else f"{item['id']}.{k}"
+            lines.append(json.dumps({**item, "id": unit_id, "text": unit}, ensure_ascii=False))
     args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
