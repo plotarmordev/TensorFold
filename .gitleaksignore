@@ -1,0 +1,4 @@
+# sha256 digests of test fixtures, not secrets
+457a7517b76271ee43f925a2c3a31f19252f4e0e:zig/tests/cuda/drama_backbone_trace.zig:generic-api-key:42
+457a7517b76271ee43f925a2c3a31f19252f4e0e:zig/src/server/drama_voice_fixture.json:generic-api-key:1
+457a7517b76271ee43f925a2c3a31f19252f4e0e:zig/tests/cuda/drama_backbone_replay.zig:generic-api-key:52
