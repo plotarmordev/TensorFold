@@ -1,7 +1,6 @@
 //! Woof's per-frame arithmetic workers: part 0 on the caller's thread, the rest on workers that sleep on a futex.
 const std = @import("std");
 const builtin = @import("builtin");
-const gpu = @import("gpu.zig");
 
 const max_threads = 32;
 /// Spins (about a millisecond) before an idle worker sleeps.
@@ -16,8 +15,6 @@ pub const Pool = struct {
     pending: std.atomic.Value(u32) = .init(0),
     sleepers: std.atomic.Value(u32) = .init(0),
     stop: bool = false,
-    /// Where rows of `gpu.min_rows` or more run, when set.
-    gpu: ?gpu.Handle = null,
 
     const Job = struct { ctx: *const anyopaque, run: *const fn (ctx: *const anyopaque, part: usize, parts: usize) void, parts: usize };
 

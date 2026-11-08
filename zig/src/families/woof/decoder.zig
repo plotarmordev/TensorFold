@@ -10,8 +10,7 @@ const dim = 512;
 const heads = 8;
 const hd = 64;
 const window = 250;
-/// Latent frames a SEANet pass takes: on the GPU, rows enough to pay for its round trips.
-const chunk = if (@import("gpu.zig").enabled) 32 else 8;
+const chunk = 8;
 const eps = 1e-5;
 
 /// Pack source over a (cout, cin, k) conv weight: Conv output o, input t * cin + i; ConvT output t * cout + o, input i.

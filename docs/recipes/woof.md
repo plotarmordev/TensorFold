@@ -1,8 +1,8 @@
 # Underdog Woof
 
 This page describes the native engine. `woof` serves [Underdog Woof](https://huggingface.co/ConwayResearch/Underdog-Woof),
-a small English text-to-speech model with two voices (Juno and Mira), on the Mac at 24 kHz. It is a port of Woof's numpy
-runtime, not a build on Drama 3: it shares only the server's `/v1/audio/speech` route.
+a small English text-to-speech model with two voices (Juno and Mira), on the Mac's CPU at 24 kHz. It is a port of
+Woof's numpy runtime, not a build on Drama 3: it shares only the server's `/v1/audio/speech` route.
 
 Underdog Woof is by Underdog ([underdog.ai](https://underdog.ai)), under the
 [Underdog Non-Commercial License 1.0](https://huggingface.co/ConwayResearch/Underdog-Woof/blob/main/LICENSE): free for
@@ -27,9 +27,6 @@ hf download ConwayResearch/Underdog-Woof --revision be702960539777fc3f698e543352
 - Decoder: a 2-layer transformer and a SEANet stack that upsample each latent frame to 960 samples.
 - Weights: the speech linears int8 with a scale per row; the decoder's int8 in groups of 32. Both are dequantized once
   at load and packed into 16-output panels for the fp32 matvecs.
-- GPU: the weights and each request's activations live in Metal shared buffers, so every matmul of 32 rows or more (the
-  prompt, the decoder's transformer and its SEANet, 32 frames a pass) runs on the GPU in place; the per-frame speech
-  loop stays on the CPU's performance cores.
 
 ## Serve
 
@@ -125,8 +122,3 @@ On one thread Accelerate's matvecs beat the engine's NEON panels 2.3x per frame.
 persistent pool by output panels (by 4-row blocks for the prompt and decoder), the speech attention by head and the
 decoder's ELU and GELU by runs, so every output sums in the same order as on one thread. Past 6 threads the speech model
 stops scaling; each of its frames is about 50 small jobs.
-
-With the batched matmuls on the GPU, back to back against the CPU-only build on the same M5 Ultra (seed 0, two runs each,
-while another process kept the GPU busy): Juno 0.0451 and 0.0474 to 0.0411 and 0.0446, Mira 0.0628 and 0.0633 to
-0.0543 and 0.0541, Mira's first audio p50 0.27 s to 0.25 s; parity on the three texts stays within 5.1e-4. The
-per-frame speech loop, about 1.1 ms of each frame's 1.6 ms, is still the CPU's.

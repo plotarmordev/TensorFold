@@ -1,4 +1,4 @@
-//! Underdog Woof (Underdog Non-Commercial License 1.0): English text to 24 kHz speech from int8 checkpoint.
+//! Underdog Woof (Underdog Non-Commercial License 1.0): English text to 24 kHz speech on the CPU from int8 checkpoint.
 const std = @import("std");
 const npy = @import("core").npy;
 const Npz = @import("npz.zig").Npz;
@@ -9,7 +9,6 @@ const speech = @import("speech.zig");
 const Speech = speech.Speech;
 const Decoder = @import("decoder.zig").Decoder;
 const Pool = @import("pool.zig").Pool;
-const gpu = @import("gpu.zig");
 
 const weights_file = "woof_int8.npz";
 pub const sample_rate: u32 = 24000;
@@ -42,7 +41,6 @@ pub const Model = struct {
     speech: Speech,
     decoder: Decoder,
     pool: Pool,
-    gpu: gpu.Handle,
     mean: []const f32,
     std: []const f32,
     voice_names: []const []const u8,
@@ -54,9 +52,7 @@ pub const Model = struct {
     pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, voices_dir: ?[]const u8, threads: usize) !*Model {
         const m = try gpa.create(Model);
         errdefer gpa.destroy(m);
-        const g: gpu.Handle = if (gpu.enabled) try gpu.Gpu.init(gpa) else {};
-        errdefer if (gpu.enabled) g.deinit();
-        m.* = .{ .arena = .init(gpu.heap(gpa, g)), .gpa = gpa, .gpu = g, .speech = undefined, .decoder = undefined, .pool = undefined, .mean = &.{}, .std = &.{}, .voice_names = &.{}, .voices = &.{}, .latents = &.{}, .takes = undefined };
+        m.* = .{ .arena = .init(gpa), .gpa = gpa, .speech = undefined, .decoder = undefined, .pool = undefined, .mean = &.{}, .std = &.{}, .voice_names = &.{}, .voices = &.{}, .latents = &.{}, .takes = undefined };
         errdefer m.arena.deinit();
         const a = m.arena.allocator();
         const path = try std.fs.path.join(gpa, &.{ dir, weights_file });
@@ -80,20 +76,18 @@ pub const Model = struct {
         m.latents = try a.alloc([speech.latent]f32, piece_frames);
         for (&m.takes) |*t| t.* = try a.alloc(f32, piece_frames * frame_length);
         try m.pool.init(a, io, threads);
-        if (gpu.enabled) m.pool.gpu = g;
         return m;
     }
 
     pub fn deinit(m: *Model) void {
         m.pool.deinit(m.arena.allocator());
         m.arena.deinit();
-        if (gpu.enabled) m.gpu.deinit();
         m.gpa.destroy(m);
     }
 
     /// Speaks `input` (code points) in `voice` into pcm, a piece at a time; the seed fixes every draw.
     pub fn speak(m: *Model, input: []const u32, voice: u32, seed: u64, pcm: []f32, progress: Progress) !Spoken {
-        var scratch = std.heap.ArenaAllocator.init(gpu.heap(m.gpa, m.gpu));
+        var scratch = std.heap.ArenaAllocator.init(m.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
         const split = try text.split(a, input);
@@ -232,5 +226,4 @@ test {
     _ = @import("text.zig");
     _ = @import("ops.zig");
     _ = @import("pool.zig");
-    if (gpu.enabled) _ = @import("gpu.zig");
 }
