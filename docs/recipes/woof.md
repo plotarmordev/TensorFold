@@ -3,6 +3,7 @@
 This page describes the native engine. `woof` serves [Underdog Woof](https://huggingface.co/ConwayResearch/Underdog-Woof),
 a small English text-to-speech model with two voices (Juno and Mira), on the Mac's CPU at 24 kHz. It is a port of
 Woof's numpy runtime, not a build on Drama 3: it shares only the server's `/v1/audio/speech` route.
+The family's upstream proposal and gate are [ashhart/TensorFold#2504](https://github.com/ashhart/TensorFold/issues/2504).
 
 Underdog Woof is by Underdog ([underdog.ai](https://underdog.ai)), under the
 [Underdog Non-Commercial License 1.0](https://huggingface.co/ConwayResearch/Underdog-Woof/blob/main/LICENSE): free for
