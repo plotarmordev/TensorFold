@@ -1,0 +1,24 @@
+OK  Ornith-1.5-122B-MLX-4bit/assets/ornith_122b_eval.png 1090967
+OK  Ornith-1.5-122B-MLX-4bit/assets/ornith_logo.png 962441
+OK  Ornith-1.5-122B-MLX-4bit/model-00001-of-00014.safetensors 5172126621
+OK  Ornith-1.5-122B-MLX-4bit/model-00002-of-00014.safetensors 5201327902
+OK  Ornith-1.5-122B-MLX-4bit/model-00003-of-00014.safetensors 5150926576
+OK  Ornith-1.5-122B-MLX-4bit/model-00004-of-00014.safetensors 5201328136
+OK  Ornith-1.5-122B-MLX-4bit/model-00005-of-00014.safetensors 5201328104
+OK  Ornith-1.5-122B-MLX-4bit/model-00006-of-00014.safetensors 5145298568
+OK  Ornith-1.5-122B-MLX-4bit/model-00007-of-00014.safetensors 5201328160
+OK  Ornith-1.5-122B-MLX-4bit/model-00008-of-00014.safetensors 5201328072
+OK  Ornith-1.5-122B-MLX-4bit/model-00009-of-00014.safetensors 5145298550
+OK  Ornith-1.5-122B-MLX-4bit/model-00010-of-00014.safetensors 5201328156
+OK  Ornith-1.5-122B-MLX-4bit/model-00011-of-00014.safetensors 5201328064
+OK  Ornith-1.5-122B-MLX-4bit/model-00012-of-00014.safetensors 5145298572
+OK  Ornith-1.5-122B-MLX-4bit/model-00013-of-00014.safetensors 5201328180
+OK  Ornith-1.5-122B-MLX-4bit/model-00014-of-00014.safetensors 1340387394
+OK  Ornith-1.5-122B-MLX-4bit/model-vision.safetensors 902618785
+OK  Ornith-1.5-122B-MLX-4bit/tokenizer.json 19989339
+OK  Ornith-1.5-122B-DFlash2/assets/dflash2-figure.png 286889
+OK  Ornith-1.5-122B-DFlash2/mask_embedding.safetensors 6432
+OK  Ornith-1.5-122B-DFlash2/model.safetensors 1860568336
+OK  Ornith-1.5-122B-mtp/model-00061-of-00062.safetensors 4997072608
+OK  Ornith-1.5-122B-mtp/model-00062-of-00062.safetensors 3186685728
+ALL OK
