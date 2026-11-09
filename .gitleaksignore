@@ -1,0 +1,4 @@
+# SHA-256 pins of Nemotron Parse's tokenizer files, not keys.
+5be42d15e99da7a7197fbf1e618b62ab31a25ade:tools/zig/nemotron_parse_reference.py:generic-api-key:33
+5be42d15e99da7a7197fbf1e618b62ab31a25ade:tools/zig/nemotron_parse_reference.py:generic-api-key:34
+5be42d15e99da7a7197fbf1e618b62ab31a25ade:tools/zig/nemotron_parse_reference.py:generic-api-key:35
