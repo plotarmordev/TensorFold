@@ -204,7 +204,6 @@ pub fn metalTargets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     const drama3_embed = if (shaders) drama3_lib else no_shaders;
     drama3_build.addNative(b, target, optimize, metal, engines, drama3_embed);
     @import("woof.zig").addNative(b, target, optimize, engines, @import("woof.zig").core(b, target, optimize, mods.engine));
-    @import("woof.zig").targets(b, test_step);
     drama3_build.targets(b, target, optimize, metal, drama3_embed, test_step, no_compiler);
 
     const programs = [_]struct { name: []const u8, path: []const u8, about: []const u8 }{
