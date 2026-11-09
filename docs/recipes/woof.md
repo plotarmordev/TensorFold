@@ -1,7 +1,7 @@
 # Underdog Woof
 
 This page describes the native engine. `woof` serves [Underdog Woof](https://huggingface.co/ConwayResearch/Underdog-Woof),
-a small English text-to-speech model with two voices (Juno and Mira), on the Mac's CPU at 24 kHz. It is a port of
+a small English text-to-speech model with two voices (Juno and Mira), on the CPU of an Apple-silicon Mac or a Linux arm64 machine at 24 kHz. It is a port of
 Woof's numpy runtime, not a build on Drama 3: it shares only the server's `/v1/audio/speech` route.
 The family's upstream proposal and gate are [ashhart/TensorFold#2504](https://github.com/ashhart/TensorFold/issues/2504).
 
@@ -123,3 +123,23 @@ On one thread Accelerate's matvecs beat the engine's NEON panels 2.3x per frame.
 persistent pool by output panels (by 4-row blocks for the prompt and decoder), the speech attention by head and the
 decoder's ELU and GELU by runs, so every output sums in the same order as on one thread. Past 6 threads the speech model
 stops scaling; each of its frames is about 50 small jobs.
+
+## Linux figures
+
+The CUDA binary links the same CPU engine, and it runs with no GPU. On a DGX Spark (GB10, Linux arm64) in a container
+held to 8 of its 20 cores and 7 GiB, with no nvcc (so no CUDA kernels): `zig build native` and `tf-woof-bench` build,
+`TF_WOOF_DIR=… zig build test` passes Woof's 13 tests on the checkpoint, and `serve` speaks WAV and streamed PCM, the
+stream equal to the whole reply. Same 24 texts, seed 0, one take each:
+
+| | TensorFold `woof`, Juno | Woof numpy, Juno | TensorFold `woof`, Mira | Woof numpy, Mira |
+| --- | --- | --- | --- | --- |
+| Real-time factor, 1 thread | 0.157 | 0.258 | 0.209 | 0.290 |
+| First audio p50, 1 thread | 0.511 s | 0.812 s | 0.928 s | 1.377 s |
+| Real-time factor, 8 threads | **0.0509** | | **0.0629** | |
+| First audio p50, 8 threads | **0.167 s** | | **0.276 s** | |
+| Peak memory (RSS) | **203 MiB** | 270 MiB | **202 MiB** | 278 MiB |
+
+Numpy is 2.5.4 on OpenBLAS with `OPENBLAS_NUM_THREADS=1`; at its default it starts a thread per core and ran so slowly
+under the quota that the run was stopped. The engine's default, 0 threads, which `serve` always uses, has the same
+fault: it counts the 20 cores the affinity mask shows rather than the 8 the CPU quota allows, and gives 0.94 (Juno)
+and 1.28 (Mira). `tf-woof-bench` takes a thread count; the server has none yet.
