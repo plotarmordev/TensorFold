@@ -95,21 +95,29 @@ pub fn pass(r: *Runner, round: *const Round, sc: *const Scratch, hidden: Ref) !R
 }
 
 /// The layer once a decode step: after each target pass over one slot's rows, it runs over the same cache rows (its K/V
-/// in its own cache) on the target's last-layer rows before the final norm, which the runner taps for it (so not for
-/// DFlash2's drafter, nor prompt-cache marks, which refuse tapped passes).
+/// in its own cache) on the target's last-layer rows before the final norm, which the runner taps for it while it lives
+/// (so not for DFlash2's drafter, nor prompt-cache marks, which refuse tapped passes).
 pub const Drafter = struct {
     runner: *Runner,
     scratch: Scratch,
+    /// The runner's tap layers before it took them, restored at deinit.
+    previous: struct { ids: [@import("taps.zig").max_planes]usize, count: usize },
 
     pub fn init(r: *Runner) !Drafter {
         const m = r.model;
         if (r.capture_taps) return error.TapsTaken;
-        try r.taps.use(m.device, &.{@intCast(m.config.layers - 1)});
+        var scratch = try Scratch.init(m.device, m.frame.capacity, m.config.hidden, m.config.vocab);
+        errdefer scratch.deinit();
+        const previous: @FieldType(Drafter, "previous") = .{ .ids = r.taps.ids, .count = r.taps.count };
+        try r.taps.use(m.device, &.{@intCast(m.config.layers - 1)}); // changes no ids when it fails
         r.capture_taps = true;
-        return .{ .runner = r, .scratch = try Scratch.init(m.device, m.frame.capacity, m.config.hidden, m.config.vocab) };
+        return .{ .runner = r, .scratch = scratch, .previous = previous };
     }
 
     pub fn deinit(d: *Drafter) void {
+        d.runner.capture_taps = false;
+        d.runner.taps.ids = d.previous.ids;
+        d.runner.taps.count = d.previous.count;
         d.scratch.deinit();
     }
 
@@ -117,6 +125,7 @@ pub const Drafter = struct {
     /// from the second on, then the target's pick); returns the layer's greedy draft of the token after `next`'s last.
     pub fn step(d: *Drafter, slot: u32, next: []const u32) !u32 {
         const r = d.runner;
+        if (slot >= r.ready) return error.RoundNotReady;
         const rows: u32 = @intCast(next.len);
         if (rows == 0 or r.taps.rows != rows or rows > r.offsets[slot]) return error.TapsDiffer;
         defer r.taps.begin(); // the taps are this step's: a second step without a target pass is refused
