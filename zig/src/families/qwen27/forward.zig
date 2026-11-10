@@ -78,6 +78,8 @@ pub const Stages = struct {
     picks: ?Ref = null,
     /// The final norm's gain: the target's, or the MTP layer's for its pass.
     norm: ?wts.Tensor = null,
+    /// Where the head writes: the frame's logits, or the MTP layer's own so the target's stay readable.
+    logits: ?Ref = null,
 
     /// Layer `index`: the target's, then (at `config.layers`) the MTP layer.
     fn layerAt(s: *const Stages, index: usize) wts.Layer {
@@ -249,7 +251,7 @@ pub const Stages = struct {
                 input.offset += @as(usize, s.rows - 1) * m.config.hidden * 2;
                 head_sums.ref.offset += @as(usize, s.rows - 1) * 4;
             }
-            try m.kernels.quant(e, m.weights.head, input, head_sums, f.get(.dims), f.get(.logits), if (s.head == .last) 1 else s.rows);
+            try m.kernels.quant(e, m.weights.head, input, head_sums, f.get(.dims), s.logits orelse f.get(.logits), if (s.head == .last) 1 else s.rows);
         }
         e.barrier();
         if (s.reduce) |r| {
