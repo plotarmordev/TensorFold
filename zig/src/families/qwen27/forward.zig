@@ -78,6 +78,15 @@ pub const Stages = struct {
     reduce: ?Reduce = null,
     /// Head seam picks (one u32 a row), required with `Reduce.argmax`: the ranks must pick the same token.
     picks: ?Ref = null,
+    /// The final norm's gain: the target's, or the MTP layer's for its pass.
+    norm: ?wts.Tensor = null,
+
+    /// Layer `index`: the target's, then (at `config.layers`) the MTP layer.
+    fn layerAt(s: *const Stages, index: usize) wts.Layer {
+        const w = &s.model.weights;
+        return if (index < w.layers.len) w.layers[index] else w.mtp.?.layer;
+    }
+
     pub fn begin(s: *Stages, lane: *@import("core").segments.Lane) !void {
         const m = s.model;
         if (s.rows == 0 or s.rows > m.frame.capacity or lane.k != 0) return error.BadFrameRows;
@@ -98,7 +107,7 @@ pub const Stages = struct {
         const m = s.model;
         const f = &m.frame;
         const e = lane.enc;
-        const layer = m.weights.layers[index];
+        const layer = s.layerAt(index);
         const h: u32 = @intCast(m.config.hidden);
         try m.kernels.norm(e, s.hidden, s.pending, wts.ref(layer.norm), f.get(.eps), f.get(.dims), s.residual, f.get(.input), f.get(.sums), h, s.rows);
         e.barrier();
@@ -118,7 +127,7 @@ pub const Stages = struct {
             lane.enc.barrier();
             return;
         }
-        switch (m.weights.layers[index].mixer) {
+        switch (s.layerAt(index).mixer) {
             .linear => |g| try s.hooks.gdn(s.hooks.ptr, lane.enc, index, g, &m.frame, s.rows),
             .attention => |a| try s.hooks.attention(s.hooks.ptr, lane.enc, index, a, &m.frame, s.rows),
         }
@@ -129,7 +138,7 @@ pub const Stages = struct {
         const m = s.model;
         const f = &m.frame;
         var e = lane.enc;
-        const layer = m.weights.layers[index];
+        const layer = s.layerAt(index);
         const h: u32 = @intCast(m.config.hidden);
         const out = switch (layer.mixer) {
             .linear => |g| g.out,
@@ -241,7 +250,7 @@ pub const Stages = struct {
         // The head seam reopens the encoder, so it goes back in the lane; rank 0's half-vocab argmax is not a token.
         var e = lane.enc;
         if (s.keysOnly(m.config.layers - 1)) return if (s.tail) |tail| tail.encode(tail.ptr, e);
-        try m.kernels.norm(e, s.hidden, s.pending, wts.ref(m.weights.norm), f.get(.eps), f.get(.dims), s.residual, f.get(.input), f.get(.sums), @intCast(m.config.hidden), s.rows);
+        try m.kernels.norm(e, s.hidden, s.pending, wts.ref(s.norm orelse m.weights.norm), f.get(.eps), f.get(.dims), s.residual, f.get(.input), f.get(.sums), @intCast(m.config.hidden), s.rows);
         e.barrier();
         std.mem.swap(Ref, &s.hidden, &s.residual);
         if (s.hooks.tap) |tap| try tap(s.hooks.ptr, e, m.config.layers - 1, s.hidden, s.rows);
