@@ -7,6 +7,7 @@ const cfg = @import("config.zig");
 const affine = @import("affine.zig");
 const widths = @import("widths.zig");
 const wts = @import("gpu_weights.zig");
+const mtp_load = @import("mtp_load.zig");
 const quant = @import("quant_gpu.zig");
 const glue = @import("glue_gpu.zig");
 const moe_gpu = @import("moe_gpu.zig");
@@ -139,6 +140,21 @@ pub const Model = struct {
     /// A deferred share takes at most `room` bytes; zero refuses it, and decided models stay as they are.
     pub fn loadShare(m: *Model, room: u64) !void {
         try m.finishShare(room, null);
+    }
+
+    /// The checkpoint's MTP layer from `dir`, the bf16 release's `mtp.*` shards, 4-bit at load; once, before loadShare
+    /// and before the runner that runs it.
+    pub fn loadMtp(m: *Model, io: std.Io, dir: []const u8) !void {
+        if (!m.share_pending) return error.MtpAfterShare;
+        if (m.weights.mtp != null) return error.MtpLoaded; // staging shifts the norms in place
+        const files = try core.checkpoint_host.shardFiles(m.allocator, io, dir);
+        defer core.checkpoint_host.freeShardFiles(m.allocator, files);
+        // the index names every shard of the release; only the ones holding mtp.* need be present
+        for (files) |file| if (std.Io.Dir.cwd().access(io, file, .{})) |_| {
+            try m.checkpoint.addFileSplit(m.device, file, mtp_load.source, "mtp.", mtp_load.deferred);
+        } else |_| {};
+        try mtp_load.stage(m.allocator, m.device, &m.checkpoint, m.config.experts);
+        try wts.loadMtp(&m.weights, m.device, &m.checkpoint, &m.shard);
     }
 
     fn finishShare(m: *Model, room: ?u64, share_fits: ?*const fn (u64) bool) !void {
