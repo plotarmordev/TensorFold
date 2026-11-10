@@ -78,10 +78,11 @@ norm, and after each target pass the layer reads those rows beside each next tok
 keys and values to its own cache, then drafts through the target's head into its own logits row.
 `tools/zig/ornith_mtp_drafts.py` writes the second test's fixture: mlx-lm's greedy 128-token reply to each of
 `tools/bench_prompts.json`'s 16 prompts, fed as the engine's test feeds it (the prompt in one pass, then a token a
-step, the target and the MTP layer each on its own K/V cache), and the layer's draft at each step. TensorFold's 2,048
-drafts equal mlx-lm's at 1,912, and every miss is within 2.9 logits of the reference's runner-up. The 4-bit MoE
-target's rows differ between the two kernels' rounding, and that alone splits mlx-lm too: its stepped drafts and
-its drafts over one whole causal pass differ at 131 of the 2,048.
+step, the target and the MTP layer each on its own K/V cache), and the layer's top eight drafts at each step with
+their logits. TensorFold's 2,048 drafts equal mlx-lm's best at 1,912, and each of the others is among its top eight,
+at most 5.4 logits below its best. The 4-bit MoE target's rows differ between the two kernels' rounding, and that
+alone splits mlx-lm too: its stepped drafts and its drafts over one whole causal pass differ at 131 of the 2,048, so
+the test does not ask for all 2,048 to be equal.
 
 Plain serving does not load the layer and is unchanged: on fresh `--parallel 1 --no-drafts` servers, alternating
 `6d4811726` and this change twice, the 16 reference prompts' greedy 128-token replies are identical (2,048 token ids),

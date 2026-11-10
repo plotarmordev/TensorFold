@@ -9,6 +9,8 @@ const Runner = @import("decode_round.zig").Runner;
 const Round = @import("round_plan.zig").Round;
 const Session = @import("session.zig").Session;
 const mtp = @import("mtp.zig");
+/// Each step's reference draft is its top `candidates` token ids, best first (tools/zig/ornith_mtp_drafts.py).
+const candidates = 8;
 
 /// An embedded safetensors file's header and data.
 const Fixture = struct {
@@ -94,8 +96,8 @@ test "Ornith MTP drafts: once a step on the target's rows, its greedy drafts mat
     const ids = try fixture.tensor(arena.allocator(), "ids", u32);
     const lengths = try fixture.tensor(arena.allocator(), "lengths", u32);
     const want = try fixture.tensor(arena.allocator(), "drafts", u32);
-    const leads = try fixture.tensor(arena.allocator(), "leads", f32);
-    const steps = want.len / lengths.len;
+    const logits = try fixture.tensor(arena.allocator(), "logits", f32);
+    const steps = want.len / candidates / lengths.len;
 
     const m = try Model.loadDeferred(a, io, dir, 128);
     defer m.deinit();
@@ -119,15 +121,16 @@ test "Ornith MTP drafts: once a step on the target's rows, its greedy drafts mat
                 try s.step(seq[prompt + k - 1]);
                 break :blk try drafter.step(0, seq[prompt + k ..][0..1]);
             };
-            const i = p * steps + k;
-            same += @intFromBool(got == want[i]);
-            // bf16 kernels and 4-bit MoE routing flips only move picks the reference leads by under 3 logits (2.9 seen)
-            if (got != want[i]) try std.testing.expect(leads[i] < 3);
+            const i = (p * steps + k) * candidates;
+            // every draft is one of the reference's top picks, near its best: the 4-bit MoE target's rows differ
+            // between the two kernels' rounding (mlx-lm's own stepped and whole-pass drafts differ at 131 of 2,048)
+            const at = std.mem.indexOfScalar(u32, want[i..][0..candidates], got) orelse return error.DraftNotInReferenceTop;
+            try std.testing.expect(logits[i] - logits[i + at] < 6); // 5.4 seen
+            same += @intFromBool(at == 0);
         }
         first += len;
     }
     try std.testing.expectError(error.TapsDiffer, drafter.step(0, ids[ids.len - 1 ..])); // no target pass since the last
     try std.testing.expectError(error.RoundNotReady, drafter.step(runner.slots, ids[ids.len - 1 ..]));
-    // 1,912 of 2,048 seen; mlx-lm's own stepped and whole-pass drafts differ at 131
-    try std.testing.expect(same * 100 >= want.len * 93);
+    try std.testing.expect(same * 100 >= steps * lengths.len * 93); // 1,912 of 2,048 seen
 }
