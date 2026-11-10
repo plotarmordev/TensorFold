@@ -140,6 +140,9 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     test_step.dependOn(&qwen_tests.step);
     const qwen_test_step = b.step("test-qwen27", "CPU Qwen config, affine and complete tensor graph contracts");
     qwen_test_step.dependOn(&qwen_tests.step);
+    const mtp_tests = b.addRunArtifact(b.addTest(.{ .root_module = qwen27, .filters = &.{"Ornith MTP"} }));
+    mtp_tests.has_side_effects = true; // TF_QWEN27_DIR and TF_QWEN27_MTP_DIR are not cached inputs
+    b.step("test-qwen27-mtp", "Ornith's MTP layer: TF_QWEN27_MTP_DIR's bf16 mtp.* 4-bit at load against mlx-lm").dependOn(&mtp_tests.step);
     const header_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = target, .optimize = .ReleaseSafe, .link_libc = true }) }));
     qwen_test_step.dependOn(&header_tests.step);
     test_step.dependOn(&header_tests.step);

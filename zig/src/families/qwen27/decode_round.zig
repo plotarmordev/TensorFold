@@ -76,11 +76,12 @@ pub const Runner = struct {
         const geometry = try attn.planning.Geometry.fromConfig(m.config, m.device.tensorUnits());
         const linear_index = try a.alloc(u32, m.config.layers);
         errdefer a.free(linear_index);
-        const attention_index = try a.alloc(u32, m.config.layers);
+        // with the MTP layer loaded, its block is one more attention layer past the last (forward.layerAt)
+        const attention_index = try a.alloc(u32, m.config.layers + @intFromBool(m.weights.mtp != null));
         errdefer a.free(attention_index);
         var ng: u32 = 0;
         var na: u32 = 0;
-        for (linear_index, attention_index, 0..) |*g, *v, block| {
+        for (linear_index, attention_index[0..m.config.layers], 0..) |*g, *v, block| {
             g.* = std.math.maxInt(u32);
             v.* = std.math.maxInt(u32);
             if (m.config.kind(block) == .linear) {
@@ -90,6 +91,10 @@ pub const Runner = struct {
                 v.* = na;
                 na += 1;
             }
+        }
+        if (m.weights.mtp != null) {
+            attention_index[m.config.layers] = na;
+            na += 1;
         }
         var pool = try GdnPool.init(m.device, try abi.Shape.init(m.config), ng, slots, m.frame.capacity);
         errdefer pool.deinit();
@@ -443,7 +448,7 @@ pub const Runner = struct {
         return r.geometry.promptRows(@min(requested, r.model.frame.capacity));
     }
 
-    fn attentionPlan(r: *Runner, round: *const Round) !attn.Plan {
+    pub fn attentionPlan(r: *Runner, round: *const Round) !attn.Plan {
         var windows: [attn.planning.max_streams]attn.planning.Window = undefined;
         if (round.windows.len > windows.len) return error.AttentionStreams;
         for (round.windows, 0..) |window, i| windows[i] = .{ .parents = window.parents, .start = window.start, .capacity = r.capacity };
@@ -455,13 +460,13 @@ pub const Runner = struct {
         return views[0..round.slots.len];
     }
 
-    fn gdnForward(ptr: *anyopaque, e: mtl.ComputeEncoder, block: usize, weights: wts.Gdn, frame: *Frame, rows: u32) !void {
+    pub fn gdnForward(ptr: *anyopaque, e: mtl.ComputeEncoder, block: usize, weights: wts.Gdn, frame: *Frame, rows: u32) !void {
         const r: *Runner = @ptrCast(@alignCast(ptr));
         var hook = GdnHook{ .pool = &r.gdn, .quant = &r.model.kernels, .glue = r.model.glue, .plan = r.current_gdn orelse return error.RoundNotReady, .linear_index = r.linear_index, .accepted_chain = r.accepted_chain };
         try GdnHook.forward(&hook, e, block, weights, frame, rows);
     }
 
-    fn attentionForward(ptr: *anyopaque, e: mtl.ComputeEncoder, block: usize, weights: wts.Attention, f: *Frame, rows: u32) !void {
+    pub fn attentionForward(ptr: *anyopaque, e: mtl.ComputeEncoder, block: usize, weights: wts.Attention, f: *Frame, rows: u32) !void {
         const r: *Runner = @ptrCast(@alignCast(ptr));
         const plan = (r.current_attention orelse return error.RoundNotReady).*;
         const layer = r.attention_index[block];
