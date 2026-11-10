@@ -143,6 +143,9 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     const mtp_tests = b.addRunArtifact(b.addTest(.{ .root_module = qwen27, .filters = &.{"Ornith MTP"} }));
     mtp_tests.has_side_effects = true; // TF_QWEN27_DIR and TF_QWEN27_MTP_DIR are not cached inputs
     b.step("test-qwen27-mtp", "Ornith's MTP layer: TF_QWEN27_MTP_DIR's bf16 mtp.* 4-bit at load against mlx-lm").dependOn(&mtp_tests.step);
+    const mtp_lanes = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/qwen27/mtp_lanes.zig"), .target = target, .optimize = .ReleaseSafe, .link_libc = true, .imports = served }) }));
+    mtp_lanes.has_side_effects = true;
+    b.step("test-qwen27-mtp-lanes", "Ornith's MTP drafts in the lane core: drafted replies are plain decoding's, alone and four at once").dependOn(&mtp_lanes.step);
     const header_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = target, .optimize = .ReleaseSafe, .link_libc = true }) }));
     qwen_test_step.dependOn(&header_tests.step);
     test_step.dependOn(&header_tests.step);
