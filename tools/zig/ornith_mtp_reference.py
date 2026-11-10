@@ -42,11 +42,11 @@ def mtp_head(mtp_dir, args):
     return fc, layer, norm
 
 
-def mtp_rows(text, head, hidden, nxt):
-    """The layer's normed rows over one causal pass: row j reads hidden j beside token nxt[j]."""
+def mtp_rows(text, head, hidden, nxt, cache=None):
+    """The layer's normed rows over one causal pass: row j reads hidden j beside token nxt[j]; `cache` its own K/V."""
     fc, layer, norm = head
     x = mx.concatenate([norm(text.embed_tokens(nxt), "pre_fc_norm_embedding"), norm(hidden, "pre_fc_norm_hidden")], axis=-1)
-    return norm(layer(fc(x)[None], mask="causal")[0], "norm")
+    return norm(layer(fc(x)[None], mask="causal" if len(nxt) > 1 else None, cache=cache)[0], "norm")
 
 
 def main(target_dir, mtp_dir, out_path):
