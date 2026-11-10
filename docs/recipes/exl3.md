@@ -44,8 +44,8 @@ layers, projections and the experts of one MoE layer, and `config.json`'s `bits`
 
 A quantized linear layer with K inputs and N outputs (both multiples of 128; ExLlamaV3 pads) is a group of
 tensors under one prefix: `trellis` int16 `[K/16, N/16, 16 * bits]`, `suh` fp16 `[K]` (or the packed sign words
-`su` int16 `[K/16]` of older checkpoints), `svh`/`sv` for the outputs, an optional fp16 `bias`, and a zero-size
-marker tensor `mcg` or `mul1` naming the codebook (no marker: the original `3inst`). Each tile holds 256 values
+`su` int16 `[K/16]` of older checkpoints), `svh`/`sv` for the outputs, an optional fp16 `bias`, and a scalar int32
+marker tensor `mcg` or `mul1` naming the codebook and storing its magic as int32 (no marker: the original `3inst`). Each tile holds 256 values
 in a circular bitstream; the codebook maps a 16-bit state to an fp16 value; the tiles' layout is the tensor-core
 permutation. The exact bit arithmetic follows; `tests/test_exl3_format.py` checks `format.py`'s decoder against
 one written from this description, bit by bit, for all 27 codebook-and-width combinations.
@@ -82,6 +82,23 @@ or outputs,
 same.) Splitting a layer keeps whole tiles and whole Hadamard blocks: by outputs, take columns of tiles and of svh
 and all of suh; by inputs, rows of tiles and of suh and all of svh, and add the partial outputs.
 ```
+
+## Encoding on a Mac
+
+`zig build tf-exl3-encode -Doptimize=ReleaseFast` builds the portable CPU encoder. It needs neither torch nor CUDA:
+
+```sh
+zig-out/bin/tf-exl3-encode WEIGHT.npy HESSIAN.npy 2.0 OUT_DIR
+```
+
+`WEIGHT.npy` is the Hugging Face `[N,K]` matrix and `HESSIAN.npy` is the corresponding full `[K,K]` calibration
+`X^T X`; both are little-endian C-order FP32 or FP64. Replace `2.0` with `2.5` or `3.0`. The command writes one
+`mul1` group as `OUT_DIR/model.safetensors`, reloads it through `core/exl3_load.zig`, and requires the reloaded
+`dequantize()` output to equal the encoder reconstruction bit for bit. Its receipt prints the exact
+`trace((W-Wq)^T H (W-Wq))` for EXL3, same-codebook majority rounding and NVFP4, plus elapsed seconds and the
+5900-expert projection. The encoder uses rotated-Hessian diagonal costs in a tail-biting beam search and keeps
+the plain candidate whenever its full Hessian error is lower, so the selected EXL3 error is never worse than that
+baseline. This is a CPU reference converter, not a claim of CUDA quantizer quality or throughput.
 
 ## Using it
 
