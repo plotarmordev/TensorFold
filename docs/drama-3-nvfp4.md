@@ -1,13 +1,13 @@
 # Drama 3 NVFP4, pruned experts
 
-How to build this branch and serve [`plotarmordev/drama-3-NVFP4-Pruned`](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned): Drama 3 with its routed experts stored in NVFP4 and only the kept experts in the checkpoint ([NVFP4 experts](drama-voices.md#nvfp4-experts), [compact experts](drama-voices.md#compact-experts)). Only this engine loads it; Transformers and SGLang-Omni do not.
+How to build this branch and serve [`plotarmordev/drama-3-NVFP4-Pruned`](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned) (7,369 experts kept) or [`plotarmordev/drama-3-NVFP4-Pruned-5900`](https://huggingface.co/plotarmordev/drama-3-NVFP4-Pruned-5900) (5,900 kept): Drama 3 with its routed experts stored in NVFP4 and only the kept experts in the checkpoint ([NVFP4 experts](drama-voices.md#nvfp4-experts), [compact experts](drama-voices.md#compact-experts)). Only this engine loads it; Transformers and SGLang-Omni do not.
 
 ## Prerequisites
 
 - Linux with an NVIDIA GPU. The model has been built and run only on an NVIDIA GB10 (aarch64, compute capability 12.1). The kernels build for `sm_121` by default; `-Dsm=86,120,121` builds other targets, but the NVFP4 path is untested on them.
 - Zig 0.17.0 exactly, from [ziglang.org/download](https://ziglang.org/download/) (the build refuses other versions).
 - The CUDA toolkit's `nvcc` (this branch was built with CUDA 13.0) and a driver that runs it.
-- The `hf` command from `huggingface_hub`, to download the model (about 22 GB).
+- The `hf` command from `huggingface_hub`, to download the model (about 22 GB, or about 20 GB for the 5,900-expert checkpoint).
 
 ## Build
 
@@ -30,7 +30,9 @@ hf download plotarmordev/drama-3-NVFP4-Pruned --local-dir /path/to/drama-3-NVFP4
 zig-out/native/bin/tensorfold-native serve /path/to/drama-3-NVFP4-Pruned --name drama-3 --port 8080 --cfg-gamma 1.5 --cfg-batched
 ```
 
-Serve this model with guidance γ 1.5 and batched guidance (`--cfg-gamma 1.5 --cfg-batched`, see [Guidance](drama-voices.md#guidance)): that is how it was measured. The startup log includes `routed experts NVFP4 in 40 of 40 layers`.
+For the 5,900-expert checkpoint, download `plotarmordev/drama-3-NVFP4-Pruned-5900` and serve its directory the same way.
+
+Serve either model with guidance γ 1.5 and batched guidance (`--cfg-gamma 1.5 --cfg-batched`, see [Guidance](drama-voices.md#guidance)): that is how both were measured. The startup log includes `routed experts NVFP4 in 40 of 40 layers` and `routed experts held N of 10240`, 7369 or 5900.
 
 ## Request
 

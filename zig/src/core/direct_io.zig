@@ -66,7 +66,7 @@ fn readAt(f: File, buf: Buffer, offset: u64, len: usize, ctx: *anyopaque, pread:
             const e = std.c.errno(n);
             if (e == .INTR) continue;
             // a file system that took the O_DIRECT open can still refuse its reads: the file goes through the cache
-            if (e == .INVAL and aligned) {
+            if (builtin.os.tag == .linux and e == .INVAL and aligned) {
                 try buffered(f.fd);
                 aligned = false;
                 continue;

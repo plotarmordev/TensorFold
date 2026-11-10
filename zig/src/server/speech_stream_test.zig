@@ -126,6 +126,9 @@ pub const Served = struct {
     pub fn open(s: *Served, engine: api.Engine, config: server.Config, line: []const u8, body: []const u8, write_ms: i32) !void {
         var pair: [2]std.c.fd_t = undefined;
         if (std.c.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &pair) != 0) return error.SocketPair;
+        // Linux-sized buffers: macOS's 8 KiB socketpair blocks a route whose reply is read only after it is joined
+        const size = std.mem.toBytes(@as(c_int, 256 * 1024));
+        for (pair) |fd| for ([_]u32{ std.posix.SO.SNDBUF, std.posix.SO.RCVBUF }) |opt| try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, opt, &size);
         s.* = .{ .srv = undefined, .client = pair[0], .route_fd = pair[1], .route = undefined, .write_ms = write_ms };
         s.srv = try server.Server.init(gpa, std.testing.io, engine, s.text.text(), config, null);
         var head: [160]u8 = undefined;
