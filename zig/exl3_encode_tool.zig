@@ -81,12 +81,12 @@ pub fn main(init: std.process.Init) !u8 {
     defer stdout.interface.flush() catch {};
     const out = &stdout.interface;
     if (args.len != 5) {
-        try out.writeAll("usage: tf-exl3-encode WEIGHT.npy HESSIAN.npy {2.0|2.5|3.0} OUT_DIR\nweight is HF [N,K] f32/f64; Hessian is [K,K] f32/f64\n");
+        try out.writeAll("usage: tf-exl3-encode WEIGHT.npy HESSIAN.npy {2.0|2.5|3.0|4.0} OUT_DIR\nweight is HF [N,K] f32/f64; Hessian is [K,K] f32/f64\n");
         return 2;
     }
     const gpa = init.gpa;
     const bits = std.fmt.parseFloat(f64, args[3]) catch return 2;
-    const halves: u4 = if (bits == 2.0) 4 else if (bits == 2.5) 5 else if (bits == 3.0) 6 else return 2;
+    const halves: u4 = if (bits == 2.0) 4 else if (bits == 2.5) 5 else if (bits == 3.0) 6 else if (bits == 4.0) 8 else return 2;
     const source = try readArray(gpa, init.io, args[1]);
     defer freeArray(gpa, source);
     const h = try readArray(gpa, init.io, args[2]);
@@ -120,7 +120,7 @@ pub fn main(init: std.process.Init) !u8 {
     const nv_error = encoder.hessianError(weight, nv, h.values, k, n);
     const bytes = std.mem.sliceAsBytes(result.trellis).len + 2 * (k + n) + 4;
     const ratio = result.error_exl3 / nv_error;
-    try out.print("bits_per_weight={d:.1} shape=[{d},{d}] seconds={d:.3} projected_5900_experts_hours={d:.3}\n", .{ bits, n, k, elapsed, elapsed * 5900 / 3600 });
+    try out.print("bits_per_weight={d:.1} shape=[{d},{d}] seconds={d:.3} projected_5900_matrices_hours={d:.3}\n", .{ bits, n, k, elapsed, elapsed * 5900 / 3600 });
     try out.print("hessian_error exl3={e:.9} plain={e:.9} nvfp4={e:.9} exl3_over_nvfp4={d:.6} bytes={d} nvfp4_bytes_approx={d}\n", .{ result.error_exl3, result.error_plain, nv_error, ratio, bytes, k * n / 2 + k * n / 16 + 4 });
     try out.writeAll("reader=ok reconstruction=bit_exact\n");
     return 0;

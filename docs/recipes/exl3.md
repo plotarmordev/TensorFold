@@ -91,14 +91,56 @@ and all of suh; by inputs, rows of tiles and of suh and all of svh, and add the 
 zig-out/bin/tf-exl3-encode WEIGHT.npy HESSIAN.npy 2.0 OUT_DIR
 ```
 
-`WEIGHT.npy` is the Hugging Face `[N,K]` matrix and `HESSIAN.npy` is the corresponding full `[K,K]` calibration
-`X^T X`; both are little-endian C-order FP32 or FP64. Replace `2.0` with `2.5` or `3.0`. The command writes one
-`mul1` group as `OUT_DIR/model.safetensors`, reloads it through `core/exl3_load.zig`, and requires the reloaded
-`dequantize()` output to equal the encoder reconstruction bit for bit. Its receipt prints the exact
-`trace((W-Wq)^T H (W-Wq))` for EXL3, same-codebook majority rounding and NVFP4, plus elapsed seconds and the
-5900-expert projection. The encoder uses rotated-Hessian diagonal costs in a tail-biting beam search and keeps
-the plain candidate whenever its full Hessian error is lower, so the selected EXL3 error is never worse than that
-baseline. This is a CPU reference converter, not a claim of CUDA quantizer quality or throughput.
+`WEIGHT.npy` is the Hugging Face `[N,K]` matrix and `HESSIAN.npy` is its full `[K,K]` calibration Hessian; both
+are little-endian C-order FP32 or FP64. Replace `2.0` with `2.5`, `3.0` or `4.0`. The command writes one `mul1`
+group as `OUT_DIR/model.safetensors`, reloads it through `core/exl3_load.zig`, and requires the reloaded
+`dequantize()` output to equal the encoder's reconstruction bit for bit; that reconstruction is built from the
+states the search chose, not by decoding the packed words. Its receipt prints the exact `trace((W-Wq) H (W-Wq)^T)`
+for EXL3, same-codebook rounding and NVFP4 (E2M1, E4M3 block-16 scales, FP32 tensor scale), the seconds for this
+one matrix and the 5,900-matrix projection.
+
+The Hessian follows Drama card 32's calibration rows (`drama-exl3-calibration/1`): for expert e, `X_e` is the
+layer's `x` rows (the MoE input after `addRmsnorm`) whose `picks` contain e, and gate and up both take
+`H_e = X_e^T X_e / n_e`; down takes `A_e^T A_e / n_e`, with `A_e` the SwiGLU of the gate and up projections on
+those rows.
+
+Each 16x16 tile is a tail-biting trellis: a 128-wide beam weighted by the rotated Hessian's diagonal runs once over
+the tile turned by half to choose the state where the ring closes, then again with the ring's wrapped bits forced to
+that state, so every tile closes (closing costs about a tenth over the free beam's error). Matrix-wide, the result
+falls back to plain rounding if that has the lower full-Hessian error. Tile rows run on every core. An all-zero
+output column (Drama's gate and up experts have about a fifth pruned) gets 1e-3 of the mean live scale: at a live
+column's scale its codebook noise would spread through the output Hadamard into the whole block.
+
+### Drama 3 experts on this Mac
+
+Layer 0 experts 152, 217 and 242 (353, 321 and 252 calibration rows, the most of any layer-0 expert; 61 of the 256
+have none), FP8 E4M3 dequantised with their 128x128 block scales, against card 32's prompt-text rows. Each figure is
+`trace((W-Wq) H (W-Wq)^T)` over NVFP4's, as (expert 152, 217, 242); NVFP4 is about 4.56 bits per weight:
+
+| bits | gate | up | down | plain rounding, any matrix |
+|---|---|---|---|---|
+| 2.0 | 8.7, 6.5, 5.8 | 8.3, 6.4, 5.6 | 9.6, 8.8, 8.4 | 185-283 |
+| 2.5 | 4.7, 3.2, 2.9 | 4.4, 3.1, 2.8 | 5.4, 4.9, 4.6 | 186-282 |
+| 3.0 | 2.5, 1.6, 1.4 | 2.3, 1.7, 1.3 | 3.1, 2.8, 2.6 | 186-278 |
+| 4.0 | 0.73, 0.42, 0.35 | 0.71, 0.43, 0.34 | 1.10, 1.00, 0.93 | |
+
+EXL3 is always far below plain rounding to the same codebook. The earlier 0.82-0.90x NVFP4 figure was K4 EXL3, and
+at 4.0 bits this encoder reaches 0.34-0.73x on gate and up and 0.93-1.10x on down. At 2.0-3.0 bits it misses that
+bar because it stores 1.5-2.6 fewer bits per weight than NVFP4 (0.45-0.66x its bytes), and each bit removed costs
+roughly 4x the error. Two further limits apply: the search weights only the rotated Hessian's diagonal, with no LDLQ
+feedback of the full H, and with only 252-353 rows each Hessian has rank at most that, against 2048 or 512 inputs.
+
+Seconds per expert (gate + up + down) on this M-series Mac, all 36 cores, and the projection for 5,900 experts:
+
+| bits | seconds per expert | 5,900 experts |
+|---|---|---|
+| 2.0 | 16.1 | 26.4 h |
+| 2.5 | 20.2 | 33.1 h |
+| 3.0 | 25.6 | 41.9 h |
+| 4.0 | 38.4 | 63.0 h |
+
+All of 2.0, 2.5 and 3.0 together take about 101 hours. That is slow but practical on the CPU, so this card leaves
+no Metal path behind. This is a CPU reference converter, not a claim of CUDA quantizer quality or throughput.
 
 ## Using it
 
