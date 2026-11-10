@@ -31,6 +31,7 @@ pub const metal_kv_pages = @import("src/core/metal_kv_pages.zig");
 
 pub const affine4 = @import("src/core/affine4.zig");
 pub const affine4_lane = @import("src/core/affine4_lane.zig");
+pub const affine4_host = @import("src/core/affine4_host.zig");
 
 pub const tree_round = @import("tree_round");
 pub const tree_round_gpu = @import("tree_round_gpu");
