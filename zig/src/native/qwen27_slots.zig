@@ -130,6 +130,10 @@ pub fn chunk(b: *Metal, s: *lanes.Stream, f: *Fill, _: u32) !bool {
         const session = q.session.Session{ .runner = b.runner, .slot = slot };
         if (decoded) try session.decodeChunk(part, last) else try session.promptChunk(part, last);
         if (b.ringOf(slot)) |g| try ringChunk(b, g, part.len);
+        // the layer's cache takes every chunk but the last, whose final row's next token the first draft request brings
+        if (b.mtp) |m| if (!last) {
+            _ = try m.step(slot, ids[at + 1 .. end + 1]);
+        };
     }
     charge(b, s, before);
     lanes.prefill_widths.completed(b.gpa, s, part.len);

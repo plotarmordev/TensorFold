@@ -1,4 +1,5 @@
-//! The 27B lane backend's drafts: each drafting slot's tree, up to eight in one drafter pass, and the held trees.
+//! The 27B lane backend's drafts: each drafting slot's tree, up to eight in one drafter pass, or the MTP layer's one
+//! draft for a lone stream; and the held trees.
 const std = @import("std");
 const mtl = @import("metal");
 const tf = @import("tensorfold");
@@ -20,13 +21,16 @@ fn live(b: *const Metal) usize {
 pub fn capacityFn(ptr: *anyopaque, s: *lanes.Stream) u32 {
     const b = Metal.self(ptr);
     const slot = b.slotOf(s) orelse return 0;
-    return if (b.draftsOwn(slot)) @import("qwen27_window.zig").proposal(b.window, b.copies, b.nodes, b.window + 1, live(b) == 1) else 0;
+    if (!b.draftsOwn(slot)) return 0;
+    if (b.mtp != null) return @intFromBool(live(b) == 1);
+    return @import("qwen27_window.zig").proposal(b.window, b.copies, b.nodes, b.window + 1, live(b) == 1);
 }
 
 /// Each drafting slot proposes its next tree, up to eight in one drafter pass; a shared round's kept taps first.
 pub fn draftFn(ptr: *anyopaque, requests: []const be.DraftRequest) anyerror!void {
     const b = Metal.self(ptr);
     errdefer mtl.pass_metrics.end();
+    if (b.mtp) |d| return mtpDrafts(b, d, requests);
     @import("qwen27_slots.zig").promoteDue(b); // a stream moves into a freed slot 0 before it drafts
     var batch: [8]Proposal = undefined;
     var owners: [8]u32 = undefined;
@@ -76,6 +80,56 @@ pub fn draftFn(ptr: *anyopaque, requests: []const be.DraftRequest) anyerror!void
             try @import("qwen27_masks.zig").prune(b.gpa, r.stream.grammar, opening, t);
         }
     }
+}
+
+/// The MTP layer steps over a lone stream's last target rows (their taps: a verify's kept rows first, or a prompt's
+/// last chunk) and holds its one draft; a dropped row never enters its cache, whose next write starts at the kept end.
+/// A shared round's streams hold none: another stream's taps may follow theirs.
+fn mtpDrafts(b: *Metal, d: *q.mtp.Drafter, requests: []const be.DraftRequest) !void {
+    const lone = live(b) == 1;
+    for (requests) |r| {
+        const slot = try b.slotFor(r.stream);
+        b.dropTreeOf(slot);
+        if (!lone) continue;
+        const pool = mtl.objc.Pool.push();
+        defer pool.pop();
+        try b.settleRound();
+        const next = try follows(b, d, slot, r) orelse continue;
+        defer b.gpa.free(next);
+        const draft = try d.step(slot, next);
+        if (r.depth == 0 or b.runner.capacity - b.runner.offsets[slot] < 2) continue;
+        b.trees[slot] = try chain(b.gpa, draft);
+    }
+}
+
+/// The token after each of the stream's tapped rows, or null when the taps are not its last target pass's.
+fn follows(b: *Metal, d: *q.mtp.Drafter, slot: u32, r: be.DraftRequest) !?[]u32 {
+    const end = b.runner.offsets[slot];
+    if (r.rows) |kept| {
+        // the layer reads the verify's first taps: its kept rows must be them (a chain's), in order
+        for (kept, 0..) |row, i| if (row != i) return null;
+        if (r.follow.len != kept.len) return null;
+        if (end != r.start + kept.len) return error.BadDraftPosition;
+        return try b.gpa.dupe(u32, r.follow);
+    }
+    const ids = r.stream.prompt();
+    const rows = d.runner.taps.rows;
+    const first = r.first orelse return null;
+    if (rows == 0 or rows > ids.len or end != ids.len) return null;
+    const next = try b.gpa.alloc(u32, rows);
+    errdefer b.gpa.free(next);
+    @memcpy(next[0 .. rows - 1], ids[ids.len - rows + 1 ..]);
+    next[rows - 1] = try b.value(first);
+    return next;
+}
+
+/// A one-node tree; its score 0 leaves its chance to the landing prior.
+fn chain(gpa: std.mem.Allocator, token: u32) !Tree {
+    const tokens = try gpa.dupe(u32, &.{token});
+    errdefer gpa.free(tokens);
+    const parents = try gpa.dupe(i32, &.{-1});
+    errdefer gpa.free(parents);
+    return .{ .gpa = gpa, .tokens = tokens, .parents = parents, .scores = try gpa.dupe(f64, &.{0}) };
 }
 
 /// The batch's trees: a stream alone takes its own pass (slot 0's fused absorb and block); several share one.

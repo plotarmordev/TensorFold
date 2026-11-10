@@ -25,6 +25,7 @@ pub const Options = struct {
     drafter: ?[]const u8 = null,
     drafter_name: ?[]const u8 = null,
     drafter_bits: u8 = 0,
+    mtp: ?[]const u8 = null, // --mtp-drafts: the bf16 release's folder holding the checkpoint's `mtp.*` shards
     cache_gib: ?f64 = null,
     cache_over_cap: bool = false,
     decode_share: ?f64 = null, // --decode-share: the reply's share of a fill step's wall time beside live decoders
@@ -41,6 +42,7 @@ pub const Host = struct {
     runner: q.decode_round.Runner,
     trace: ?tf.gpu_profile.Trace = null, // TF_Q27_PROFILE: rounds' class GPU times to the log, gpu_seconds in replies
     draft: ?*lb.Draft = null,
+    mtp: ?q.mtp.Drafter = null,
     back: *lb.Metal,
     cfg: lanes.Config,
     clock: lanes.backend.WallClock,
@@ -296,6 +298,10 @@ pub fn open(gpa: Allocator, io: std.Io, dir: []const u8, o: Options, a: Allocato
     };
     const model = try q.model.Model.loadDeferred(gpa, io, dir, 128);
     errdefer model.deinit();
+    if (o.mtp) |m| model.loadMtp(io, m) catch |err| {
+        why.* = try std.fmt.allocPrint(a, "--mtp-drafts: the MTP layer cannot load from {s} ({s})", .{ m, @errorName(err) });
+        return err;
+    };
     var with = o;
     // the tower before the slots: their room and the cache's budget count it as taken
     if (o.vision) |v| with.images = try images.open(gpa, io, model, dir, v, a, why);
@@ -367,6 +373,7 @@ pub fn attach(parent: Allocator, io: std.Io, model: *q.model.Model, drafter: ?*q
     h.model = model;
     h.owns_model = false;
     h.draft = null;
+    h.mtp = null;
     h.cache = null;
     h.resident = null;
     h.disk_stage = null;
@@ -381,19 +388,22 @@ pub fn attach(parent: Allocator, io: std.Io, model: *q.model.Model, drafter: ?*q
     if (draft_model) |d| h.draft = try lb.Draft.attach(gpa, &h.runner, d, owns_draft);
     draft_owned = false;
     errdefer if (h.draft) |d| d.deinit();
+    if (model.weights.mtp != null) h.mtp = try q.mtp.Drafter.init(&h.runner);
+    errdefer if (h.mtp) |*d| d.deinit();
     h.back = try lb.Metal.init(gpa, &h.runner, h.draft);
+    if (h.mtp) |*d| h.back.mtp = d;
     errdefer h.back.deinit();
     h.back.chunk = h.runner.promptRows(@min(rows, row_policy.requested(model.device.generation(), model.config.moe(), value)));
     h.back.grow = .{ .ctx = h, .room = Host.roomFor, .added = Host.added };
     h.back.vision = o.images;
-    if (h.draft != null) try h.back.measure(io);
+    if (h.draft != null or h.mtp != null) try h.back.measure(io);
     h.cfg = try lanes.Config.init(gpa, h.back.facts(), window, h.back.nodes);
     errdefer h.cfg.deinit(gpa);
     h.clock = .{ .io = io };
     h.core = lanes.Engine.init(gpa, &h.cfg, h.back.backend(), h.clock.clock());
     errdefer h.core.deinit();
     const offer: ?api.Vision = if (o.images) |v| .{ .ctx = h, .prepare = Host.prepareImage, .image_token = v.c.image_token, .markers = &v.markers, .image_tokens = v.capacity, .max_images = v.max_images, .explain = tf.qwen_vl.geometry.problem } else null;
-    h.host = api.LaneHost.init(gpa, io, &h.core, .{ .name = "qwen27", .draft_sources = .{ .drafter = if (h.draft != null) .{ .kind = "DFlash2", .name = o.drafter_name orelse o.drafter orelse "" } else null }, .structures = @import("qwen27_masks.zig").supported, .lanes = slots, .context_window = capacity, .prefill_step = @intCast(h.back.chunk), .decode_share = o.decode_share, .vision = offer });
+    h.host = api.LaneHost.init(gpa, io, &h.core, .{ .name = "qwen27", .draft_sources = .{ .mtp = h.mtp != null, .drafter = if (h.draft != null) .{ .kind = "DFlash2", .name = o.drafter_name orelse o.drafter orelse "" } else null }, .structures = @import("qwen27_masks.zig").supported, .lanes = slots, .context_window = capacity, .prefill_step = @intCast(h.back.chunk), .decode_share = o.decode_share, .vision = offer });
     h.host.memory = .{ .ctx = h, .read = readMemory };
     h.host.explain = .{ .text = words };
     h.host.decoded_rows = true; // a reply's rows prefill with the bits decoding gave them, with the cache on or off
@@ -426,7 +436,7 @@ pub fn attach(parent: Allocator, io: std.Io, model: *q.model.Model, drafter: ?*q
     h.host.keepalive_target = .{ .ctx = &h.warm, .tick = mtl.keepalive.Target.tick };
     if (h.trace) |*t| t.enabled = true; // serving rounds count from here: measure() timed whole, unsplit buffers
     try h.host.start();
-    std.log.info("Qwen3.8-27B: {d} streams of {d} tokens{s}{s}", .{ slots, capacity, if (h.draft != null) ", DFlash2 drafts for one of them" else "", if (o.images != null) ", images read" else "" });
+    std.log.info("Qwen3.8-27B: {d} streams of {d} tokens{s}{s}", .{ slots, capacity, if (h.draft != null) ", DFlash2 drafts for one of them" else if (h.mtp != null) ", MTP drafts for a lone one" else "", if (o.images != null) ", images read" else "" });
     return h;
 }
 
@@ -493,6 +503,7 @@ pub fn close(ptr: *anyopaque) void {
     h.cfg.deinit(h.gpa);
     h.back.deinit();
     if (h.draft) |d| d.deinit();
+    if (h.mtp) |*d| d.deinit();
     if (h.trace) |*t| t.reportRest();
     h.runner.deinit();
     if (h.vision) |v| v.deinit();

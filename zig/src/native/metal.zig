@@ -27,7 +27,7 @@ const modelContext = metal_shared.modelContext;
 const gibBytes = metal_shared.gibBytes;
 
 pub const backends: []const []const u8 = &.{"metal"};
-pub const serves: []const []const u8 = &.{ "--checkpoint-slots", "--spill-gib" };
+pub const serves: []const []const u8 = &.{ "--checkpoint-slots", "--spill-gib", "--mtp-drafts" };
 const spill = @import("metal_spill.zig");
 
 /// Every checkpoint-wide MLX affine width the per-module readers take (oQ quants): 2-8 bits but 7, groups 32-128.
@@ -133,6 +133,10 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
         problem.* = if (o.prompt_int8) prompt_int8_refusal else "--rope-yarn: the Metal engine has no YaRN rope; serve without --rope-yarn";
         return null;
     }
+    if (o.mtp_drafts) |n| if (n != 1 or !std.mem.eql(u8, o.model_type, "qwen3_5_moe") or o.drafter == null) {
+        problem.* = mtp_refusal;
+        return null;
+    };
     if (std.mem.eql(u8, o.model_type, "woof")) return @import("woof_host.zig").open(a, gpa, io, o, problem);
     if (std.mem.eql(u8, o.model_type, "fish_omni")) return @import("drama_open.zig").openMetal(a, gpa, io, o, problem);
     if (o.cfg_enabled or o.cfg_batched) {
@@ -279,6 +283,9 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
 
 const prompt_int8_refusal = "--prompt-precision int8 is the CUDA Qwen3.5 engine's; the Metal engines prompt in bf16: serve without it";
 
+/// --mtp-drafts on a Mac: Ornith's MTP layer, from the bf16 release --drafter names, one draft a lone stream's round.
+const mtp_refusal = "--mtp-drafts 1 drafts with a Qwen3.5-MoE checkpoint's MTP layer (Ornith-1.5-122B): --drafter names the bf16 release's folder holding its mtp.* shards; other Metal models serve without --mtp-drafts";
+
 /// Flash Next's replay engine copies on the GPU from its own history: it reads no Recall record yet.
 const recall_refusal = "--recall drafts from a record in the lane engine's rounds; " ++
     "Flash Next's replay engine copies from its own history on the GPU and reads no record yet: " ++
@@ -316,9 +323,10 @@ fn openQwen27(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[
         return null;
     }
     var why: []const u8 = "";
-    const drafter = if (o.drafts) o.drafter else null;
+    const mtp = o.drafts and o.mtp_drafts != null;
+    const drafter = if (o.drafts and !mtp) o.drafter else null;
     const learn: ?@import("qwen27_disk.zig").Learn = if (o.learn_conversations) if (o.learn) |root| .{ .root = root, .dir = o.dir, .drafter = drafter, .cap = gibBytes(o.learn_gib), .floor = gibBytes(o.learn_min_free_gib), .daily = gibBytes(o.learn_daily_gib), .spill = o.spill, .slots = spill.slots(o) } else null else null;
-    const h = qwen27.open(gpa, io, o.dir, .{ .context = @intCast(context), .streams = o.lanes, .streams_fixed = o.lanes_fixed, .drafter = drafter, .drafter_name = o.drafter_name, .drafter_bits = o.drafter_bits, .cache_gib = o.prompt_cache_gib, .cache_over_cap = o.prompt_cache_over_cap, .decode_share = o.decode_share, .learn = learn, .vision = o.vision }, a, &why) catch |err| {
+    const h = qwen27.open(gpa, io, o.dir, .{ .context = @intCast(context), .streams = o.lanes, .streams_fixed = o.lanes_fixed, .drafter = drafter, .drafter_name = o.drafter_name, .drafter_bits = o.drafter_bits, .mtp = if (mtp) o.drafter else null, .cache_gib = o.prompt_cache_gib, .cache_over_cap = o.prompt_cache_over_cap, .decode_share = o.decode_share, .learn = learn, .vision = o.vision }, a, &why) catch |err| {
         problem.* = if (why.len > 0) why else try std.fmt.allocPrint(a, "the native Qwen engine (27B class) cannot load {s} ({s})", .{ o.dir, @errorName(err) });
         return null;
     };

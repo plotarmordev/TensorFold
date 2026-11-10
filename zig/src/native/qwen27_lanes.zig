@@ -1,4 +1,5 @@
-//! The 27B's lane core backend: a stream a runner slot, shared rounds across slots, DFlash2 trees for slot 0.
+//! The 27B's lane core backend: a stream a runner slot, shared rounds across slots, DFlash2 trees for slot 0 or the
+//! checkpoint's MTP layer's one draft for a lone stream.
 const std = @import("std");
 const platform = @import("sys");
 const mtl = @import("metal");
@@ -46,6 +47,7 @@ pub const Metal = struct {
     tensor_units: bool = false, // the device capability used by startup and first-token policy
     runner: *q.decode_round.Runner,
     draft: ?*Draft,
+    mtp: ?*q.mtp.Drafter = null, // --mtp-drafts: the checkpoint's MTP layer drafts in place of DFlash2
     chunk: usize = 128, // prompt rows a pass
     window: u32 = 16, // the device per-stream verification width
     copies: bool = false, // lone context copies leave room past a 15-node tree
@@ -158,14 +160,14 @@ pub const Metal = struct {
 
     /// What the round loop reads at setup: slot 0's stream drafts trees; every stream verifies copies.
     pub fn facts(b: *const Metal) lanes.Model {
-        const drafting = b.draft != null;
+        const drafting = b.draft != null or b.mtp != null;
         const shared = b.runner.slots > 1;
         // Context copies remain opt-in until their served cost is qualified.
         const lone_copies = b.copies;
         const narrow: usize = @min(b.window, b.timed);
         // routed experts make a drafted window read most expert weights: plain rounds compete with drafted depths
         const routed = b.runner.model.config.moe();
-        return .{ .exact_width = if (drafting or shared) b.window else 1, .mtp = drafting, .speculate = drafting, .speculate_early = false, .drafts = b.nodes, .draft_probabilities = true, .plain_guard = routed, .window_costs = b.costs[0..narrow], .shared_costs = b.costs[narrow..b.timed], .hidden_rows = shared, .streams_exact = true, .batch_rows = if (shared) batch_rows else b.window, .max_streams = b.runner.slots, .lone_copies = lone_copies, .context_copies = lone_copies, .allocate_shared_drafts = drafting, .draft_streams = drafting and b.draft_slots > 1 };
+        return .{ .exact_width = if (drafting or shared) b.window else 1, .mtp = drafting, .speculate = drafting, .speculate_early = false, .drafts = b.nodes, .draft_probabilities = true, .plain_guard = routed, .window_costs = b.costs[0..narrow], .shared_costs = b.costs[narrow..b.timed], .hidden_rows = shared, .streams_exact = true, .batch_rows = if (shared) batch_rows else b.window, .max_streams = b.runner.slots, .lone_copies = lone_copies, .context_copies = lone_copies, .allocate_shared_drafts = b.draft != null, .draft_streams = b.draft != null and b.draft_slots > 1 };
     }
 
     /// The slot holding `s`.
@@ -182,8 +184,9 @@ pub const Metal = struct {
         return x.ring(d.model.graph.config);
     }
 
-    /// Whether `slot`'s stream drafts its own trees.
+    /// Whether `slot`'s stream drafts its own trees: every slot with the MTP layer, which drafts only a lone stream.
     pub fn draftsOwn(b: *const Metal, slot: u32) bool {
+        if (b.mtp != null) return true;
         if (b.draft == null) return false;
         if (slot == 0) return true;
         const x = b.contexts[slot] orelse return false;

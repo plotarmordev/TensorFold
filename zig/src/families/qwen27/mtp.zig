@@ -121,13 +121,14 @@ pub const Drafter = struct {
         d.scratch.deinit();
     }
 
-    /// After a target pass over `slot`'s last `next.len` rows, `next` holds each row's following token (the pass's ids
-    /// from the second on, then the target's pick); returns the layer's greedy draft of the token after `next`'s last.
+    /// After a target pass over `slot`'s last `next.len` rows (a verify's kept rows: the first of its tapped rows),
+    /// `next` holds each row's following token (the pass's ids from the second on, then the target's pick); returns
+    /// the layer's greedy draft of the token after `next`'s last. Rows the verify dropped never reach the layer's cache.
     pub fn step(d: *Drafter, slot: u32, next: []const u32) !u32 {
         const r = d.runner;
         if (slot >= r.ready) return error.RoundNotReady;
         const rows: u32 = @intCast(next.len);
-        if (rows == 0 or r.taps.rows != rows or rows > r.offsets[slot]) return error.TapsDiffer;
+        if (rows == 0 or r.taps.rows < rows or rows > r.offsets[slot]) return error.TapsDiffer;
         defer r.taps.begin(); // the taps are this step's: a second step without a target pass is refused
         var round = try Round.init(r.allocator, &.{.{ .slot = slot, .start = r.offsets[slot] - rows, .capacity = r.capacity, .ids = next }}, @intCast(r.model.config.conv_kernel), r.slots, @intCast(r.model.shard.global.vocab));
         defer round.deinit();
