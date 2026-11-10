@@ -29,13 +29,8 @@ def mtp_weights(folder, experts):
     return w
 
 
-def main(target_dir, mtp_dir, out_path):
-    model, tok = load(target_dir)
-    text = model.language_model.model
-    args = model.language_model.args
-    ids = tok.encode(PROMPT)
-    text.norm = lambda x: x  # the rows the head reads: the last layer's, before the final norm
-    hidden = text(mx.array([ids]))[0]
+def mtp_head(mtp_dir, args):
+    """The MTP layer as the engine loads it: (fc, block, norm), every matrix affine 4-bit g64; norm(x, name) gains `name`."""
     w = mtp_weights(mtp_dir, args.num_experts)
     layer = DecoderLayer(args, args.full_attention_interval - 1)
     layer.load_weights([(k[len("layers.0."):], v) for k, v in w.items() if k.startswith("layers.0.")])
@@ -44,9 +39,25 @@ def main(target_dir, mtp_dir, out_path):
     nn.quantize(layer, group_size=64, bits=4)
     fc = nn.QuantizedLinear.from_linear(fc, group_size=64, bits=4)  # nn.quantize skips a bare root module
     norm = lambda x, name: mx.fast.rms_norm(x, w[f"{name}.weight"], args.rms_norm_eps)
+    return fc, layer, norm
+
+
+def mtp_rows(text, head, hidden, nxt, cache=None):
+    """The layer's normed rows over one causal pass: row j reads hidden j beside token nxt[j]; `cache` its own K/V."""
+    fc, layer, norm = head
+    x = mx.concatenate([norm(text.embed_tokens(nxt), "pre_fc_norm_embedding"), norm(hidden, "pre_fc_norm_hidden")], axis=-1)
+    return norm(layer(fc(x)[None], mask="causal" if len(nxt) > 1 else None, cache=cache)[0], "norm")
+
+
+def main(target_dir, mtp_dir, out_path):
+    model, tok = load(target_dir)
+    text = model.language_model.model
+    args = model.language_model.args
+    ids = tok.encode(PROMPT)
+    text.norm = lambda x: x  # the rows the head reads: the last layer's, before the final norm
+    hidden = text(mx.array([ids]))[0]
     nxt = mx.array(ids[1:])
-    x = mx.concatenate([norm(text.embed_tokens(nxt), "pre_fc_norm_embedding"), norm(hidden[:-1], "pre_fc_norm_hidden")], axis=-1)
-    out = norm(layer(fc(x)[None], mask="causal")[0], "norm")
+    out = mtp_rows(text, mtp_head(mtp_dir, args), hidden[:-1], nxt)
     tensors = {"ids": nxt.astype(mx.uint32), "hidden": hidden[:-1].astype(mx.bfloat16), "out": out.astype(mx.bfloat16)}
     mx.save_safetensors(out_path, tensors)
     print(len(ids) - 1, "rows ->", out_path)
