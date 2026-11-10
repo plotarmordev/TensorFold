@@ -1,5 +1,7 @@
 # EXL3 encoder on Mac CPUs
 
-- Add `tf-exl3-encode`, a torch-free Zig CPU encoder for one FP32/FP64 NPY expert matrix and its full calibration Hessian at 2.0, 2.5, or 3.0 bits per weight.
-- Write an EXL3/mul1 safetensors group, reload it with the existing reader, verify bit-exact `dequantize()` reconstruction, and report plain-rounding/NVFP4 Hessian errors and 5,900-expert timing projections.
-- Cover circular bit packing, half-bit transitions, weighted-tile fallback, both full Drama 3 expert shapes, and reader/reconstruction equality.
+- Add `tf-exl3-encode`, a torch-free Zig CPU encoder for one FP32/FP64 NPY expert matrix and its full calibration Hessian at 2.0, 2.5, 3.0 or 4.0 bits per weight.
+- Close every tile's tail-biting trellis: a free beam over the tile turned by half picks the closing state, then a second beam forces the ring's wrapped bits to it. Tile rows run on all cores.
+- Give all-zero (pruned) output columns a tiny scale, so their codebook noise no longer swamps the live columns of their Hadamard block.
+- Write an EXL3/mul1 safetensors group, reload it with the existing reader, verify that `dequantize()` reproduces the encoder's own reconstruction from its chosen states bit for bit, and report plain-rounding/NVFP4 Hessian errors with timing.
+- `docs/recipes/exl3.md` records real Drama 3 expert errors beside NVFP4 at each bitrate, seconds per expert and the 5,900-expert projections, with card 32's Hessian format.
