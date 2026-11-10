@@ -127,6 +127,7 @@ pub const draft_ops = @import("draft_ops");
 
 pub const affine4 = @import("core/affine4.zig");
 pub const affine4_lane = @import("core/affine4_lane.zig");
+pub const affine4_host = @import("core/affine4_host.zig");
 
 pub const tree_round = @import("tree_round");
 pub const tree_round_gpu = @import("tree_round_gpu");
