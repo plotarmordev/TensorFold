@@ -6,7 +6,7 @@ Each prompt (chat items through the template, thinking off) and mlx-lm's greedy 
 engine's test feeds it: the prompt in one pass, then the reply a token a step, the target and the MTP layer
 (ornith_mtp_reference.mtp_head) each on its own K/V cache. After each target pass the layer reads its last-layer rows
 before the final norm beside each row's next token, and the target's head drafts from its last row: one draft a step,
-with its lead over the runner-up logit.
+as its top CANDIDATES token ids with their logits, best first.
 """
 import json
 import sys
@@ -20,6 +20,7 @@ from mlx_lm.models.cache import KVCache, make_prompt_cache
 from ornith_mtp_reference import mtp_head, mtp_rows
 
 STEPS = 128
+CANDIDATES = 8
 PROMPTS = Path(__file__).resolve().parents[1] / "bench_prompts.json"
 
 
@@ -37,7 +38,7 @@ def main(target_dir, mtp_dir, out_path):
         prompts.append(list(ids) + reply)
     text.norm = lambda x: x  # the rows the head reads: the last layer's, before the final norm
     head = mtp_head(mtp_dir, lm.args)
-    drafts, leads = [], []
+    drafts, logits_top = [], []
     for seq in prompts:
         prompt = len(seq) - STEPS
         cache, mtp_cache = make_prompt_cache(lm), KVCache()
@@ -46,14 +47,14 @@ def main(target_dir, mtp_dir, out_path):
             hidden = text(mx.array([seq[first:end]]), cache=cache)[0]
             row = mtp_rows(text, head, hidden, mx.array(seq[first + 1 : end + 1]), mtp_cache)[-1]
             logits = lm.lm_head(row).astype(mx.float32)
-            top = mx.sort(logits)[-2:]
-            drafts.append(mx.argmax(logits).astype(mx.uint32))
-            leads.append(top[1] - top[0])
+            top = mx.argsort(-logits)[:CANDIDATES]
+            drafts.append(top.astype(mx.uint32))
+            logits_top.append(logits[top])
     tensors = {
         "ids": mx.array([t for seq in prompts for t in seq], dtype=mx.uint32),
         "lengths": mx.array([len(seq) for seq in prompts], dtype=mx.uint32),
         "drafts": mx.stack(drafts),
-        "leads": mx.stack(leads),
+        "logits": mx.stack(logits_top),
     }
     mx.save_safetensors(out_path, tensors)
     print(len(prompts), "prompts,", len(prompts) * STEPS, "drafts ->", out_path)
