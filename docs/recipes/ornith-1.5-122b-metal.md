@@ -73,6 +73,15 @@ every one of its 11 rows matches TensorFold's at a cosine of 0.996 or better:
 TF_QWEN27_DIR=~/models/Ornith-1.5-122B-MLX-4bit TF_QWEN27_MTP_DIR=~/models/Ornith-1.5-122B-mtp zig build test-qwen27-mtp
 ```
 
+`qwen27.mtp.Drafter` runs the layer once a decode step: the runner taps the target's last layer before its final
+norm, and after each target pass the layer reads those rows beside each next token at the same cache rows, writing its
+keys and values to its own cache, then drafts through the target's head into its own logits row.
+`tools/zig/ornith_mtp_drafts.py` writes the second test's fixture: mlx-lm's greedy 128-token reply to each of
+`tools/bench_prompts.json`'s 16 prompts, and its MTP layer's draft at each step. Teacher-forced on those replies,
+TensorFold's 2,048 drafts equal mlx-lm's at 1,900; mlx-lm's own drafts one step at a time with a cache equal its
+whole-pass ones at 1,917. Every miss is within 3.4 logits of the reference's runner-up, and at both misses above
+1.5 mlx-lm's stepped drafts split from its whole pass as well.
+
 Plain serving does not load the layer and is unchanged: on fresh `--parallel 1 --no-drafts` servers, alternating
 `6d4811726` and this change twice, the 16 reference prompts' greedy 128-token replies are identical (2,048 token ids),
 and one stream decodes at 90.8 / 85.2 tok/s before and 88.4 / 85.3 tok/s after (`tools/bench_concurrent.py --levels 1`,
@@ -80,5 +89,6 @@ and one stream decodes at 90.8 / 85.2 tok/s before and 88.4 / 85.3 tok/s after (
 
 ## Not covered
 
-- MTP drafting. The layer loads and runs, but `serve` does not draft with it yet; plain serving does not load it.
+- MTP drafting in `serve`. The layer drafts once a step in the engine, but `serve` does not draft or verify with it
+  yet; plain serving does not load it.
 - Images, sampled replies and prompts longer than the bench's (under 50 tokens) were not measured here.
