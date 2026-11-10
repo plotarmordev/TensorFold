@@ -121,12 +121,13 @@ test "Ornith MTP drafts: once a step on the target's rows, its greedy drafts mat
             };
             const i = p * steps + k;
             same += @intFromBool(got == want[i]);
-            // a 4-bit MoE target's routing flips between kernels shift its rows by up to 4.1 nats (the Ornith recipe)
-            if (got != want[i]) try std.testing.expect(leads[i] < 4);
+            // bf16 kernels and 4-bit MoE routing flips only move picks the reference leads by under 3 logits (2.9 seen)
+            if (got != want[i]) try std.testing.expect(leads[i] < 3);
         }
         first += len;
     }
     try std.testing.expectError(error.TapsDiffer, drafter.step(0, ids[ids.len - 1 ..])); // no target pass since the last
-    // mlx-lm's own one-step-at-a-time drafts equal its whole-pass ones at 1,917 of 2,048 (93.6%)
-    try std.testing.expect(same * 100 >= want.len * 92);
+    try std.testing.expectError(error.RoundNotReady, drafter.step(runner.slots, ids[ids.len - 1 ..]));
+    // 1,912 of 2,048 seen; mlx-lm's own stepped and whole-pass drafts differ at 131
+    try std.testing.expect(same * 100 >= want.len * 93);
 }

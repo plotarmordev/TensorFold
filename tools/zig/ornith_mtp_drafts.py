@@ -2,10 +2,11 @@
 
 Usage: ornith_mtp_drafts.py MLX_4BIT_DIR BF16_MTP_DIR OUT.safetensors
 
-Each prompt (chat items through the template, thinking off) and mlx-lm's greedy 128-token continuation; over them the
-target's last-layer rows before its final norm, then the MTP layer (ornith_mtp_reference.mtp_head) in one causal pass
-and the target's head. Row j reads hidden j beside token j + 1 and drafts token j + 2: the drafts from the prompt's
-last row on, one a decode step, with each draft's lead over the runner-up logit.
+Each prompt (chat items through the template, thinking off) and mlx-lm's greedy 128-token continuation, fed as the
+engine's test feeds it: the prompt in one pass, then the reply a token a step, the target and the MTP layer
+(ornith_mtp_reference.mtp_head) each on its own K/V cache. After each target pass the layer reads its last-layer rows
+before the final norm beside each row's next token, and the target's head drafts from its last row: one draft a step,
+with its lead over the runner-up logit.
 """
 import json
 import sys
@@ -14,6 +15,7 @@ from pathlib import Path
 import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.generate import generate_step
+from mlx_lm.models.cache import KVCache, make_prompt_cache
 
 from ornith_mtp_reference import mtp_head, mtp_rows
 
@@ -37,17 +39,21 @@ def main(target_dir, mtp_dir, out_path):
     head = mtp_head(mtp_dir, lm.args)
     drafts, leads = [], []
     for seq in prompts:
-        hidden = text(mx.array([seq]))[0]
-        rows = mtp_rows(text, head, hidden[:-1], mx.array(seq[1:]))[len(seq) - STEPS - 1 :]
-        logits = lm.lm_head(rows).astype(mx.float32)
-        top = mx.sort(logits, axis=-1)[:, -2:]
-        drafts.append(mx.argmax(logits, axis=-1).astype(mx.uint32))
-        leads.append(top[:, 1] - top[:, 0])
+        prompt = len(seq) - STEPS
+        cache, mtp_cache = make_prompt_cache(lm), KVCache()
+        spans = [(0, prompt)] + [(prompt + k - 1, prompt + k) for k in range(1, STEPS)]
+        for first, end in spans:
+            hidden = text(mx.array([seq[first:end]]), cache=cache)[0]
+            row = mtp_rows(text, head, hidden, mx.array(seq[first + 1 : end + 1]), mtp_cache)[-1]
+            logits = lm.lm_head(row).astype(mx.float32)
+            top = mx.sort(logits)[-2:]
+            drafts.append(mx.argmax(logits).astype(mx.uint32))
+            leads.append(top[1] - top[0])
     tensors = {
         "ids": mx.array([t for seq in prompts for t in seq], dtype=mx.uint32),
         "lengths": mx.array([len(seq) for seq in prompts], dtype=mx.uint32),
-        "drafts": mx.concatenate(drafts),
-        "leads": mx.concatenate(leads),
+        "drafts": mx.stack(drafts),
+        "leads": mx.stack(leads),
     }
     mx.save_safetensors(out_path, tensors)
     print(len(prompts), "prompts,", len(prompts) * STEPS, "drafts ->", out_path)
