@@ -69,11 +69,6 @@ pub const Redraws = struct {
         return std.fmt.bufPrint(buf, "{d}", .{r.hollow orelse return null}) catch unreachable;
     }
 
-    /// The seed salt of a synthesis's attempt `k` (0 first, then its redraws): the server's salt plus `k`.
-    pub fn salt(base: i64, k: u8) i64 {
-        return base +% k;
-    }
-
     /// Whether a draw of `text` that ended `reason` with `samples` at `rate` trips: silence, or a short stop.
     pub fn trip(r: *const Redraws, reason: api.Reason, samples: usize, rate: u32, text: []const u8) ?Trip {
         if (reason == .silence) return .silence;

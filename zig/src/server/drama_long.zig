@@ -1,10 +1,11 @@
 //! Drama 3 long-form speech: an input cut at sentence ends into segments, each spoken after hearing those before it.
 const std = @import("std");
 const drama_prompt = @import("drama_prompt.zig");
+const drama_spans = @import("drama_spans.zig");
 const Reference = drama_prompt.Reference;
 const Allocator = std.mem.Allocator;
 
-/// --long-form's segments of at most `chars`, each hearing `history` before it; --shift-pause-s: seconds at each `¶`.
+/// --long-form's character target; indivisible controls may exceed it. `history` sets earlier segments heard.
 pub const Options = struct { chars: u32 = 500, history: u8 = 1, shift_pause_s: f32 = 0 };
 
 pub const max_history = 3;
@@ -14,13 +15,17 @@ pub const max_frames = 6000;
 
 /// Where text may be cut, coarsest first.
 const Level = enum { sentence, clause, space, any };
+const Protection = struct { base: [*]const u8, spans: []const drama_spans.Span };
 
-/// The input's segments: the fewest that fit `chars`, balanced, ending where the text turns (see `balance`).
+/// Balanced slices targeting `chars`, without cutting controls; an oversized control stays whole in its own slice.
 pub fn split(a: Allocator, input: []const u8, chars: u32) Allocator.Error![]const []const u8 {
+    const spans = try drama_spans.collect(a, input);
+    defer a.free(spans);
+    const protection: Protection = .{ .base = input.ptr, .spans = spans };
     var out: std.ArrayList([]const u8) = .empty;
     var run: std.ArrayList([]const u8) = .empty;
     var at: usize = 0;
-    while (nextPiece(input, &at, .sentence, chars)) |piece| {
+    while (nextPiece(input, &at, .sentence, chars, protection)) |piece| {
         if (count(piece) <= chars) {
             try run.append(a, piece);
             continue;
@@ -28,7 +33,7 @@ pub fn split(a: Allocator, input: []const u8, chars: u32) Allocator.Error![]cons
         try balance(a, &out, run.items, chars);
         run.clearRetainingCapacity();
         // a sentence over `chars` is cut at ``; : ,``, then spaces, then anywhere, into segments of its own
-        try pack(a, &out, piece, .clause, chars);
+        try pack(a, &out, piece, .clause, chars, protection);
     }
     try balance(a, &out, run.items, chars);
     return out.items;
@@ -106,15 +111,17 @@ pub fn gapBetween(left: []const u8, right: []const u8) []const u8 {
     return left.ptr[left.len .. @intFromPtr(right.ptr) - @intFromPtr(left.ptr)];
 }
 
-/// Packs `text`'s pieces at `level` greedily into segments of at most `chars`; a longer piece is cut one level finer.
-fn pack(a: Allocator, out: *std.ArrayList([]const u8), text: []const u8, level: Level, chars: u32) Allocator.Error!void {
+/// Packs free text within `chars`; the final level emits an oversized protected atom without splitting it.
+fn pack(a: Allocator, out: *std.ArrayList([]const u8), text: []const u8, level: Level, chars: u32, protection: Protection) Allocator.Error!void {
     var current: ?[]const u8 = null;
     var at: usize = 0;
-    while (nextPiece(text, &at, level, chars)) |piece| {
+    while (nextPiece(text, &at, level, chars, protection)) |piece| {
         if (count(piece) > chars) {
             if (current) |c| try out.append(a, c);
             current = null;
-            try pack(a, out, piece, @fromBackingInt(@intCast(@backingInt(level) + 1)), chars);
+            if (level == .any) {
+                try out.append(a, piece);
+            } else try pack(a, out, piece, @fromBackingInt(@intCast(@backingInt(level) + 1)), chars, protection);
         } else if (current) |c| {
             const joined = c.ptr[0 .. @intFromPtr(piece.ptr) + piece.len - @intFromPtr(c.ptr)];
             if (count(joined) <= chars) {
@@ -139,10 +146,11 @@ pub fn turns(left: []const u8, gap: []const u8, right: []const u8) bool {
 
 /// `text` ends in a question mark, closing quotes and brackets aside.
 pub fn question(text: []const u8) bool {
-    return lastMark(text) == '?';
+    const cp = lastMark(text);
+    return cp == '?' or cp == 0xff1f;
 }
 
-/// `text`, trailing white space, closing quotes and brackets aside, ends in `.` `!` `?` or `…`.
+/// `text`, trailing white space and closing quotes/brackets aside, ends in ASCII or CJK sentence punctuation.
 pub fn endsSentence(text: []const u8) bool {
     return terminal(lastMark(trim(text)) orelse return false);
 }
@@ -200,14 +208,18 @@ fn count(text: []const u8) usize {
     return std.unicode.utf8CountCodepoints(text) catch unreachable;
 }
 
-/// Ends a sentence when followed by white space or the end; closing quotes and brackets stay with it.
+/// ASCII or CJK sentence punctuation; ASCII additionally needs white space or the end at the split point.
 fn terminal(cp: u21) bool {
-    return cp == '.' or cp == '!' or cp == '?' or cp == 0x2026;
+    return cp == '.' or cp == '!' or cp == '?' or cp == 0x2026 or cjkTerminal(cp);
+}
+
+fn cjkTerminal(cp: u21) bool {
+    return cp == 0x3002 or cp == 0xff01 or cp == 0xff1f or cp == 0xff1b;
 }
 
 fn closer(cp: u21) bool {
     return switch (cp) {
-        '"', '\'', ')', ']', 0x201d, 0x2019, 0xbb => true,
+        '"', '\'', ')', ']', 0x201d, 0x2019, 0xbb, 0x300d, 0x300f, 0x3011, 0xff09 => true,
         else => false,
     };
 }
@@ -217,10 +229,10 @@ fn newline(cp: u21) bool {
 }
 
 /// The next non-empty piece of `text` from `at.*`, trimmed of white space, with `at.*` moved past it.
-fn nextPiece(text: []const u8, at: *usize, level: Level, chars: u32) ?[]const u8 {
+fn nextPiece(text: []const u8, at: *usize, level: Level, chars: u32, protection: Protection) ?[]const u8 {
     while (at.* < text.len) {
         const begin = at.*;
-        const end = cut(text, begin, level, chars);
+        const end = cut(text, begin, level, chars, protection);
         at.* = end;
         const piece = trim(text[begin..end]);
         if (piece.len > 0) return piece;
@@ -229,25 +241,45 @@ fn nextPiece(text: []const u8, at: *usize, level: Level, chars: u32) ?[]const u8
 }
 
 /// Where the piece starting at `begin` ends (its cut point, or the end of `text`).
-fn cut(text: []const u8, begin: usize, level: Level, chars: u32) usize {
+fn cut(text: []const u8, begin: usize, level: Level, chars: u32, protection: Protection) usize {
     var it = std.unicode.Utf8View.initUnchecked(text[begin..]).iterator();
     var seen: usize = 0;
-    while (it.nextCodepoint()) |cp| {
+    const offset = @intFromPtr(text.ptr) - @intFromPtr(protection.base);
+    var atom: usize = 0;
+    while (atom < protection.spans.len and protection.spans[atom].end <= offset + begin) atom += 1;
+    while (it.i < text.len - begin) {
+        const here = begin + it.i;
+        if (atom < protection.spans.len and protection.spans[atom].start == offset + here) {
+            const end = protection.spans[atom].end - offset;
+            const n = count(text[here..end]);
+            if (level == .any and seen > 0 and seen + n > chars) return here;
+            seen += n;
+            it.i = end - begin;
+            atom += 1;
+            if (level == .any and seen >= chars) return end;
+            continue;
+        }
+        const cp = it.nextCodepoint().?;
         seen += 1;
         switch (level) {
             .sentence => {
                 if (newline(cp)) return begin + it.i;
                 if (!terminal(cp)) continue;
                 var after = it;
+                var cjk = cjkTerminal(cp);
                 while (after.peek(1).len > 0) {
                     const next = std.unicode.utf8Decode(after.peek(1)) catch unreachable;
                     if (!terminal(next) and !closer(next)) break;
+                    cjk = cjk or cjkTerminal(next);
                     _ = after.nextCodepoint();
                 }
                 it = after;
-                if (endsWord(text[begin..], it.i)) return begin + it.i;
+                if (cjk or endsWord(text[begin..], it.i)) return begin + it.i;
             },
-            .clause => if ((cp == ';' or cp == ':' or cp == ',') and endsWord(text[begin..], it.i)) return begin + it.i,
+            .clause => {
+                const cjk = cp == 0xff0c or cp == 0xff1a or cp == 0x3001;
+                if (cjk or ((cp == ';' or cp == ':' or cp == ',') and endsWord(text[begin..], it.i))) return begin + it.i;
+            },
             .space => if (drama_prompt.isWhiteSpace(cp)) return begin + it.i,
             .any => if (seen == chars) return begin + it.i,
         }
@@ -388,7 +420,7 @@ test "no segment is ever longer than the limit, and there are never more than ne
         var greedy: usize = 0;
         var current: usize = 0;
         var at: usize = 0;
-        while (nextPiece(text.items, &at, .sentence, chars)) |piece| {
+        while (nextPiece(text.items, &at, .sentence, chars, .{ .base = text.items.ptr, .spans = &.{} })) |piece| {
             const n = count(piece);
             if (current > 0 and current + 1 + n <= chars) current += 1 + n else {
                 greedy += 1;
@@ -406,6 +438,56 @@ test "a sentence longer than the limit is cut at clause marks, then spaces, then
     try expectSplit("aaaa bbbb cccc dddd.", 9, &.{ "aaaa bbbb", "cccc", "dddd." });
     try expectSplit("abcdefghij k", 4, &.{ "abcd", "efgh", "ij", "k" });
     try expectSplit("\u{3042}\u{3044}\u{3046}\u{3048}\u{304a}", 2, &.{ "\u{3042}\u{3044}", "\u{3046}\u{3048}", "\u{304a}" });
+}
+
+test "protected chunks keep a paired direction whole when it exceeds the target" {
+    const input = "<whisper>One. Two. Three.</whisper>";
+    for ([_]u32{ 1, 20, input.len - 1, input.len }) |chars| try expectSplit(input, chars, &.{input});
+    try expectSplit("AB" ++ input ++ "CD", 2, &.{ "AB", input, "CD" });
+    try expectSplit("[laughs softly] Hello.", 10, &.{ "[laughs softly]", "Hello." });
+    try expectSplit("[laughs][pause]", 1, &.{ "[laughs]", "[pause]" });
+    try expectSplit("<|speaker:0|> ab", 1, &.{ "<|speaker:0|>", "a", "b" });
+}
+
+test "protected chunks preserve nested spans and recover after malformed openers" {
+    const nested = "<soft>One. <whisper>Two.</whisper> [pause] Three.</soft>";
+    try expectSplit(nested ++ " After.", 10, &.{ nested, "After." });
+    try expectSplit("<soft>one. two.", 10, &.{ "<soft>one.", "two." });
+    try expectSplit("[open <soft>Quiet.</soft>", 5, &.{ "[open", "<soft>Quiet.</soft>" });
+    try expectSplit("[outer [inner] tail] End.", 5, &.{ "[outer [inner] tail]", "End." });
+}
+
+test "protected chunks stay in the original input and only indivisible spans may exceed the target" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = "ab<soft>\u{4e59}\u{4e19}\u{4e01}\u{3002}</soft>cd [laughs softly] ef";
+    const spans = try drama_spans.collect(a, input);
+    for ([_]u32{ 1, 2, 7, 20 }) |chars| {
+        const got = try split(a, input, chars);
+        var end: usize = 0;
+        for (got) |segment| {
+            const start = @intFromPtr(segment.ptr) - @intFromPtr(input.ptr);
+            try std.testing.expect(start >= end and start + segment.len <= input.len);
+            try std.testing.expectEqual(@as(usize, 0), trim(input[end..start]).len);
+            end = start + segment.len;
+            if (count(segment) > chars) {
+                const whole = for (spans) |atom| {
+                    if (start == atom.start and end == atom.end) break true;
+                } else false;
+                try std.testing.expect(whole);
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 0), trim(input[end..]).len);
+    }
+}
+
+test "CJK sentence and clause punctuation does not need a following space" {
+    try expectSplit("\u{4f60}\u{597d}\u{3002}\u{4e16}\u{754c}\u{ff01}\u{518d}\u{89c1}\u{ff1f}\u{7ed3}\u{675f}\u{3002}", 6, &.{ "\u{4f60}\u{597d}\u{3002}\u{4e16}\u{754c}\u{ff01}", "\u{518d}\u{89c1}\u{ff1f}\u{7ed3}\u{675f}\u{3002}" });
+    try expectSplit("\u{7532}\u{4e59}\u{ff0c}\u{4e19}\u{4e01}\u{3001}\u{620a}\u{5df1}\u{ff1a}\u{5e9a}\u{8f9b}\u{3002}", 5, &.{ "\u{7532}\u{4e59}\u{ff0c}", "\u{4e19}\u{4e01}\u{3001}", "\u{620a}\u{5df1}\u{ff1a}", "\u{5e9a}\u{8f9b}\u{3002}" });
+    try expectSplit("\u{300c}\u{7532}\u{3002}\u{300d}\u{4e59}\u{ff1b}\u{4e19}\u{ff01}", 4, &.{ "\u{300c}\u{7532}\u{3002}\u{300d}", "\u{4e59}\u{ff1b}\u{4e19}\u{ff01}" });
+    try expectSplit("\u{7532}.\u{ff1f}\u{4e59}\u{3002}", 4, &.{ "\u{7532}.\u{ff1f}", "\u{4e59}\u{3002}" });
+    try std.testing.expect(question("\u{4f60}\u{597d}\u{ff1f}\u{300d}"));
 }
 
 test "the segments header lists where each segment after the first starts, and its largest value fits its buffer" {

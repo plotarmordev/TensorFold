@@ -19,7 +19,7 @@ fn passages() [3]Reference {
         const second = [_]Codes{.{ 20, 21, 22, 23, 24, 25, 26, 27, 28, 29 }};
         const own = [_]Codes{ .{ 30, 31, 32, 33, 34, 35, 36, 37, 38, 39 }, .{ 40, 41, 42, 43, 44, 45, 46, 47, 48, 49 }, .{ 7, 7, 7, 7, 7, 7, 7, 7, 7, 7 } };
     };
-    return .{ .{ .text = "The first passage.", .frames = &S.first }, .{ .text = "A second one, then.", .frames = &S.second }, .{ .text = "And the voice's own.", .frames = &S.own } };
+    return .{ .{ .text = "The first passage.", .frames = &S.first }, .{ .text = "<|speaker:15|> A second one, then.", .frames = &S.second }, .{ .text = "And the voice's own.", .frames = &S.own } };
 }
 
 /// The [codebooks, frames] grid as a voice file writes it.
@@ -94,7 +94,7 @@ test "a /2 voice builds the rows a request's references followed by a /1 voice b
     try expectRows(try rows(a, input, "null", own), try rows(a, input, "null", try load(a, try several(a, entries[2..]))));
 }
 
-test "a /2 file is refused for an empty list, a reference without its clip's digest, wrong codes or another speaker" {
+test "a /2 file is refused for an empty list, a reference without its clip's digest, wrong codes or a malformed tag" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -106,7 +106,7 @@ test "a /2 file is refused for an empty list, a reference without its clip's dig
         .{ try several(a, &.{ good, try fields(a, p[1], "") }), "references.1: audio_sha256 is not a clip's sha256 (64 lowercase hex digits)" },
         .{ try several(a, &.{ good, try fields(a, p[1], clip[1..] ++ "A") }), "references.1: audio_sha256 is not a clip's sha256 (64 lowercase hex digits)" },
         .{ try several(a, &.{ good, wrong }), "references.1: codes_sha256 does not match vq_codes" },
-        .{ try several(a, &.{try fields(a, .{ .text = "<|speaker:3|> x", .frames = p[0].frames }, clip)}), "references.0: Drama 3 request: only speaker 0 is supported; got speaker tags [3]" },
+        .{ try several(a, &.{try fields(a, .{ .text = "<|speaker:16|> x", .frames = p[0].frames }, clip)}), "references.0: Drama 3 request: text: speaker tags must be written" },
         .{ try std.mem.replaceOwned(u8, a, try several(a, &.{good}), "voice/2", "voice/3"), "format is not drama3-voice/1 or drama3-voice/2" },
         .{ try std.mem.replaceOwned(u8, a, try several(a, &.{good}), source, "null"), "source must say whose voice this is" },
     };

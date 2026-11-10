@@ -79,38 +79,9 @@ fn speakerId(digits: []const u8) ?u8 {
     return if (n <= max_speaker_id) n else null;
 }
 
-/// Why ``input`` (valid UTF-8) cannot be spoken, in the reference's words, or null when it can.
-/// The order is the reference's: other speakers first, then ``validate_caller_text``.
+/// Why input (valid UTF-8) cannot be spoken; canonical speaker tags 0..15 are accepted.
 pub fn problem(a: Allocator, input: []const u8) Allocator.Error!?[]const u8 {
-    if (try otherSpeakers(a, &.{input})) |message| return message;
     return callerText(a, input, "input");
-}
-
-/// speech_request.py's refusal of well-formed tags naming speakers other than 0 (malformed ones are the builder's).
-pub fn otherSpeakers(a: Allocator, texts: []const []const u8) Allocator.Error!?[]const u8 {
-    var others: u16 = 0;
-    for (texts) |text| {
-        var at: usize = 0;
-        while (std.mem.indexOfPos(u8, text, at, "<|speaker:")) |start| {
-            if (tagAt(text, start)) |tag| {
-                if (speakerId(tag.digits)) |n| if (n != 0) {
-                    others |= @as(u16, 1) << @intCast(n);
-                };
-                at = tag.end;
-            } else at = start + 1;
-        }
-    }
-    if (others == 0) return null;
-    var list: std.ArrayList(u8) = .empty;
-    try list.appendSlice(a, error_prefix ++ " only speaker 0 is supported; got speaker tags [");
-    var first = true;
-    for (1..max_speaker_id + 1) |n| if (others & (@as(u16, 1) << @intCast(n)) != 0) {
-        if (!first) try list.appendSlice(a, ", ");
-        try list.print(a, "{d}", .{n});
-        first = false;
-    };
-    try list.append(a, ']');
-    return list.items;
 }
 
 /// prompt.py's ``validate_caller_text(text, location)`` for valid UTF-8 ``text``.
@@ -132,6 +103,20 @@ pub fn callerText(a: Allocator, text: []const u8, location: []const u8) Allocato
 pub fn tagged(a: Allocator, input: []const u8) Allocator.Error![]const u8 {
     if (tagAt(trimStart(input), 0) != null) return input;
     return std.mem.concat(a, u8, &.{ "<|speaker:0|> ", input });
+}
+
+/// Continues checked text with the last speaker in its checked preceding text; keeps speaker 0 implicit.
+pub fn continued(a: Allocator, input: []const u8, preceding: []const u8) Allocator.Error![]const u8 {
+    if (tagAt(trimStart(input), 0) != null) return input;
+    var speaker: u8 = 0;
+    var at: usize = 0;
+    while (std.mem.indexOfPos(u8, preceding, at, "<|speaker:")) |start| {
+        const tag = tagAt(preceding, start).?;
+        speaker = speakerId(tag.digits).?;
+        at = tag.end;
+    }
+    if (speaker == 0) return input;
+    return std.fmt.allocPrint(a, "<|speaker:{d}|> {s}", .{ speaker, input });
 }
 
 /// The prompt's segments for a checked ``input`` (``problem`` returned null), each tokenized on its own.
@@ -205,6 +190,7 @@ test "speaker 0 tags untagged text; a leading tag after white space is kept" {
         .{ "\n<|speaker:0|> hi", "\n<|speaker:0|> hi" },
         .{ "\u{3000}<|speaker:0|> hi", "\u{3000}<|speaker:0|> hi" },
         .{ "a <|speaker:0|> b", "<|speaker:0|> a <|speaker:0|> b" },
+        .{ "a <|speaker:15|> b", "<|speaker:0|> a <|speaker:15|> b" },
         .{ "\x1c<|speaker:0|> hi", "<|speaker:0|> \x1c<|speaker:0|> hi" },
         .{ "\x1f", "<|speaker:0|> \x1f" },
     };
@@ -212,9 +198,14 @@ test "speaker 0 tags untagged text; a leading tag after white space is kept" {
         try std.testing.expect(try problem(a, c[0]) == null);
         try std.testing.expectEqualStrings(c[1], try tagged(a, c[0]));
     }
+    for (0..16) |id| {
+        const text = try std.fmt.allocPrint(a, "\u{3000}<|speaker:{d}|> First. <|speaker:0|> Reply.", .{id});
+        try std.testing.expect(try problem(a, text) == null);
+        try std.testing.expectEqualStrings(text, try tagged(a, text));
+    }
 }
 
-test "input the reference refuses" {
+test "empty input, malformed speaker tags and structural tokens are refused" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -223,9 +214,7 @@ test "input the reference refuses" {
         const message = (try problem(a, text)) orelse return error.TestUnexpectedResult;
         try std.testing.expect(std.mem.startsWith(u8, message, "Drama 3 request: input: speaker tags must be written <|speaker:N|> with N in 0..15 and no leading zero; got "));
     }
-    try std.testing.expectEqualStrings("Drama 3 request: only speaker 0 is supported; got speaker tags [1, 15]", (try problem(a, "<|speaker:15|> a <|speaker:1|> b <|speaker:1|> c <|speaker:0|> d")).?);
-    // other speakers are refused before malformed tags, as speech_request.py checks them first
-    try std.testing.expectEqualStrings("Drama 3 request: only speaker 0 is supported; got speaker tags [2]", (try problem(a, "<|speaker:2|> x <|speaker:01|>")).?);
+    try std.testing.expectStringStartsWith((try problem(a, "<|speaker:2|> x <|speaker:01|>")).?, error_prefix ++ " input: speaker tags must be written");
     for ([_][]const u8{ "", " ", "\u{3000}\u{2028}\t" }) |blank|
         try std.testing.expectEqualStrings("Drama 3 request: input: text must not be empty", (try problem(a, blank)).?);
     for (structural_tokens) |token| {
@@ -235,4 +224,15 @@ test "input the reference refuses" {
     for ([_][]const u8{ "<|semantic:", "<|semantic:12|>" }) |text| try std.testing.expect(try problem(a, text) != null);
     for ([_][]const u8{ "hi <|audio_separator|> there", "<|fim_prefix|> hi", "<|speaker:0|> current part<|endofturn|>next part" }) |content|
         try std.testing.expect(try problem(a, content) == null);
+}
+
+test "continued speech inherits the last tag, explicit tags override it, and speaker zero stays implicit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("<|speaker:15|> Next.", try continued(a, "Next.", "<|speaker:15|> First."));
+    try std.testing.expectEqualStrings("<|speaker:2|> Next.", try continued(a, "Next.", "<|speaker:15|> First. <|speaker:2|> Second."));
+    try std.testing.expectEqualStrings("\u{3000}<|speaker:1|> Next.", try continued(a, "\u{3000}<|speaker:1|> Next.", "<|speaker:15|> First."));
+    try std.testing.expectEqualStrings("Next.", try continued(a, "Next.", "First."));
+    try std.testing.expectEqualStrings("Next.", try continued(a, "Next.", "<|speaker:15|> First. <|speaker:0|> Second."));
 }

@@ -46,16 +46,13 @@ pub fn lower(cx: *Cx, input: []const u8, sent: Value, voice: []const Reference) 
             return cx.fail(.request, "unknown speech reference field: references.{d}.{s}", .{ i, key });
     }
     const a = cx.a;
-    const texts = try a.alloc([]const u8, 1 + items.len + voice.len);
-    texts[0] = input;
-    for (items, texts[1..][0..items.len], 0..) |item, *text, i| {
+    const texts = try a.alloc([]const u8, items.len);
+    for (items, texts, 0..) |item, *text, i| {
         // descriptor.get("text") or "": a falsy text is an empty transcript
         const t = item.get("text") orelse Value.null;
         text.* = if (!t.truthy()) "" else if (t == .string) t.string else return cx.fail(.request, prefix ++ " references.{d}.text must be a string", .{i});
         if (!std.unicode.utf8ValidateSlice(text.*)) return cx.fail(.request, prefix ++ " references.{d}.text must be valid UTF-8 text", .{i});
     }
-    for (voice, texts[1 + items.len ..]) |v, *text| text.* = v.text;
-    if (try drama_prompt.otherSpeakers(a, texts)) |message| return cx.refuse(message);
     const grids = try a.alloc(Grid, items.len);
     for (items, grids, 0..) |item, *g, i| {
         if (item.field("vq_codes")) |codes| {
@@ -67,7 +64,7 @@ pub fn lower(cx: *Cx, input: []const u8, sent: Value, voice: []const Reference) 
     const out = try a.alloc(Reference, items.len + voice.len);
     for (grids, out[0..items.len], 0..) |g, *reference, i| {
         const location = try std.fmt.allocPrint(a, "references.{d}", .{i});
-        reference.* = .{ .text = texts[1 + i], .frames = undefined };
+        reference.* = .{ .text = texts[i], .frames = undefined };
         if (try drama_prompt.callerText(a, try drama_prompt.tagged(a, reference.text), location)) |message| return cx.refuse(message);
         reference.frames = try frames(a, g) orelse return cx.refuse(try codesProblem(a, g, location));
     }
@@ -194,7 +191,7 @@ fn fileReference(a: Allocator, doc: Value, problem: *[]const u8) Allocator.Error
     const codes = if (g) |x| try frames(a, x) else null;
     if (!std.unicode.utf8ValidateSlice(text)) {
         problem.* = "text is not UTF-8";
-    } else if (try drama_prompt.otherSpeakers(a, &.{text}) orelse try drama_prompt.callerText(a, try drama_prompt.tagged(a, text), "text")) |message| {
+    } else if (try drama_prompt.callerText(a, try drama_prompt.tagged(a, text), "text")) |message| {
         problem.* = message;
     } else if (codes == null) {
         problem.* = "vq_codes is not a [10, frames] grid of codes in [0, 4096)";

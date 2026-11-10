@@ -8,6 +8,7 @@ const harness = @import("speech_stream_test.zig");
 const Served = harness.Served;
 
 const gpa = std.testing.allocator;
+pub const Sampling = struct { temperature: f32, top_p: f32, top_k: u32 };
 /// 1 kHz audio in 10-sample frames: a codec frame is one 10 ms join frame, and a sentence's pause is 420 samples.
 const rate = 1000;
 const frame = 10;
@@ -26,6 +27,7 @@ pub const Turns = struct {
     prompts: std.ArrayList([]const u32) = .empty,
     codes: std.ArrayList([]const drama_prompt.Codes) = .empty,
     seeds: std.ArrayList(u64) = .empty,
+    sampling: std.ArrayList(Sampling) = .empty,
     limits: std.ArrayList(u32) = .empty,
     generated: std.ArrayList(usize) = .empty,
     streamed: std.ArrayList(bool) = .empty,
@@ -54,6 +56,7 @@ pub const Turns = struct {
         t.prompts.append(a, a.dupe(u32, request.prompt) catch unreachable) catch unreachable;
         t.codes.append(a, a.dupe(drama_prompt.Codes, request.codes) catch unreachable) catch unreachable;
         t.seeds.append(a, request.seed) catch unreachable;
+        t.sampling.append(a, .{ .temperature = request.temperature, .top_p = request.top_p, .top_k = request.top_k }) catch unreachable;
         t.limits.append(a, request.max_frames) catch unreachable;
         t.generated.append(a, request.generated.len) catch unreachable;
         t.streamed.append(a, request.stream) catch unreachable;
@@ -110,9 +113,10 @@ pub fn body(a: std.mem.Allocator, input: []const u8, stream: bool) ![]const u8 {
 fn serve(t: *Turns, cfg: server.Config, request: []const u8) !struct { s: *Served, head: []const u8 } {
     const s = try gpa.create(Served);
     try s.startWith(t.engine(), cfg, "HTTP/1.1", request, 2000);
-    const head = try s.readHead();
+    const head_len = (try s.readHead()).len;
+    _ = try s.readRest(); // drain before joining: a whole reply can outgrow the socket's buffers
     s.route.join();
-    return .{ .s = s, .head = head };
+    return .{ .s = s, .head = s.got.items[0..head_len] };
 }
 
 pub fn done(s: *Served) void {
@@ -338,7 +342,7 @@ test "more than 12 segments are refused before any synthesis" {
     const r = try serve(&t, config(.{ .chars = 20 }), try body(a, try sentences(a, 13), false));
     defer done(r.s);
     try std.testing.expect(std.mem.indexOf(u8, r.head, " 400 ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, try r.s.readRest(), "Drama 3 request: a long-form input in 13 segments of at most 20 characters exceeds the maximum of 12 segments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try r.s.readRest(), "Drama 3 request: a long-form input in 13 segments targeting 20 characters exceeds the maximum of 12 segments") != null);
     try std.testing.expectEqual(@as(usize, 0), t.seen);
 }
 
@@ -381,5 +385,53 @@ test "a failure after the first segment ends a stream incomplete and a whole rep
         } else {
             try std.testing.expect(std.mem.indexOf(u8, r.head, "HTTP/1.1 500") != null and std.mem.indexOf(u8, rest, "scripted failure") != null);
         }
+    }
+}
+
+test "protected controls reach whole and streamed speech requests without a split inside them" {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var text: harness.Bytes = .{};
+    const cases = [_]struct { input: []const u8, first: []const u8, second: []const u8, chars: u32 }{
+        .{ .input = "<whisper>One. Two. Three.</whisper> After.", .first = "<whisper>One. Two. Three.</whisper>", .second = "After.", .chars = 20 },
+        .{ .input = "[laughs softly] Hello.", .first = "[laughs softly]", .second = "Hello.", .chars = 10 },
+        .{ .input = "<whisper>One. \u{b6} Two.</whisper> After.", .first = "<whisper>One. Two.</whisper>", .second = "After.", .chars = 20 },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |stream| {
+        var t: Turns = .{ .turns = &.{ .{ .frames = 3 }, .{ .frames = 4 } } };
+        defer t.deinit();
+        const options: drama_long.Options = .{ .chars = case.chars, .history = 0, .shift_pause_s = 0.5 };
+        const r = try serve(&t, config(options), try body(a, case.input, stream));
+        defer done(r.s);
+        try std.testing.expect(std.mem.indexOf(u8, r.head, "HTTP/1.1 200") != null);
+        const rest = try r.s.readRest();
+        try std.testing.expect(rest.len > 0);
+        try std.testing.expectEqual(@as(usize, 2), t.seen);
+        for ([_][]const u8{ case.first, case.second }, t.prompts.items) |segment, prompt|
+            try std.testing.expectEqualSlices(u32, try drama_prompt.encode(a, text.text(), segment), prompt);
+        try std.testing.expectEqualSlices(bool, &.{ stream, false }, t.streamed.items);
+        const metadata = if (stream) rest else r.s.got.items[0..r.head.len];
+        try std.testing.expect(std.mem.indexOf(u8, metadata, "X-Long-Form-Segments: 2;") != null);
+        try std.testing.expect(std.mem.indexOf(u8, metadata, "X-Pause-Spans:") == null);
+        if (stream) try std.testing.expect(std.mem.endsWith(u8, rest, "\r\n\r\n"));
+    };
+}
+
+test "an indivisible span above the character target still obeys the engine prompt ceiling" {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var text: harness.Bytes = .{};
+    const span = "<whisper>One. Two. Three.</whisper>";
+    const ceiling: u32 = @intCast((try drama_prompt.encode(a, text.text(), span)).len - 1);
+    for ([_][]const u8{ span, span ++ " After." }) |input| {
+        var t: Turns = .{ .turns = &.{}, .max_prompt = ceiling };
+        defer t.deinit();
+        const r = try serve(&t, config(.{ .chars = 1 }), try body(a, input, false));
+        defer done(r.s);
+        try std.testing.expect(std.mem.indexOf(u8, r.head, "HTTP/1.1 400") != null);
+        try std.testing.expect(std.mem.indexOf(u8, try r.s.readRest(), "exceeds the maximum allowed length") != null);
+        try std.testing.expectEqual(@as(usize, 0), t.seen);
     }
 }

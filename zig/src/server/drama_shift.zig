@@ -2,6 +2,7 @@
 const std = @import("std");
 const drama_prompt = @import("drama_prompt.zig");
 const drama_long = @import("drama_long.zig");
+const drama_spans = @import("drama_spans.zig");
 const drama_joins = @import("drama_joins.zig");
 const unicode = @import("tokenizer").unicode;
 const Allocator = std.mem.Allocator;
@@ -15,6 +16,9 @@ pub const Marked = struct { text: []const u8, cuts: []const usize = &.{}, droppe
 /// `input` without its marks and the white space after each; with `honour`, its cuts (`read`'s rule, in the docs).
 pub fn read(a: Allocator, input: []const u8, honour: bool) Allocator.Error!Marked {
     if (std.mem.indexOf(u8, input, mark) == null) return .{ .text = input };
+    const protected = if (honour) try drama_spans.collect(a, input) else &.{};
+    defer if (honour) a.free(protected);
+    var atom: usize = 0;
     var text: std.ArrayList(u8) = .empty;
     var cuts: std.ArrayList(usize) = .empty;
     var dropped: usize = 0;
@@ -28,6 +32,11 @@ pub fn read(a: Allocator, input: []const u8, honour: bool) Allocator.Error!Marke
             at = afterWhiteSpace(input, at + mark.len);
         }
         if (!honour) continue;
+        while (atom < protected.len and protected[atom].end <= found) atom += 1;
+        if (atom < protected.len and protected[atom].start < found) {
+            dropped += marks;
+            continue;
+        }
         // the segments either side: from the cut before, and up to the next mark
         const before = text.items[if (cuts.items.len > 0) cuts.items[cuts.items.len - 1] else 0..];
         const after = input[at .. std.mem.indexOfPos(u8, input, at, mark) orelse input.len];
@@ -64,7 +73,7 @@ fn hasWords(text: []const u8) bool {
 /// A long-form input's segments, and `shifts[i]` (empty without a cut): a mark stands right before segment i.
 pub const Segments = struct { segments: []const []const u8, shifts: []const bool = &.{} };
 
-/// `marked`'s segments of at most `chars`.
+/// `marked`'s segments targeting `chars`, keeping indivisible controls whole.
 pub fn split(a: Allocator, marked: Marked, chars: u32) Allocator.Error!Segments {
     if (marked.cuts.len == 0) return .{ .segments = try drama_long.split(a, marked.text, chars) };
     var segments: std.ArrayList([]const u8) = .empty;
@@ -208,6 +217,15 @@ test "a mark needs words on both sides: punctuation or cues alone are no segment
     try expectRead("One. \u{b6} !!! \u{b6} Two.", "One. !!! Two.", &.{9}, 1);
     // a cue may open the segment after a mark, before its words
     try expectRead("One. \u{b6} [small laugh] Two.", "One. [small laugh] Two.", &.{5}, 0);
+}
+
+test "topic shifts never cut protected spans, but a following ordinary shift still counts" {
+    try expectRead("<whisper>One. \u{b6} Two.</whisper>", "<whisper>One. Two.</whisper>", &.{}, 1);
+    try expectRead("[laughs. \u{b6} softly] End.", "[laughs. softly] End.", &.{}, 1);
+    const before = "<soft>One. <whisper>Two. Three.</whisper></soft> End. ";
+    try expectRead("<soft>One. <whisper>Two. \u{b6} Three.</whisper></soft> End. \u{b6} Next.", before ++ "Next.", &.{before.len}, 1);
+    try expectRead("<unclosed>One. \u{b6} Two.", "<unclosed>One. Two.", &.{15}, 0);
+    try expectRead("\u{4f60}\u{597d}\u{3002}\u{b6}\u{4e16}\u{754c}\u{3002}", "\u{4f60}\u{597d}\u{3002}\u{4e16}\u{754c}\u{3002}", &.{9}, 0);
 }
 
 test "words are Unicode letters and numbers; full-width punctuation and symbols are none" {

@@ -25,8 +25,8 @@ fn serve(t: *Turns, cfg: server.Config, deadline: ?[]const u8, request: []const 
     const first = if (deadline) |d| try std.fmt.bufPrint(&line, "POST /v1/audio/speech HTTP/1.1\r\nX-Deadline-S: {s}", .{d}) else "POST /v1/audio/speech HTTP/1.1";
     try s.open(t.engine(), cfg, first, request, 2000);
     _ = try s.readHead();
-    s.route.join();
     _ = try s.readRest();
+    s.route.join();
     // read whole first: reading more can move the bytes a head slice points into
     const all = s.got.items;
     return .{ .s = s, .head = all[0 .. std.mem.indexOf(u8, all, "\r\n\r\n").? + 4], .all = all };
