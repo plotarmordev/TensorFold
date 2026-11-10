@@ -28,8 +28,9 @@ Idle and peak health snapshots are in [health.txt](../receipts/ornith-122b-metal
 
 ## Speed
 
-Greedy, 256 tokens per request, `tools/bench_prompts.json`'s 16 prompts (code, chat and raw completion; request `i`
-takes prompt `i`), median of three. Each server was a fresh boot. "Peak" is `/health`'s `memory.peak` after the run.
+Greedy, 256 tokens per request, the first four of `tools/bench_prompts.json`'s 16 prompts (request `i` takes prompt
+`i`: `quicksort-raw`, `rust-reverse-words`, `multiply-17-23`, `sleep-tips`), median of three. Each server was a fresh
+boot. "Peak" is `/health`'s `memory.peak` after the run.
 
 | Drafts | Streams | Server | tok/s per stream | Aggregate tok/s | First token (median, max) | Tokens a round | Peak |
 | --- | ---: | --- | ---: | ---: | --- | ---: | ---: |

@@ -9,7 +9,6 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Native Underdog Woof speech on the CPU: `serve` a folder holding `woof_int8.npz` for 24 kHz `/v1/audio/speech` in Juno, Mira or `--voices DIR` prefixes, a sentence at a time with Woof's redraw of a take that stalls or runs long; it matches Woof's numpy runtime on fixed seeds. See [the Woof recipe](docs/recipes/woof.md); Woof's licence is non-commercial.
 - Qwen 4 day one: a `qwen4_moe` checkpoint (the expected Flash MoE tier) opens on the Flash Next Metal engine, and an MTP head declared only by `mtp_num_hidden_layers` is read as full-attention layers. [Day-one checklist](docs/recipes/qwen4-day-one.md) for pull, convert, fit, serve and measure on a Mac.
 - `zig build test test-golden` passes on a Mac without Xcode's Metal compiler: it warns once, embeds empty offline metallibs for the tests and still runs the Metal device checks; `native`, `drama3-generate`, `tf-metal-tests`, `tf-dispatch-bench` and `tf-kernel-exact` stop with `install Xcode`.
-- Drama3 CUDA replay waits for poison fills to finish before reset, prefill or decode reuses the buffers.
 - Register redraws that trip silence reenter the remaining silence retry pipeline before take selection, preserving the held audio and separate admission counts.
 - Docs: the optimization ledger's cells for #2011, #2162 and #2282 say they landed (#2431).
 
@@ -17,7 +16,6 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Nemotron Parse on HIP: NVIDIA's `nvidia/Nemotron-3.5-Parse` is served natively from its FP32 safetensors on a Radeon AI PRO R9700 (gfx1201), with its RADIO image tower, convolution neck and mBART decoder. The token arrays match the published example's on three pages, plain and drafted, solo and concurrent (#1941, part of #1927). Thanks to @laudney.
 
 - Developers: `test-glm-snapshots-host` runs under `test-cuda-host`, as GLM's other host steps do, so CI builds it and runs its 21 tests; its host-cache test sets `TF_GLM_HOST_CACHE` through `sys.env`, so it links on Windows too (#2426, refs #2031). Thanks to @Bizuayeu.
-- Conversation states on disk try one shorter compatible state after a refused read before prefilling from the start. Failed reads still name their error in the log.
 - Conversation states on disk try one shorter compatible state after a refused read before prefilling from the start. Failed reads still name their error in the log (#2442).
 
 - Internal: `families/glm/cuda_engine.zig` goes from 600 to 547 lines; GLM's CUDA chunk gate (`gate`, `shared`, `Wait`) lives in `cuda_engine_gate.zig`, unchanged (#2429).
@@ -67,7 +65,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Internal: the kernel contract's nvcc 13.0 resource records match what nvcc 13.0.88 builds for 57 CUDA kernels (226 per-SM slots), so the five-SM limits gate passes on main; no kernel, flag or launch changes (#2390).
 
 - Flash Next on CUDA: a prompt-cache mark inside a prompt chunk is kept on the way through the pass instead of cutting the pass there, so a new short prompt's first token comes 19% sooner on a GB10, with replies unchanged; `TF_FLASHNEXT_KEEP_INPASS=0` cuts the pass at the mark as before (#1866). Thanks to @Arminova.
-- Tests: `tf-moss-image-blocks` gates MOSS-Image's transformer block by block against the publisher's float32 run, within twice the spread of torch bf16's device and CPU runs, on Metal and CUDA (#2294, part of #1529).
+- Tests: `tf-moss-image-blocks` gates MOSS-Image's transformer block by block against the publisher's float32 run, within twice the spread of torch bf16's device and CPU runs, on Metal and CUDA (#2294, part of #1529). Thanks to @BobClawblaw.
 
 - Cluster: MCDMA bring-up on real hosts, step 2a of #1594 (#2088). Thanks to @ThinkOffApp.
 
