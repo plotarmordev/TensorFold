@@ -89,8 +89,16 @@ Plain serving does not load the layer and is unchanged: on fresh `--parallel 1 -
 and one stream decodes at 90.8 / 85.2 tok/s before and 88.4 / 85.3 tok/s after (`tools/bench_concurrent.py --levels 1`,
 256 tokens, three repetitions).
 
+`serve --mtp-drafts 1 --drafter ~/models/Ornith-1.5-122B-mtp` loads the layer and drafts with it in place of DFlash2:
+after each target pass over a lone stream's rows, the layer steps over the rows the verify kept and holds one draft,
+which the next round verifies beside the pending token. A refused draft's row is dropped before the layer steps, so its
+cache's next write starts at the kept end; prompt chunks step it too. Streams in shared rounds hold no draft.
+`zig build test-qwen27-mtp-lanes` (the same two variables) checks that drafted replies are plain decoding's tokens alone
+and four streams at once: alone, 47 of 48 drafts land over a 96-token reply, and the four-stream run's longest reply,
+drafting again once alone, keeps 20 of 20.
+
 ## Not covered
 
-- MTP drafting in `serve`. The layer drafts once a step in the engine, but `serve` does not draft or verify with it
-  yet; plain serving does not load it.
+- MTP drafts' speed in `serve`: they verify, and match plain decoding, but were not timed here. They draft for a lone
+  stream only; streams in shared rounds decode undrafted.
 - Images, sampled replies and prompts longer than the bench's (under 50 tokens) were not measured here.
