@@ -56,6 +56,7 @@ test {
     _ = @import("drama_cfg.zig");
     _ = @import("speech_cfg_test.zig");
     _ = @import("speech_long_test.zig");
+    _ = @import("speech_sampling_test.zig");
     _ = @import("speech_redraw.zig");
     _ = @import("speech_redraw_test.zig");
     _ = @import("speech_redraw_off_test.zig");
