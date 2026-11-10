@@ -168,6 +168,12 @@ const FakeHub = struct {
             fake.respond(conn, "[{\"type\": \"file\", \"path\": \"config.json\", \"size\": 27}]");
         } else if (std.mem.eql(u8, path, "/Org/Draft/resolve/ccccccccccccccccccccccccccccccccccccccc3/config.json")) {
             fake.respond(conn, "{\"model_type\": \"gemma3n\"}");
+        } else if (std.mem.eql(u8, path, "/api/models/Org/Moe/revision/main")) {
+            fake.respond(conn, "{\"sha\": \"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee5\"}");
+        } else if (std.mem.eql(u8, path, "/api/models/Org/Moe/tree/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee5")) {
+            fake.respond(conn, "[{\"type\": \"file\", \"path\": \"config.json\", \"size\": 26}]");
+        } else if (std.mem.eql(u8, path, "/Org/Moe/resolve/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee5/config.json")) {
+            fake.respond(conn, "{\"model_type\":\"qwen4_moe\"}");
         } else if (std.mem.eql(u8, path, "/api/models/Org/DFlash/revision/main")) {
             fake.respond(conn, "{\"sha\": \"ddddddddddddddddddddddddddddddddddddddd4\"}");
         } else if (std.mem.eql(u8, path, "/api/models/Org/DFlash/tree/ddddddddddddddddddddddddddddddddddddddd4")) {
@@ -350,6 +356,11 @@ test "pull downloads, verifies, retries a cut body, resumes and refuses a family
     try std.testing.expectEqual(@as(u8, 1), try pull.run(a, io, &refused_out.writer, &refused_err.writer, &env, root, "Org/Draft"));
     try std.testing.expect(std.mem.indexOf(u8, refused_err.written(), "model_type gemma3n") != null);
     try std.testing.expect(std.mem.indexOf(u8, refused_err.written(), "tensorfold@0.6") != null);
+
+    // Qwen 4's Flash MoE tier is admitted as Flash Next.
+    var moe_out: std.Io.Writer.Allocating = .init(a);
+    try std.testing.expectEqual(@as(u8, 0), try pull.run(a, io, &moe_out.writer, &err_out.writer, &env, root, "Org/Moe"));
+    try std.testing.expect(std.mem.indexOf(u8, moe_out.written(), "Org/Moe: Qwen3.8 Flash Next (qwen4_exp)") != null);
 
     // A DFlash2 drafter repo comes down for serve --drafter although no family serves its model_type.
     var drafter_out: std.Io.Writer.Allocating = .init(a);

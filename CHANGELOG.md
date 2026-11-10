@@ -4,6 +4,10 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Woof's tests and `tf-woof-bench` build on Linux too, and Woof speaks from the CUDA binary on a DGX Spark's CPU with no GPU: on 8 of its cores, the 24-text bench runs at a real-time factor of 0.051 (Juno) and 0.063 (Mira). The default thread count takes every core the affinity mask shows, not a container's CPU quota; see [Linux figures](docs/recipes/woof.md#linux-figures).
+- Woof runs each frame on the performance cores (12 on an M5 Ultra), with the same samples at any thread count. On the 24-text English bench (Juno and Mira, seed 0), against Woof's own numpy runtime on the same Mac, the real-time factor goes from 0.0595 to 0.0426 (1.4x) for Juno and 0.0683 to 0.0547 (1.25x) for Mira; median first audio from 0.19 to 0.15 s and 0.33 to 0.20 s. `tools/zig/woof_numpy_bench.py` times the numpy side; see [the Woof recipe](docs/recipes/woof.md#mac-figures).
+- Native Underdog Woof speech on the CPU: `serve` a folder holding `woof_int8.npz` for 24 kHz `/v1/audio/speech` in Juno, Mira or `--voices DIR` prefixes, a sentence at a time with Woof's redraw of a take that stalls or runs long; it matches Woof's numpy runtime on fixed seeds. See [the Woof recipe](docs/recipes/woof.md); Woof's licence is non-commercial.
+- Qwen 4 day one: a `qwen4_moe` checkpoint (the expected Flash MoE tier) opens on the Flash Next Metal engine, and an MTP head declared only by `mtp_num_hidden_layers` is read as full-attention layers. [Day-one checklist](docs/recipes/qwen4-day-one.md) for pull, convert, fit, serve and measure on a Mac.
 - `zig build test test-golden` passes on a Mac without Xcode's Metal compiler: it warns once, embeds empty offline metallibs for the tests and still runs the Metal device checks; `native`, `drama3-generate`, `tf-metal-tests`, `tf-dispatch-bench` and `tf-kernel-exact` stop with `install Xcode`.
 - Drama3 CUDA replay waits for poison fills to finish before reset, prefill or decode reuses the buffers.
 - Register redraws that trip silence reenter the remaining silence retry pipeline before take selection, preserving the held audio and separate admission counts.
@@ -63,6 +67,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Internal: the kernel contract's nvcc 13.0 resource records match what nvcc 13.0.88 builds for 57 CUDA kernels (226 per-SM slots), so the five-SM limits gate passes on main; no kernel, flag or launch changes (#2390).
 
 - Flash Next on CUDA: a prompt-cache mark inside a prompt chunk is kept on the way through the pass instead of cutting the pass there, so a new short prompt's first token comes 19% sooner on a GB10, with replies unchanged; `TF_FLASHNEXT_KEEP_INPASS=0` cuts the pass at the mark as before (#1866). Thanks to @Arminova.
+- Tests: `tf-moss-image-blocks` gates MOSS-Image's transformer block by block against the publisher's float32 run, within twice the spread of torch bf16's device and CPU runs, on Metal and CUDA (#2294, part of #1529).
 
 - Tests: `tf-moss-image-blocks` gates MOSS-Image's transformer block by block against the publisher's float32 run, within twice the spread of torch bf16's device and CPU runs, on Metal and CUDA (#2294, part of #1529). Thanks to @BobClawblaw.
 
@@ -147,6 +152,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - HIP builds and loads its runtime on Windows: `hipcc.exe` is preferred and `hipcc.bat` is found through `-Dhipcc`, `PATH` or `HIP_PATH`/`ROCM_PATH` and run through `cmd /c call`, `check-native-hip-host` compiles for the host OS instead of always `linux-gnu`, the runtime is loaded by its Windows names (`amdhip64.dll` and the versioned ones, `TENSORFOLD_HIP` overrides), the admission budget comes from the driver where `/proc/meminfo` and sysfs do not exist, the optional libraries use their Windows names (cuBLAS had been looking for `libcublas.so.13`), and the cooperative grid test runs plain where the driver reports no cooperative launch support (ROCm/HIP#3640) (#2178). Thanks to @ElderOrb.
 
 - HIP: the decode round's residual-add and norm tail issues each row's loads before its branches, and a MoE tail loads its slots' rows together, with output bytes unchanged. On a gfx1151, one-stream decode is 2.7% faster on Qwen3.6-35B-A3B and 1.1% on the 27B. `tf_tail` is now under the kernel contract (#2247). Thanks to @AbrahamCete.
+- Qwen3.8-27B on Metal: a round's keep that fails part way (an allocation, a refused keep or path) returns its error instead of aborting the process on an unended command encoder, and after a failed allocation the round can keep again; `tf-qwen27-keep-error` fails each of the keep's allocations in turn and refuses a path after the encoder has ended (#2376). Thanks to @jschmied.
 
 - Qwen3.8-27B on Metal: a round's keep that fails part way (an allocation, a refused keep or path) returns its error instead of aborting the process on an unended command encoder, and after a failed allocation the round can keep again; `tf-qwen27-keep-error` fails each of the keep's allocations in turn and refuses a path after the encoder has ended (#2376). Thanks to @jschmied.
 
@@ -155,6 +161,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Docs: the pull request pre-flight asks a PR that adds, finishes or drops a family's optimization to update that family's cell in the optimization ledger (#2243). Thanks to @jschmied.
 
 - Server: a refused `--api-key-file` logs the path it was given, the mode the file system reported and which test failed, once at startup and once when a reload is refused (#2365). Thanks to @Whq02.
+- CLI: `tensorfold models --json` prints the cached checkpoints as one document (`schema` 1, each checkpoint's `repo`, `family` and `model_type`); the lines are unchanged (#2364). Thanks to @Whq02.
 
 - CLI: `tensorfold models --json` prints the cached checkpoints as one document (`schema` 1, each checkpoint's `repo`, `family` and `model_type`); the lines are unchanged (#2364). Thanks to @Whq02.
 
@@ -206,6 +213,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Docs: `docs/hermes-agent.md` shows how to use TensorFold from Hermes Agent through the community [hermes-tensorfold](https://github.com/atakann/hermes-tensorfold) plugin (a model provider and a dashboard tab), checked on a GB10 with Qwen3.8-Flash-Next (#2330, part of #2109). Thanks to @atakann.
 
 - Qwen3.5 and Qwen3.6 on CUDA: KV pool pages stay opt-in (`TF_QWEN_KV_PAGES=256`), dense and MoE alike; unset keeps a window each, as before, and `TF_QWEN_KV_PAGES_ALL` unset still leaves the engine's own stream a window. With pages set, `--parallel` is a cap rather than a reservation: a request can wait for pages instead of every stream holding a full-context window. Paged prompt attention stages a chunk's page ids in shared memory, a decode thread looks its page up once a page, and a paged prompt-cache save or restore copies one 2D block a page. Replies are the same tokens on pages and windows (#2011, part of #1943). Thanks to @jschmied.
+- Tests: the pull client's security tests build and run on Windows, on a portable fake hub, and CI runs them there
+  (#2284). Thanks to @ElderOrb.
 
 - Tests: the pull client's security tests build and run on Windows, on a portable fake hub, and CI runs them there
   (#2284). Thanks to @ElderOrb.

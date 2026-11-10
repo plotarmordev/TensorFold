@@ -203,6 +203,7 @@ pub fn metalTargets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     b.getInstallStep().dependOn(&b.addInstallFile(drama3_lib, "lib/drama3.metallib").step);
     const drama3_embed = if (shaders) drama3_lib else no_shaders;
     drama3_build.addNative(b, target, optimize, metal, engines, drama3_embed);
+    @import("woof.zig").addNative(b, target, optimize, engines, @import("woof.zig").core(b, target, optimize, mods.engine));
     drama3_build.targets(b, target, optimize, metal, drama3_embed, test_step, no_compiler);
 
     const programs = [_]struct { name: []const u8, path: []const u8, about: []const u8 }{
@@ -573,6 +574,7 @@ pub fn distMetalServer(b: *std.Build, target: std.Build.ResolvedTarget, draft_id
     drama3_build.addNative(b, target, .fast, m.metal, engines, drama3_build.metallib(b, mlxMetalStd(b)));
     engines.addImport("kimi_k3", kimiModule(b, target, .fast, m.metal, m.engine, m.lanes));
     engines.addImport("kimi_metallib", embedded(b, kimiMetallib(b, &flags), "kimi.metallib"));
+    @import("woof.zig").addNative(b, target, .fast, engines, @import("woof.zig").core(b, target, .fast, m.engine));
     return nativeServer(b, target, .fast, m.metal, m.engine, m.living, api, engines, build_options, null, null);
 }
 

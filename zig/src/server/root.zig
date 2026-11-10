@@ -77,6 +77,7 @@ test {
     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_lane_release_test.zig");
     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_speakers_test.zig");
     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_sampling_test.zig");
+    if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_voices_test.zig");
     _ = @import("drama_voice_tool.zig");
     _ = @import("speech_redraw.zig");
     if (comptime @import("builtin").os.tag != .windows) _ = @import("speech_redraw_test.zig"); // over a Unix socket pair

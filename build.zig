@@ -171,6 +171,8 @@ pub fn build(b: *std.Build) void {
         .linux, .windows => cuda_build.targets(b, target, optimize, draft_ids, build_options, cuda_options),
         else => {},
     }
+    // Woof is CPU only: its tests and bench run on any host the CUDA binary links it on, Linux included
+    if (b.graph.host.result.os.tag != .windows) @import("zig/build/woof.zig").targets(b, test_step);
     @import("zig/build/gemma4_backward.zig").tests(b, test_step);
     const gemma4_host_sources = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/sources.zig"), .target = b.graph.host });
     gemma4_host_sources.addAnonymousImport("nemotron_packed_metallib", .{ .root_source_file = b.addWriteFiles().add("gemma4-host-empty.metallib", "") });

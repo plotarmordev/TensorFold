@@ -1,0 +1,229 @@
+//! Underdog Woof (Underdog Non-Commercial License 1.0): English text to 24 kHz speech on the CPU from int8 checkpoint.
+const std = @import("std");
+const npy = @import("core").npy;
+const Npz = @import("npz.zig").Npz;
+const Loader = @import("weights.zig").Loader;
+const Randn = @import("rng.zig").Randn;
+const text = @import("text.zig");
+const speech = @import("speech.zig");
+const Speech = speech.Speech;
+const Decoder = @import("decoder.zig").Decoder;
+const Pool = @import("pool.zig").Pool;
+
+const weights_file = "woof_int8.npz";
+pub const sample_rate: u32 = 24000;
+pub const frame_length: u32 = 960;
+/// Frames one request may write: about eight minutes.
+pub const max_frames: u32 = 12000;
+/// Frames one piece may take (the checkpoint's max_frames); fewer when its text fills the speech model's positions.
+const piece_frames = 750;
+/// Characters one piece may hold: at the redraw check's slowest pace its speech fills no more than the piece's frames.
+const piece_chars: usize = @intFromFloat(@as(f64, piece_frames * frame_length / sample_rate) / max_seconds_per_char);
+comptime {
+    std.debug.assert(speech.voice_rows + piece_chars + 2 + piece_frames <= speech.max_len); // prefix, then every frame
+}
+const builtin_voices = [_][]const u8{ "juno", "mira" };
+
+/// Runtime defaults: flow temperature, end probability, and the redraw check (seconds a character, silence, takes).
+const temperature: f32 = 0.5;
+const end_probability = 0.9;
+const max_seconds_per_char = 0.095;
+const stall_seconds = 1.0;
+const redraws = 3;
+
+pub const Progress = struct { ctx: *anyopaque, piece: *const fn (ctx: *anyopaque, samples: usize) bool };
+pub const Reason = enum { stop, length, cancelled };
+pub const Spoken = struct { samples: usize, reason: Reason };
+
+pub const Model = struct {
+    arena: std.heap.ArenaAllocator,
+    gpa: std.mem.Allocator,
+    speech: Speech,
+    decoder: Decoder,
+    pool: Pool,
+    mean: []const f32,
+    std: []const f32,
+    voice_names: []const []const u8,
+    voices: []const []const f32,
+    latents: [][speech.latent]f32,
+    takes: [2][]f32,
+
+    /// `dir`/woof_int8.npz + `voices_dir`/NAME.npy as voice NAME; `threads` run each frame, 0 for performance cores.
+    pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, voices_dir: ?[]const u8, threads: usize) !*Model {
+        const m = try gpa.create(Model);
+        errdefer gpa.destroy(m);
+        m.* = .{ .arena = .init(gpa), .gpa = gpa, .speech = undefined, .decoder = undefined, .pool = undefined, .mean = &.{}, .std = &.{}, .voice_names = &.{}, .voices = &.{}, .latents = &.{}, .takes = undefined };
+        errdefer m.arena.deinit();
+        const a = m.arena.allocator();
+        const path = try std.fs.path.join(gpa, &.{ dir, weights_file });
+        defer gpa.free(path);
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(256 << 20));
+        defer gpa.free(bytes);
+        var l: Loader = .{ .z = try Npz.open(bytes), .a = a, .tmp = gpa };
+        m.speech = try Speech.load(&l);
+        m.decoder = try Decoder.load(&l);
+        m.mean = try l.floats(speech.latent, "mean", .{});
+        m.std = try l.floats(speech.latent, "std", .{});
+        var names: std.ArrayList([]const u8) = .empty;
+        var voices: std.ArrayList([]const f32) = .empty;
+        for (builtin_voices) |name| {
+            try names.append(a, name);
+            try voices.append(a, try l.floats(speech.voice_rows * speech.d, "voices.{s}", .{name}));
+        }
+        if (voices_dir) |vd| try catalog(a, io, vd, &names, &voices);
+        m.voice_names = names.items;
+        m.voices = voices.items;
+        m.latents = try a.alloc([speech.latent]f32, piece_frames);
+        for (&m.takes) |*t| t.* = try a.alloc(f32, piece_frames * frame_length);
+        try m.pool.init(a, io, threads);
+        return m;
+    }
+
+    pub fn deinit(m: *Model) void {
+        m.pool.deinit(m.arena.allocator());
+        m.arena.deinit();
+        m.gpa.destroy(m);
+    }
+
+    /// Speaks `input` (code points) in `voice` into pcm, a piece at a time; the seed fixes every draw.
+    pub fn speak(m: *Model, input: []const u32, voice: u32, seed: u64, pcm: []f32, progress: Progress) !Spoken {
+        var scratch = std.heap.ArenaAllocator.init(m.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const split = try text.split(a, input);
+        var rng = Randn.init(seed);
+        var at: usize = 0;
+        var reason: Reason = .stop;
+        for (try text.fit(a, if (split.len == 0) &.{input} else split, piece_chars)) |piece| {
+            const take = try m.bestTake(a, try text.encode(a, piece), piece.len, voice, &rng);
+            if (take.pcm.len > pcm.len - at) return .{ .samples = at, .reason = .length };
+            @memcpy(pcm[at..][0..take.pcm.len], take.pcm);
+            at += take.pcm.len;
+            if (take.capped) reason = .length;
+            if (!progress.piece(progress.ctx, at)) return .{ .samples = at, .reason = .cancelled };
+        }
+        return .{ .samples = at, .reason = reason };
+    }
+
+    /// First take that neither stalls nor runs long, else the best of 1 + redraws; `capped` when it filled the frames.
+    fn bestTake(m: *Model, a: std.mem.Allocator, ids: []const u32, chars: usize, voice: u32, rng: *Randn) !struct { pcm: []const f32, capped: bool } {
+        var best: ?struct { take: Take, slot: usize, len: usize } = null;
+        var slot: usize = 0;
+        for (0..1 + redraws) |_| {
+            const n = m.speech.generate(&m.pool, m.voices[voice], ids, rng, temperature, end_probability, m.latents);
+            for (m.latents[0..n]) |*f| for (f, m.std, m.mean) |*z, s, u| {
+                z.* = z.* * s + u;
+            };
+            const wav = m.takes[slot][0 .. n * frame_length];
+            try m.decoder.run(&m.pool, a, m.latents[0..n], wav);
+            const take = Take.judge(wav, chars);
+            if (best == null or take.better(best.?.take)) {
+                best = .{ .take = take, .slot = slot, .len = wav.len };
+                slot = 1 - slot;
+            }
+            if (take.bad == 0) break;
+        }
+        return .{ .pcm = m.takes[best.?.slot][0..best.?.len], .capped = best.?.take.capped };
+    }
+};
+
+/// The redraw check on one take: bad counts a stall, then a slow pace or all of the piece's frames used (`capped`).
+const Take = struct {
+    bad: u2,
+    run: f64,
+    pace: f64,
+    capped: bool,
+
+    fn judge(wav: []const f32, chars: usize) Take {
+        const run = text.stall(wav, sample_rate);
+        const pace = @as(f64, @floatFromInt(wav.len)) / sample_rate / @as(f64, @floatFromInt(@max(1, chars)));
+        const capped = wav.len >= piece_frames * frame_length;
+        return .{ .bad = @as(u2, @intFromBool(run >= stall_seconds)) + @intFromBool(pace > max_seconds_per_char or capped), .run = run, .pace = pace, .capped = capped };
+    }
+
+    /// Fewer faults, then the shorter stall, then the quicker pace.
+    fn better(x: Take, y: Take) bool {
+        if (x.bad != y.bad) return x.bad < y.bad;
+        if (x.run != y.run) return x.run < y.run;
+        return x.pace < y.pace;
+    }
+};
+
+fn catalog(a: std.mem.Allocator, io: std.Io, path: []const u8, names: *std.ArrayList([]const u8), voices: *std.ArrayList([]const f32)) !void {
+    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    defer dir.close(io);
+    var found: std.ArrayList([]const u8) = .empty;
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".npy")) continue;
+        try found.append(a, try a.dupe(u8, entry.name));
+    }
+    std.mem.sort([]const u8, found.items, {}, struct {
+        fn lt(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lt);
+    for (found.items) |file| {
+        const name = file[0 .. file.len - 4];
+        for (names.items) |n| if (std.mem.eql(u8, n, name)) return error.DuplicateVoice;
+        const arr = try npy.parse(try dir.readFileAlloc(io, file, a, .limited(1 << 20)));
+        if (!std.mem.eql(u8, arr.descr, "<f4") or arr.rank != 2 or arr.shape[0] != speech.voice_rows or arr.shape[1] != speech.d) return error.BadVoice;
+        const v = try a.alloc(f32, speech.voice_rows * speech.d);
+        for (v, 0..) |*x, i| x.* = @bitCast(std.mem.readInt(u32, arr.data[i * 4 ..][0..4], .little));
+        try names.append(a, name);
+        try voices.append(a, v);
+    }
+}
+
+test "take: all of a piece's frames is capped and redrawn; an end of speech within them completes" {
+    var tone: [piece_frames * frame_length]f32 = undefined;
+    for (&tone, 0..) |*x, i| x.* = 0.1 * @sin(@as(f32, @floatFromInt(i)) * 0.05);
+    // at 400 characters both paces are quick, so only the cap tells the takes apart
+    const full = Take.judge(&tone, 400);
+    try std.testing.expect(full.capped and full.bad == 1);
+    const ended = Take.judge(tone[0 .. (piece_frames - 1) * frame_length], 400);
+    try std.testing.expect(!ended.capped and ended.bad == 0);
+    try std.testing.expect(ended.better(full) and !full.better(ended));
+}
+
+test "speak (TF_WOOF_DIR, seed 7): length once every take of a piece hit its cap, even before a piece that ends; else stop" {
+    const dir = std.mem.span(std.c.getenv("TF_WOOF_DIR") orelse return error.SkipZigTest);
+    const gpa = std.testing.allocator;
+    const m = try Model.load(gpa, std.testing.io, dir, null, 0);
+    defer m.deinit();
+    const pcm = try gpa.alloc(f32, 2 * piece_frames * frame_length);
+    defer gpa.free(pcm);
+    const cap = piece_frames * frame_length;
+    const capped = comptime blk: { // "ha ha ... ha.": no draw ends it within the piece's frames
+        var s: [300]u8 = undefined;
+        for (0..100) |i| s[3 * i ..][0..3].* = "ha ".*;
+        s[299] = '.';
+        break :blk s;
+    };
+    const ended = "Your order ships on March third.";
+    const normal = try say(m, ended, pcm);
+    try std.testing.expect(normal.reason == .stop and normal.samples < cap);
+    const exhausted = try say(m, &capped, pcm);
+    try std.testing.expect(exhausted.reason == .length and exhausted.samples == cap);
+    const then_ended = try say(m, &capped ++ " " ++ ended, pcm);
+    try std.testing.expect(then_ended.reason == .length and then_ended.samples > cap);
+}
+
+fn say(m: *Model, ascii: []const u8, pcm: []f32) !Spoken {
+    var input: [512]u32 = undefined;
+    for (ascii, input[0..ascii.len]) |c, *x| x.* = c;
+    const go = struct {
+        fn on(_: *anyopaque, _: usize) bool {
+            return true;
+        }
+    }.on;
+    return m.speak(input[0..ascii.len], 0, 7, pcm, .{ .ctx = m, .piece = go });
+}
+
+test {
+    _ = @import("npz.zig");
+    _ = @import("rng.zig");
+    _ = @import("text.zig");
+    _ = @import("ops.zig");
+    _ = @import("pool.zig");
+}
