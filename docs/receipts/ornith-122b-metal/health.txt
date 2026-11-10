@@ -1,0 +1,19 @@
+Captured 10 November 2026 from GET /health on the same binary and checkpoints as the benchmark receipts.
+Each server was freshly booted; idle precedes the benchmark and peak follows it.
+
+plain, --parallel 1, idle
+{"status": "ok", "model": "bench", "model_ids": ["bench"], "max_batch_size": 1, "warming": false, "memory": {"active": 75838113520, "cache": 0, "peak": 75838113520}, "live": {"connections": 0, "waiting": 0, "decode_tokens_per_second": 0.0, "prefill_tokens_per_second": 0.0}, "version": "1.2.4", "backend": "metal", "device": "Apple M5 Ultra"}
+plain, --parallel 1, after --levels 1
+{"status": "ok", "model": "bench", "model_ids": ["bench"], "max_batch_size": 1, "warming": false, "memory": {"active": 76390385416, "cache": 0, "peak": 76390385416}, "live": {"connections": 0, "waiting": 0, "decode_tokens_per_second": 94.0, "prefill_tokens_per_second": 0.0}, "version": "1.2.4", "backend": "metal", "device": "Apple M5 Ultra"}
+DFlash2, --parallel 1, idle
+{"status": "ok", "model": "bench", "model_ids": ["bench"], "max_batch_size": 1, "warming": false, "memory": {"active": 76905138624, "cache": 0, "peak": 76905138624}, "live": {"connections": 0, "waiting": 0, "decode_tokens_per_second": 0.0, "prefill_tokens_per_second": 0.0}, "version": "1.2.4", "backend": "metal", "device": "Apple M5 Ultra"}
+DFlash2, --parallel 1, after --levels 1
+{"status": "ok", "model": "bench", "model_ids": ["bench"], "max_batch_size": 1, "warming": false, "memory": {"active": 77513820752, "cache": 0, "peak": 77513820752}, "live": {"connections": 0, "waiting": 0, "decode_tokens_per_second": 234.5, "prefill_tokens_per_second": 442.3}, "version": "1.2.4", "backend": "metal", "device": "Apple M5 Ultra"}
+plain, --parallel 4, idle
+{"status": "ok", "model": "bench", "model_ids": ["bench"], "max_batch_size": 4, "warming": false, "memory": {"active": 76314740752, "cache": 0, "peak": 76314740752}, "live": {"connections": 0, "waiting": 0, "decode_tokens_per_second": 0.0, "prefill_tokens_per_second": 0.0}, "version": "1.2.4", "backend": "metal", "device": "Apple M5 Ultra"}
+plain, --parallel 4, after --levels 1,4
+{"status": "ok", "model": "bench", "model_ids": ["bench"], "max_batch_size": 4, "warming": false, "memory": {"active": 80093431920, "cache": 0, "peak": 80093431920}, "live": {"connections": 7, "waiting": 6, "decode_tokens_per_second": 224.0, "prefill_tokens_per_second": 0.0}, "version": "1.2.4", "backend": "metal", "device": "Apple M5 Ultra"}
+DFlash2, --parallel 4, idle
+{"status": "ok", "model": "bench", "model_ids": ["bench"], "max_batch_size": 4, "warming": false, "memory": {"active": 77381503712, "cache": 0, "peak": 77381503712}, "live": {"connections": 0, "waiting": 0, "decode_tokens_per_second": 0.0, "prefill_tokens_per_second": 0.0}, "version": "1.2.4", "backend": "metal", "device": "Apple M5 Ultra"}
+DFlash2, --parallel 4, after --levels 1,4 --serial
+{"status": "ok", "model": "bench", "model_ids": ["bench"], "max_batch_size": 4, "warming": false, "memory": {"active": 82362338424, "cache": 0, "peak": 82362338424}, "live": {"connections": 1, "waiting": 0, "decode_tokens_per_second": 255.0, "prefill_tokens_per_second": 0.0}, "version": "1.2.4", "backend": "metal", "device": "Apple M5 Ultra"}
