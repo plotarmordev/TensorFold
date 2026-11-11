@@ -36,26 +36,30 @@ tiles): small beside six transformer steps at that size.
   nvfp4 transformer repacks, GGUF for the video model, and a two-step re-distillation that needs new weights.
 - **H3 video engines** (this fork's `tf-h3-dit`, drowzeys' Python H3 family). FastH3's top-20% tile attention, held
   keyframe rows, layer-streamed weights for small Macs in community MLX ports.
+- **h3-image-mlx** ([repo](https://github.com/Anionex/h3-image-mlx)). The fastest published Mac run: Comfy-Org's
+  int8 weights through W8A8 Metal tensor ops, the prompt encoder, transformer and decoder in separate processes,
+  resident or block-streamed weights, AdaLN tables precomputed, batched decoder tiles. 4096 x 4096 in 356.84 s on an
+  M5 Pro (343.6 s of transformer steps, 8.37 s of decode).
 
-None of them change the canvas inside the six steps, and none keep the prompt's encoder out of the transformer's
-memory on a Mac.
+None of them change the canvas inside the six steps.
 
 ## Ideas nobody ships, ranked
 
 ### 1. A resolution cascade inside the six steps
 
-The first m steps run on a half-side canvas, the rest on the full one. The model cannot tell: a picture block's
+The first m steps run on a half-side canvas, the rest on the full one. The positions allow it: a picture block's
 positions are normalised by its own area, so a half canvas spans the same [0, 32) coordinates in steps twice as wide,
-and each step's head is chosen by step, not size. A 2048 canvas is the model's own default size, so a 4096 run's early
-steps sit where the model is most at home.
+and each step's head is chosen by step, not size. What the positions cannot hide is the coarser row density, which is
+what the proof measures. A 2048 canvas is the model's own default size, so a 4096 run's early steps sit at a size the
+model knows.
 
 - **Gain.** A half-side step costs 1/5.35 of a 4096 step (attention falls 16x). Six steps with m = 2, 3, 4 low:
   1.37x, 1.69x, 2.18x faster at 4096; 1.35x, 1.63x, 2.06x at 2048 (half side 1024).
 - **Risk.** Layout is decided at a quarter of the rows. Detail forms in the last, full-size steps, but a distilled
   trajectory may not forgive the jump: softness, or seams at 2 x 2 blocks.
-- **Proof.** Twenty seed-locked prompts at 4096 x 4096 on one M5: median wall time against the uncascaded run, and
-  LPIPS and DINO similarity of the decoded pictures against it, per m. Gate before the run: m = 3 at least 1.6x faster
-  with LPIPS at most 0.08.
+- **Proof.** Twenty seed-locked prompts at 4096 x 4096 on one M5, picked before the run: median wall time against the
+  uncascaded run and LPIPS of the decoded pictures against it, per m. Gate: m = 3 at least 1.6x faster with LPIPS at
+  most 0.08.
 - **Needs weights?** Only to measure. The lift is started here (below).
 
 ### 2. Routed attention in the last full-size steps
@@ -67,27 +71,30 @@ attention is most local. Route the target tiles in steps 4 and 5 only, without t
 references dense, and pick `keep` by measurement.
 
 - **Gain.** At keep = 20%, a 4096 step's attention falls to about a fifth: 27% off each routed step, 9% off the
-  run alone, about 15% stacked on the cascade (whose last steps are the full-size ones).
+  run alone, about 15% stacked on the cascade (whose last steps are the full-size ones). These are FLOP bounds: the
+  dense prefix and the routing pass come off them.
 - **Risk.** Untrained routing can drop a far tile that mattered: repeated textures and symmetric objects are the
   first to break. Text and reference rows stay dense.
-- **Proof.** The same twenty prompts at 4096: LPIPS against dense steps at most 0.03 at the chosen `keep`, and the
-  routed steps' GPU time against dense ones.
+- **Proof.** `keep` chosen on ten prompts apart from the twenty, including edits; then on the twenty at 4096, LPIPS
+  against dense steps with the same cascade at most 0.03, and the routed steps' GPU time against those dense ones.
 
-### 3. The decoder on the tensor units, in fewer tiles
+### 3. The decoder in 512-pixel tiles on the tensor units
 
-The decoder's products run without tensor units (about 12 TFLOP/s on an M3 Ultra, by its 13.4 ms a tile). On an M5
-the same tile through the transformer's GEMMs, and 512-pixel tiles where memory allows (overlap overhead 1.31x instead
-of 1.78x), cut the 4096 decode several-fold.
+The decoder's products run without tensor units (about 12 TFLOP/s on an M3 Ultra, by its 13.4 ms a tile), and its
+256-pixel tiles overlap: 441 tiles at 4096 x 4096, 1.78x the picture's area. h3-image-mlx already runs its decoder
+through MLX's GEMMs on an M5 (8.37 s at 4096), so tensor units alone are not new; 512-pixel tiles are (overlap 1.31x),
+at four times each tile's attention per token.
 
 - **Gain.** 5.9 s to about 1.5 s at 4096 x 4096 [INFERENCE: the M5 tensor-unit rate on 1,024-wide products].
 - **Risk.** Tensor-unit GEMMs change sum order: within the decoder's float64 gate, not bit-equal. A larger tile changes
   what each token attends to, so it is checked against the reference decode, not assumed.
-- **Proof.** The decoder's selftest gates unchanged; PSNR at least 45 dB against the reference decoder at 4096.
+- **Proof.** The decoder's selftest gates unchanged; on five fixed latents, PSNR at least 45 dB against the reference
+  decoder at 4096.
 
 ### Considered, not ranked
 
 - **Caching the prompt's rows, or keeping its encoder apart from the transformer.** SGLang and vLLM-Omni cache
-  conditioning, and the maintainer's tools already run the encoder and the transformer as separate processes.
+  conditioning; h3-image-mlx and the maintainer's tools run the encoder and the transformer as separate processes.
 - **Reusing an edit reference's rows across steps.** Not exact: its hidden states depend on the moving target rows
   through attention. A lossy cache stays opt-in under this repository's precision rules.
 - **Streaming bf16 blocks from the SSD on 24-36 GB Macs.** A block is 0.69 GB; at 4096 a block's compute is fast
@@ -103,12 +110,13 @@ of 1.78x), cut the 4096 decode several-fold.
      the uncascaded run; the table per M in this recipe.
 2. **H3-Image: routed target attention in the last two steps (`route=KEEP`).**
    - The existing routed attention kernels, with no pooled branch; text and reference rows dense.
-   - Without `route` the run is byte-identical; at 4096 on an M5, LPIPS against dense at most 0.03 and each routed
-     step at least 20% faster.
-3. **H3-Image decoder on the M5's tensor units.**
-   - The selftest's float64 gates hold; 4096 x 4096 decode at least 3x faster than today's on the same M5.
-4. **H3-Image at 4096 x 4096 under 60 s on an M5 Ultra** (about 97 s of dense steps today by the video tool's rate),
-   cards 1 to 3 together, faster than every published Mac run of the same prompts and seeds.
+   - Without `route` the run is byte-identical; at 4096 on an M5, LPIPS against dense steps with the same `cascade`
+     at most 0.03 and each routed step at least 20% faster.
+3. **H3-Image decoder on the M5's tensor units in 512-pixel tiles.**
+   - Today's 4096 x 4096 decode time recorded first on the same M5; the selftest's float64 gates hold and the decode
+     is at least 3x faster than that record.
+4. **H3-Image at 4096 x 4096 at least 3x faster than h3-image-mlx**, cards 1 to 3 together: its teapot prompt, seed
+   42, text encoding through PNG, both on the same M5 (356.84 s on an M5 Pro today, so under 120 s there).
 
 ## The cascade's lift (started here)
 
