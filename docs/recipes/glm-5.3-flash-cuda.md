@@ -4,7 +4,7 @@ The native CUDA build serves GLM-5.3-Flash at tensor parallel over hosts: from N
 ([1.0.12](../../CHANGELOG.md#1012)), on two ranks from Mia-AiLab's EXL3/TR3 checkpoint
 ([1.1.0](../../CHANGELOG.md#110), [the checkpoint](glm-5.3-flash.md#exl3)), and in [1.1.5](../../CHANGELOG.md#115) (#1050) from
 NVIDIA's FP4-Local checkpoint as stored and from XSFP4, which keeps FP4-Local's tensors outside the routed experts.
-Jammed XSFP4, on `main` after 1.2.2 ([#2041](https://github.com/ashhart/TensorFold/pull/2041)), holds those experts at block 32 in the `csf0_v1` form and loads the same way.
+Jammed XSFP4, in [1.2.3](../../CHANGELOG.md#123) ([#2041](https://github.com/ashhart/TensorFold/pull/2041)), holds those experts at block 32 in the `csf0_v1` form and loads the same way.
 Rank 0 serves HTTP and the other ranks follow its steps, with MTP drafts, concurrent streams and kept prompt states.
 The [Python 0.6.6 recipe](glm-5.3-flash.md) and its `--tp`, `--rank` and `--master` flags belong to the frozen engine.
 
@@ -61,11 +61,23 @@ left after a 12.2 GiB reserve` and a 5.8 GiB prompt cache
   prompt cache's budget with chat states, least recently used out first, so long raw prompts between two chat turns can
   push the chat's state out. Unset or 0, a raw prompt keeps none; GLM refuses any other value at startup. The KV
   pages' store (`TF_KV_SHARE`) keeps a prompt's last page either way.
+- `TF_GLM_KV_LIVE_HALF=1` on every rank (opt-in) keeps a prompt state with the live half of the double-buffered KDA
+  recurrent state alone. The other half is the state before the last prompt chunk or decode window: the forward reads
+  the live half and writes the other, every chunk and every decode window flips them, and a keep waits for an empty
+  window, so nothing reads the dead half after a restore, which leaves the slot's own copy untouched. A kept state is
+  71 MB a rank smaller on GLM-5.3-Flash at TP=2 (34 KDA layers, 32 heads a rank, fp32 128x128 a head) with replies
+  unchanged. Checked on two GB10 at TP=2 with a modified (ablated) EXL3 4bpw checkpoint, drafts off and on
+  (`docs/receipts/glm-kv-live-half-d3e06e76/`), and again on the rebased head with the recipe's EXL3/TR3 checkpoint,
+  drafts on, against upstream `main` and a run with no prompt cache (`docs/receipts/glm-kv-live-half-555f052d/`).
 - `TF_GLM_KV_HOST=1` on every rank (with KV pages, BF16) keeps the KV pages' latent rows in pinned host memory: the
   device keeps the pooled index keys, and each sparse call copies only the rows it picked into device slots. The KV
   pool then costs the card 768 bytes a token instead of 13,056, so a 1,048,576-token window fits beside the weights.
   `TF_GLM_KV_HOST_GIB` sizes the host pages (one full window unasked); `TF_GLM_KV_HOST_SHARED=1` gives the ranks of
   one host a single copy in `/dev/shm`. Checked on two RTX PRO 6000 Blackwell cards at TP=2.
+- `TF_KV_SHARE=n` (with KV pages, 64 at most) keeps prompts' rows as the pool's pages, and the startup plan sets aside
+  a slot for each of the n kept states' other parts in the prompt cache, as many as the cache holds; the rest of the
+  cache goes to the pool's pages. `--prompt-cache-gib N` bounds them: the startup line names the slots, and when the
+  cache holds fewer than n, how many it holds and the `--prompt-cache-gib` that holds all n.
 - `TF_GLM_CHUNK_SOLO=4096` on every rank (opt-in) lets a prompt pass take 4,096 rows while no other stream is decoding.
   Unset or `2048`, every pass takes 2,048 rows and nothing extra is held. See [Prompt chunk size](#prompt-chunk-size).
 - `TF_GLM_DENSE_BITS=4` (EXL3 at TP=2, off by default) repacks the BF16 dense layers to 4 bits at load. Decode is
@@ -76,16 +88,100 @@ left after a 12.2 GiB reserve` and a 5.8 GiB prompt cache
 
 `TF_GLM_COPIES=1` on rank 0 tries the lane host's cost-priced root/context copies, with a four-token history match.
 Unset or 0 retains the existing policy. Copies use the normal target verify/partial-keep path and require no external
-drafter; `--no-drafts` and `"draft": false` remain plain. The inherited target-cost tables seed pricing and observed
-copy rejections can cut an offer to zero rows. The opt-in's head confidence is a maximum prefix; cost may choose plain.
+drafter; `--no-drafts` and `"draft": false` remain plain. MTP uses its timed window prices; DFlash2 keeps its seed
+prices. Observed copy rejections can cut an offer to zero rows. The opt-in's head confidence is a maximum prefix;
+cost may choose plain.
 See [copy pricing and the required TP=2 comparison](cuda-lane-copies.md#glm-on-cuda). Device exactness and speed are
 pending, so keep the default policy until that checkpoint's complete cost and reply checks pass (#1910).
+
+## Window prices
+
+Decode windows reach 32 rows and MTP chains 15 drafts. With drafts and enough scratch context, rank 0 races
+classic NVFP4 experts against the factored form over real text on every rank, keeping the faster form with the same
+bits. MTP also times windows of 1, 2, 3, 4, 6, 8, 12, 16, 24 and 32 rows, with straight lines between them, and a
+chained draft step. Its startup line reports `glm: windows (timed)` and the expert form. DFlash2 keeps the existing
+seed forward and step prices in lone and shared rounds; it times only the target expert-form race and reports
+`glm: expert form (timed)`. No unused DFlash2 window or draft-step table is measured or published to the lane core.
+
+The measurements stay in `~/.cache/tensorfold/window-costs`, keyed by the build, GPU/driver, full checkpoint and drafter
+identity, drafter precision, rank count, layer limit, L2-prefetch options, loaded NVFP4 decode warps, KDA and matmul
+modes, dense/head bits, KV placement and the recorded NCCL channel/P2P settings. The DFlash2 form-only records have
+separate keys from window tables. An identity too long for its buffer skips both price caches with a log line and
+still measures the required work; it never truncates an identity or refuses the model for that reason.
+
+An older TP=2 GB10 receipt, before the unused DFlash2 timing was removed, had one empty-price-cache load of 85.2 s
+and other loads of 70-75 s. Its drafter mode is not recorded. That single sample does not estimate this startup path.
+A `(kept)` load skips the work its valid record covers. With `--no-drafts` nothing is timed. Timings steer windows
+and expert-form choice, never tokens. MTP's lone depth rule uses its measured window and step prices; its shared
+rounds retain the prior zero step price. DFlash2 retains the prior 1.6/7 ms step price in lone and shared rounds.
+The three-draft shared MTP cap does not apply with `TF_GLM_COPIES=1`.
+
+A host-KV gather wider than 16 rows invalidates the saved narrow row list before overwriting its slots. Otherwise
+a later narrow gather could reuse rows from before that wide overwrite. The existing invalidation is retained; the
+revised key and fixtures do not change the gather arithmetic.
+
+## Four cards in one host
+
+The following receipt is historical, from 9200a3064 with its experimental window changes. It does not qualify
+the current price-cache identity or 32-row contract additions. Its DFlash2 rows were measured with timed DFlash2
+lone and shared prices, which this branch no longer applies: DFlash2 keeps main's prices.
+
+NCCL allows direct card-to-card transfers on AMD hosts only up to two GPUs, so set these on every rank at three or more:
+
+```sh
+export NCCL_P2P_LEVEL=SYS NCCL_MIN_NCHANNELS=4 NCCL_MAX_NCHANNELS=4 TF_GLM_PREFILL_REDUCE=gather
+```
+
+`NCCL_P2P_LEVEL=SYS` takes a 32 MiB all-gather from 8.3 to 36.9 GB/s. `gather` replaces the default `split`, whose direct
+exchanges took 86% of a rank's prompt time here, and gives the same tokens. Four channels shorten the small decode
+gathers by up to 20%. Without these, the same server managed 166 tok/s on code, 128 on chat and 1,330 on prompts.
+
+Four RTX PRO 6000 Blackwell Max-Q cards at TP=4 (sm_120, 300 W, one Threadripper PRO host), `nvidia/GLM-5.3-Flash-NVFP4`
+at revision `09b04e5e`, `--context 245760`, tok/s. Before is `main` at `9200a3064` with the settings above, and after is
+the windows, prices and expert race on the same commit. Every reply equalled its `"draft": false` run and every
+concurrent one its run alone.
+
+| Drafter | Case | Before | After |
+| --- | --- | ---: | ---: |
+| MTP head | Code, one stream, greedy | 235.8 | 291.8 |
+| MTP head | Chat, one stream, greedy | 146.4 | 190.3 |
+| DFlash2 | Code, one stream, greedy | 254.3 | 304.8 |
+| DFlash2 | Chat, one stream, greedy | 167.0 | 202.2 |
+| DFlash2 | Code, one stream, temperature 1 | 187.7 | 215.2 |
+| DFlash2 | Chat, one stream, temperature 1 | 158.3 | 189.1 |
+| DFlash2 | Code, 8 streams, eight different prompts | 473.7 | 542.8 |
+| DFlash2 | Code, 16 streams | 649.2 | 685.4 |
+| DFlash2 | Prose, 8 streams, eight different prompts | 392.7 | 429.7 |
+| DFlash2 | Prose, 16 streams | 526.0 | 583.6 |
+
+One-stream runs are `tools/bench_openai.py` at 512 tokens and stream runs `tools/bench_concurrent.py` at 256. DFlash2's
+weights are CC BY-NC-ND 4.0. After uses `TF_GLM_DRAFT_CONFIDENCE=0.4` and before keeps the default 0.7. Cold prompts
+are unchanged at about 4,430 tok/s from 8K to 131K tokens, and a repeated code reply reaches about 850 tok/s with
+windows of up to 32 rows. Other GPUs and rank counts are not covered here.
 
 ## More ranks
 
 With `TF_GLM_PREFILL_REDUCE=ring`, the startup peer warm-up touches only each rank's next and previous neighbours,
-using the existing rank order. The default split and gather modes still warm every peer. This removes the eager
-opposite-peer warm-up; it does not add a switchless RoCE relay or qualify a four-node ring (#1971).
+using the existing rank order (#2126). With `gather`, the warm-up is one all-gather of the same size, which connects
+the collective gather uses and posts no point-to-point (#2569). The default split mode still warms every peer.
+
+On four GB10s cabled as a switchless ring, each linked only to its two neighbours, TP=4 starts and serves with
+`TF_GLM_PREFILL_REDUCE=gather` (#2569). Ring and split don't start there yet: their exchanges are NCCL
+point-to-point, and NCCL picks a receive's port by channel rather than by peer, so a receive can wait on the
+missing link (#1971). The ring also needs these NCCL settings at start (#1971):
+
+- `NCCL_CUMEM_ENABLE=1` and `NCCL_RUNTIME_CONNECT=1`. The engine sets both to `0` when they're unset. With cuMem
+  off, NCCL connects its trees inside init, and a four-rank tree crosses the missing link. The engine turns cuMem
+  off by default because NCCL's cuMem buffers wore out GB10's driver pool under load; the ring's runs reported no
+  driver errors with it on.
+- `NCCL_ALGO=Ring`, and a graph for each rank that receives on the port toward the previous rank and sends toward
+  the next.
+
+`TF_GLM_ROCE_MULTI=1` with `TF_TP_ROCE_RELAY=1` relays gathers through both neighbours on such a ring instead of
+NCCL (#2352, opt-in, four ranks only). Gathers up to `TF_TP_ROCE_RELAY_MAX_KB` a rank go on the wire (64 KiB by
+default, 4 to 1024); larger ones, reductions and exchanges stay on NCCL. On the ring with gather, @Bizuayeu measured
+cold 64K prompts in 36.5 s and decode at 73.1 / 60.8 tok/s (code / chat, temperature 0) with the relay off, and
+36.7 s and 75.3 / 62.7 tok/s with it on (#2569).
 
 `TF_GLM_WORLD=3` places a third rank the same way. From 1.1.2 the uneven KDA input projections of TP=3 (22, 21 and
 21 heads) run instead of being refused; TP=3 device qualification is pending
@@ -146,3 +242,17 @@ without solo at 3, with the same tokens; in another, 8 pieces without solo staye
 Long prompts and long runs of replies heat a GB10. The runbook's [heat bands](../../RUNBOOK.md#linux-and-cuda) (with a
 1,035,295-token prompt at TP=3), [CPU pinning](../../RUNBOOK.md#gb10-cpu-pinning-for-long-cuda-runs) and
 [GPU clock cap](../../RUNBOOK.md#gb10-gpu-clock-cap-for-long-cuda-runs) each carry a measured GLM-5.3-Flash run.
+
+## Shared KDA operator
+
+`cuda.kda` owns the fused and three-kernel chains and single-layer and batched saved-row replay.
+Its current envelope is 128 key and value channels, four convolution taps, BF16 input/output rows and FP32 state
+and sums. Heads belong to the caller's rank, including uneven shares. Strides are elements; projections, convolution
+commit and checkpoint geometry stay with the family. This extraction does not add a Ling serving path (#850).
+
+The `glm_kda` image retains its six exported symbols, launch bounds and `-O3 --fmad=false` flags.
+The arithmetic bodies live in `zig/kernels/cuda/common/kda.cuh`; no reduction or rounding expression changes.
+`zig build test-kda-host test-glm-tp3-host` checks launch arguments against the frozen predecessor and GLM's
+projection dispatch. Host tests do not prove machine-code identity: before landing, run the complete
+[CUDA SASS comparison](cuda-sass-identity.md) against the parent before extraction, then `tf-cuda-test glm-ref`
+for the independent FP64, fused/wide and replay checks, and the complete CUDA kernel contract.
