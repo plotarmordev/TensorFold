@@ -1,4 +1,5 @@
-//! The 27B lane backend's drafts: each drafting slot's tree, up to eight in one drafter pass, and the held trees.
+//! The 27B lane backend's drafts: each drafting slot's tree, up to eight in one drafter pass, or the MTP layer's one
+//! draft a drafting stream's round, lone or shared; and the held trees.
 const std = @import("std");
 const mtl = @import("metal");
 const tf = @import("tensorfold");
@@ -27,6 +28,7 @@ pub fn capacityFn(ptr: *anyopaque, s: *lanes.Stream) u32 {
 pub fn draftFn(ptr: *anyopaque, requests: []const be.DraftRequest) anyerror!void {
     const b = Metal.self(ptr);
     errdefer mtl.pass_metrics.end();
+    if (b.mtp) |d| return mtpDrafts(b, d, requests);
     @import("qwen27_slots.zig").promoteDue(b); // a stream moves into a freed slot 0 before it drafts
     var batch: [8]Proposal = undefined;
     var owners: [8]u32 = undefined;
@@ -76,6 +78,118 @@ pub fn draftFn(ptr: *anyopaque, requests: []const be.DraftRequest) anyerror!void
             try @import("qwen27_masks.zig").prune(b.gpa, r.stream.grammar, opening, t);
         }
     }
+}
+
+/// How far each slot's MTP K/V follows its target rows from the prompt's start, and the layer's draft at that end.
+pub const MtpCache = struct {
+    ends: [lb.max_streams]u32 = @splat(0),
+    drafts: [lb.max_streams]u32 = undefined,
+    /// The slot whose prompt's last chunk the runner's taps hold, from `ends` on, until another target pass.
+    tapped: ?u32 = null,
+};
+
+/// The layer steps over `slot`'s last `next.len` cache rows (the taps from round row `at`) only when its own cache
+/// reaches their start: rows it missed (a resumed prompt, a skipped tail) stop its drafts for the stream.
+fn mtpStep(b: *Metal, d: *q.mtp.Drafter, slot: u32, at: u32, next: []const u32) !void {
+    const end = b.runner.offsets[slot];
+    if (b.mtp_cache.ends[slot] + next.len != end) return;
+    b.mtp_cache.drafts[slot] = try d.step(slot, at, next);
+    b.mtp_cache.ends[slot] = end;
+}
+
+/// A prompt pass opens: the layer's cache holds none of it (a resumed or restored state's rows never reached it).
+pub fn mtpOpen(b: *Metal, slot: u32) void {
+    b.mtp_cache.ends[slot] = 0;
+}
+
+/// A prompt chunk `ids[at..end]` of `s` just passed: the layer steps over every chunk but the last, whose last row's
+/// next token the first draft request brings.
+pub fn mtpChunk(b: *Metal, s: *const lanes.Stream, slot: u32, at: usize, end: usize) !void {
+    const d = b.mtp orelse return;
+    b.mtp_cache.tapped = null;
+    if (!s.drafts or b.mtp_cache.ends[slot] != at) return;
+    const ids = s.prompt();
+    if (end < ids.len) return mtpStep(b, d, slot, 0, ids[at + 1 .. end + 1]);
+    b.mtp_cache.tapped = slot;
+}
+
+/// Every window's kept chain steps the layer, lone or shared, so a stream left alone drafts from a whole cache. Each
+/// kept row's next token is the reply's own (committed before the keep), forced or drawn.
+pub fn mtpKeep(b: *Metal, paths: []const []const u32) !void {
+    const d = b.mtp orelse return;
+    windows: for (paths, b.round.?.firsts, b.windows[0..b.count]) |path, first, slot| {
+        const s = b.owners[slot] orelse continue;
+        // the layer reads the tapped rows from the window's first: its kept rows must be them, in order
+        for (path, 0..) |row, i| if (row != i) continue :windows;
+        const end = b.runner.offsets[slot];
+        const context = s.context.items;
+        if (!s.drafts or context.len <= end) continue;
+        try mtpStep(b, d, slot, first, context[end - path.len + 1 ..][0..path.len]);
+    }
+}
+
+/// A prompt's end steps its last chunk's taps with the first token. The round is kept here, ahead of the engine's
+/// keep, so the layer steps every kept chain before each stream holds its draft from its cache's end.
+fn mtpDrafts(b: *Metal, d: *q.mtp.Drafter, requests: []const be.DraftRequest) !void {
+    const pool = mtl.objc.Pool.push();
+    defer pool.pop();
+    for (requests) |r| {
+        const slot = try b.slotFor(r.stream);
+        b.dropTreeOf(slot);
+        if (r.rows == null) try promptEnd(b, d, slot, r);
+    }
+    try keepEarly(b, requests);
+    if (b.round != null) return; // a window it could not keep: its cache would trail its rows
+    for (requests) |r| {
+        const slot = try b.slotFor(r.stream);
+        const end = b.runner.offsets[slot];
+        if (r.depth == 0 or b.mtp_cache.ends[slot] != end or b.runner.capacity - end < 2) continue;
+        b.trees[slot] = try chain(b.gpa, b.mtp_cache.drafts[slot]);
+    }
+}
+
+/// A lone round settles; a shared one keeps every window's rows once it knows them all (the engine asks for every
+/// drafting stream's in one batch; a plain stream's one-row window keeps its row), and the engine's keep then finds it
+/// done.
+fn keepEarly(b: *Metal, requests: []const be.DraftRequest) !void {
+    if (b.count < 2) return b.settleRound();
+    var paths: [lb.max_streams][]const u32 = undefined;
+    for (b.windows[0..b.count], b.widths[0..b.count], paths[0..b.count]) |slot, width, *path| {
+        const r = for (requests) |r| {
+            if (b.slotOf(r.stream) == slot) break r;
+        } else {
+            if (width != 1) return;
+            path.* = &.{0};
+            continue;
+        };
+        path.* = r.rows orelse return;
+    }
+    try b.keepPaths(paths[0..b.count]);
+    b.kept_early = true;
+}
+
+/// The prompt's last chunk, still in the taps, steps the layer with the first token after it.
+fn promptEnd(b: *Metal, d: *q.mtp.Drafter, slot: u32, r: be.DraftRequest) !void {
+    if (b.mtp_cache.tapped != slot) return;
+    b.mtp_cache.tapped = null;
+    const ids = r.stream.prompt();
+    const at = b.mtp_cache.ends[slot];
+    const first = r.first orelse return;
+    if (b.runner.offsets[slot] != ids.len or at >= ids.len) return;
+    const next = try b.gpa.alloc(u32, ids.len - at);
+    defer b.gpa.free(next);
+    @memcpy(next[0 .. next.len - 1], ids[at + 1 ..]);
+    next[next.len - 1] = try b.value(first);
+    try mtpStep(b, d, slot, 0, next);
+}
+
+/// A one-node tree; its score 0 leaves its chance to the landing prior.
+fn chain(gpa: std.mem.Allocator, token: u32) !Tree {
+    const tokens = try gpa.dupe(u32, &.{token});
+    errdefer gpa.free(tokens);
+    const parents = try gpa.dupe(i32, &.{-1});
+    errdefer gpa.free(parents);
+    return .{ .gpa = gpa, .tokens = tokens, .parents = parents, .scores = try gpa.dupe(f64, &.{0}) };
 }
 
 /// The batch's trees: a stream alone takes its own pass (slot 0's fused absorb and block); several share one.
