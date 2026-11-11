@@ -2,6 +2,7 @@
 const std = @import("std");
 const core = @import("core");
 const layer_pattern = @import("qwen35_layers");
+const rules = @import("qwen35_rules");
 const cuda_rope = @import("cuda_rope.zig");
 
 pub const max_layers = 128;
@@ -271,9 +272,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Geometry {
     };
     const t = try object(root.get("text_config") orelse return error.BadQwenConfig);
     try is(t, "model_type", []const u8, if (moe) "qwen3_5_moe_text" else "qwen3_5_text");
-    try is(t, "attention_bias", bool, false);
-    try is(t, "attn_output_gate", bool, true);
-    try is(t, "hidden_act", []const u8, "silu");
+    try rules.check(t, .cuda);
     try is(t, "head_dim", usize, head_dim);
     try is(t, "linear_key_head_dim", usize, dk);
     try is(t, "linear_value_head_dim", usize, dk);
@@ -299,11 +298,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Geometry {
         .q_heads = try integer(t, "num_attention_heads"),
         .kv_heads = try integer(t, "num_key_value_heads"),
         .eps = @floatCast(try number(t, "rms_norm_eps")),
-        .tied = blk: {
-            const v = t.get("tie_word_embeddings") orelse root.get("tie_word_embeddings") orelse break :blk false;
-            if (v != .bool) return error.BadQwenConfig;
-            break :blk v.bool;
-        },
+        .tied = try rules.tied(root, t, .cuda),
         .context = resolved.ceiling,
         .rope = resolved.rope,
         .linear = @splat(false),

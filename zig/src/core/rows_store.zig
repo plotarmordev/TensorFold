@@ -66,12 +66,14 @@ pub const Options = struct {
     spill: Spill = .off,
     sync_writes: bool = false,
     staging_bytes: u64 = 1 << 30,
+    longest: u32 = 0, // the longest state the host keeps: the permit takes one whole, within the RAM store's budget
     slots: ?usize = null, // --checkpoint-slots: the RAM store's states at most, beside this one (null: the family's)
 };
 
 /// The store under `o`, the RAM store's disk: `o.slots` bounds what it keeps in RAM.
 pub fn attach(gpa: Allocator, store: *pc.Store, o: Options) !*Rows {
     const r = try Rows.open(gpa, store.family, o);
+    r.staging_bytes = @max(o.staging_bytes, @min(write.coldCharge(r, o.longest) catch 0, store.budget)); // unpriced: the floor
     store.disk = r;
     if (o.slots) |n| store.most = n;
     return r;
@@ -456,7 +458,7 @@ pub const Rows = struct {
         s.tokens = try r.gpa.dupe(u32, @alignCast(std.mem.bytesAsSlice(u32, m[12..][0 .. 4 * nt])));
         s.spans = try r.gpa.dupe(Span, @alignCast(std.mem.bytesAsSlice(Span, m[12 + 4 * nt ..][0 .. 8 * ns])));
         s.starts = try r.gpa.dupe(u32, @alignCast(std.mem.bytesAsSlice(u32, m[12 + 4 * nt + 8 * ns ..][0 .. 4 * nst])));
-        if (s.at == 0 or s.tokens.len != s.at + r.keying.lookahead or o.trailer.block != r.keying.block) return error.RowsRead;
+        if (s.at == 0 or s.tokens.len != @as(usize, s.at) + r.keying.lookahead or o.trailer.block != r.keying.block) return error.RowsRead;
         if (!std.mem.eql(u8, &chain.state(r.keying, s.tokens, s.spans, s.starts, s.at), &s.name)) return error.RowsRead;
         modes.validate(s.spans) catch return error.RowsRead;
         r.clock += 1;
