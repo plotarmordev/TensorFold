@@ -458,32 +458,32 @@ nothing; finite outputs keep their bytes.
 
 ## On an M5 Ultra with the release weights
 
-Measured on TensorFold 1.2.6 at `37843fcfa` (`v1.2.6-249-g37843fcfa`, the #2810 merge), built with `-Dcpu=apple_m1
--Doptimize=ReleaseFast`. Text to image from the release folder (`text_encoder/`, `transformer/`, `vae/`; not the
-diffusers copies), seed 42, a 24-token prompt, each tool its own process, nothing else large running. Two runs at each
-size, 2048 then 4096, back to back; each tool maps its weights again. Both runs at a size write byte-identical PNGs,
-kept outside the repo: `/Users/agents/projects/tensorfold/h3-image-runs/34/fox-2048-seed42.png` and
-`fox-4096-seed42.png` beside it.
+Measured on TensorFold 1.2.7 at `a1c758603` (`v1.2.6-342-ga1c758603`, this branch with our main and card 43 merged in),
+built with `-Dcpu=apple_m1 -Doptimize=ReleaseFast`. Text to image from the release folder (`text_encoder/`,
+`transformer/`, `vae/`; not the diffusers copies), seed 42, a 24-token prompt, each tool its own process, no other
+model running; other checkouts' builds shared the CPU and disk. Two runs at each size, 2048 then 4096, back to back;
+each tool maps its weights again. Both runs at a size write the same bytes as the first build's PNGs, kept outside the
+repo: `/Users/agents/projects/tensorfold/h3-image-runs/34/fox-2048-seed42.png` and `fox-4096-seed42.png` beside it.
 
 Seconds; a step's wall time, then its GPU time in brackets.
 
 | Stage | 2048 run 1 | 2048 run 2 | 4096 run 1 | 4096 run 2 |
 |---|---|---|---|---|
-| Prompt path: map, 50 layers, refiner | 31.0 (0.52) | 17.6 (0.45) | 15.0 (0.47) | 14.8 (0.46) |
-| Transformer load | 26.4 | 23.3 | 17.3 | 12.5 |
-| Step 1 | 1.91 (1.88) | 1.89 (1.84) | 10.10 (9.89) | 10.01 (9.82) |
-| Step 2 | 1.85 (1.85) | 1.86 (1.85) | 9.89 (9.88) | 9.86 (9.85) |
-| Step 3 | 1.90 (1.90) | 1.85 (1.85) | 9.90 (9.89) | 9.87 (9.86) |
-| Step 4 | 1.91 (1.90) | 1.85 (1.85) | 9.89 (9.87) | 9.92 (9.90) |
-| Step 5 | 1.91 (1.90) | 1.84 (1.84) | 9.85 (9.84) | 9.89 (9.88) |
-| Step 6 | 1.91 (1.91) | 1.85 (1.85) | 9.87 (9.80) | 9.83 (9.81) |
-| Decoder: weights, 121 / 441 tiles, PNG | 10.7 (tiles 1.18) | 7.2 (tiles 1.18) | 71.2 (tiles 4.19) | 57.2 (tiles 4.13) |
-| Total a picture | 79.7 | 59.5 | 163.6 | 145.4 |
+| Prompt path: map, 50 layers, refiner | 27.0 (0.53) | 35.5 (0.49) | 10.7 (0.47) | 14.0 (0.52) |
+| Transformer load | 21.9 | 19.4 | 21.9 | 14.7 |
+| Step 1 | 1.88 (1.83) | 1.88 (1.83) | 9.95 (9.81) | 10.01 (9.82) |
+| Step 2 | 1.84 (1.84) | 1.83 (1.83) | 9.86 (9.85) | 9.85 (9.83) |
+| Step 3 | 1.84 (1.83) | 1.83 (1.83) | 9.84 (9.83) | 9.86 (9.85) |
+| Step 4 | 1.84 (1.84) | 1.83 (1.83) | 9.84 (9.83) | 9.87 (9.86) |
+| Step 5 | 1.83 (1.83) | 1.83 (1.83) | 9.81 (9.80) | 9.83 (9.81) |
+| Step 6 | 1.83 (1.83) | 1.83 (1.83) | 10.05 (9.79) | 9.95 (9.80) |
+| Decoder: weights, 121 / 441 tiles, PNG | 10.9 (tiles 1.17) | 20.8 (tiles 1.18) | 96.9 (tiles 4.19) | 102.6 (tiles 4.25) |
+| Total a picture | 71.4 | 88.0 | 189.4 | 191.0 |
 
-Peak memory footprint per tool: prompt 0.33-0.36 GB, transformer 1.43 GB at 2048 and 4.40-4.43 GB at 4096, decoder
-1.31 GB and 1.52 GB. The weights are read in place, so the machine's used memory rises by about 48 GB for the
+Peak memory footprint per tool: prompt 0.33-0.41 GB, transformer 1.41-1.42 GB at 2048 and 4.40 GB at 4096, decoder
+1.31 GB and 1.51-1.52 GB. The weights are read in place, so the machine's used memory rises by about 48 GB for the
 transformer and 33 GB for the text encoder while each runs. Wall time outside the steps is mostly weights read from
-disk (the decoder's 4.3-8.2 s at 2048, 22.8-27.8 s at 4096), and at 4096 the decoder spends 28-36 s past its tiles
+disk (the decoder's 6.9-15.1 s at 2048, 26.4-48.8 s at 4096), and at 4096 the decoder spends 36-66 s past its tiles
 writing a 38 MB PNG.
 
 The maintainer's gates that run here:
