@@ -174,7 +174,7 @@ fn convertShard(gpa: Allocator, arena: Allocator, io: Io, src: []const u8, out: 
         }
         const weight = file.get(name).?;
         const scale_inv = file.get(try std.fmt.allocPrint(scratch, "{s}_scale_inv", .{name})) orelse return error.SplitExpert;
-        if (weight.dtype != .f8_e4m3 or weight.rank != 2 or weight.shape[1] % nvfp4.group != 0) return error.ExpectedFp8Expert;
+        if (weight.dtype != .f8_e4m3 or weight.rank != 2 or weight.shape[0] == 0 or weight.shape[1] == 0 or weight.shape[1] % nvfp4.group != 0) return error.ExpectedFp8Expert;
         const n, const k = .{ weight.shape[0], weight.shape[1] };
         if (!scale_inv.is(.f32, &.{ (n + fp8.block - 1) / fp8.block, (k + fp8.block - 1) / fp8.block })) return error.ExpectedFp8Expert;
         try items.append(scratch, .{ .job = jobs.items.len });
@@ -230,8 +230,9 @@ pub fn convert(gpa: Allocator, io: Io, src: []const u8, dst: []const u8, o: Opti
     const parent = try cwd.realPathFileAlloc(io, std.fs.path.dirname(dst) orelse ".", arena);
     const to = try std.fs.path.join(arena, &.{ parent, std.fs.path.basename(dst) });
     if (std.mem.startsWith(u8, to, from) and (to.len == from.len or to[from.len] == '/')) return error.DestinationInSource;
+    if (cwd.access(io, to, .{ .follow_symlinks = false })) return error.DestinationExists else |e| if (e != error.FileNotFound) return e; // the rename below guards a race
 
-    // everything refusable is checked before DST is staged
+    // the index and the map are checked before DST is staged; shapes and scales fail later, under the errdefer
     const index = try std.json.parseFromSliceLeaky(std.json.Value, arena, try cwd.readFileAlloc(io, try join(arena, from, index_name), arena, .limited(st.index.max_bytes)), .{});
     const map = try st.index.plainWeightMap(index);
     const source_meta = index.object.get("metadata") orelse std.json.Value{ .object = .empty };
@@ -239,7 +240,6 @@ pub fn convert(gpa: Allocator, io: Io, src: []const u8, dst: []const u8, o: Opti
     var shards: std.StringArrayHashMapUnmanaged(void) = .empty;
     var experts: [cfg.layers]usize = @splat(0);
     for (map.keys(), map.values()) |name, shard| {
-        if (shard != .string) return error.BadIndex;
         try shards.put(arena, shard.string, {});
         const x = parseName(name) orelse continue;
         if (x.layer >= experts.len) return error.UnexpectedExpertLayer;
@@ -248,20 +248,20 @@ pub fn convert(gpa: Allocator, io: Io, src: []const u8, dst: []const u8, o: Opti
     }
     const held: ?format.Held = if (o.compact_experts) |path| try heldExperts(arena, io, path, map, experts) else null;
     if (held != null and source_meta.object.contains(format.experts_key)) return error.AlreadyCompact;
-    const shard_names = shards.keys();
+    const shard_names = try arena.dupe([]const u8, shards.keys());
     std.mem.sort([]const u8, shard_names, {}, struct {
         fn lt(_: void, a: []const u8, b: []const u8) bool {
             return std.mem.lessThan(u8, a, b);
         }
     }.lt);
-    const others = try ancillary(gpa, arena, io, from);
+    const others = try ancillary(gpa, arena, io, from, &shards);
     var record: Provenance = .{
-        .source = from,
+        .source = src,
         .tool_commit = o.commit,
         .config_sha256 = try fileSha256(arena, io, try join(arena, from, "config.json")),
         .experts = if (o.nvfp4) "nvfp4" else "keep",
         .compact_experts = if (o.compact_experts) |path| .{
-            .file = try cwd.realPathFileAlloc(io, path, arena),
+            .file = std.fs.path.basename(path),
             .sha256 = try fileSha256(arena, io, path),
             .held = total(&held.?),
         } else null,
@@ -282,7 +282,7 @@ pub fn convert(gpa: Allocator, io: Io, src: []const u8, dst: []const u8, o: Opti
     for (shard_names) |shard|
         bytes += try convertShard(gpa, arena, io, try join(arena, from, shard), try join(arena, partial, shard), &map, if (held) |*h| h else null, o, &tensors, &weight_map, shard, &listed);
     if (listed != map.count()) return error.IndexedTensorMissing; // every shard tensor is indexed there, so the rest are absent
-    var meta = try source_meta.object.clone(arena); // SRC's own keys hold on, a held map replaced by --compact-experts'
+    var meta = try source_meta.object.clone(arena); // SRC's own keys hold on
     try meta.put(arena, "total_size", .{ .integer = @intCast(bytes) });
     if (held) |*h| try meta.put(arena, format.experts_key, try heldJson(arena, h));
     var root: std.json.ObjectMap = .empty;
@@ -352,10 +352,11 @@ fn heldJson(arena: Allocator, h: *const format.Held) !std.json.Value {
     return .{ .object = layers };
 }
 
-/// SRC's directories and other files by relative path, parents first; a symlink is refused, as it could reach outside SRC.
+/// SRC's directories and files other than its index's shards by relative path, parents first; a symlink is refused, as it
+/// could reach outside SRC.
 const Ancillary = struct { dirs: []const []const u8, files: []const []const u8 };
 
-fn ancillary(gpa: Allocator, arena: Allocator, io: Io, src: []const u8) !Ancillary {
+fn ancillary(gpa: Allocator, arena: Allocator, io: Io, src: []const u8, shards: *const std.StringArrayHashMapUnmanaged(void)) !Ancillary {
     var dir = try Io.Dir.cwd().openDir(io, src, .{ .iterate = true });
     defer dir.close(io);
     var walker = try dir.walk(gpa);
@@ -365,7 +366,7 @@ fn ancillary(gpa: Allocator, arena: Allocator, io: Io, src: []const u8) !Ancilla
     while (try walker.next(io)) |e| switch (e.kind) {
         .directory => try dirs.append(arena, try arena.dupe(u8, e.path)),
         .file => {
-            if (std.mem.endsWith(u8, e.basename, ".safetensors")) continue;
+            if (shards.contains(e.path)) continue;
             if (std.mem.eql(u8, e.path, index_name) or std.mem.eql(u8, e.path, provenance_name)) continue; // DST writes its own
             try files.append(arena, try arena.dupe(u8, e.path));
         },
