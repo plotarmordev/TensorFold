@@ -4,6 +4,10 @@ const pp = @import("picture_prompt.zig");
 const picture = @import("picture");
 const testing = std.testing;
 
+test {
+    _ = @import("read_ahead.zig");
+}
+
 const marks: pp.Marks = .{ .start = 151652, .image = 151655, .end = 151653 };
 
 /// One id per segment: the hash of the whole text, so a segment merged with its neighbour would show.
