@@ -1,12 +1,13 @@
 #!/bin/sh
 # Drama 3 compact NVFP4 on one GB10, the checks host tests cannot make; RECEIPT.txt and every log go to RECEIPT_DIR.
 set -eu
-[ "$#" -eq 5 ] || { echo 'usage: drama3_compact_gb10.sh FP8_MODEL COMPACT_MODEL CODEC NVCC RECEIPT_DIR' >&2; exit 2; }
-fp8=$1 compact=$2 codec=$3 nvcc=$4 out=$5
+[ "$#" -eq 6 ] || { echo 'usage: drama3_compact_gb10.sh PRE_FEATURE_COMMIT FP8_MODEL COMPACT_MODEL CODEC NVCC RECEIPT_DIR' >&2; exit 2; }
+base=$1 fp8=$2 compact=$3 codec=$4 nvcc=$5 out=$6
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+# the FP8 comparison needs a tree without the feature: once merged, merge-base with main is HEAD itself
+if git -C "$root" grep -q d3_router_compact "$base" -- zig/kernels/cuda; then echo "$base already has d3_router_compact" >&2; exit 2; fi
 mkdir -p "$out"
 out=$(CDPATH= cd -- "$out" && pwd)
-base=$(git -C "$root" merge-base HEAD origin/main)
 main_tree=$(mktemp -d "${TMPDIR:-/tmp}/drama3-main.XXXXXX")
 trap 'git -C "$root" worktree remove --force "$main_tree"' EXIT
 git -C "$root" worktree add --detach "$main_tree" "$base" >/dev/null
@@ -29,18 +30,21 @@ run "$root" "$compact" compact --codec "$codec" --replay 1
 grep -q 'routed experts NVFP4 in 40 of 40 layers; compact routers in 40 of 40 layers' "$out/compact.log"
 run "$root" "$compact" compact-batched --codec "$codec" --max-rows 64
 cmp "$out/compact.codes" "$out/compact-batched.codes"
-"$root/zig-out/bin/tf-cuda-test" drama3-router-compact 2>"$out/router.log"
-"$root/zig-out/bin/tf-cuda-test" kernel-contract-limits "$root/zig-out/fatbin" >"$out/limits.log" 2>&1 || true
+# gates 1-4 and the unmasked control; the word matches no limits record, so the pending one waits for the audit below
+"$root/zig-out/bin/tf-cuda-test" kernel-contract 'compact router' >"$out/contract.log" 2>&1
+status=0
+"$root/zig-out/bin/tf-cuda-test" kernel-contract-limits "$root/zig-out/fatbin" >"$out/limits.log" 2>&1 || status=$?
+"$root/tools/zig/drama3_limits_gate.sh" "$status" "$out/limits.log"
 {
-    echo "head $(git -C "$root" rev-parse HEAD) base $base"
+    echo "head $(git -C "$root" rev-parse HEAD) pre-feature $base"
     nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
     "$nvcc" --version | tail -n 1
     for f in "$fp8" "$compact" "$codec"; do echo "input $f: $(find "$f" -name '*.safetensors' -o -name '*.pth' | sort | xargs cat | sha256sum | cut -d' ' -f1)"; done
-    echo "PASS fp8 greedy codes byte-identical to main: $(sha256sum "$out/fp8-head.codes" | cut -d' ' -f1)"
+    echo "PASS fp8 greedy codes byte-identical to $base: $(sha256sum "$out/fp8-head.codes" | cut -d' ' -f1)"
     echo "PASS compact $(grep -o 'routed experts held.*' "$out/compact.log")"
     echo "PASS compact decode and replay: $(tail -n 1 "$out/compact.log")"
     echo "PASS compact batched prefill (64 rows) codes equal one-row: $(sha256sum "$out/compact.codes" | cut -d' ' -f1)"
-    grep '^PASS drama3-router-compact' "$out/router.log"
+    grep '^(filtered) SUMMARY' "$out/contract.log"
     grep '^RECORD drama3 d3_router_compact:' "$out/limits.log"
 } >"$out/RECEIPT.txt"
 cat "$out/RECEIPT.txt"

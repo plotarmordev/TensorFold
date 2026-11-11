@@ -53,14 +53,23 @@ fn unpacked(blocks: []const u32, parts: usize, part: usize, k: usize, row: usize
     return .{ @intCast((word >> E.slot(h, ii % 4)) & 0xF), scale };
 }
 
-/// The served f32 arithmetic: a staged row's dot product (fp32 sums of bf16-exact terms) times its global scale.
-fn servedRow(blocks: []const u32, parts: usize, part: usize, k: usize, row: usize, x: []const f32, global: f32) f32 {
+/// nvfp4_experts.cu in f32: each 16-group's dot from zero, fmaf by its e4m3 scale into the row sum, then the global.
+fn servedDot(codes: []const u8, scales: []const u8, x: []const f32, global: f32) f32 {
     var sum: f32 = 0;
-    for (0..k) |i| {
-        const code, const scale = unpacked(blocks, parts, part, k, row, i);
-        sum = @mulAdd(f32, @floatCast(ref.fp4(code) * ref.fp8(scale)), x[i], sum);
+    for (scales, 0..) |scale, b| {
+        var dot: f32 = 0;
+        for (codes[16 * b ..][0..16], x[16 * b ..][0..16]) |code, v| dot = @mulAdd(f32, @floatCast(ref.fp4(code)), v, dot);
+        sum = @mulAdd(f32, dot, @floatCast(ref.fp8(scale)), sum);
     }
     return sum * global;
+}
+
+/// A staged row through servedDot.
+fn servedRow(blocks: []const u32, parts: usize, part: usize, k: usize, row: usize, x: []const f32, global: f32) f32 {
+    var codes: [cfg.hidden]u8 = undefined;
+    var scales: [cfg.hidden / 16]u8 = undefined;
+    for (0..k) |i| codes[i], scales[i / 16] = unpacked(blocks, parts, part, k, row, i);
+    return servedDot(codes[0..k], scales[0 .. k / 16], x[0..k], global);
 }
 
 /// Round to nearest even bf16 by the integer trick the kernels' __float2bfloat16_rn performs.
@@ -97,6 +106,37 @@ test "SwiGLU rounds silu to bf16 before the up product: the served epilogue and 
     try testing.expectEqual(@as(f64, -0.0033721923828125), ref.swiglu(-4, 0.046875));
     try testing.expectEqual(contractSwiglu(1.0078125, -3), servedSwiglu(1.0078125, -3));
     try testing.expectEqual(contractSwiglu(-0.5, 0.0009765625), servedSwiglu(-0.5, 0.0009765625));
+}
+
+/// servedDot and the FP64 oracle on one crafted row of 32 inputs: codes, one e4m3 scale a group, bf16 inputs.
+fn crafted(codes: [32]u8, scales: [2]u8, x: [32]f32) struct { f32, f64 } {
+    var packed_codes: [16]u8 = undefined;
+    for (&packed_codes, 0..) |*p, i| p.* = codes[2 * i] | codes[2 * i + 1] << 4;
+    var xb: [32]u16 = undefined;
+    for (&xb, x) |*b, v| b.* = bits(v);
+    return .{ servedDot(&codes, &scales, &x, 1), ref.projection(&packed_codes, &scales, 1, 0, 32, &xb) };
+}
+
+test "served NVFP4 rows scale each 16-group's dot, not each term: overflow and cancellation the FP64 oracle lacks" {
+    const six = 0x7; // fp4 6
+    const one = 0x2; // fp4 1
+    const neg_one = 0xA;
+    var codes: [32]u8 = @splat(0);
+    var x: [32]f32 = @splat(0);
+    // 16 x (6 * 2^125) leaves f32 inside the group's dot, before e4m3 1/512 (0x01) would bring it back
+    @memset(codes[0..16], six);
+    @memset(x[0..16], 0x1p125);
+    var got, var want = crafted(codes, .{ 0x01, 0 }, x);
+    try testing.expect(std.math.isInf(got));
+    try testing.expectEqual(@as(f64, 96 * 0x1p125 / 512), want);
+    // 2^24 + 1 - 2^24 in a group: its f32 dot drops the 1 before e4m3 3 (0x44); per-term scaling gives 4, FP64 3
+    codes = @splat(0);
+    x = @splat(0);
+    codes[0..3].* = .{ one, one, neg_one };
+    x[0..3].* = .{ 0x1p24, 1, 0x1p24 };
+    got, want = crafted(codes, .{ 0x44, 0 }, x);
+    try testing.expectEqual(@as(f32, 0), got);
+    try testing.expectEqual(@as(f64, 3), want);
 }
 
 test "compact NVFP4 experts stage as stored in held-slot order and decode gate-up, SwiGLU, down and combine to FP64" {
