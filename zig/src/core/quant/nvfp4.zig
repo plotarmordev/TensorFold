@@ -53,7 +53,7 @@ const Lanes = @Vector(group, f64);
 const Index = @Vector(group, u8);
 
 /// The global of a matrix whose largest magnitude is `amax`: its largest block scale lands on e4m3's 448.
-pub fn globalScale(amax: f64) f32 {
+fn globalScale(amax: f64) f32 {
     return if (amax == 0) 1 else @floatCast(amax / (6.0 * 448.0));
 }
 
@@ -82,10 +82,10 @@ fn loss(aw: Lanes, s: f64, g: f64) f64 {
 }
 
 /// One block's e4m3 scale code, its 16 nibbles (sign bit 3) and the squared error of that choice.
-pub const Block = struct { scale: u8, nibbles: [group]u8, loss: f64 };
+const Block = struct { scale: u8, nibbles: [group]u8, loss: f64 };
 
 /// Of all 126 e4m3 scale codes the least squared error (ties: smaller code); an all-zero block takes scale 0.
-pub fn encodeBlock(w: *const [group]f64, g: f32) Block {
+fn encodeBlock(w: *const [group]f64, g: f32) Block {
     var aw: Lanes = undefined;
     inline for (0..group) |i| aw[i] = @abs(w[i]);
     if (@reduce(.Max, aw) == 0) return .{ .scale = 0, .nibbles = @splat(0), .loss = 0 };

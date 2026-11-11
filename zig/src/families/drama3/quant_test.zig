@@ -31,15 +31,19 @@ fn scaleInv(rnd: std.Random, arena: Allocator, n: usize, poison: bool) ![]u8 {
     return std.mem.sliceAsBytes(v);
 }
 
+/// How `Fixture.init` breaks layer 30's last expert: a NaN scale_inv, or no rows or columns.
+const Fault = enum { none, nan_scale, no_rows, no_cols };
+
 const Fixture = struct {
     arena_state: std.heap.ArenaAllocator,
     tmp: testing.TmpDir,
     root: []const u8,
 
     /// SRC: layers 0-19 in the first shard and 20-39 in the second, each a BF16 norm then its FP8 experts (expert 0's
-    /// gate with an input_scale); an index, config.json, a nested tokenizer file and SRC's own provenance.
-    /// `poison` gives layer 30's last expert a NaN scale_inv, so a run fails in the second shard.
-    fn init(poison: bool) !Fixture {
+    /// gate with an input_scale); an index, config.json, a nested tokenizer file, two safetensors files the index does
+    /// not name and SRC's own provenance.
+    /// `fault` breaks layer 30's last expert in the second shard.
+    fn init(fault: Fault) !Fixture {
         var f: Fixture = .{ .arena_state = .init(testing.allocator), .tmp = testing.tmpDir(.{}), .root = undefined };
         errdefer f.deinit();
         const arena = f.arena_state.allocator();
@@ -53,11 +57,13 @@ const Fixture = struct {
             const pre = try std.fmt.allocPrint(arena, "model.language_model.layers.{d}.", .{l});
             try s.append(arena, .{ .name = try std.fmt.allocPrint(arena, "{s}input_layernorm.weight", .{pre}), .dtype = .bf16, .shape = &.{hidden}, .bytes = try fill(rnd, arena, 2 * hidden, false) });
             for (0..experts) |e| for (quant.projections) |p| {
-                const n: usize, const k: usize = if (p[0] == 'd') .{ hidden, inner } else .{ inner, hidden };
+                const broken = l == 30 and e == experts - 1;
+                const n: usize = if (broken and fault == .no_rows) 0 else if (p[0] == 'd') hidden else inner;
+                const k: usize = if (broken and fault == .no_cols) 0 else if (p[0] == 'd') inner else hidden;
                 const name = try std.fmt.allocPrint(arena, "{s}mlp.experts.{d}.{s}.weight", .{ pre, e, p });
                 try s.append(arena, .{ .name = name, .dtype = .f8_e4m3, .shape = try arena.dupe(usize, &.{ n, k }), .bytes = try fill(rnd, arena, n * k, true) });
-                const bad = poison and l == 30 and e == experts - 1;
-                try s.append(arena, .{ .name = try std.fmt.allocPrint(arena, "{s}_scale_inv", .{name}), .dtype = .f32, .shape = &.{ 1, 1 }, .bytes = try scaleInv(rnd, arena, 1, bad) });
+                const blocks = @intFromBool(n > 0) * @intFromBool(k > 0);
+                try s.append(arena, .{ .name = try std.fmt.allocPrint(arena, "{s}_scale_inv", .{name}), .dtype = .f32, .shape = try arena.dupe(usize, &.{ @intFromBool(n > 0), @intFromBool(k > 0) }), .bytes = try scaleInv(rnd, arena, blocks, broken and fault == .nan_scale) });
                 if (e == 0 and p[0] == 'g') try s.append(arena, .{ .name = try std.fmt.allocPrint(arena, "{s}mlp.experts.0.gate_proj.input_scale", .{pre}), .dtype = .f32, .shape = &.{}, .bytes = try scaleInv(rnd, arena, 1, false) });
             };
         }
@@ -72,6 +78,8 @@ const Fixture = struct {
         try f.tmp.dir.writeFile(io, .{ .sub_path = "src/" ++ quant.index_name, .data = index.items });
         try f.tmp.dir.writeFile(io, .{ .sub_path = "src/config.json", .data = "{\"model_type\": \"fish_omni\"}\n" });
         try f.tmp.dir.writeFile(io, .{ .sub_path = "src/tokenizer/tokenizer.json", .data = "{\"tokens\": []}\n" });
+        try f.tmp.dir.writeFile(io, .{ .sub_path = "src/codec.safetensors", .data = "a codec, not a shard\n" });
+        try f.tmp.dir.writeFile(io, .{ .sub_path = "src/tokenizer/vocoder.safetensors", .data = "nor this\n" });
         try f.tmp.dir.writeFile(io, .{ .sub_path = "src/" ++ quant.provenance_name, .data = "{\"producer\": \"modelopt\"}\n" });
         return f;
     }
@@ -208,19 +216,19 @@ fn expectIndex(f: *Fixture, dst: []const u8) !std.json.Value {
 }
 
 test "an FP8 checkpoint converts: NVFP4 experts, every other tensor and file unchanged, provenance, SRC untouched" {
-    var f = try Fixture.init(false);
+    var f = try Fixture.init(.none);
     defer f.deinit();
     const arena = f.arena_state.allocator();
     const before = try f.read("src/" ++ shards[1]);
     const s = try f.convert("dst", .{ .commit = commit, .threads = 3 });
     try testing.expectEqual(2, s.shards);
     try testing.expectEqual(layers * experts * 3, s.converted);
-    try testing.expectEqual(2, s.copied);
+    try testing.expectEqual(4, s.copied);
     try testing.expect(!f.exists("dst.partial"));
     try expectShards(&f, "dst", null, true);
     const index = try expectIndex(&f, "dst");
     try testing.expect(index.object.get("metadata").?.object.get(format.experts_key) == null);
-    for ([_][]const u8{ "config.json", "tokenizer/tokenizer.json" }) |name|
+    for ([_][]const u8{ "config.json", "tokenizer/tokenizer.json", "codec.safetensors", "tokenizer/vocoder.safetensors" }) |name|
         try testing.expectEqualStrings(try f.read(try std.fs.path.join(arena, &.{ "src", name })), try f.read(try std.fs.path.join(arena, &.{ "dst", name })));
     try testing.expectEqualSlices(u8, before, try f.read("src/" ++ shards[1]));
 
@@ -240,7 +248,7 @@ test "an FP8 checkpoint converts: NVFP4 experts, every other tensor and file unc
     // the same run, one thread: the same bytes
     _ = try f.convert("one", .{ .commit = commit });
     for (shards) |shard| try testing.expectEqualSlices(u8, try f.read(try std.fs.path.join(arena, &.{ "dst", shard })), try f.read(try std.fs.path.join(arena, &.{ "one", shard })));
-    // DST exists: refused at the rename, its staging removed
+    // DST exists: refused before staging
     try testing.expectError(error.DestinationExists, f.convert("dst", .{}));
     try testing.expect(!f.exists("dst.partial"));
     try testing.expectError(error.DestinationInSource, f.convert("src/dst", .{}));
@@ -264,7 +272,7 @@ fn dropOne(arena: Allocator) ![]const u8 {
 }
 
 test "--compact-experts writes the held experts alone and a map the loader reads back" {
-    var f = try Fixture.init(false);
+    var f = try Fixture.init(.none);
     defer f.deinit();
     const arena = f.arena_state.allocator();
     const text = try dropOne(arena);
@@ -284,7 +292,7 @@ test "--compact-experts writes the held experts alone and a map the loader reads
         const p = try f.json(try std.fs.path.join(arena, &.{ dst, quant.provenance_name }));
         const c = p.object.get("compact_experts").?.object;
         try testing.expectEqual(layers * (experts - 1), c.get("held").?.integer);
-        try testing.expectEqualStrings(path, c.get("file").?.string);
+        try testing.expectEqualStrings("held.json", c.get("file").?.string);
     }
     // a compact checkpoint is not compacted again
     try testing.expectError(error.AlreadyCompact, quant.convert(testing.allocator, io, try f.path("keep"), try f.path("again"), .{ .compact_experts = path }));
@@ -292,7 +300,7 @@ test "--compact-experts writes the held experts alone and a map the loader reads
 }
 
 test "--compact-experts refuses a malformed map and leaves nothing behind" {
-    var f = try Fixture.init(false);
+    var f = try Fixture.init(.none);
     defer f.deinit();
     const arena = f.arena_state.allocator();
     const good = try dropOne(arena);
@@ -310,14 +318,16 @@ test "--compact-experts refuses a malformed map and leaves nothing behind" {
     for (cases, 0..) |c, i| try f.refused("dst", c[1], .{ .compact_experts = try f.map(try std.fmt.allocPrint(arena, "bad{d}.json", .{i}), c[0]) });
 }
 
-test "a run that fails part way leaves no DST behind" {
-    var f = try Fixture.init(true);
-    defer f.deinit();
-    try f.refused("dst", error.BadSourceScale, .{ .threads = 2 });
+test "a run that fails part way leaves no DST behind, an empty expert as a bad scale" {
+    for ([_]struct { Fault, anyerror }{ .{ .nan_scale, error.BadSourceScale }, .{ .no_rows, error.ExpectedFp8Expert }, .{ .no_cols, error.ExpectedFp8Expert } }) |c| {
+        var f = try Fixture.init(c[0]);
+        defer f.deinit();
+        try f.refused("dst", c[1], .{ .threads = 2 });
+    }
 }
 
 test "SRC's index and shards must agree, and its metadata comes through" {
-    var f = try Fixture.init(false);
+    var f = try Fixture.init(.none);
     defer f.deinit();
     const arena = f.arena_state.allocator();
     const index = try f.read("src/" ++ quant.index_name);
