@@ -91,15 +91,16 @@ and one stream decodes at 90.8 / 85.2 tok/s before and 88.4 / 85.3 tok/s after (
 
 `serve --mtp-drafts 1 --drafter ~/models/Ornith-1.5-122B-mtp` loads the layer and drafts with it in place of DFlash2:
 after every target pass, lone or shared, the layer steps over each drafting stream's kept rows with the tokens the reply
-committed after them, and a lone stream holds its one draft, which the next round verifies beside the pending token.
-A refused draft's row is dropped before the layer steps, so its cache's next write starts at the kept end; prompt chunks
-step it too. A stream drafts only while the layer's cache follows every one of its rows from the prompt's start: a
-resumed or restored prompt drafts nothing. `zig build test-qwen27-mtp-lanes` (the same two variables) checks that
-drafted replies are plain decoding's tokens four streams at once and then alone in a reused slot: the four-stream run's
-longest reply, drafting once alone, keeps 20 of 20, and the lone reply 47 of 48 over 96 tokens.
+committed after them, and each stream holds its one draft, which the next round verifies beside the pending token. A
+shared round is kept when its streams ask for drafts, all at once, so the layer has stepped every kept chain before it
+drafts. A refused draft's row is dropped before the layer steps, so its cache's next write starts at the kept end;
+prompt chunks step it too. A stream drafts only while the layer's cache follows every one of its rows from the prompt's
+start: a resumed or restored prompt drafts nothing. `zig build test-qwen27-mtp-lanes` (the same two variables) checks
+that drafted replies are plain decoding's tokens four streams at once, each drafting and accepting in shared rounds,
+and then alone in a reused slot, where the reply keeps 47 of 48 drafts over 96 tokens.
 
 ## Not covered
 
-- MTP drafts' speed in `serve`: they verify, and match plain decoding, but were not timed here. They draft for a lone
-  stream only (shared rounds keep the layer's cache whole, undrafted), and not after a resumed or restored prompt.
+- MTP drafts' speed in `serve`: they verify, and match plain decoding, but were not timed here. They do not draft after
+  a resumed or restored prompt.
 - Images, sampled replies and prompts longer than the bench's (under 50 tokens) were not measured here.
