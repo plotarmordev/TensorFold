@@ -175,6 +175,7 @@ pub fn build(b: *std.Build) void {
     // the dashboard page is text, so its test runs on every OS and Linux CI sees it (it ran only in the macOS suite)
     const dashboard = b.createModule(.{ .root_source_file = b.path("zig/src/server/dashboard_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = dashboard })).step);
+    @import("zig/build/drama3_quant.zig").targets(b, target, optimize, test_step);
     // the backend options are declared for every target, so one build script may pass the same flags on every OS
     const cuda_options = @import("zig/build/options.zig").cuda(b);
     const tp_options = @import("zig/build/options.zig").tp(b);
