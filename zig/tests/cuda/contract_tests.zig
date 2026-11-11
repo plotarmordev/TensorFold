@@ -320,6 +320,9 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     var d3_norm = try drama3_k.Norm.init(gpu, s, d3_mod);
     defer d3_norm.deinit();
     try kernels.append(a, d3_norm.kernel());
+    var d3_mix = try drama3_k.Mix.init(gpu, s, d3_mod);
+    defer d3_mix.deinit();
+    try kernels.append(a, d3_mix.kernel());
     var ck: ?cuda.ck.Ck = null;
     var ck_reduce: ?cuda.ck.Ck = null; // no clusters: the FP8 slices meet in tf_ck8_reduce
     if (cap >= 120) {
