@@ -1,10 +1,10 @@
 //! Portable EXL3/mul1 encoder. The decoder remains the bit-exact reconstruction oracle.
 const std = @import("std");
 const exl3 = @import("exl3_format.zig");
+const scheduler = @import("exl3_threads.zig");
 const Allocator = std.mem.Allocator;
 
 const beam_width = 128;
-pub const max_threads = 64;
 const Entry = struct { value: f16, state: u32 };
 const Candidate = struct { cost: f64, node: u32, parent: u32, state: u32 };
 
@@ -217,32 +217,7 @@ fn searchTile(target: *const [256]f64, importance: *const [256]f64, book: *const
     beam(target, importance, book, w, states[127] & (@as(u32, 0xffff) >> emitBits(w, 0)), states);
 }
 
-/// Runs body(ctx, i) for every i < count on up to `threads` threads, each taking the next index until none is left.
-fn forEach(threads: usize, count: usize, ctx: anytype, comptime body: fn (@TypeOf(ctx), usize) void) void {
-    const Pool = struct {
-        ctx: @TypeOf(ctx),
-        count: usize,
-        next: std.atomic.Value(usize) = .init(0),
-
-        fn run(pool: *@This()) void {
-            while (true) {
-                const i = pool.next.fetchAdd(1, .monotonic);
-                if (i >= pool.count) return;
-                body(pool.ctx, i);
-            }
-        }
-    };
-    var pool: Pool = .{ .ctx = ctx, .count = count };
-    var spawned: [max_threads]?std.Thread = @splat(null);
-    const extra = @min(threads, count, max_threads) -| 1;
-    // a thread that fails to start leaves its share to the others
-    for (spawned[0..extra]) |*t| t.* = std.Thread.spawn(.{}, Pool.run, .{&pool}) catch null;
-    pool.run();
-    for (spawned[0..extra]) |t| if (t) |thread| thread.join();
-}
-
-/// Exact sum_n (W-Q)^T H (W-Q), with matrices in [K,N] layout. Columns run on `threads` threads and add up in column
-/// order, so the sum does not depend on the count.
+/// Exact sum_n (W-Q)^T H (W-Q), [K,N] layout; columns share `threads` threads but add up in column order.
 pub fn hessianError(gpa: Allocator, threads: usize, w: []const f64, q: []const f64, h: []const f64, k: usize, n: usize) !f64 {
     const Columns = struct {
         d: []f64, // W-Q by column: [N,K]
@@ -261,13 +236,14 @@ pub fn hessianError(gpa: Allocator, threads: usize, w: []const f64, q: []const f
             c.terms[col] = total;
         }
     };
-    const columns = Columns{ .d = try gpa.alloc(f64, k * n), .h = h, .k = k, .terms = try gpa.alloc(f64, n) };
-    defer gpa.free(columns.d);
+    const d = try gpa.alloc(f64, k * n);
+    defer gpa.free(d);
+    const columns = Columns{ .d = d, .h = h, .k = k, .terms = try gpa.alloc(f64, n) };
     defer gpa.free(columns.terms);
     for (0..k) |i| for (0..n) |col| {
         columns.d[col * k + i] = w[i * n + col] - q[i * n + col];
     };
-    forEach(threads, n, &columns, Columns.term);
+    scheduler.forEach(threads, n, &columns, Columns.term);
     var total: f64 = 0;
     for (columns.terms) |t| total += t;
     return total;
@@ -315,7 +291,6 @@ const Job = struct {
 };
 
 /// Encode [K,N] with its full [K,K] Hessian on `threads` threads; the bytes do not depend on the count.
-/// `reconstructed` comes from the chosen states, not the packed trellis.
 pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usize, n: usize, width: exl3.Width, threads: usize) !Result {
     if (k == 0 or n == 0 or k % 128 != 0 or n % 128 != 0 or weight.len != k * n or hessian.len != k * k or width.halves < 4 or width.halves > 8) return error.BadShape;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -386,7 +361,7 @@ pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usiz
         .placement = undefined,
     };
     exl3.tilePlacement(&job.placement);
-    forEach(threads, (k / 16) * (n / 16), &job, Job.tile);
+    scheduler.forEach(threads, (k / 16) * (n / 16), &job, Job.tile);
 
     exl3.restore(job.plain_q, k, n, suh, svh);
     exl3.restore(chosen_q, k, n, suh, svh);
@@ -562,19 +537,6 @@ test "an empty dimension is a bad shape" {
     try std.testing.expectError(error.BadShape, encode(gpa, &.{}, &.{}, 128, 0, .{ .halves = 4 }, 1));
 }
 
-test "forEach runs every index exactly once, whatever the thread count" {
-    const Hits = struct {
-        fn hit(counts: []std.atomic.Value(u32), i: usize) void {
-            _ = counts[i].fetchAdd(1, .monotonic);
-        }
-    };
-    for ([_][2]usize{ .{ 1, 10 }, .{ 3, 10 }, .{ 16, 5 }, .{ 7, 1 }, .{ 4, 0 }, .{ 200, 130 } }) |case| {
-        var counts: [130]std.atomic.Value(u32) = @splat(.init(0));
-        forEach(case[0], case[1], counts[0..case[1]], Hits.hit);
-        for (counts[0..case[1]]) |c| try std.testing.expectEqual(@as(u32, 1), c.load(.monotonic));
-    }
-}
-
 test "the encoded bytes and errors do not depend on the thread count" {
     const gpa = std.testing.allocator;
     // 16 x 24 tiles: no thread count below divides them into equal shares
@@ -588,7 +550,7 @@ test "the encoded bytes and errors do not depend on the thread count" {
     for (h, 0..) |*v, i| v.* = std.math.pow(f64, 0.6, @floatFromInt(@max(i / k, i % k) - @min(i / k, i % k)));
     var serial = try encode(gpa, w, h, k, n, .{ .halves = 5 }, 1);
     defer serial.deinit(gpa);
-    for ([_]usize{ 5, 36, max_threads + 1 }) |threads| {
+    for ([_]usize{ 5, 36, scheduler.max_threads + 1 }) |threads| {
         var parallel = try encode(gpa, w, h, k, n, .{ .halves = 5 }, threads);
         defer parallel.deinit(gpa);
         try std.testing.expectEqualSlices(i16, serial.trellis, parallel.trellis);
@@ -598,4 +560,19 @@ test "the encoded bytes and errors do not depend on the thread count" {
         try std.testing.expectEqual(serial.error_exl3, parallel.error_exl3);
         try std.testing.expectEqual(serial.error_plain, parallel.error_plain);
     }
+}
+
+test "hessianError frees what it took when an allocation fails" {
+    const Probe = struct {
+        fn run(gpa: Allocator) !void {
+            const w: [4]f64 = .{ 1, 2, 3, 4 };
+            const h: [4]f64 = .{ 1, 0, 0, 1 };
+            _ = try hessianError(gpa, 2, &w, &@as([4]f64, @splat(0)), &h, 2, 2);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
+}
+
+test {
+    _ = scheduler;
 }

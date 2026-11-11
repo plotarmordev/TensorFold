@@ -6,6 +6,7 @@ const npy = @import("src/core/npy.zig");
 const shard = @import("src/core/shard_edit.zig");
 const loader = @import("src/core/exl3_load.zig");
 const nvfp4 = @import("src/core/quant/nvfp4.zig");
+const max_threads = @import("src/core/exl3_threads.zig").max_threads;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -57,14 +58,14 @@ fn verify(gpa: Allocator, io: Io, out: []const u8, expected: encoder.Result) !vo
 
 const Command = struct { threads: usize, weight: []const u8, hessian: []const u8, bits: []const u8, out_dir: []const u8 };
 
-/// [--threads N] WEIGHT HESSIAN BITS OUT_DIR; N defaults to every core and must be 1 to encoder.max_threads.
+/// [--threads N] WEIGHT HESSIAN BITS OUT_DIR; N defaults to every core and must be 1 to max_threads.
 fn parseArgs(args: []const []const u8, cores: usize) ?Command {
     var rest = args;
-    var threads: usize = @min(cores, encoder.max_threads);
+    var threads: usize = @min(cores, max_threads);
     if (rest.len > 0 and std.mem.eql(u8, rest[0], "--threads")) {
         if (rest.len < 2) return null;
         threads = std.fmt.parseInt(usize, rest[1], 10) catch return null;
-        if (threads == 0 or threads > encoder.max_threads) return null;
+        if (threads == 0 or threads > max_threads) return null;
         rest = rest[2..];
     }
     if (rest.len != 4) return null;
@@ -126,7 +127,7 @@ pub fn main(init: std.process.Init) !u8 {
 test "--threads sets the count, every core is the default, and 0 or over the cap is refused" {
     const paths = [_][]const u8{ "w.npy", "h.npy", "2.0", "out" };
     try std.testing.expectEqual(@as(usize, 36), parseArgs(&paths, 36).?.threads);
-    try std.testing.expectEqual(@as(usize, encoder.max_threads), parseArgs(&paths, 256).?.threads);
+    try std.testing.expectEqual(@as(usize, max_threads), parseArgs(&paths, 256).?.threads);
     const nine = parseArgs(&(.{ "--threads", "9" } ++ paths), 36).?;
     try std.testing.expectEqual(@as(usize, 9), nine.threads);
     try std.testing.expectEqualStrings("out", nine.out_dir);
