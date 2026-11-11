@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+# The bench tools' token_sha256 is a reply's token-id hash, not a key.
+[[allowlists]]
+regexTarget = "match"
+regexes = ['''"token_sha256": "[0-9a-f]{64}"''']
+paths = ['''docs/receipts/ornith-122b-metal/.*''']

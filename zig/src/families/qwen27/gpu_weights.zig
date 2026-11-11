@@ -18,6 +18,8 @@ pub const Attention = struct { q: Linear, kv: Linear, out: Linear, q_norm: Tenso
 pub const Moe = struct { router: row_gpu.Weights, gate: row_gpu.Experts, up: row_gpu.Experts, down: row_gpu.Experts, shared_gate: row_gpu.Weights, shared_up: row_gpu.Weights, shared_down: row_gpu.Weights };
 /// With experts, `gu` and `down` are the shared expert's.
 pub const Layer = struct { norm: Tensor, post_norm: Tensor, gu: Linear, down: Linear, moe: ?Moe = null, mixer: union(@import("config.zig").Kind) { linear: Gdn, attention: Attention } };
+/// The MTP layer: fc over [norm_embed(embed(token)) | norm_hidden(hidden)], one attention block, its norm.
+pub const Mtp = struct { norm_embed: Tensor, norm_hidden: Tensor, fc: Linear, layer: Layer, norm: Tensor };
 
 pub const Weights = struct {
     allocator: std.mem.Allocator,
@@ -25,6 +27,8 @@ pub const Weights = struct {
     embed: projection.Triple,
     norm: Tensor,
     head: Linear,
+    /// The MTP layer, once loadMtp read it; embed and head stay the target's.
+    mtp: ?Mtp = null,
     owned: std.ArrayList(mtl.Buffer) = .empty,
     runs: std.ArrayList([]projection.Run) = .empty,
 
@@ -259,10 +263,15 @@ const Builder = struct {
     }
 
     fn layer(b: Builder, s: *const cfg.Shard, i: usize) !Layer {
+        var name: [32]u8 = undefined;
+        return b.block(s, try std.fmt.bufPrint(&name, "model.layers.{d}.", .{i}), s.local.kind(i), b.widths.layers[i]);
+    }
+
+    /// One decoder layer under `prefix` (a target layer's, or the MTP layer's `mtp.layers.0.`) at widths `w`.
+    fn block(b: Builder, s: *const cfg.Shard, prefix: []const u8, kind: cfg.Kind, w: [widths.members]Width) !Layer {
         var arena = std.heap.ArenaAllocator.init(b.allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        const prefix = try std.fmt.allocPrint(a, "model.layers.{d}.", .{i});
         const Name = struct {
             fn full(allocator: std.mem.Allocator, p: []const u8, leaf: []const u8) ![]const u8 {
                 return std.mem.concat(allocator, u8, &.{ p, leaf });
@@ -270,12 +279,11 @@ const Builder = struct {
         };
         const c = s.local;
         const g = s.global;
-        const w = b.widths.layers[i];
         const M = widths.Member;
         const qkv = s.qkvSpans();
         const qkvRows = [3]usize{ g.k_heads * g.dk, g.k_heads * g.dk, g.gdnValueDim() };
         const convRows = s.convSpans();
-        const mixer: @FieldType(Layer, "mixer") = switch (c.kind(i)) {
+        const mixer: @FieldType(Layer, "mixer") = switch (kind) {
             .linear => .{ .linear = .{
                 .qkv = try b.blocks(try Name.full(a, prefix, "linear_attn.in_proj_qkv"), g.gdnQkvDim(), g.hidden, w[@backingInt(M.qkv)], &qkv, &qkvRows),
                 .zba = try b.linear(&.{
@@ -394,15 +402,43 @@ pub fn load(allocator: std.mem.Allocator, device: mtl.Device, checkpoint: *const
 fn laneOrder(a: std.mem.Allocator, device: mtl.Device, layers: []const Layer, head: Linear) !void {
     var jobs: std.ArrayList(lane.Order) = .empty;
     defer jobs.deinit(a);
-    for (layers) |l| {
-        const list = switch (l.mixer) {
-            .linear => |g| [_]Linear{ g.qkv, g.zba, g.out, l.gu, l.down },
-            .attention => |t| [_]Linear{ t.q, t.kv, t.out, l.gu, l.down },
-        };
-        for (list) |p| try regJobs(a, &jobs, p);
-    }
+    for (layers) |l| try layerJobs(a, &jobs, l);
     try regJobs(a, &jobs, head);
     try lane.regOrder(device, jobs.items);
+}
+
+/// The MTP layer from the 4-bit `language_model.mtp.*` tensors mtp_load staged, into `w.mtp`; one rank only.
+pub fn loadMtp(w: *Weights, device: mtl.Device, checkpoint: *const cp.Checkpoint, s: *const cfg.Shard) !void {
+    if (s.ranks != 1) return error.MtpNeedsOneRank;
+    const c = s.local;
+    var stage = cp.Stage{ .device = device };
+    defer stage.deinit();
+    const b = Builder{ .allocator = w.allocator, .device = device, .checkpoint = checkpoint, .prefix = "language_model.", .owned = &w.owned, .stage = &stage, .runs = &w.runs, .widths = undefined };
+    const width: [widths.members]Width = @splat(widths.uniform);
+    const mtp = Mtp{
+        .norm_embed = try b.tensor("mtp.pre_fc_norm_embedding.weight", .bf16, &.{c.hidden}),
+        .norm_hidden = try b.tensor("mtp.pre_fc_norm_hidden.weight", .bf16, &.{c.hidden}),
+        .fc = try b.linear(&.{.{ .module = "mtp.fc", .n = c.hidden, .w = widths.uniform }}, 2 * c.hidden),
+        .layer = try b.block(s, "mtp.layers.0.", .attention, width),
+        .norm = try b.tensor("mtp.norm.weight", .bf16, &.{c.hidden}),
+    };
+    if (device.tensorUnits()) {
+        var jobs: std.ArrayList(lane.Order) = .empty;
+        defer jobs.deinit(w.allocator);
+        try regJobs(w.allocator, &jobs, mtp.fc);
+        try layerJobs(w.allocator, &jobs, mtp.layer);
+        try lane.regOrder(device, jobs.items);
+    }
+    w.mtp = mtp;
+}
+
+/// A layer's projections that take the reg kernel.
+fn layerJobs(a: std.mem.Allocator, jobs: *std.ArrayList(lane.Order), l: Layer) !void {
+    const list = switch (l.mixer) {
+        .linear => |g| [_]Linear{ g.qkv, g.zba, g.out, l.gu, l.down },
+        .attention => |t| [_]Linear{ t.q, t.kv, t.out, l.gu, l.down },
+    };
+    for (list) |p| try regJobs(a, jobs, p);
 }
 
 /// Only 4-bit g64 matrices take the reg kernel; other widths keep lane_projection.weight_layout.

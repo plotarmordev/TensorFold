@@ -7,6 +7,7 @@ const cfg = @import("config.zig");
 const affine = @import("affine.zig");
 const widths = @import("widths.zig");
 const wts = @import("gpu_weights.zig");
+const mtp_load = @import("mtp_load.zig");
 const quant = @import("quant_gpu.zig");
 const glue = @import("glue_gpu.zig");
 const moe_gpu = @import("moe_gpu.zig");
@@ -79,6 +80,15 @@ pub const Model = struct {
         share_fits: ?*const fn (u64) bool,
         later: bool,
     ) !*Model {
+        if (platform.getenv("TF_PROMPT_ROWS")) |raw| {
+            const n = std.fmt.parseInt(u32, raw, 10) catch 0;
+            if (n < 16 or n > 2048 or n % 16 != 0) {
+                try platform.environment.check("TF_PROMPT_ROWS", raw);
+            }
+        }
+        const timing = core.startup_receipt;
+        timing.target();
+        const validation = timing.span(.model_config);
         const path = try std.fs.path.join(a, &.{ dir, "config.json" });
         defer a.free(path);
         const text = try std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(16 << 20));
@@ -105,25 +115,34 @@ pub const Model = struct {
             std.log.err("qwen27: {s} (layer {?d}) is {d}-bit group {d}; this chip's projection kernels do not run it ({s})", .{ why.module, why.layer, why.width.bits, why.width.group, @errorName(why.reason) });
             return err;
         };
+        validation.end();
         m.queue = try m.device.queue();
         errdefer m.queue.deinit();
         m.checkpoint = core.checkpoint_metal.Checkpoint.init(a);
         errdefer m.checkpoint.deinit();
+        const headers = timing.span(.checkpoint_headers);
         const files = try core.checkpoint_host.shardFiles(a, io, dir);
         defer core.checkpoint_host.freeShardFiles(a, files);
         // projections stay in the files until load repacks them: the weights live once, in their lane layouts
         for (files) |file| try m.checkpoint.addFileSplit(m.device, file, "", "language_model.", wts.repacked);
+        headers.end();
+        const packing = timing.span(.read_pack);
         m.weights = try wts.load(a, m.device, &m.checkpoint, &m.shard, &ws);
         errdefer m.weights.deinit();
+        packing.end();
+        const pipelines = timing.span(.weight_pipelines);
         m.kernels = .{ .allocator = a, .device = m.device, .raw_tiles = !m.device.tensorUnits(), .long_prompt = quant.longPrompt(std.mem.span(m.device.name()), m.device.tensorUnits()) };
         errdefer m.kernels.deinit();
         m.glue = try glue.Kernels.init(m.device);
         errdefer m.glue.deinit();
         m.moe = if (c.moe()) try moe_gpu.Kernels.init(a, m.device) else null;
         errdefer if (m.moe) |*k| k.deinit();
+        pipelines.end();
+        const allocation = timing.span(.initial_allocation);
         // Serving defers automatic widening until its context and streams are known; explicit widths stay exact.
         m.frame = try Frame.init(m.device, shard.local, @max(rows, promptRows(shard.local, if (later) 0 else m.device.generation())));
         errdefer m.frame.deinit();
+        allocation.end();
         m.ane = null;
         m.share_pending = true;
         if (!later) try m.finishShare(null, share_fits);
@@ -133,6 +152,21 @@ pub const Model = struct {
     /// A deferred share takes at most `room` bytes; zero refuses it, and decided models stay as they are.
     pub fn loadShare(m: *Model, room: u64) !void {
         try m.finishShare(room, null);
+    }
+
+    /// The checkpoint's MTP layer from `dir`, the bf16 release's `mtp.*` shards, 4-bit at load; once, before loadShare
+    /// and before the runner that runs it.
+    pub fn loadMtp(m: *Model, io: std.Io, dir: []const u8) !void {
+        if (!m.share_pending) return error.MtpAfterShare;
+        if (m.weights.mtp != null) return error.MtpLoaded; // staging shifts the norms in place
+        const files = try core.checkpoint_host.shardFiles(m.allocator, io, dir);
+        defer core.checkpoint_host.freeShardFiles(m.allocator, files);
+        // the index names every shard of the release; only the ones holding mtp.* need be present
+        for (files) |file| if (std.Io.Dir.cwd().access(io, file, .{})) |_| {
+            try m.checkpoint.addFileSplit(m.device, file, mtp_load.source, "mtp.", mtp_load.deferred);
+        } else |_| {};
+        try mtp_load.stage(m.allocator, m.device, &m.checkpoint, m.config.experts);
+        try wts.loadMtp(&m.weights, m.device, &m.checkpoint, &m.shard);
     }
 
     fn finishShare(m: *Model, room: ?u64, share_fits: ?*const fn (u64) bool) !void {

@@ -1,0 +1,16 @@
+quicksort-raw: no split in 128
+rust-reverse-words: split at 0, mlx 8160 vs tf 2, logprob gap 2.2500
+multiply-17-23: split at 23, mlx 44896 vs tf 1654, logprob gap -0.2500
+sleep-tips: split at 3, mlx 5721 vs tf 10104, logprob gap -0.3750
+js-debounce-raw: no split in 128
+linear-equation: split at 0, mlx 2 vs tf 9764, logprob gap 0.8750
+fishing-village: split at 28, mlx 22651 vs tf 369, logprob gap 2.3125
+sql-left-join: split at 8, mlx 29359 vs tf 561, logprob gap -4.1250
+rectangle: split at 91, mlx 7525 vs tf 32, logprob gap 2.3750
+dinner-idea: split at 2, mlx 264 vs tf 1010, logprob gap 0.8750
+c-primes-raw: split at 18, mlx 8 vs tf 1321, logprob gap -0.3125
+prime-221: split at 45, mlx 4924 vs tf 220, logprob gap -0.7500
+heist-story: split at 36, mlx 364 vs tf 384, logprob gap 0.6250
+bash-line-count: split at 24, mlx 12 vs tf 13, logprob gap 0.6250
+sum-1-250: split at 100, mlx 198 vs tf 271, logprob gap 4.0625
+blue-sky: split at 2, mlx 369 vs tf 5686, logprob gap 1.5000

@@ -10,7 +10,9 @@ For agent-assisted contributions, read the [TensorFold contributor skill](SKILL.
 | dots.mocr | [Native HIP OCR, BF16, one GPU](dots-mocr-hip.md) |
 | Kimi K3 / K3.1 | [Native Metal bring-up, synthetic only, resident budget refusal](kimi-k3-metal.md) |
 | Nemotron 3.5 Lightning | [MLX](nemotron-3.5.md), [Intel Arc, experimental](xpu-arc.md) |
+| Nemotron 3.5 Parse | [Native HIP OCR, validation and qualification limits](nemotron-parse.md) |
 | Nemotron 3.5 Super VL | [Native CUDA on one or two GB10s, images](nemotron-3.5-super-vl.md) |
+| Ornith-1.5-122B (Qwen3.5-MoE) | [Native Metal on one 256 GB Mac: MLX 4-bit, DFlash2 drafts](ornith-1.5-122b-metal.md) |
 | Qwen3.8-27B | [MLX, quantization and CUDA](qwen3.8-27b.md) |
 | Qwen3.5-2B | [Native Metal preview, tied affine 4-bit](qwen3.5-2b-native.md) |
 | Qwen3.8 Flash Next | [MLX prefill and CUDA](qwen3.8-flash-next.md), [native CUDA](flash-next-cuda.md), [CUDA images](flash-next-vision.md), [exact SSD residency on Metal](fluid-subgraph-residency.md) |
@@ -30,13 +32,16 @@ For agent-assisted contributions, read the [TensorFold contributor skill](SKILL.
 | Nanbeige4.3-33B | [Native Metal, the bf16 and INT4 releases, the Llama family](nanbeige-4.3-33b-metal.md) |
 | Underdog Woof | [Native CPU speech on a Mac, int8, non-commercial licence](woof.md) |
 
+[Persisted serving-state identities](persisted-serving-keys.md) lists the disk owners, their compatibility keys and stale-state host checks.
+
 ## Capability floor
 
 The native release includes CUDA kernels for sm_80, sm_86, sm_120 and sm_121. This is a build target list, not
 per-card model qualification. Nemotron MLX 4-bit has been checked on GB10, RTX 3090 and RTX PRO 6000.
 The A100 (sm_80) has [kernel-check evidence](../../CHANGELOG.md#1012) from #846, but no served checkpoint on record;
 it is not model-qualified. See [qualified models](../../README.md#qualified-models) for the measured scope.
-`tensorfold info REPO` prints a checkpoint's memory floor: its weights plus a 2 GiB runtime margin.
+`tensorfold info REPO` prints a checkpoint's memory floor: its weights plus a 2 GiB runtime margin. On macOS, a
+Flash Next (`qwen4_exp`) checkpoint instead prints its startup and cold pack budgets.
 
 | Engine | Floor |
 | --- | --- |

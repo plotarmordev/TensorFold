@@ -14,6 +14,8 @@ pub const Mixer = struct {
     gdn: *const fn (*anyopaque, mtl.ComputeEncoder, usize, wts.Gdn, *Frame, u32) anyerror!void,
     attention: *const fn (*anyopaque, mtl.ComputeEncoder, usize, wts.Attention, *Frame, u32) anyerror!void,
     tap: ?*const fn (*anyopaque, mtl.ComputeEncoder, usize, Ref, u32) anyerror!void = null,
+    /// A pass that keeps no row and has no other reader of the last layer: that layer writes keys and values only.
+    keys: ?*const fn (*anyopaque, mtl.ComputeEncoder, usize, wts.Attention, *Frame, u32) anyerror!void = null,
 };
 
 /// One exchange: `x` its index, `ref` this rank's `width` columns of the seam in the window's slot for x.
@@ -76,6 +78,17 @@ pub const Stages = struct {
     reduce: ?Reduce = null,
     /// Head seam picks (one u32 a row), required with `Reduce.argmax`: the ranks must pick the same token.
     picks: ?Ref = null,
+    /// The final norm's gain: the target's, or the MTP layer's for its pass.
+    norm: ?wts.Tensor = null,
+    /// Where the head writes: the frame's logits, or the MTP layer's own so the target's stay readable.
+    logits: ?Ref = null,
+
+    /// Layer `index`: the target's, then (at `config.layers`) the MTP layer.
+    fn layerAt(s: *const Stages, index: usize) wts.Layer {
+        const w = &s.model.weights;
+        return if (index < w.layers.len) w.layers[index] else w.mtp.?.layer;
+    }
+
     pub fn begin(s: *Stages, lane: *@import("core").segments.Lane) !void {
         const m = s.model;
         if (s.rows == 0 or s.rows > m.frame.capacity or lane.k != 0) return error.BadFrameRows;
@@ -96,7 +109,7 @@ pub const Stages = struct {
         const m = s.model;
         const f = &m.frame;
         const e = lane.enc;
-        const layer = m.weights.layers[index];
+        const layer = s.layerAt(index);
         const h: u32 = @intCast(m.config.hidden);
         try m.kernels.norm(e, s.hidden, s.pending, wts.ref(layer.norm), f.get(.eps), f.get(.dims), s.residual, f.get(.input), f.get(.sums), h, s.rows);
         e.barrier();
@@ -105,19 +118,29 @@ pub const Stages = struct {
             if (s.hooks.tap) |tap| try tap(s.hooks.ptr, e, index - 1, s.hidden, s.rows);
         }
     }
+    /// The last layer of a pass whose other rows nothing reads: q, attention, o and the MLP have no reader.
+    fn keysOnly(s: *const Stages, index: usize) bool {
+        return s.hooks.keys != null and s.head == .none and index + 1 == s.model.config.layers;
+    }
     pub fn mixer(s: *Stages, lane: *@import("core").segments.Lane, index: usize) !void {
         const m = s.model;
-        switch (m.weights.layers[index].mixer) {
+        if (s.keysOnly(index)) {
+            try s.hooks.keys.?(s.hooks.ptr, lane.enc, index, m.weights.layers[index].mixer.attention, &m.frame, s.rows);
+            lane.enc.barrier();
+            return;
+        }
+        switch (s.layerAt(index).mixer) {
             .linear => |g| try s.hooks.gdn(s.hooks.ptr, lane.enc, index, g, &m.frame, s.rows),
             .attention => |a| try s.hooks.attention(s.hooks.ptr, lane.enc, index, a, &m.frame, s.rows),
         }
         lane.enc.barrier();
     }
     pub fn post(s: *Stages, lane: *@import("core").segments.Lane, index: usize) !void {
+        if (s.keysOnly(index)) return;
         const m = s.model;
         const f = &m.frame;
         var e = lane.enc;
-        const layer = m.weights.layers[index];
+        const layer = s.layerAt(index);
         const h: u32 = @intCast(m.config.hidden);
         const out = switch (layer.mixer) {
             .linear => |g| g.out,
@@ -228,7 +251,8 @@ pub const Stages = struct {
         const f = &m.frame;
         // The head seam reopens the encoder, so it goes back in the lane; rank 0's half-vocab argmax is not a token.
         var e = lane.enc;
-        try m.kernels.norm(e, s.hidden, s.pending, wts.ref(m.weights.norm), f.get(.eps), f.get(.dims), s.residual, f.get(.input), f.get(.sums), @intCast(m.config.hidden), s.rows);
+        if (s.keysOnly(m.config.layers - 1)) return if (s.tail) |tail| tail.encode(tail.ptr, e);
+        try m.kernels.norm(e, s.hidden, s.pending, wts.ref(s.norm orelse m.weights.norm), f.get(.eps), f.get(.dims), s.residual, f.get(.input), f.get(.sums), @intCast(m.config.hidden), s.rows);
         e.barrier();
         std.mem.swap(Ref, &s.hidden, &s.residual);
         if (s.hooks.tap) |tap| try tap(s.hooks.ptr, e, m.config.layers - 1, s.hidden, s.rows);
@@ -240,7 +264,7 @@ pub const Stages = struct {
                 input.offset += @as(usize, s.rows - 1) * m.config.hidden * 2;
                 head_sums.ref.offset += @as(usize, s.rows - 1) * 4;
             }
-            try m.kernels.quant(e, m.weights.head, input, head_sums, f.get(.dims), f.get(.logits), if (s.head == .last) 1 else s.rows);
+            try m.kernels.quant(e, m.weights.head, input, head_sums, f.get(.dims), s.logits orelse f.get(.logits), if (s.head == .last) 1 else s.rows);
         }
         e.barrier();
         if (s.reduce) |r| {

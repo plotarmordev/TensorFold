@@ -1,6 +1,7 @@
 //! The native engine: model loading, families and the lane core, over our Metal runtime.
 const std = @import("std");
 
+pub const startup_receipt = @import("profile").startup_receipt;
 pub const benchmark_group = @import("core/benchmark_group.zig");
 pub const safetensors = @import("core/safetensors.zig");
 pub const gguf = @import("core/gguf.zig");
@@ -43,6 +44,7 @@ pub const nemotron = @import("families/nemotron/nemotron.zig");
 pub const flashnext_vision_contract = @import("families/flashnext/vision_contract.zig");
 pub const flashnext_fsr_fixture = @import("families/flashnext/fsr_gpu_fixture.zig");
 pub const flashnext_fsr_contract = @import("families/flashnext/fsr_contract_source.zig");
+pub const flashnext_scale_index_fixture = @import("families/flashnext/scale_index_fixture.zig");
 pub const flashnext_replay = @import("families/flashnext/replay.zig");
 pub const flashnext_rows = @import("families/flashnext/rows_load.zig");
 pub const flashnext_sample = @import("families/flashnext/host_sample.zig");
@@ -122,11 +124,14 @@ pub const shared_attention = @import("core/shared_attention.zig");
 pub const tile_qmm = @import("core/tile_qmm.zig");
 
 pub const gpu_profile = @import("core/gpu_profile.zig");
+/// The core KV pool on Metal: one arena of pages and each stream's table (qwen27's TF_QWEN27_METAL_KV_PAGES).
+pub const metal_kv_pages = @import("core/metal_kv_pages.zig");
 
 pub const draft_ops = @import("draft_ops");
 
 pub const affine4 = @import("core/affine4.zig");
 pub const affine4_lane = @import("core/affine4_lane.zig");
+pub const affine4_host = @import("core/affine4_host.zig");
 
 pub const tree_round = @import("tree_round");
 pub const tree_round_gpu = @import("tree_round_gpu");
