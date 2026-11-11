@@ -41,8 +41,7 @@ pub fn reference(h: Host, out: []f64) error{UnexpectedTensor}!void {
     };
 }
 
-/// fp64 values of `w` [N, K] (K a multiple of 16) after ModelOpt's NVFP4 round trip, into `out`: global =
-/// amax / (6 * 448), an e4m3 scale amax16 / (6 * global) per 16 inputs, codes to the nearest e2m1, ties to even.
+/// ModelOpt NVFP4 round trip of `w` [N,K]: global amax/(6*448), e4m3 scale per 16 inputs, e2m1 ties to even.
 pub fn quantize(w: []const f64, k: usize, out: []f64) void {
     std.debug.assert(k % group == 0 and w.len % k == 0 and out.len == w.len);
     var amax: f64 = 0;
@@ -116,8 +115,7 @@ test "quantize rounds midpoints to the even e2m1 code" {
 }
 
 test "quantize keeps a small block's precision beside a large tensor amax" {
-    // global = 1: block 0's scale is 448, block 1's 2^-5 and its values exact; amax / 6 as the global would
-    // give block 1 a scale of 7e-5, below e4m3's smallest subnormal, and flush it to zero
+    // global = 1: block 1's scale is exact at 2^-5; amax / 6 as global would flush it below e4m3's smallest subnormal
     var w: [32]f64 = undefined;
     @memset(w[0..16], 2688);
     @memset(w[16..], 0.1875);

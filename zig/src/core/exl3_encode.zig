@@ -136,8 +136,7 @@ fn emitBits(w: exl3.Width, p: usize) u5 {
     return @intCast(w.halves / 2 + if (w.isHalf()) p % 2 else 0);
 }
 
-/// Importance-weighted beam Viterbi over one tile's circular stream. Value 0's window starts with the
-/// stream's last 16 - emitBits(0) bits; with `start`, those bits are forced to it, so the states close the ring.
+/// Weighted beam Viterbi over a tile's ring; with `start`, value 0's wrapped window is forced to it, closing the ring.
 fn beam(target: *const [256]f64, importance: *const [256]f64, book: *const Book, w: exl3.Width, start: ?u32, states: *[256]u32) void {
     var candidates: [beam_width * 16]Candidate = undefined;
     var history: [256][beam_width]u32 = undefined;
@@ -206,8 +205,7 @@ fn beam(target: *const [256]f64, importance: *const [256]f64, book: *const Book,
     }
 }
 
-/// Tail-biting search: a free pass over the tile rotated by half picks where the ring closes, mid-path where
-/// the beam has settled, then a second pass closes it there.
+/// Tail-biting search: a free pass over the tile turned by half picks the closing state, a second pass closes there.
 fn searchTile(target: *const [256]f64, importance: *const [256]f64, book: *const Book, w: exl3.Width, states: *[256]u32) void {
     var turned_target: [256]f64 = undefined;
     var turned_importance: [256]f64 = undefined;
@@ -277,8 +275,7 @@ const Job = struct {
     }
 };
 
-/// Encode one [K,N] matrix with a full [K,K] calibration Hessian. The exact-error fallback is tensor-wide.
-/// `reconstructed` comes from the chosen states, not from decoding the packed trellis.
+/// Encode [K,N] with its full [K,K] Hessian; `reconstructed` comes from the chosen states, not the packed trellis.
 pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usize, n: usize, width: exl3.Width) !Result {
     if (k == 0 or n == 0 or k % 128 != 0 or n % 128 != 0 or weight.len != k * n or hessian.len != k * k or width.halves < 4 or width.halves > 8) return error.BadShape;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -299,8 +296,7 @@ pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usiz
     for (svh, 0..) |*s, j| {
         var sum: f64 = 0;
         for (0..k) |i| sum += rotated[i * n + j] * rotated[i * n + j];
-        // an all-zero output decodes to exactly zero; any other scale would leak codebook noise
-        // through the output Hadamard into every live column of its block
+        // a zero scale keeps a dead output exactly zero; any other leaks codebook noise across its Hadamard block
         if (sum == 0) {
             s.* = 0;
             continue;
