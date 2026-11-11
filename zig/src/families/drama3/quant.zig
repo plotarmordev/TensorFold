@@ -263,7 +263,7 @@ pub fn convert(gpa: Allocator, io: Io, src: []const u8, dst: []const u8, o: Opti
         .compact_experts = if (o.compact_experts) |path| .{
             .file = std.fs.path.basename(path),
             .sha256 = try fileSha256(arena, io, path),
-            .held = total(&held.?),
+            .held = held.?.total(),
         } else null,
         .source_provenance = try sourceProvenance(arena, io, from),
         .tensors = &.{},
@@ -321,12 +321,6 @@ pub const Provenance = struct {
 
 fn holds(h: *const format.Held, layer: usize, expert: usize) bool {
     return std.mem.indexOfScalar(u8, h.ids[layer][0..h.counts[layer]], std.math.cast(u8, expert) orelse return false) != null;
-}
-
-fn total(h: *const format.Held) usize {
-    var n: usize = 0;
-    for (h.counts) |c| n += c;
-    return n;
 }
 
 /// --compact-experts' map as the loader reads it, refused unless SRC's index lists each held projection's weight and scale_inv.

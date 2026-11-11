@@ -286,9 +286,9 @@ test "--compact-experts writes the held experts alone and a map the loader reads
         const index = try expectIndex(&f, dst);
         const got = try format.heldMetadata(index.object.get("metadata"));
         try testing.expectEqualDeep(held, got);
-        var names: std.StringHashMapUnmanaged(usize) = .empty;
-        for (index.object.get("weight_map").?.object.keys()) |name| try names.put(arena, name, 0);
-        try format.checkNames(&got, names.keyIterator());
+        var names: std.StringHashMapUnmanaged(void) = .empty;
+        for (index.object.get("weight_map").?.object.keys()) |name| try names.put(arena, name, {});
+        try format.checkStored(&got, names);
         const p = try f.json(try std.fs.path.join(arena, &.{ dst, quant.provenance_name }));
         const c = p.object.get("compact_experts").?.object;
         try testing.expectEqual(layers * (experts - 1), c.get("held").?.integer);
