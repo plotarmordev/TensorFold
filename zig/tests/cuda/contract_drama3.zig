@@ -1,9 +1,10 @@
-//! Drama 3's RMS norm rows (d3_rmsnorm, plain gamma and gated-norm form) and its CFG mix under the CUDA contract.
+//! Drama 3's kernels under the CUDA contract: RMS norm rows (d3_rmsnorm), the compact router and the CFG mix.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
 const check = @import("check.zig");
 const rig_ = @import("contract_rig.zig");
+const router_k = @import("contract_drama3_router.zig");
 
 const contract = core.contract;
 const c = contract.spec;
@@ -186,23 +187,34 @@ pub const Mix = struct {
     }
 };
 
-/// The drama3 image's registrations: the norm rows and the CFG mix, onto `kernels`.
-pub const Set = struct {
-    mod: ?cuda.Module = null,
-    norm: ?Norm = null,
-    mix: ?Mix = null,
+/// The drama3 image, its norm, its compact router with the unmasked control and its CFG mix, appended to `kernels`.
+pub const Group = struct {
+    a: std.mem.Allocator,
+    mod: cuda.Module,
+    norm: Norm,
+    routers: [2]router_k.Router,
+    mix: Mix,
 
-    pub fn add(self: *Set, gpu: check.Gpu, s: cuda.Stream, kernels: *std.ArrayList(g.Kernel)) !void {
+    pub fn create(a: std.mem.Allocator, gpu: check.Gpu, s: cuda.Stream, kernels: *std.ArrayList(g.Kernel)) !*Group {
+        const self = try a.create(Group);
+        errdefer a.destroy(self);
+        self.a = a;
         self.mod = try cuda.Module.load(gpu.d, cuda.kernels.drama3);
-        self.norm = try Norm.init(gpu, s, self.mod.?);
-        try kernels.append(gpu.gpa, self.norm.?.kernel());
-        self.mix = try Mix.init(gpu, s, self.mod.?);
-        try kernels.append(gpu.gpa, self.mix.?.kernel());
+        errdefer self.mod.unload();
+        self.norm = try Norm.init(gpu, s, self.mod);
+        self.routers = .{ try .init(gpu, s, self.mod, false), try .init(gpu, s, self.mod, true) };
+        self.mix = try Mix.init(gpu, s, self.mod);
+        try kernels.append(a, self.norm.kernel());
+        for (&self.routers) |*r| try kernels.append(a, r.kernel());
+        try kernels.append(a, self.mix.kernel());
+        return self;
     }
 
-    pub fn deinit(self: *Set) void {
-        if (self.mix) |*m| m.deinit();
-        if (self.norm) |*n| n.deinit();
-        if (self.mod) |*m| m.unload();
+    pub fn destroy(self: *Group) void {
+        self.norm.deinit();
+        for (&self.routers) |*r| r.deinit();
+        self.mix.deinit();
+        self.mod.unload();
+        self.a.destroy(self);
     }
 };

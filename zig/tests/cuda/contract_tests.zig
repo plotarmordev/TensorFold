@@ -315,9 +315,8 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     var h3_topk = h3_topk_k.TopK{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_topk") };
     defer h3_topk.deinit();
     try kernels.append(a, h3_topk.kernel());
-    var d3: drama3_k.Set = .{};
-    defer d3.deinit();
-    try d3.add(gpu, s, &kernels);
+    const d3 = try drama3_k.Group.create(a, gpu, s, &kernels);
+    defer d3.destroy();
     var ck: ?cuda.ck.Ck = null;
     var ck_reduce: ?cuda.ck.Ck = null; // no clusters: the FP8 slices meet in tf_ck8_reduce
     if (cap >= 120) {
