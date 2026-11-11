@@ -1,4 +1,5 @@
-//! The 27B's lane core backend: a stream a runner slot, shared rounds across slots, DFlash2 trees for slot 0.
+//! The 27B's lane core backend: a stream a runner slot, shared rounds across slots, DFlash2 trees for slot 0 or the
+//! checkpoint's MTP layer's one draft a drafting stream's round.
 const std = @import("std");
 const platform = @import("sys");
 const mtl = @import("metal");
@@ -49,6 +50,9 @@ pub const Metal = struct {
     tensor_units: bool = false, // the device capability used by startup and first-token policy
     runner: *q.decode_round.Runner,
     draft: ?*Draft,
+    mtp: ?*q.mtp.Drafter = null, // --mtp-drafts: the checkpoint's MTP layer drafts in place of DFlash2
+    mtp_cache: draft_fns.MtpCache = .{}, // how far each slot's MTP K/V follows its target rows, and its draft there
+    kept_early: bool = false, // the MTP drafts kept the shared round the engine's next keep names
     chunk: usize = 128, // prompt rows a pass
     window: u32 = 16, // the device per-stream verification width
     copies: bool = false, // lone context copies leave room past a 15-node tree
@@ -161,14 +165,14 @@ pub const Metal = struct {
 
     /// What the round loop reads at setup: slot 0's stream drafts trees; every stream verifies copies.
     pub fn facts(b: *const Metal) lanes.Model {
-        const drafting = b.draft != null;
+        const drafting = b.draft != null or b.mtp != null;
         const shared = b.runner.slots > 1;
         // Context copies remain opt-in until their served cost is qualified.
         const lone_copies = b.copies;
         const narrow: usize = @min(b.window, b.timed);
         // routed experts make a drafted window read most expert weights: plain rounds compete with drafted depths
         const routed = b.runner.model.config.moe();
-        return .{ .exact_width = if (drafting or shared) b.window else 1, .mtp = drafting, .speculate = drafting, .speculate_early = false, .drafts = b.nodes, .draft_probabilities = true, .plain_guard = routed, .window_costs = b.costs[0..narrow], .shared_costs = b.costs[narrow..b.timed], .hidden_rows = shared, .streams_exact = true, .batch_rows = if (shared) batch_rows else b.window, .max_streams = b.runner.slots, .lone_copies = lone_copies, .context_copies = lone_copies, .allocate_shared_drafts = drafting, .draft_streams = drafting and b.draft_slots > 1 };
+        return .{ .exact_width = if (drafting or shared) b.window else 1, .mtp = drafting, .speculate = drafting, .speculate_early = false, .drafts = b.nodes, .draft_probabilities = true, .plain_guard = routed, .window_costs = b.costs[0..narrow], .shared_costs = b.costs[narrow..b.timed], .hidden_rows = shared, .streams_exact = true, .batch_rows = if (shared) batch_rows else b.window, .max_streams = b.runner.slots, .lone_copies = lone_copies, .context_copies = lone_copies, .allocate_shared_drafts = b.draft != null, .draft_streams = b.mtp != null or (b.draft != null and b.draft_slots > 1) };
     }
 
     /// The slot holding `s`.
@@ -185,8 +189,9 @@ pub const Metal = struct {
         return x.ring(d.model.graph.config);
     }
 
-    /// Whether `slot`'s stream drafts its own trees.
+    /// Whether `slot`'s stream drafts its own trees: every slot with the MTP layer.
     pub fn draftsOwn(b: *const Metal, slot: u32) bool {
+        if (b.mtp != null) return true;
         if (b.draft == null) return false;
         if (slot == 0) return true;
         const x = b.contexts[slot] orelse return false;
@@ -295,7 +300,7 @@ pub const Metal = struct {
     }
 
     /// Keep the last verify's rows on `paths`: slot 0 alone keeps on the GPU with its taps, else the runner and rings.
-    fn keepPaths(b: *Metal, paths: []const []const u32) !void {
+    pub fn keepPaths(b: *Metal, paths: []const []const u32) !void {
         defer mtl.pass_metrics.end();
         const metric = mtl.pass_metrics.phase(.keep);
         defer metric.end();
@@ -304,7 +309,7 @@ pub const Metal = struct {
         if (b.pass_profile and b.count == 1) std.log.info("q27_keep width={d} rows={d} kept={d}", .{ b.window, b.rows, paths[0].len });
         if (b.advanced) { // the verify kept each window's one row at its position; its logits already sit in row 0
             for (paths) |path| if (path.len != 1) return error.NothingToKeep;
-            return;
+            return draft_fns.mtpKeep(b, paths);
         }
         const pool = mtl.objc.Pool.push();
         defer pool.pop();
@@ -314,6 +319,7 @@ pub const Metal = struct {
         }
         try b.runner.keep(&b.round.?, paths);
         if (b.draft != null) try b.gatherTaps(paths);
+        try draft_fns.mtpKeep(b, paths);
         if (b.count != 1) return;
         // a lone window's last kept row's logits become row 0, where a one-token step leaves them
         const last = paths[0][paths[0].len - 1];
@@ -408,6 +414,7 @@ pub const Metal = struct {
         const slot = try b.slotFor(s);
         const token = try b.value(feed);
         const before = b.runner.gpu_seconds;
+        b.mtp_cache.tapped = null;
         if (b.drafter(slot)) |d| try d.advance(token) else {
             try (q.session.Session{ .runner = b.runner, .slot = slot }).step(token);
             if (b.ringOf(slot)) |g| try b.ringChunk(g, 1);
@@ -461,6 +468,7 @@ pub const Metal = struct {
         defer pool.pop();
         b.round = try Round.init(b.gpa, inputs[0..windows.len], @intCast(r.model.config.conv_kernel), r.slots, @intCast(r.model.config.vocab));
         b.count = windows.len;
+        b.kept_early = false; // a keep the engine never sent after an early one must not pass for this round's
         errdefer b.dropRound();
         b.rows = total;
         if (b.pass_profile and windows.len == 1) std.log.info("q27_offer width={d} rows={d} tree_nodes={d} copy_rows={d}", .{ b.window, total, b.from_tree, total - 1 - b.from_tree });
@@ -483,6 +491,7 @@ pub const Metal = struct {
             @memcpy(o.drafts, b.ids[first + 1 ..][0 .. rows - 1]);
         }
         if (windows.len == 1) @memcpy(b.sampled[0..b.rows], out[0].sampled);
+        b.mtp_cache.tapped = null;
     }
 
     /// How many drafts are the held tree's first nodes with their own parents (0: copies, fills or a chain).
@@ -543,6 +552,10 @@ pub const Metal = struct {
 
     fn keepFn(ptr: *anyopaque, windows: []const be.Window, paths: []const []const u32) anyerror!void {
         const b = self(ptr);
+        if (b.kept_early) { // the MTP drafts kept this shared round before the engine asked
+            b.kept_early = false;
+            return;
+        }
         if (b.round == null or windows.len != b.count) return error.NothingToKeep;
         for (windows, paths, b.windows[0..b.count]) |w, path, slot| if (path.len == 0 or path[0] != 0 or b.slotOf(w.stream) != slot) return error.NothingToKeep;
         try b.keepPaths(paths);
