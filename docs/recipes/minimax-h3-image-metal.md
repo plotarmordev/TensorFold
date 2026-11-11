@@ -494,20 +494,49 @@ A cold picture is 3.8x faster at 2048 and 2.3x at 4096. The steps did not change
 at 4096), and are now most of the 4096 picture. The `main` prompt at 4096 found part of the encoder still cached from
 the 2048 run before it (its encoder took 41 s against 76 s at 2048), so its gain is understated.
 
-### Next, ranked
+### Other stacks
 
-No other stack's time for this model on a Mac exists to compare: MiniMax publishes none, ComfyUI's tutorial gives
-none, and MacMax (ComfyUI on an M5 Pro) times only H3's video model. PyTorch, diffusers and ComfyUI are not installed
-here, so the sizes below are ours, measured or reasoned from the times above.
+What each one does for this model, and what it would take on this Mac:
+
+- **The maintainer's stacks, SGLang and vLLM-Omni** ([SGLang cookbook](https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3-image),
+  [vLLM-Omni recipe](https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3-Image)): CUDA and ROCm only, so neither runs here.
+  SGLang's measured warm pipeline times for 2048x2048 are 1.934 s on one H200 and 16.21 s on a DGX Spark (GB10), and
+  for 4736x3552 10.133 s and 84.96 s. They exclude startup, the first request, HTTP and PNG encoding. What SGLang
+  does for this model:
+  - keeps the components resident;
+  - precomputes the AdaLN timestep projections and drops their weights (24.6 GiB less memory, same outputs);
+  - fuses QK-norm with rotary;
+  - runs dense FlashAttention;
+  - batches the VAE's decode tiles;
+  - caches the text conditioning across requests;
+  - offers opt-in FP8/MXFP8, CUDA graphs, regional `torch.compile`, and Ulysses or tensor-parallel splits over GPUs.
+- **diffusers** ([docs](https://huggingface.co/docs/diffusers/main/en/api/pipelines/minimax_h3_image)): the
+  `MiniMaxH3ImageModularPipeline` on `main` (0.42.0.dev0, torch 2.15.0) loads on MPS but reads the repository's
+  `transformer_diffusers/` and `vae_diffusers/` copies, not the release folders this Mac holds. Not run yet: those
+  copies came from the Hub at under 1 MB/s.
+- **ComfyUI** ([tutorial](https://docs.comfy.org/tutorials/image/minimax/minimax-h3-image)): a pruned int8 DiT
+  (`minimax_h3_image_pruned_int8_convrot`, 21 GB) and an int8 text encoder (25.28 GB), through `comfy_kitchen`'s
+  layouts. Not run here: its weights came from the Hub at under 1 MB/s, so a single download takes hours.
+
+TensorFold already has some of this:
+
+- Its AdaLN tables come once per run from the time embedder and each block's projections (`modulation.zig`), as
+  SGLang's precompute does.
+- Its attention is dense, as SGLang's is.
+- The decoder batches its tiles.
+
+It has none of the rest: a resident process, a conditioning cache, fp8 or int8, or graph capture.
+
+### Next, ranked
 
 | # | Idea | Size at 4096 (123 s cold) | Basis |
 |---|---|---|---|
-| 1 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps; -6 s of load | The steps are compute-bound: a block's GEMMs hold 386 M weights, so a 2048 step is about 183 TFLOP in 1.83 s and a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs; int8 weights with bf16 math would only halve the load. Not bit-identical, so it needs its own latent gate. ComfyUI's int8 path for H3 (MacMax's optional loader) was not measured here. |
-| 2 | One process holding the weights (a server, or the three tools as one) | -20 s cold; a warm 2048 picture near 13 s | Three tools map, wire and convert their weights in turn even with every page cached: the prompt path's 8.6-13.7 s to map and 2.5-6.1 s of encoder wall against 0.3 s of GPU, the transformer's 12.7-16.9 s load, the decoder's 1.0-6.8 s. |
-| 3 | PNG writing | -15 s | The decoder's 4096 run spends 18 s of its 24 s after the tiles on one-threaded deflate at the default level (`moss_image/png.zig`); rows compressed in parallel bands, joined as one zlib stream, would take most of it. |
-| 4 | Attention | up to -15 s | At 16,408 rows attention is about 38% of a step's work (a 2048 step's is 24 of its 183 TFLOP), growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. |
-| 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones. With six distilled steps, each skip is a sixth of the steps; it needs a gate against the six-step latent. |
-| 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU. |
+| 1 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps; -6 s of load | The steps are compute-bound: a block's GEMMs hold 386 M weights, so a 2048 step is about 183 TFLOP in 1.83 s and a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs; int8 weights with bf16 math would only halve the load. Not bit-identical, so it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000 takes 2048 from 3.434 s to 2.338 s (-32%) and 4K from 18.544 s to 14.445 s (-22%); ComfyUI ships int8 weights. |
+| 2 | One process holding the weights (a server, or the three tools as one), with SGLang's conditioning cache | -20 s cold; a warm 2048 picture near 13 s | Three tools map, wire and convert their weights in turn even with every page cached: the prompt path's 8.6-13.7 s to map and 2.5-6.1 s of encoder wall against 0.3 s of GPU, the transformer's 12.7-16.9 s load, the decoder's 1.0-6.8 s. A repeated prompt would skip the text encoder's 0.3-0.5 s of GPU too. |
+| 3 | PNG writing | -15 s | The decoder's 4096 run spends 18 s of its 24 s after the tiles on one-threaded deflate at the default level (`moss_image/png.zig`); rows compressed in parallel bands, joined as one zlib stream, would take most of it. SGLang's times leave PNG encoding out. |
+| 4 | Attention | up to -15 s | At 16,408 rows attention is about 38% of a step's work (a 2048 step's is 24 of its 183 TFLOP), growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves passes over q and k, under 1% of a step here. |
+| 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones; SGLang's recipe runs all six steps. With six distilled steps, each skip is a sixth of the steps; it needs a gate against the six-step latent. |
+| 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU. SGLang batches its tiles the same way. |
 
 ## On an M5 Ultra with the release weights
 

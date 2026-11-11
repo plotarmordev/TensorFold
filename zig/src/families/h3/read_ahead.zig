@@ -9,6 +9,7 @@ pub const Span = struct { path: [*:0]const u8, lo: usize, hi: usize };
 
 /// The bytes of one pread.
 const piece = 8 << 20;
+/// Readers at once, the calling thread among them.
 const readers = 16;
 
 const Work = struct {
@@ -64,8 +65,9 @@ fn close(fd: std.c.fd_t) void {
 /// Every byte of `spans`, by up to 16 readers in 8 MiB pieces: the bytes read, or an error when a file is missing or
 /// shorter than a span.
 pub fn read(spans: []const Span) !usize {
+    if (spans.len == 0) return 0;
     var w: Work = .{ .spans = spans };
-    var threads: [readers]?std.Thread = @splat(null);
+    var threads: [readers - 1]?std.Thread = @splat(null);
     for (&threads) |*t| t.* = std.Thread.spawn(.{}, Work.run, .{&w}) catch null;
     w.run();
     for (threads) |t| if (t) |thread| thread.join();
