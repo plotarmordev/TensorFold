@@ -54,6 +54,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     }) });
     b.step("tf-exl3-encode", "Calibrated portable EXL3/mul1 encoder and NVFP4 error receipt")
         .dependOn(&b.addInstallArtifact(encode_tool, .{}).step);
+    host_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = encode_tool.root_module })).step);
     host_tests.dependOn(host_step);
     const gpu = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("zig/src/core/exl3_projection_gpu_test.zig"),

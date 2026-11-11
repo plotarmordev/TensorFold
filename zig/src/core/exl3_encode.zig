@@ -1,10 +1,10 @@
 //! Portable EXL3/mul1 encoder. The decoder remains the bit-exact reconstruction oracle.
 const std = @import("std");
 const exl3 = @import("exl3_format.zig");
+const scheduler = @import("exl3_threads.zig");
 const Allocator = std.mem.Allocator;
 
 const beam_width = 128;
-const max_workers = 64;
 const Entry = struct { value: f16, state: u32 };
 const Candidate = struct { cost: f64, node: u32, parent: u32, state: u32 };
 
@@ -189,23 +189,39 @@ fn searchTile(target: *const [256]f64, importance: *const [256]f64, book: *const
     beam(target, importance, book, w, states[127] & (@as(u32, 0xffff) >> emitBits(w, 0)), states);
 }
 
-/// Exact sum_n (W-Q)^T H (W-Q), with matrices in [K,N] layout.
-pub fn hessianError(w: []const f64, q: []const f64, h: []const f64, k: usize, n: usize) f64 {
-    var total: f64 = 0;
-    var d = std.heap.page_allocator.alloc(f64, k) catch @panic("oom");
-    defer std.heap.page_allocator.free(d);
-    for (0..n) |col| {
-        for (0..k) |i| d[i] = w[i * n + col] - q[i * n + col];
-        for (0..k) |i| {
-            var v: f64 = 0;
-            for (0..k) |j| v += h[i * k + j] * d[j];
-            total += d[i] * v;
+/// Exact sum_n (W-Q)^T H (W-Q), [K,N] layout; columns share `threads` threads but add up in column order.
+pub fn hessianError(gpa: Allocator, threads: usize, w: []const f64, q: []const f64, h: []const f64, k: usize, n: usize) !f64 {
+    const Columns = struct {
+        d: []f64, // W-Q by column: [N,K]
+        h: []const f64,
+        k: usize,
+        terms: []f64,
+
+        fn term(c: *const @This(), col: usize) void {
+            const d = c.d[col * c.k ..][0..c.k];
+            var total: f64 = 0;
+            for (d, 0..) |di, i| {
+                var v: f64 = 0;
+                for (c.h[i * c.k ..][0..c.k], d) |hij, dj| v += hij * dj;
+                total += di * v;
+            }
+            c.terms[col] = total;
         }
-    }
+    };
+    const d = try gpa.alloc(f64, k * n);
+    defer gpa.free(d);
+    const columns = Columns{ .d = d, .h = h, .k = k, .terms = try gpa.alloc(f64, n) };
+    defer gpa.free(columns.terms);
+    for (0..k) |i| for (0..n) |col| {
+        columns.d[col * k + i] = w[i * n + col] - q[i * n + col];
+    };
+    scheduler.forEach(threads, n, &columns, Columns.term);
+    var total: f64 = 0;
+    for (columns.terms) |t| total += t;
     return total;
 }
 
-/// One band of tile rows: the chosen trellis words and their rotated-domain values.
+/// One tile at a time: the chosen trellis words and their rotated-domain values.
 const Job = struct {
     rotated: []const f64,
     hd: []const f64,
@@ -215,31 +231,29 @@ const Job = struct {
     n: usize,
     trellis: []i16,
     q: []f64,
+    placement: [256]exl3.Placement,
 
-    fn rows(job: *const Job, first: usize, last: usize) void {
-        var placement: [256]exl3.Placement = undefined;
-        exl3.tilePlacement(&placement);
+    fn tile(job: *const Job, index: usize) void {
+        const tr = index / (job.n / 16);
+        const tc = index % (job.n / 16);
         const words = job.width.tileWords();
-        for (first..last) |tr| for (0..job.n / 16) |tc| {
-            var target: [256]f64 = undefined;
-            var importance: [256]f64 = undefined;
-            for (placement, &target, &importance) |at, *x, *weight| {
-                const row = tr * 16 + at.row;
-                const col = tc * 16 + at.col;
-                x.* = job.rotated[row * job.n + col];
-                weight.* = job.hd[row] * job.gd[col];
-            }
-            var states: [256]u32 = undefined;
-            searchTile(&target, &importance, job.book, job.width, &states);
-            const tile = (tr * (job.n / 16) + tc) * words;
-            packTile(job.width, &states, job.trellis[tile..][0..words]);
-            for (placement, states) |at, s| job.q[(tr * 16 + at.row) * job.n + tc * 16 + at.col] = job.book.values[s];
-        };
+        var target: [256]f64 = undefined;
+        var importance: [256]f64 = undefined;
+        for (job.placement, &target, &importance) |at, *x, *weight| {
+            const row = tr * 16 + at.row;
+            const col = tc * 16 + at.col;
+            x.* = job.rotated[row * job.n + col];
+            weight.* = job.hd[row] * job.gd[col];
+        }
+        var states: [256]u32 = undefined;
+        searchTile(&target, &importance, job.book, job.width, &states);
+        packTile(job.width, &states, job.trellis[index * words ..][0..words]);
+        for (job.placement, states) |at, s| job.q[(tr * 16 + at.row) * job.n + tc * 16 + at.col] = job.book.values[s];
     }
 };
 
-/// Encode [K,N] with its full [K,K] Hessian; `reconstructed` comes from the chosen states, not the packed trellis.
-pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usize, n: usize, width: exl3.Width) !Result {
+/// Encode [K,N] with its full [K,K] Hessian on `threads` threads; the bytes do not depend on the count.
+pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usize, n: usize, width: exl3.Width, threads: usize) !Result {
     if (k == 0 or n == 0 or k % 128 != 0 or n % 128 != 0 or weight.len != k * n or hessian.len != k * k or width.halves < 4 or width.halves > 8) return error.BadShape;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -295,15 +309,9 @@ pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usiz
     errdefer gpa.free(trellis);
     const q = try gpa.alloc(f64, k * n);
     errdefer gpa.free(q);
-    const job = Job{ .rotated = rotated, .hd = hd, .gd = gd, .book = book, .width = width, .n = n, .trellis = trellis, .q = q };
-    // tile rows are independent: each worker's band matches a serial pass byte for byte
-    const tiles_k = k / 16;
-    const workers = @min(max_workers, std.Thread.getCpuCount() catch 1, tiles_k);
-    const per = (tiles_k + workers - 1) / workers;
-    var threads: [max_workers]?std.Thread = @splat(null);
-    for (1..workers) |t| threads[t] = std.Thread.spawn(.{}, Job.rows, .{ &job, @min(tiles_k, t * per), @min(tiles_k, (t + 1) * per) }) catch null;
-    job.rows(0, @min(tiles_k, per));
-    for (1..workers) |t| if (threads[t]) |thread| thread.join() else job.rows(@min(tiles_k, t * per), @min(tiles_k, (t + 1) * per));
+    var job = Job{ .rotated = rotated, .hd = hd, .gd = gd, .book = book, .width = width, .n = n, .trellis = trellis, .q = q, .placement = undefined };
+    exl3.tilePlacement(&job.placement);
+    scheduler.forEach(threads, (k / 16) * (n / 16), &job, Job.tile);
 
     exl3.restore(q, k, n, suh, svh);
     return .{ .width = width, .k = k, .n = n, .trellis = trellis, .suh = suh, .svh = svh, .reconstructed = q };
@@ -313,10 +321,13 @@ fn had(r: usize, c: usize) f64 {
     return if (@popCount(r & c) % 2 == 0) 1 else -1;
 }
 
+/// More than one thread, fewer than a test machine's cores, so the shared index is contended.
+const test_threads = 8;
+
 /// Decode the packed trellis and require the encoder's own reconstruction bit for bit; returns the Hessian error.
 fn expectBitExact(weight: []const f64, hessian: []const f64, k: usize, n: usize, halves: u16) !f64 {
     const gpa = std.testing.allocator;
-    var result = try encode(gpa, weight, hessian, k, n, .{ .halves = halves });
+    var result = try encode(gpa, weight, hessian, k, n, .{ .halves = halves }, test_threads);
     defer result.deinit(gpa);
     const decoded = try gpa.alloc(f64, k * n);
     defer gpa.free(decoded);
@@ -324,7 +335,7 @@ fn expectBitExact(weight: []const f64, hessian: []const f64, k: usize, n: usize,
     defer gpa.free(scratch);
     exl3.dequantize(result.width, .mul1, result.trellis, k / 16, n / 16, result.suh, result.svh, decoded, scratch);
     try std.testing.expect(std.mem.eql(u8, std.mem.sliceAsBytes(result.reconstructed), std.mem.sliceAsBytes(decoded)));
-    return hessianError(weight, result.reconstructed, hessian, k, n);
+    return hessianError(gpa, test_threads, weight, result.reconstructed, hessian, k, n);
 }
 
 /// Bit exact at 2.0, 2.5, 3.0 and 4.0 bits, with error relative to W^T H W falling under `first` and with every width.
@@ -332,7 +343,7 @@ fn expectWidths(weight: []const f64, hessian: []const f64, k: usize, n: usize, f
     const zero = try std.testing.allocator.alloc(f64, k * n);
     defer std.testing.allocator.free(zero);
     @memset(zero, 0);
-    const norm = hessianError(weight, zero, hessian, k, n);
+    const norm = try hessianError(std.testing.allocator, test_threads, weight, zero, hessian, k, n);
     var last = first;
     for ([_]u16{ 4, 5, 6, 8 }) |halves| {
         const relative = try expectBitExact(weight, hessian, k, n, halves) / norm;
@@ -406,9 +417,9 @@ test "the Hessian-weighted search beats the same search with H = I under an unev
     for (0..k) |i| identity[i * k + i] = 1;
     for ([_]u16{ 4, 5, 6, 8 }) |halves| {
         const weighted = try expectBitExact(&w, &h, k, n, halves);
-        var unweighted = try encode(std.testing.allocator, &w, &identity, k, n, .{ .halves = halves });
+        var unweighted = try encode(std.testing.allocator, &w, &identity, k, n, .{ .halves = halves }, test_threads);
         defer unweighted.deinit(std.testing.allocator);
-        try std.testing.expect(weighted < 0.9 * hessianError(&w, unweighted.reconstructed, &h, k, n));
+        try std.testing.expect(weighted < 0.9 * try hessianError(std.testing.allocator, test_threads, &w, unweighted.reconstructed, &h, k, n));
     }
 }
 
@@ -468,6 +479,46 @@ test "an all-zero matrix decodes to exactly zero at every width" {
 
 test "an empty dimension is a bad shape" {
     const gpa = std.testing.allocator;
-    try std.testing.expectError(error.BadShape, encode(gpa, &.{}, &.{}, 0, 128, .{ .halves = 4 }));
-    try std.testing.expectError(error.BadShape, encode(gpa, &.{}, &.{}, 128, 0, .{ .halves = 4 }));
+    try std.testing.expectError(error.BadShape, encode(gpa, &.{}, &.{}, 0, 128, .{ .halves = 4 }, 1));
+    try std.testing.expectError(error.BadShape, encode(gpa, &.{}, &.{}, 128, 0, .{ .halves = 4 }, 1));
+}
+
+test "the encoded bytes and errors do not depend on the thread count" {
+    const gpa = std.testing.allocator;
+    // 16 x 24 tiles: no thread count below divides them into equal shares
+    const k = 256;
+    const n = 384;
+    const w = try gpa.alloc(f64, k * n);
+    defer gpa.free(w);
+    const h = try gpa.alloc(f64, k * k);
+    defer gpa.free(h);
+    gaussian(26, w);
+    for (h, 0..) |*v, i| v.* = std.math.pow(f64, 0.6, @floatFromInt(@max(i / k, i % k) - @min(i / k, i % k)));
+    var serial = try encode(gpa, w, h, k, n, .{ .halves = 5 }, 1);
+    defer serial.deinit(gpa);
+    const serial_error = try hessianError(gpa, 1, w, serial.reconstructed, h, k, n);
+    for ([_]usize{ 5, 36, scheduler.max_threads + 1 }) |threads| {
+        var parallel = try encode(gpa, w, h, k, n, .{ .halves = 5 }, threads);
+        defer parallel.deinit(gpa);
+        try std.testing.expectEqualSlices(i16, serial.trellis, parallel.trellis);
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(serial.suh), std.mem.sliceAsBytes(parallel.suh));
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(serial.svh), std.mem.sliceAsBytes(parallel.svh));
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(serial.reconstructed), std.mem.sliceAsBytes(parallel.reconstructed));
+        try std.testing.expectEqual(serial_error, try hessianError(gpa, threads, w, parallel.reconstructed, h, k, n));
+    }
+}
+
+test "hessianError frees what it took when an allocation fails" {
+    const Probe = struct {
+        fn run(gpa: Allocator) !void {
+            const w: [4]f64 = .{ 1, 2, 3, 4 };
+            const h: [4]f64 = .{ 1, 0, 0, 1 };
+            _ = try hessianError(gpa, 2, &w, &@as([4]f64, @splat(0)), &h, 2, 2);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
+}
+
+test {
+    _ = scheduler;
 }
