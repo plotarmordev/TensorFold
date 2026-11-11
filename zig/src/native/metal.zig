@@ -283,7 +283,7 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
 
 const prompt_int8_refusal = "--prompt-precision int8 is the CUDA Qwen3.5 engine's; the Metal engines prompt in bf16: serve without it";
 
-/// --mtp-drafts on a Mac: Ornith's MTP layer, from the bf16 release --drafter names, one draft a lone stream's round.
+/// --mtp-drafts on a Mac: Ornith's MTP layer, from the bf16 release --drafter names, one draft a stream's round.
 const mtp_refusal = "--mtp-drafts 1 drafts with a Qwen3.5-MoE checkpoint's MTP layer (Ornith-1.5-122B): --drafter names the bf16 release's folder holding its mtp.* shards; other Metal models serve without --mtp-drafts";
 
 /// Flash Next's replay engine copies on the GPU from its own history: it reads no Recall record yet.

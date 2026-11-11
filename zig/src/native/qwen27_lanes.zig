@@ -1,5 +1,5 @@
 //! The 27B's lane core backend: a stream a runner slot, shared rounds across slots, DFlash2 trees for slot 0 or the
-//! checkpoint's MTP layer's one draft for a lone stream.
+//! checkpoint's MTP layer's one draft a drafting stream's round.
 const std = @import("std");
 const platform = @import("sys");
 const mtl = @import("metal");
@@ -186,7 +186,7 @@ pub const Metal = struct {
         return x.ring(d.model.graph.config);
     }
 
-    /// Whether `slot`'s stream drafts its own trees: every slot with the MTP layer, which drafts only a lone stream.
+    /// Whether `slot`'s stream drafts its own trees: every slot with the MTP layer.
     pub fn draftsOwn(b: *const Metal, slot: u32) bool {
         if (b.mtp != null) return true;
         if (b.draft == null) return false;
