@@ -364,8 +364,8 @@ tokens, 5,120], aligned. `tf-h3-image-prompt --reference` reads it.
 tower's prefix is whatever precedes `blocks.0.norm1.weight` in its index, such as `model.visual.`. The loader reads
 exactly the 351 bf16 tensors of a Qwen3-VL tower with three DeepStack mergers (`deepstack_merger_list.{0,1,2}` with
 `norm`, `linear_fc1` and `linear_fc2`), and refuses a checkpoint with more or fewer. The patch kernel is read in
-torch's [1,152, 3, 2, 16, 16] layout. These names and shapes come from the HF model's code and config. No header of the
-released checkpoint has been read here, so the first real load is their check.
+torch's [1,152, 3, 2, 16, 16] layout. These names and shapes come from the HF model's code and config; the release's
+`text_encoder/` loads under them, as `model.visual.`, on an M5 Ultra.
 
 **Precision.** As for Qwen3.5's images:
 
@@ -423,10 +423,12 @@ the United States of America. Read it before use.
 
 ## Not done
 
-- **Checked against the release:** nothing yet. The reference cases and the gates above wait for the weights.
+- **Checked against the release:** text to image runs end to end on the release weights
+  ([On an M5 Ultra](#on-an-m5-ultra-with-the-release-weights)); the reference cases and the gates above still wait for
+  a reference pipeline's case.
 - **Edits:** they run end to end in five tools, not one. With several references, each reference's noise is drawn
-  as a one-reference edit draws it, not on the edit's one chain. The vision tower's tensor names are inferred, and its
-  speed at the released size is not measured here.
+  as a one-reference edit draws it, not on the edit's one chain. The vision tower's selftest misses one bound on an
+  M5. Its 1,024-token pass at the released size takes 0.25 s there.
 - **Serving:** no `/v1/images/generations` or `/v1/images/edits` route for it, and no CUDA path.
 - **Machines:** the transformer runs on an M5 only; chips without tensor units are refused.
 
@@ -453,3 +455,40 @@ On an M3 Ultra all 31 pass gates 1 to 4 and every control goes red as planted.
 The contract found one fault, now fixed: the prompt path's attention filled a row's last block of 4 keys with its last
 key at weight 0, so an infinite value there gave 0 x Inf = NaN where float64 keeps the infinity. A padded key now adds
 nothing; finite outputs keep their bytes.
+
+## On an M5 Ultra with the release weights
+
+Text to image from the release folder (`text_encoder/`, `transformer/`, `vae/`; not the diffusers copies), seed 42, a
+24-token prompt, each tool its own process, nothing else large running. Two runs of all six stages back to back, cold:
+each tool maps its weights again, and the page cache does not hold both 62 GB checkpoints at once.
+
+| Stage | 2048 x 2048 | 4096 x 4096 |
+|---|---|---|
+| Prompt path: map, 50 layers, refiner | 16.9-22.8 s (GPU 0.52 s) | 15.2 s (GPU 0.52 s) |
+| Transformer load | 18.7-26.0 s | 30.1 s |
+| Steps 1-6, wall | 1.83-1.90 s each; the first 2.78 s after a cold load | 9.84-10.43 s each; the first 12.08 s |
+| Steps 1-6, GPU | 1.82-1.93 s each | 9.82-10.38 s each |
+| Decoder: weights, 121 / 441 tiles, PNG | 5.5-9.1 s (tiles 1.2 s) | 19.4-27.3 s (tiles 4.3-5.4 s) |
+| Total a picture | 53-70 s | 134 s |
+
+Peak memory: each tool's own footprint stays under 4.2 GB (the transformer at 4096: 4.1 GB; 2048: 1.3-1.4 GB). The
+weights are read in place, so the machine's used memory rises by about 48 GB for the transformer and 33 GB for the
+text encoder while each runs. Wall time outside the steps is mostly weights read from disk, and at 4096 the decoder
+spends 8-14 s past its tiles writing a 36 MB PNG.
+
+The maintainer's gates that run here:
+
+| Gate | Result |
+|---|---|
+| `tf-h3-image-prompt selftest` | pass: kernels 99.97-100% bit-equal; whole runs 0.80-1.04 x the float32-sum host's distance |
+| `tf-h3-image-encoder selftest` | pass: layers 2.0e-7 to 8.6e-7 (bound 1e-5); tiled moments 1.6e-6 (bound 1e-4) |
+| `tf-h3-image-decoder selftest` | pass: 24 blocks relative 1.49e-2, worst 16.5 ULP; picture bytes at most 1 apart |
+| `tf-h3-image-contract` | pass: 31 of 31 kernels, 34 of 34 controls red, no limit problems |
+| `tf-h3-image-vision selftest` | **fail**: DeepStack after block 0, 1 - cosine 1.32e-5 against a bound of 1.00e-5 (twice the float32-sum host's 5.0e-6); relative error 5.14e-3 passes (bound 6.34e-3) |
+| `tf-h3-image` gates on a reference case | not run: no reference pipeline case exists yet |
+
+The vision miss is the M5's: the M3 Ultra above passed the same output at 0.9999949, and on the M5 every tower output
+sits further from float64 (merged rows 0.9999789 against 0.9999825). Only the M5 takes `nax.h`'s tensor-unit path, whose
+`matmul2d` runs with `relaxed_precision`; the tower's fp32 score and value products go through it. Turning that flag
+off is no fix: the cooperative tensors' element layout changes with it and every output breaks (cosine 0.75). The
+tower's attention products need their own exact-fp32 path on the M5 before this gate can pass.
