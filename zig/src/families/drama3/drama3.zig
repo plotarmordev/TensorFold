@@ -43,4 +43,5 @@ test {
 
 test {
     _ = @import("cuda/owner_test.zig");
+    _ = @import("cuda/nvfp4_test.zig");
 }
