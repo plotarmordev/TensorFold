@@ -335,6 +335,7 @@ test "SRC's index and shards must agree, and its metadata comes through" {
     const edits = [_]struct { []const u8, []const u8, anyerror }{
         .{ scale, "", error.UnindexedTensor }, // a shard tensor the index leaves out
         .{ "\"weight_map\": {", "\"weight_map\": {\"model.language_model.layers.0.extra.weight\": \"" ++ shards[0] ++ "\", ", error.IndexedTensorMissing }, // an indexed tensor no shard holds
+        .{ "\"weight_map\": {", "\"weight_map\": {\"model.language_model.layers.0.mlp.experts.18446744073709551615.up_proj.weight\": \"" ++ shards[0] ++ "\", ", error.UnexpectedExpert }, // past Drama 3's 256 experts
     };
     for (edits) |e| {
         try testing.expect(std.mem.indexOf(u8, index, e[0]) != null);

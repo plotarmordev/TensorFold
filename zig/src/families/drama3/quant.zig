@@ -242,7 +242,7 @@ pub fn convert(gpa: Allocator, io: Io, src: []const u8, dst: []const u8, o: Opti
     for (map.keys(), map.values()) |name, shard| {
         try shards.put(arena, shard.string, {});
         const x = parseName(name) orelse continue;
-        if (x.layer >= experts.len) return error.UnexpectedExpertLayer;
+        if (x.layer >= experts.len or x.expert >= cfg.experts) return error.UnexpectedExpert;
         experts[x.layer] = @max(experts[x.layer], x.expert + 1);
         if (o.nvfp4) _ = try role(x.field);
     }
