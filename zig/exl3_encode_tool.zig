@@ -55,22 +55,38 @@ fn verify(gpa: Allocator, io: Io, out: []const u8, expected: encoder.Result) !vo
     if (!std.mem.eql(u8, std.mem.sliceAsBytes(actual), std.mem.sliceAsBytes(expected.reconstructed))) return error.ReconstructionDiffers;
 }
 
+const Command = struct { threads: usize, weight: []const u8, hessian: []const u8, bits: []const u8, out_dir: []const u8 };
+
+/// [--threads N] WEIGHT HESSIAN BITS OUT_DIR; N defaults to every core and must be 1 to encoder.max_threads.
+fn parseArgs(args: []const []const u8, cores: usize) ?Command {
+    var rest = args;
+    var threads: usize = @min(cores, encoder.max_threads);
+    if (rest.len > 0 and std.mem.eql(u8, rest[0], "--threads")) {
+        if (rest.len < 2) return null;
+        threads = std.fmt.parseInt(usize, rest[1], 10) catch return null;
+        if (threads == 0 or threads > encoder.max_threads) return null;
+        rest = rest[2..];
+    }
+    if (rest.len != 4) return null;
+    return .{ .threads = threads, .weight = rest[0], .hessian = rest[1], .bits = rest[2], .out_dir = rest[3] };
+}
+
 pub fn main(init: std.process.Init) !u8 {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var out_buf: [4096]u8 = undefined;
     var stdout = Io.File.stdout().writerStreaming(init.io, &out_buf);
     defer stdout.interface.flush() catch {};
     const out = &stdout.interface;
-    if (args.len != 5) {
-        try out.writeAll("usage: tf-exl3-encode WEIGHT.npy HESSIAN.npy {2.0|2.5|3.0|4.0} OUT_DIR\nweight is HF [N,K] f32/f64; Hessian is [K,K] f32/f64\n");
+    const cmd = parseArgs(args[1..], std.Thread.getCpuCount() catch 1) orelse {
+        try out.writeAll("usage: tf-exl3-encode [--threads N] WEIGHT.npy HESSIAN.npy {2.0|2.5|3.0|4.0} OUT_DIR\nweight is HF [N,K] f32/f64; Hessian is [K,K] f32/f64; N is 1 to 64, every core by default\n");
         return 2;
-    }
+    };
     const gpa = init.gpa;
-    const bits = std.fmt.parseFloat(f64, args[3]) catch return 2;
+    const bits = std.fmt.parseFloat(f64, cmd.bits) catch return 2;
     const halves: u4 = if (bits == 2.0) 4 else if (bits == 2.5) 5 else if (bits == 3.0) 6 else if (bits == 4.0) 8 else return 2;
-    const source = try readArray(gpa, init.io, args[1]);
+    const source = try readArray(gpa, init.io, cmd.weight);
     defer freeArray(gpa, source);
-    const h = try readArray(gpa, init.io, args[2]);
+    const h = try readArray(gpa, init.io, cmd.hessian);
     defer freeArray(gpa, h);
     const n = source.shape[0];
     const k = source.shape[1];
@@ -79,11 +95,11 @@ pub fn main(init: std.process.Init) !u8 {
     defer gpa.free(weight);
 
     const started = Io.Clock.awake.now(init.io);
-    var result = try encoder.encode(gpa, weight, h.values, k, n, .{ .halves = halves });
+    var result = try encoder.encode(gpa, weight, h.values, k, n, .{ .halves = halves }, cmd.threads);
     defer result.deinit(gpa);
     const elapsed = seconds(init.io, started);
-    try Io.Dir.cwd().createDirPath(init.io, args[4]);
-    const model = try std.fs.path.join(init.arena.allocator(), &.{ args[4], "model.safetensors" });
+    try Io.Dir.cwd().createDirPath(init.io, cmd.out_dir);
+    const model = try std.fs.path.join(init.arena.allocator(), &.{ cmd.out_dir, "model.safetensors" });
     const marker: i32 = @bitCast(format.Mul1Mul);
     const tensors = [_]shard.New{
         .{ .name = "weight.trellis", .dtype = .i16, .shape = &.{ k / 16, n / 16, result.width.tileWords() }, .bytes = std.mem.sliceAsBytes(result.trellis) },
@@ -92,17 +108,29 @@ pub fn main(init: std.process.Init) !u8 {
         .{ .name = "weight.mul1", .dtype = .i32, .shape = &.{1}, .bytes = std.mem.asBytes(&marker) },
     };
     try shard.create(gpa, model, &.{.{ "format", "exl3" }}, &tensors);
-    try verify(gpa, init.io, args[4], result);
+    try verify(gpa, init.io, cmd.out_dir, result);
     const nv_rows = try gpa.alloc(f64, n * k);
     defer gpa.free(nv_rows);
     nvfp4.quantize(source.values, k, nv_rows);
     const nv = try transpose(gpa, nv_rows, n, k);
     defer gpa.free(nv);
-    const nv_error = encoder.hessianError(weight, nv, h.values, k, n);
+    const nv_error = try encoder.hessianError(gpa, cmd.threads, weight, nv, h.values, k, n);
     const bytes = std.mem.sliceAsBytes(result.trellis).len + 2 * (k + n) + 4;
     const ratio = result.error_exl3 / nv_error;
-    try out.print("bits_per_weight={d:.1} shape=[{d},{d}] encode_seconds={d:.3} encode_hours_for_5900_matrices={d:.3}\n", .{ bits, n, k, elapsed, elapsed * 5900 / 3600 });
+    try out.print("bits_per_weight={d:.1} shape=[{d},{d}] threads={d} encode_seconds={d:.3} encode_hours_for_5900_matrices={d:.3}\n", .{ bits, n, k, cmd.threads, elapsed, elapsed * 5900 / 3600 });
     try out.print("hessian_error exl3={e:.9} plain={e:.9} nvfp4={e:.9} exl3_over_nvfp4={d:.6} bytes={d} nvfp4_bytes_approx={d}\n", .{ result.error_exl3, result.error_plain, nv_error, ratio, bytes, k * n / 2 + k * n / 16 + 4 });
     try out.writeAll("reader=ok reconstruction=bit_exact\n");
     return 0;
+}
+
+test "--threads sets the count, every core is the default, and 0 or over the cap is refused" {
+    const paths = [_][]const u8{ "w.npy", "h.npy", "2.0", "out" };
+    try std.testing.expectEqual(@as(usize, 36), parseArgs(&paths, 36).?.threads);
+    try std.testing.expectEqual(@as(usize, encoder.max_threads), parseArgs(&paths, 256).?.threads);
+    const nine = parseArgs(&(.{ "--threads", "9" } ++ paths), 36).?;
+    try std.testing.expectEqual(@as(usize, 9), nine.threads);
+    try std.testing.expectEqualStrings("out", nine.out_dir);
+    for ([_][]const u8{ "0", "65", "x", "-1" }) |bad| try std.testing.expectEqual(null, parseArgs(&(.{ "--threads", bad } ++ paths), 36));
+    try std.testing.expectEqual(null, parseArgs(&.{ "--threads", "9", "w.npy" }, 36));
+    try std.testing.expectEqual(null, parseArgs(paths[0..3], 36));
 }
