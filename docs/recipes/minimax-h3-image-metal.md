@@ -444,6 +444,9 @@ the United States of America. Read it before use.
 
 `zig build compile-h3-host` compiles both H3 tools without the Metal compiler.
 
+`zig build test-h3-image-prompt` also checks the read-ahead: spans across pieces and files are read once, and a short
+or missing file fails.
+
 ## Kernel contract
 
 The edit encoder's, prompt path's and image decoder's kernels are registered with the kernel contract
@@ -455,6 +458,56 @@ On an M3 Ultra all 31 pass gates 1 to 4 and every control goes red as planted.
 The contract found one fault, now fixed: the prompt path's attention filled a row's last block of 4 keys with its last
 key at weight 0, so an infinite value there gave 0 x Inf = NaN where float64 keeps the infinity. A padded key now adds
 nothing; finite outputs keep their bytes.
+
+## Speed: weights read ahead, and what is next
+
+A first picture after the weights leave the page cache spent most of its time waiting on disk, not the GPU. Each tool
+maps its bf16 weights and Metal reads them in place, so the first touch of every 16 KiB page is a fault served by one
+small read. On the M5 Ultra's SSD a 2.3 GB file read that way takes 40 s (0.06 GB/s); 16 threads each `pread`ing 8 MiB
+pieces take 0.7 s (3.2 GB/s). Faulting the mapping from 16 threads stays at 0.38 GB/s.
+
+So each tool now reads the bytes it is about to use into the page cache first (`h3/read_ahead.zig`), then runs
+unchanged on the same mapping: the transformer reads its whole shards when `Model.load` opens them; the prompt path
+reads its 50 text layers, embedding, `condition_proj` and token refiner; the decoder reads its tensors before its
+bf16 conversion. A missing or short file fails the load. The load stays zero-copy; only the faults are gone.
+
+### Gates, fixed before the runs
+
+Same machine, build flags, seed 42, prompt (`prompt.txt` of card 34) and sizes for both builds. The case, final
+latent and PNG of the new build must be **byte-identical** to the old build's: the change only decides when pages
+are read, so any difference is a bug. Both sizes passed: `cmp` found no difference in any of the three files.
+
+### Measured
+
+Before each run, every weight file (`text_encoder/`, `transformer/`, `vae/`) was evicted from the page cache
+(`msync(MS_INVALIDATE)` on a mapping). Wall seconds per tool, as `date` around each process; the last column is the
+picture.
+
+| Size | Build | Prompt | Transformer (load) | Decoder | Picture |
+|---|---|---|---|---|---|
+| 2048 | `main` | 87 | 116 (102.9) | 26 | 229 |
+| 2048 | read ahead | 29 | 28 (12.7) | 4 | **61** |
+| 4096 | `main` | 45 | 135 (75.6) | 108 | 288 |
+| 4096 | read ahead | 13 | 78 (16.9) | 32 | **123** |
+
+A cold picture is 3.8x faster at 2048 and 2.3x at 4096. The steps did not change (1.83-1.86 s at 2048, 9.9-10.1 s
+at 4096), and are now most of the 4096 picture. The `main` prompt at 4096 found part of the encoder still cached from
+the 2048 run before it (its encoder took 41 s against 76 s at 2048), so its gain is understated.
+
+### Next, ranked
+
+No other stack's time for this model on a Mac exists to compare: MiniMax publishes none, ComfyUI's tutorial gives
+none, and MacMax (ComfyUI on an M5 Pro) times only H3's video model. PyTorch, diffusers and ComfyUI are not installed
+here, so the sizes below are ours, measured or reasoned from the times above.
+
+| # | Idea | Size at 4096 (123 s cold) | Basis |
+|---|---|---|---|
+| 1 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps; -6 s of load | The steps are compute-bound: a block's GEMMs hold 386 M weights, so a 2048 step is about 183 TFLOP in 1.83 s and a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs; int8 weights with bf16 math would only halve the load. Not bit-identical, so it needs its own latent gate. ComfyUI's int8 path for H3 (MacMax's optional loader) was not measured here. |
+| 2 | One process holding the weights (a server, or the three tools as one) | -20 s cold; a warm 2048 picture near 13 s | Three tools map, wire and convert their weights in turn even with every page cached: the prompt path's 8.6-13.7 s to map and 2.5-6.1 s of encoder wall against 0.3 s of GPU, the transformer's 12.7-16.9 s load, the decoder's 1.0-6.8 s. |
+| 3 | PNG writing | -15 s | The decoder's 4096 run spends 18 s of its 24 s after the tiles on one-threaded deflate at the default level (`moss_image/png.zig`); rows compressed in parallel bands, joined as one zlib stream, would take most of it. |
+| 4 | Attention | up to -15 s | At 16,408 rows attention is about 38% of a step's work (a 2048 step's is 24 of its 183 TFLOP), growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. |
+| 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones. With six distilled steps, each skip is a sixth of the steps; it needs a gate against the six-step latent. |
+| 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU. |
 
 ## On an M5 Ultra with the release weights
 
