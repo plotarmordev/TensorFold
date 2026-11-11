@@ -1,6 +1,7 @@
 //! tf-drama-quant: Drama 3's FP8 routed experts to NVFP4, or kept, optionally compacted to a held set, on the CPU.
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 const quant = @import("drama3_quant");
 
 const usage = "usage: tf-drama-quant SRC_CHECKPOINT DST_DIR [--experts nvfp4|keep] [--compact-experts MAP]\n";
@@ -10,10 +11,8 @@ pub fn main(init: std.process.Init) !u8 {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var paths: [2][]const u8 = undefined;
     var given: usize = 0;
-    var options: quant.Options = .{
-        .commit = std.mem.trimEnd(u8, @embedFile("tool_commit"), "\n"),
-        .threads = std.Thread.getCpuCount() catch 1,
-    };
+    var options: quant.Options = .{ .threads = std.Thread.getCpuCount() catch 1 };
+    if (build_options.commit) |c| options.commit = c;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const a = args[i];
