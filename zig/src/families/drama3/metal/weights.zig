@@ -184,7 +184,7 @@ pub fn load(g: *Gpu, io: std.Io, dir: []const u8, c: cfg.Config) !*Weights {
     w.sh = try Shards.open(g.gpa, io, dir);
     errdefer w.sh.close(io);
     const held = try quant.heldMetadata(w.sh.metadata);
-    try quant.checkNames(&held, w.sh.map.keyIterator());
+    try quant.checkStored(&held, w.sh.map);
     const first = g.bufs.items.len;
     const indirect_first = g.indirect.items.len;
     errdefer {
@@ -266,5 +266,8 @@ pub fn load(g: *Gpu, io: std.Io, dir: []const u8, c: cfg.Config) !*Weights {
     }
     for (0..cfg.codebooks - 1) |hi| w.heads[hi] = try l.one(fmt(&nb[0], "audio_decoder_mtp.heads.{d}.weight", .{hi}), &.{ cfg.codebook_size, H });
     std.log.info("drama3: {d:.2} GB of BF16/copied weights, {d:.2} GB of packed FP8/NVFP4 experts read in place", .{ @as(f64, @floatFromInt(w.bytes)) / 1e9, @as(f64, @floatFromInt(w.mapped)) / 1e9 });
+    var nvfp4: usize = 0;
+    for (w.layers) |L| nvfp4 += @intFromBool(L.nvfp4);
+    std.log.info("drama3: routed experts held {d} of {d}; routed experts NVFP4 in {d} of {d} layers", .{ held.total(), cfg.layers * cfg.experts, nvfp4, cfg.layers });
     return w;
 }
