@@ -49,6 +49,7 @@ pub const Metal = struct {
     draft: ?*Draft,
     mtp: ?*q.mtp.Drafter = null, // --mtp-drafts: the checkpoint's MTP layer drafts in place of DFlash2
     mtp_cache: draft_fns.MtpCache = .{}, // how far each slot's MTP K/V follows its target rows, and its draft there
+    kept_early: bool = false, // the MTP drafts kept the shared round the engine's next keep names
     chunk: usize = 128, // prompt rows a pass
     window: u32 = 16, // the device per-stream verification width
     copies: bool = false, // lone context copies leave room past a 15-node tree
@@ -168,7 +169,7 @@ pub const Metal = struct {
         const narrow: usize = @min(b.window, b.timed);
         // routed experts make a drafted window read most expert weights: plain rounds compete with drafted depths
         const routed = b.runner.model.config.moe();
-        return .{ .exact_width = if (drafting or shared) b.window else 1, .mtp = drafting, .speculate = drafting, .speculate_early = false, .drafts = b.nodes, .draft_probabilities = true, .plain_guard = routed, .window_costs = b.costs[0..narrow], .shared_costs = b.costs[narrow..b.timed], .hidden_rows = shared, .streams_exact = true, .batch_rows = if (shared) batch_rows else b.window, .max_streams = b.runner.slots, .lone_copies = lone_copies, .context_copies = lone_copies, .allocate_shared_drafts = b.draft != null, .draft_streams = b.draft != null and b.draft_slots > 1 };
+        return .{ .exact_width = if (drafting or shared) b.window else 1, .mtp = drafting, .speculate = drafting, .speculate_early = false, .drafts = b.nodes, .draft_probabilities = true, .plain_guard = routed, .window_costs = b.costs[0..narrow], .shared_costs = b.costs[narrow..b.timed], .hidden_rows = shared, .streams_exact = true, .batch_rows = if (shared) batch_rows else b.window, .max_streams = b.runner.slots, .lone_copies = lone_copies, .context_copies = lone_copies, .allocate_shared_drafts = b.draft != null, .draft_streams = b.mtp != null or (b.draft != null and b.draft_slots > 1) };
     }
 
     /// The slot holding `s`.
@@ -300,7 +301,7 @@ pub const Metal = struct {
     }
 
     /// Keep the last verify's rows on `paths`: slot 0 alone keeps on the GPU with its taps, else the runner and rings.
-    fn keepPaths(b: *Metal, paths: []const []const u32) !void {
+    pub fn keepPaths(b: *Metal, paths: []const []const u32) !void {
         defer mtl.pass_metrics.end();
         const metric = mtl.pass_metrics.phase(.keep);
         defer metric.end();
@@ -551,6 +552,10 @@ pub const Metal = struct {
 
     fn keepFn(ptr: *anyopaque, windows: []const be.Window, paths: []const []const u32) anyerror!void {
         const b = self(ptr);
+        if (b.kept_early) { // the MTP drafts kept this shared round before the engine asked
+            b.kept_early = false;
+            return;
+        }
         if (b.round == null or windows.len != b.count) return error.NothingToKeep;
         for (windows, paths, b.windows[0..b.count]) |w, path, slot| if (path.len == 0 or path[0] != 0 or b.slotOf(w.stream) != slot) return error.NothingToKeep;
         try b.keepPaths(paths);

@@ -50,14 +50,14 @@ test "Ornith MTP lanes: drafted replies are plain decoding's, alone and four at 
     defer for (&plain) |*s| s.deinit(gpa);
     for (&plain) |*s| try run(back, &cfg, io, s[0..1]);
 
-    // four at once share rounds, each window's kept rows stepping the layer; the longest, left alone, drafts from a
-    // whole cache (one with holes drafts none), so its drafts land as a lone stream's do
+    // four at once draft in their shared rounds, each window's kept rows stepping the layer before it drafts; the
+    // shortest reply ends while all four are live, so its drafts and accepts are all shared rounds'
     var together: [lengths.len]lanes.Stream = undefined;
     try init(&together, true);
     defer for (&together) |*s| s.deinit(gpa);
     try run(back, &cfg, io, &together);
     for (plain, together) |p, t| try std.testing.expectEqualSlices(u32, p.emitted(), t.emitted());
-    try std.testing.expect(together[3].drafted > 0 and together[3].accepted * 2 >= together[3].drafted);
+    for (together) |t| try std.testing.expect(t.drafted > 0 and t.accepted > 0);
 
     // alone, in a slot another stream's cache filled: a kept row moves the layer's cache on; a refused draft's row
     // never enters it, so later drafts still land

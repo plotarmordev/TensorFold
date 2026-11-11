@@ -128,22 +128,39 @@ pub fn mtpKeep(b: *Metal, paths: []const []const u32) !void {
     }
 }
 
-/// A prompt's end steps its last chunk's taps with the first token; a lone stream then holds the layer's draft from
-/// its cache's end, which every kept row reached. A shared round's streams hold none.
+/// A prompt's end steps its last chunk's taps with the first token. The round is kept here, ahead of the engine's
+/// keep, so the layer steps every kept chain before each stream holds its draft from its cache's end.
 fn mtpDrafts(b: *Metal, d: *q.mtp.Drafter, requests: []const be.DraftRequest) !void {
-    const lone = live(b) == 1;
+    const pool = mtl.objc.Pool.push();
+    defer pool.pop();
     for (requests) |r| {
         const slot = try b.slotFor(r.stream);
         b.dropTreeOf(slot);
-        const pool = mtl.objc.Pool.push();
-        defer pool.pop();
         if (r.rows == null) try promptEnd(b, d, slot, r);
-        if (!lone) continue;
-        try b.settleRound();
+    }
+    try keepEarly(b, requests);
+    if (b.round != null) return; // a window without a request: its cache would trail its rows
+    for (requests) |r| {
+        const slot = try b.slotFor(r.stream);
         const end = b.runner.offsets[slot];
         if (r.depth == 0 or b.mtp_cache.ends[slot] != end or b.runner.capacity - end < 2) continue;
         b.trees[slot] = try chain(b.gpa, b.mtp_cache.drafts[slot]);
     }
+}
+
+/// A lone round settles; a shared one keeps every window's rows once each has its request (the engine asks for all
+/// of them in one batch), and the engine's keep then finds it done.
+fn keepEarly(b: *Metal, requests: []const be.DraftRequest) !void {
+    if (b.count < 2) return b.settleRound();
+    var paths: [lb.max_streams][]const u32 = undefined;
+    for (b.windows[0..b.count], paths[0..b.count]) |slot, *path| {
+        const r = for (requests) |r| {
+            if (b.slotOf(r.stream) == slot) break r;
+        } else return;
+        path.* = r.rows orelse return;
+    }
+    try b.keepPaths(paths[0..b.count]);
+    b.kept_early = true;
 }
 
 /// The prompt's last chunk, still in the taps, steps the layer with the first token after it.
