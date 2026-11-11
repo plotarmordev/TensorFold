@@ -15,6 +15,8 @@ def latent(path, size):
         if values.shape not in ((1, 24, size // 16, size // 16), (1, 24, 1, size // 16, size // 16)):
             raise ValueError(f"unexpected latent shape: {values.shape}")
     else:
+        if path.stat().st_size != 24 * (size // 16) ** 2 * 4:
+            raise ValueError("wrong raw latent byte size")
         values = np.fromfile(path, dtype="<f4")
     if values.size != 24 * (size // 16) ** 2 or not np.isfinite(values).all():
         raise ValueError("wrong latent size or non-finite values")

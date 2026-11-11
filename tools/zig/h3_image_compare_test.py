@@ -38,6 +38,9 @@ class ImageGateTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 latent(path, 32)
             values = np.ones(96, dtype="<f4")
+            path.write_bytes(values.tobytes() + b"\x00")
+            with self.assertRaises(ValueError):
+                latent(path, 32)
             values[0] = np.nan
             values.tofile(path)
             with self.assertRaises(ValueError):
@@ -46,6 +49,10 @@ class ImageGateTest(unittest.TestCase):
             save_file({"latent_tensor": np.ones((2, 12, 2, 2), dtype="<f4")}, path)
             with self.assertRaises(ValueError):
                 latent(path, 32)
+            for shape in ((1, 24, 2, 2), (1, 24, 1, 2, 2)):
+                values = np.arange(96, dtype="<f4").reshape(shape)
+                save_file({"latent_tensor": values}, path)
+                np.testing.assert_array_equal(latent(path, 32), values.ravel())
 
     def test_zero_norm_and_wrong_image_shape(self):
         with tempfile.TemporaryDirectory() as directory:
