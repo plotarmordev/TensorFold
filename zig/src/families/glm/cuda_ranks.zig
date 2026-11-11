@@ -28,9 +28,20 @@ pub const Settings = struct {
     kv_host: u8 = 0, // TF_GLM_KV_HOST=1: KV pages in host memory (1); with TF_GLM_KV_HOST_SHARED=1, one copy a host (2)
     kv_host_gib: f64 = 0, // TF_GLM_KV_HOST_GIB: the host pages' GiB (0: one full window)
     l2pf: l2pf.Options = .{}, // TF_GLM_L2PF and its knobs: a decode window's next weights read into L2 beside it
+    kv_live_half: bool = false, // TF_GLM_KV_LIVE_HALF=1: a keep carries the live KDA half alone (cuda_snapshot_layout.zig)
 
-    /// The settings `get` (an environment lookup) gives; `problem` names a value that is not one of the choices.
-    pub fn read(get: *const fn ([:0]const u8) ?[]const u8, problem: *[]const u8) !Settings {
+    /// The settings `get` gives, blank text as unset; `problem` names a value that is not one of the choices.
+    pub fn read(comptime get: *const fn ([:0]const u8) ?[]const u8, problem: *[]const u8) !Settings {
+        return readSet(&struct {
+            fn set(name: [:0]const u8) ?[]const u8 {
+                const v = get(name) orelse return null;
+                return if (std.mem.trim(u8, v, " \t\r\n").len == 0) null else v; // environment.parse's blank
+            }
+        }.set, problem);
+    }
+
+    /// `read` from a lookup with no blank text, so every name below and in l2pf's reader is unset when blank.
+    fn readSet(get: *const fn ([:0]const u8) ?[]const u8, problem: *[]const u8) !Settings {
         var s: Settings = .{};
         if (get("TF_GLM_PROMPT_K")) |v| {
             if (std.mem.eql(u8, v, "shape")) s.prompt_fixed_k = true else if (!std.mem.eql(u8, v, "one")) {
@@ -154,6 +165,12 @@ pub const Settings = struct {
                 return error.BadSetting;
             }
         }
+        if (get("TF_GLM_KV_LIVE_HALF")) |v| {
+            if (std.mem.eql(u8, v, "1")) s.kv_live_half = true else if (!std.mem.eql(u8, v, "0")) {
+                problem.* = "TF_GLM_KV_LIVE_HALF: 0 or 1";
+                return error.BadSetting;
+            }
+        }
         // refused here, before the weights load: the wire's bootstrap meets at rank 0, its kernel comes from the image
         if (s.roce_multi and (get("TF_TP_MASTER") == null or get("TF_TP_KERNEL_IMAGE") == null)) {
             problem.* = "TF_GLM_ROCE_MULTI=1 requires TF_TP_MASTER and TF_TP_KERNEL_IMAGE";
@@ -183,7 +200,7 @@ fn wireOpens(get: *const fn ([:0]const u8) ?[]const u8) bool {
 
 /// What every rank must agree on, as bytes the communicator carries.
 pub const Fingerprint = extern struct {
-    layout: u32 = 19, // this struct's version (18 plus the prompt pair)
+    layout: u32 = 20, // this struct's version (19, main's prompt pair, plus kv_live_half)
     world: u32,
     rank: u32,
     kv8: u32 = 0,
@@ -193,6 +210,7 @@ pub const Fingerprint = extern struct {
     split: u32, // TF_GLM_PREFILL_REDUCE: 0 gather, 1 split, 2 ring
     kda_wide: u32,
     kda_pad: u32 = 0, // TF_GLM_KDA_PAD: every rank's KDA input rows carry one width
+    kv_live_half: u32 = 0, // TF_GLM_KV_LIVE_HALF: every rank keeps the live KDA half alone (1) or the head whole (0)
     pieces: u32,
     pair: u32, // TF_GLM_PROMPT_PAIR: rank 0's paired steps need the second chunk's buffers on every rank
     layers: u32, // TF_GLM_LAYERS (0: all)
@@ -226,6 +244,7 @@ pub const Fingerprint = extern struct {
         split,
         kda_wide,
         kda_pad,
+        kv_live_half,
         pieces,
         pair,
         layers,
@@ -269,6 +288,7 @@ pub const Fingerprint = extern struct {
             .split = if (!s.split) 0 else if (s.ring) 2 else 1,
             .kda_wide = @intFromBool(s.kda_wide),
             .kda_pad = @intFromBool(s.kda_pad),
+            .kv_live_half = @intFromBool(s.kv_live_half),
             .pieces = s.pieces,
             .pair = @intFromBool(s.pair),
             .layers = s.layers,
@@ -306,6 +326,7 @@ pub fn mismatch(all: []const Fingerprint) ?Mismatch {
             "split",
             "kda_wide",
             "kda_pad",
+            "kv_live_half",
             "pieces",
             "pair",
             "layers",
@@ -428,6 +449,7 @@ fn explain(f: Fingerprint.Field) []const u8 {
         .split => "TF_GLM_PREFILL_REDUCE",
         .kda_wide => "TF_GLM_KDA_DECODE_WIDE",
         .kda_pad => "TF_GLM_KDA_PAD",
+        .kv_live_half => "TF_GLM_KV_LIVE_HALF",
         .pieces => "TF_GLM_OVERLAP_PIECES",
         .pair => "TF_GLM_PROMPT_PAIR",
         .layers => "TF_GLM_LAYERS",

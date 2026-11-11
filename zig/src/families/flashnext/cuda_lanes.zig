@@ -314,7 +314,10 @@ pub fn Namespace(comptime Tri: type) type {
                     l.seq.media = try v.state(ids, s.images);
                     if (self.ranks) |r| try r.setMedia(&l.seq);
                 }
-                if (l.draft) |*d| d.media = if (l.seq.media) |*m| m.view() else null;
+                if (l.draft) |*d| {
+                    d.label = s.id;
+                    d.media = if (l.seq.media) |*m| m.view() else null;
+                }
 
                 s.cached = 0;
                 const saved = s.reuse.saved orelse return l;
@@ -338,7 +341,7 @@ pub fn Namespace(comptime Tri: type) type {
                     s.keepInterruptedPrefill(@intCast(at));
                     return error.Cancelled;
                 }
-                const rows = @import("cuda_chunk.zig").passRows(&self.lanes, l, self.engine.chunk, self.engine.busy_chunk);
+                const rows = @import("cuda_chunk.zig").passRows(&self.lanes, s, self.engine.chunk, self.engine.busy_chunk);
                 var marks: [prompt.batch.max_marks]prompt.batch.Mark = .{ .{}, .{} };
                 defer snaps.dropPrepared(self, l);
                 const cut = snaps.cut(self, s, l, ids, at, @min(ids.len, at + rows), &marks);
