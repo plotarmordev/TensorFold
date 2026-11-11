@@ -88,7 +88,7 @@ and all of suh; by inputs, rows of tiles and of suh and all of svh, and add the 
 `zig build tf-exl3-encode -Doptimize=ReleaseFast` builds the portable CPU encoder. It needs neither torch nor CUDA:
 
 ```sh
-zig-out/bin/tf-exl3-encode WEIGHT.npy HESSIAN.npy 2.0 OUT_DIR
+zig-out/bin/tf-exl3-encode [--threads N] WEIGHT.npy HESSIAN.npy 2.0 OUT_DIR [--unweighted]
 ```
 
 `WEIGHT.npy` is the Hugging Face `[N,K]` matrix and `HESSIAN.npy` is its full `[K,K]` calibration Hessian; both
@@ -96,9 +96,11 @@ are little-endian C-order FP32 or FP64. Replace `2.0` with `2.5`, `3.0` or `4.0`
 group as `OUT_DIR/model.safetensors`, reloads it through `core/exl3_load.zig`, and requires the reloaded
 `dequantize()` output to equal the encoder's reconstruction bit for bit; that reconstruction is built from the
 states the search chose, not by decoding the packed words. Its receipt prints the exact `trace((W-Wq) H (W-Wq)^T)`
-for EXL3, same-codebook rounding and NVFP4 (`core/quant/nvfp4.zig`'s `quantize`: ModelOpt's global scale
-amax / (6 * 448), E4M3 block-16 scales, E2M1 ties to even), and the encode-only seconds for this one matrix with their
-5,900-matrix projection; writing, reloading and the comparison are not timed.
+for EXL3 and NVFP4 (`core/quant/nvfp4.zig`'s `quantize`: ModelOpt's global scale amax / (6 * 448), E4M3 block-16
+scales, E2M1 ties to even), and the encode-only seconds for this one matrix with their 5,900-matrix projection;
+writing, reloading and the comparison are not timed. `--unweighted` also prints the error, under the same Hessian,
+of the same search run without calibration (`H = I`, every value weighted alike): the same-codebook baseline that
+shows what the calibration buys. It doubles the run, so a conversion leaves it off.
 
 The Hessian follows Drama card 32's calibration rows (`drama-exl3-calibration/1`): for expert e, `X_e` is the
 layer's `x` rows (the MoE input after `addRmsnorm`) whose `picks` contain e, and gate and up both take
@@ -107,11 +109,11 @@ those rows.
 
 Each 16x16 tile is a tail-biting trellis: a 128-wide beam weighted by the rotated Hessian's diagonal runs once over
 the tile turned by half to choose the state where the ring closes, then again with the ring's wrapped bits forced to
-that state, so every tile closes (closing costs about a tenth over the free beam's error). Matrix-wide, the result
-falls back to plain rounding if that has the lower full-Hessian error. Threads take the next tile from a shared
-counter and then the full-Hessian errors by output column, so the bytes are the same at any thread count. An all-zero
-output column (Drama's gate and up experts have about a fifth pruned) gets a zero scale and decodes to exactly zero:
-any other scale would spread its codebook noise through the output Hadamard into the whole block.
+that state, so every tile closes (closing costs about a tenth over the free beam's error). Threads take the next
+tile from a shared counter and then the full-Hessian errors by output column, so the bytes are the same at any
+thread count. An all-zero output column (Drama's gate and up experts have about a fifth pruned) gets a zero scale
+and decodes to exactly zero: any other scale would spread its codebook noise through the output Hadamard into the
+whole block.
 
 ### Drama 3 experts on this Mac
 
@@ -120,19 +122,31 @@ have none), FP8 E4M3 dequantised with their 128x128 block scales, against card 3
 `trace((W-Wq) H (W-Wq)^T)` over NVFP4's (ModelOpt scaling, as above), as (expert 152, 217, 242); NVFP4 is about 4.56
 bits per weight:
 
-| bits | gate | up | down | plain rounding, any matrix |
-|---|---|---|---|---|
-| 2.0 | 8.74, 6.67, 5.89 | 8.46, 6.26, 5.59 | 9.64, 8.69, 8.34 | 184-290 |
-| 2.5 | 4.72, 3.28, 2.94 | 4.43, 3.08, 2.83 | 5.41, 4.84, 4.60 | 184-289 |
-| 3.0 | 2.49, 1.63, 1.45 | 2.33, 1.63, 1.33 | 3.08, 2.73, 2.59 | 184-285 |
-| 4.0 | 0.73, 0.43, 0.36 | 0.72, 0.43, 0.34 | 1.11, 0.98, 0.93 | 182-275 |
+| bits | gate | up | down |
+|---|---|---|---|
+| 2.0 | 8.74, 6.67, 5.89 | 8.46, 6.26, 5.59 | 9.64, 8.69, 8.34 |
+| 2.5 | 4.72, 3.28, 2.94 | 4.43, 3.08, 2.83 | 5.41, 4.84, 4.60 |
+| 3.0 | 2.49, 1.63, 1.45 | 2.33, 1.63, 1.33 | 3.08, 2.73, 2.59 |
+| 4.0 | 0.73, 0.43, 0.36 | 0.72, 0.43, 0.34 | 1.11, 0.98, 0.93 |
 
-EXL3 is below plain rounding to the same codebook on all 36 matrices. The earlier 0.82-0.90x NVFP4 figure was K4
-EXL3, and at 4.0 bits this encoder reaches 0.34-0.73x on gate and up and 0.93-1.11x on down. At 2.0-3.0 bits it
-misses that bar because it stores 1.5-2.6 fewer bits per weight than NVFP4 (0.45-0.66x its bytes), and each bit
-removed costs roughly 4x the error. Two further limits apply: the search weights only the rotated Hessian's
-diagonal, with no LDLQ feedback of the full H, and with only 252-353 rows each Hessian has rank at most that, against
-2048 or 512 inputs.
+The same matrices' EXL3 error over the same-codebook baseline (`--unweighted`: the same search without calibration,
+scored under the same Hessian):
+
+| bits | gate | up | down |
+|---|---|---|---|
+| 2.0 | 0.926, 0.983, 0.976 | 0.969, 0.943, 0.946 | 0.994, 0.998, 0.992 |
+| 2.5 | 0.974, 0.950, 0.963 | 0.948, 0.909, 0.960 | 0.991, 0.996, 0.989 |
+| 3.0 | 0.962, 0.984, 0.948 | 0.941, 0.989, 0.932 | 0.997, 0.990, 0.997 |
+| 4.0 | 0.993, 0.911, 0.940 | 0.973, 0.916, 0.897 | 0.993, 0.99992, 0.992 |
+
+The calibration wins on all 36 matrices, but by little: 0.7-10% on gate and up, under 1% on down (expert 217 at
+4.0 bits by 0.01%). The search weights only the rotated Hessian's diagonal, with no LDLQ feedback of the
+full H, and the Hadamard rotation evens that diagonal out within each 128-row block (a diagonal H becomes a constant
+one). With only 252-353 rows each Hessian also has rank at most that, against 2048 or 512 inputs.
+
+The earlier 0.82-0.90x NVFP4 figure was K4 EXL3, and at 4.0 bits this encoder reaches 0.34-0.73x on gate and up
+and 0.93-1.11x on down. At 2.0-3.0 bits it misses that bar because it stores 1.5-2.6 fewer bits per weight than
+NVFP4 (0.45-0.66x its bytes), and each bit removed costs roughly 4x the error.
 
 Encode-only seconds (the mean of the three experts) on an Apple M5 Ultra (12 performance and 24 efficiency cores,
 256 GB, macOS 27.0, Zig 0.17.0 ReleaseFast, all 36 cores), and the projection for 5,900 experts. The Mac was shared:

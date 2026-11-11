@@ -8,6 +8,7 @@ const lanes = tf.lanes;
 const lb = @import("qwen27_lanes.zig");
 const images = @import("qwen27_images.zig");
 const resume_rules = @import("qwen27_resume.zig");
+const draft_fns = @import("qwen27_drafts.zig");
 const Metal = lb.Metal;
 const Ring = q.tap_ring.Ring;
 const Context = q.dflash.runtime_model.Context;
@@ -40,6 +41,7 @@ pub fn opening(b: *Metal, s: *lanes.Stream, slot: u32) !Fill {
         try clearContext(b, slot);
     }
     s.cached = resumed;
+    draft_fns.mtpOpen(b, slot);
     var at: usize = resumed;
     if (resumed == 0) if (s.reuse.saved) |saved| { // a kept state of this prompt's prefix: the pass starts there
         const st: *q.snapshot.State = @ptrCast(@alignCast(saved));
@@ -89,6 +91,7 @@ pub fn chunk(b: *Metal, s: *lanes.Stream, f: *Fill, _: u32) !bool {
     const at = f.at;
     var end = resume_rules.chunkEnd(at, @import("qwen27_prompt_rows.zig").choose(b, s), ids.len, s.chunks, s.decode_spans);
     if (f.checkpoint > at and f.checkpoint < end) end = f.checkpoint;
+    end = resume_rules.rewindEnd(at, end, f.rewind);
     var decoded = false;
     for (s.decode_spans) |span| decoded = decoded or (at >= span[0] and at < span[1]);
     var mark_bank: ?q.gdn_pool_gpu.PromptMarks = null;
@@ -120,7 +123,6 @@ pub fn chunk(b: *Metal, s: *lanes.Stream, f: *Fill, _: u32) !bool {
     if (mark_bank == null) for (s.reuse.marks) |mark| if (mark > at and mark < end) {
         end = mark;
     };
-    if (mark_bank == null and f.rewind > at and f.rewind < end) end = f.rewind;
     const part = ids[at..end];
     const last = end == ids.len;
     const before = b.runner.gpu_seconds;
@@ -130,6 +132,7 @@ pub fn chunk(b: *Metal, s: *lanes.Stream, f: *Fill, _: u32) !bool {
         const session = q.session.Session{ .runner = b.runner, .slot = slot };
         if (decoded) try session.decodeChunk(part, last) else try session.promptChunk(part, last);
         if (b.ringOf(slot)) |g| try ringChunk(b, g, part.len);
+        try draft_fns.mtpChunk(b, s, slot, at, end);
     }
     charge(b, s, before);
     lanes.prefill_widths.completed(b.gpa, s, part.len);
@@ -274,11 +277,11 @@ fn saveRewind(b: *Metal, at: u32) void {
     b.standing.rewind_at = at;
 }
 
-/// The rewind buffer, where the prompt cache cannot keep a full-context state (`cache` bytes) and `room` holds it.
+/// The history rewind where two full-context states do not fit in `cache`, provided `room` holds its bytes.
 pub fn rewindInit(b: *Metal, room: u64, cache: u64) ?mtl.Buffer {
     if (!slotResume(b) or b.runner.ready == 0) return null;
     const need = q.snapshot.rewindBytes(b.runner, b.ringOf(0));
-    if (cache >= q.snapshot.slotBytes(b.runner, b.ringOf(0), b.runner.capacity)) return null; // the cache keeps them
+    if (!resume_rules.needsRewind(cache, q.snapshot.Spares.size(q.snapshot.slotBytes(b.runner, b.ringOf(0), b.runner.capacity)))) return null;
     if (need > room) {
         std.log.info("qwen27: no rewind point for slot 0 ({d} MiB, {d} MiB left under the load limit): a next turn that drops the last reply's reasoning reads its prompt again", .{ need >> 20, room >> 20 });
         return null;

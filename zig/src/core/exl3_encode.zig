@@ -16,8 +16,6 @@ pub const Result = struct {
     suh: []f16,
     svh: []f16,
     reconstructed: []f64,
-    error_exl3: f64,
-    error_plain: f64,
 
     pub fn deinit(self: *Result, gpa: Allocator) void {
         gpa.free(self.trellis);
@@ -47,15 +45,6 @@ const Book = struct {
                 return e.value <= t;
             }
         }.below);
-    }
-
-    fn nearest(book: *const Book, x: f64) u32 {
-        const hi = book.above(x);
-        if (hi == 0) return book.sorted[0].state;
-        if (hi == book.sorted.len) return book.sorted[hi - 1].state;
-        const a = book.sorted[hi - 1];
-        const b = book.sorted[hi];
-        return if (@abs(@as(f64, a.value) - x) <= @abs(@as(f64, b.value) - x)) a.state else b.state;
     }
 };
 
@@ -112,23 +101,6 @@ fn rotateFast(v: []f64, rows: usize, cols: usize, axis: u1) void {
             for (0..128) |c| v[at + c] *= norm;
         };
     }
-}
-
-/// Same-codebook baseline: each value's nearest state, then a majority vote on every overlapping stream bit.
-fn plainTile(target: *const [256]f64, book: *const Book, w: exl3.Width, states: *[256]u32) void {
-    const ring = 128 * @as(usize, w.halves);
-    var votes: [1024]i32 = @splat(0);
-    var ends: [256]u32 = undefined;
-    exl3.streamEnds(w, &ends);
-    for (target, ends) |x, end| {
-        const state = book.nearest(x);
-        for (0..16) |j| votes[(end + ring - 16 + j) % ring] += if ((state >> @intCast(15 - j)) & 1 != 0) 1 else -1;
-    }
-    var tile: [64]i16 = @splat(0);
-    for (0..ring) |j| if (votes[j] >= 0) {
-        tile[2 * (j / 32) + 1 - (j % 32) / 16] |= @as(i16, @bitCast(@as(u16, 1) << @intCast(15 - j % 16)));
-    };
-    exl3.tileStates(w, tile[0..w.tileWords()], states);
 }
 
 /// Stream bits value p shifts into its 16-bit state.
@@ -249,7 +221,7 @@ pub fn hessianError(gpa: Allocator, threads: usize, w: []const f64, q: []const f
     return total;
 }
 
-/// One tile at a time: both candidates' trellis words and their rotated-domain values.
+/// One tile at a time: the chosen trellis words and their rotated-domain values.
 const Job = struct {
     rotated: []const f64,
     hd: []const f64,
@@ -257,10 +229,8 @@ const Job = struct {
     book: *const Book,
     width: exl3.Width,
     n: usize,
-    plain_trellis: []i16,
-    chosen_trellis: []i16,
-    plain_q: []f64,
-    chosen_q: []f64,
+    trellis: []i16,
+    q: []f64,
     placement: [256]exl3.Placement,
 
     fn tile(job: *const Job, index: usize) void {
@@ -275,18 +245,10 @@ const Job = struct {
             x.* = job.rotated[row * job.n + col];
             weight.* = job.hd[row] * job.gd[col];
         }
-        var plain: [256]u32 = undefined;
-        var chosen: [256]u32 = undefined;
-        plainTile(&target, job.book, job.width, &plain);
-        searchTile(&target, &importance, job.book, job.width, &chosen);
-        const at = index * words;
-        packTile(job.width, &plain, job.plain_trellis[at..][0..words]);
-        packTile(job.width, &chosen, job.chosen_trellis[at..][0..words]);
-        for (job.placement, plain, chosen) |p, s0, s1| {
-            const i = (tr * 16 + p.row) * job.n + tc * 16 + p.col;
-            job.plain_q[i] = job.book.values[s0];
-            job.chosen_q[i] = job.book.values[s1];
-        }
+        var states: [256]u32 = undefined;
+        searchTile(&target, &importance, job.book, job.width, &states);
+        packTile(job.width, &states, job.trellis[index * words ..][0..words]);
+        for (job.placement, states) |at, s| job.q[(tr * 16 + at.row) * job.n + tc * 16 + at.col] = job.book.values[s];
     }
 };
 
@@ -343,36 +305,16 @@ pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usiz
     const book = try a.create(Book);
     book.init();
     const words = (k / 16) * (n / 16) * width.tileWords();
-    const chosen_trellis = try gpa.alloc(i16, words);
-    errdefer gpa.free(chosen_trellis);
-    const chosen_q = try gpa.alloc(f64, k * n);
-    errdefer gpa.free(chosen_q);
-    var job = Job{
-        .rotated = rotated,
-        .hd = hd,
-        .gd = gd,
-        .book = book,
-        .width = width,
-        .n = n,
-        .plain_trellis = try a.alloc(i16, words),
-        .chosen_trellis = chosen_trellis,
-        .plain_q = try a.alloc(f64, k * n),
-        .chosen_q = chosen_q,
-        .placement = undefined,
-    };
+    const trellis = try gpa.alloc(i16, words);
+    errdefer gpa.free(trellis);
+    const q = try gpa.alloc(f64, k * n);
+    errdefer gpa.free(q);
+    var job = Job{ .rotated = rotated, .hd = hd, .gd = gd, .book = book, .width = width, .n = n, .trellis = trellis, .q = q, .placement = undefined };
     exl3.tilePlacement(&job.placement);
     scheduler.forEach(threads, (k / 16) * (n / 16), &job, Job.tile);
 
-    exl3.restore(job.plain_q, k, n, suh, svh);
-    exl3.restore(chosen_q, k, n, suh, svh);
-    const plain_error = try hessianError(gpa, threads, weight, job.plain_q, hessian, k, n);
-    const chosen_error = try hessianError(gpa, threads, weight, chosen_q, hessian, k, n);
-    const keep_plain = plain_error < chosen_error;
-    if (keep_plain) {
-        @memcpy(chosen_trellis, job.plain_trellis);
-        @memcpy(chosen_q, job.plain_q);
-    }
-    return .{ .width = width, .k = k, .n = n, .trellis = chosen_trellis, .suh = suh, .svh = svh, .reconstructed = chosen_q, .error_exl3 = if (keep_plain) plain_error else chosen_error, .error_plain = plain_error };
+    exl3.restore(q, k, n, suh, svh);
+    return .{ .width = width, .k = k, .n = n, .trellis = trellis, .suh = suh, .svh = svh, .reconstructed = q };
 }
 
 fn had(r: usize, c: usize) f64 {
@@ -393,8 +335,7 @@ fn expectBitExact(weight: []const f64, hessian: []const f64, k: usize, n: usize,
     defer gpa.free(scratch);
     exl3.dequantize(result.width, .mul1, result.trellis, k / 16, n / 16, result.suh, result.svh, decoded, scratch);
     try std.testing.expect(std.mem.eql(u8, std.mem.sliceAsBytes(result.reconstructed), std.mem.sliceAsBytes(decoded)));
-    try std.testing.expect(result.error_exl3 <= result.error_plain);
-    return result.error_exl3;
+    return hessianError(gpa, test_threads, weight, result.reconstructed, hessian, k, n);
 }
 
 /// Bit exact at 2.0, 2.5, 3.0 and 4.0 bits, with error relative to W^T H W falling under `first` and with every width.
@@ -414,24 +355,6 @@ fn expectWidths(weight: []const f64, hessian: []const f64, k: usize, n: usize, f
 fn gaussian(seed: u64, out: []f64) void {
     var prng = std.Random.DefaultPrng.init(seed);
     for (out) |*v| v.* = prng.random().floatNorm(f64);
-}
-
-test "packTile is tileStates' inverse at every requested width" {
-    const book = try std.testing.allocator.create(Book);
-    defer std.testing.allocator.destroy(book);
-    book.init();
-    var target: [256]f64 = undefined;
-    for (&target, 0..) |*v, i| v.* = @sin(@as(f64, @floatFromInt(i)) * 0.13);
-    for ([_]u16{ 4, 5, 6, 8 }) |halves| {
-        const w = exl3.Width{ .halves = halves };
-        var states: [256]u32 = undefined;
-        plainTile(&target, book, w, &states);
-        var tile: [64]i16 = undefined;
-        packTile(w, &states, tile[0..w.tileWords()]);
-        var actual: [256]u32 = undefined;
-        exl3.tileStates(w, tile[0..w.tileWords()], &actual);
-        try std.testing.expectEqualSlices(u32, &states, &actual);
-    }
 }
 
 test "the closed ring decodes to its chosen states and stays near the free beam" {
@@ -475,6 +398,29 @@ test "seeded Gaussian gate [512,2048] with H = I" {
     gaussian(23, w);
     for (h, 0..) |*v, i| v.* = if (i / k == i % k) 1 else 0;
     try expectWidths(w, h, k, n, 0.15);
+}
+
+test "the Hessian-weighted search beats the same search with H = I under an uneven Hessian" {
+    const k = 256;
+    const n = 256;
+    const rank = 4;
+    var w: [k * n]f64 = undefined;
+    var x: [rank * k]f64 = undefined;
+    var h: [k * k]f64 = @splat(0);
+    var identity: [k * k]f64 = @splat(0);
+    gaussian(26, &w);
+    gaussian(27, &x);
+    // few calibration rows: the rotated diagonal varies widely within each 128-row block
+    for (0..k) |i| for (0..k) |j| for (0..rank) |r| {
+        h[i * k + j] += x[r * k + i] * x[r * k + j] / rank;
+    };
+    for (0..k) |i| identity[i * k + i] = 1;
+    for ([_]u16{ 4, 5, 6, 8 }) |halves| {
+        const weighted = try expectBitExact(&w, &h, k, n, halves);
+        var unweighted = try encode(std.testing.allocator, &w, &identity, k, n, .{ .halves = halves }, test_threads);
+        defer unweighted.deinit(std.testing.allocator);
+        try std.testing.expect(weighted < 0.9 * try hessianError(std.testing.allocator, test_threads, &w, unweighted.reconstructed, &h, k, n));
+    }
 }
 
 test "Drama down shape [2048,512] with a correlated Hessian" {
@@ -550,6 +496,7 @@ test "the encoded bytes and errors do not depend on the thread count" {
     for (h, 0..) |*v, i| v.* = std.math.pow(f64, 0.6, @floatFromInt(@max(i / k, i % k) - @min(i / k, i % k)));
     var serial = try encode(gpa, w, h, k, n, .{ .halves = 5 }, 1);
     defer serial.deinit(gpa);
+    const serial_error = try hessianError(gpa, 1, w, serial.reconstructed, h, k, n);
     for ([_]usize{ 5, 36, scheduler.max_threads + 1 }) |threads| {
         var parallel = try encode(gpa, w, h, k, n, .{ .halves = 5 }, threads);
         defer parallel.deinit(gpa);
@@ -557,8 +504,7 @@ test "the encoded bytes and errors do not depend on the thread count" {
         try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(serial.suh), std.mem.sliceAsBytes(parallel.suh));
         try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(serial.svh), std.mem.sliceAsBytes(parallel.svh));
         try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(serial.reconstructed), std.mem.sliceAsBytes(parallel.reconstructed));
-        try std.testing.expectEqual(serial.error_exl3, parallel.error_exl3);
-        try std.testing.expectEqual(serial.error_plain, parallel.error_plain);
+        try std.testing.expectEqual(serial_error, try hessianError(gpa, threads, w, parallel.reconstructed, h, k, n));
     }
 }
 

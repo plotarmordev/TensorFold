@@ -1,4 +1,4 @@
-//! tf-exl3-encode WEIGHT.npy HESSIAN.npy BITS OUT_DIR: one calibrated EXL3 group, with its receipt.
+//! tf-exl3-encode [--threads N] WEIGHT.npy HESSIAN.npy BITS OUT_DIR [--unweighted]: one calibrated EXL3 group, with its receipt.
 const std = @import("std");
 const encoder = @import("src/core/exl3_encode.zig");
 const format = @import("src/core/exl3_format.zig");
@@ -56,9 +56,9 @@ fn verify(gpa: Allocator, io: Io, out: []const u8, expected: encoder.Result) !vo
     if (!std.mem.eql(u8, std.mem.sliceAsBytes(actual), std.mem.sliceAsBytes(expected.reconstructed))) return error.ReconstructionDiffers;
 }
 
-const Command = struct { threads: usize, weight: []const u8, hessian: []const u8, bits: []const u8, out_dir: []const u8 };
+const Command = struct { threads: usize, weight: []const u8, hessian: []const u8, bits: []const u8, out_dir: []const u8, unweighted: bool };
 
-/// [--threads N] WEIGHT HESSIAN BITS OUT_DIR; N defaults to every core and must be 1 to max_threads.
+/// [--threads N] WEIGHT HESSIAN BITS OUT_DIR [--unweighted]; N defaults to every core and must be 1 to max_threads.
 fn parseArgs(args: []const []const u8, cores: usize) ?Command {
     var rest = args;
     var threads: usize = @min(cores, max_threads);
@@ -68,8 +68,9 @@ fn parseArgs(args: []const []const u8, cores: usize) ?Command {
         if (threads == 0 or threads > max_threads) return null;
         rest = rest[2..];
     }
-    if (rest.len != 4) return null;
-    return .{ .threads = threads, .weight = rest[0], .hessian = rest[1], .bits = rest[2], .out_dir = rest[3] };
+    const unweighted = rest.len == 5 and std.mem.eql(u8, rest[4], "--unweighted");
+    if (rest.len != 4 and !unweighted) return null;
+    return .{ .threads = threads, .weight = rest[0], .hessian = rest[1], .bits = rest[2], .out_dir = rest[3], .unweighted = unweighted };
 }
 
 pub fn main(init: std.process.Init) !u8 {
@@ -79,7 +80,7 @@ pub fn main(init: std.process.Init) !u8 {
     defer stdout.interface.flush() catch {};
     const out = &stdout.interface;
     const cmd = parseArgs(args[1..], std.Thread.getCpuCount() catch 1) orelse {
-        try out.writeAll("usage: tf-exl3-encode [--threads N] WEIGHT.npy HESSIAN.npy {2.0|2.5|3.0|4.0} OUT_DIR\nweight is HF [N,K] f32/f64; Hessian is [K,K] f32/f64; N is 1 to 64, every core by default\n");
+        try out.writeAll("usage: tf-exl3-encode [--threads N] WEIGHT.npy HESSIAN.npy {2.0|2.5|3.0|4.0} OUT_DIR [--unweighted]\nweight is HF [N,K] f32/f64; Hessian is [K,K] f32/f64; N is 1 to 64, every core by default\n--unweighted also reports the same search with H = I, scored under HESSIAN\n");
         return 2;
     };
     const gpa = init.gpa;
@@ -110,6 +111,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
     try shard.create(gpa, model, &.{.{ "format", "exl3" }}, &tensors);
     try verify(gpa, init.io, cmd.out_dir, result);
+    const exl3_error = try encoder.hessianError(gpa, cmd.threads, weight, result.reconstructed, h.values, k, n);
     const nv_rows = try gpa.alloc(f64, n * k);
     defer gpa.free(nv_rows);
     nvfp4.quantize(source.values, k, nv_rows);
@@ -117,9 +119,18 @@ pub fn main(init: std.process.Init) !u8 {
     defer gpa.free(nv);
     const nv_error = try encoder.hessianError(gpa, cmd.threads, weight, nv, h.values, k, n);
     const bytes = std.mem.sliceAsBytes(result.trellis).len + 2 * (k + n) + 4;
-    const ratio = result.error_exl3 / nv_error;
+    const ratio = exl3_error / nv_error;
     try out.print("bits_per_weight={d:.1} shape=[{d},{d}] threads={d} encode_seconds={d:.3} encode_hours_for_5900_matrices={d:.3}\n", .{ bits, n, k, cmd.threads, elapsed, elapsed * 5900 / 3600 });
-    try out.print("hessian_error exl3={e:.9} plain={e:.9} nvfp4={e:.9} exl3_over_nvfp4={d:.6} bytes={d} nvfp4_bytes_approx={d}\n", .{ result.error_exl3, result.error_plain, nv_error, ratio, bytes, k * n / 2 + k * n / 16 + 4 });
+    try out.print("hessian_error exl3={e:.9} nvfp4={e:.9} exl3_over_nvfp4={d:.6} bytes={d} nvfp4_bytes_approx={d}\n", .{ exl3_error, nv_error, ratio, bytes, k * n / 2 + k * n / 16 + 4 });
+    if (cmd.unweighted) {
+        const identity = try gpa.alloc(f64, k * k);
+        defer gpa.free(identity);
+        for (identity, 0..) |*v, i| v.* = if (i / k == i % k) 1 else 0;
+        var baseline = try encoder.encode(gpa, weight, identity, k, n, .{ .halves = halves }, cmd.threads);
+        defer baseline.deinit(gpa);
+        const baseline_error = try encoder.hessianError(gpa, cmd.threads, weight, baseline.reconstructed, h.values, k, n);
+        try out.print("unweighted_hessian_error={e:.9} exl3_over_unweighted={d:.6}\n", .{ baseline_error, exl3_error / baseline_error });
+    }
     try out.writeAll("reader=ok reconstruction=bit_exact\n");
     return 0;
 }
@@ -134,4 +145,7 @@ test "--threads sets the count, every core is the default, and 0 or over the cap
     for ([_][]const u8{ "0", "65", "x", "-1" }) |bad| try std.testing.expectEqual(null, parseArgs(&(.{ "--threads", bad } ++ paths), 36));
     try std.testing.expectEqual(null, parseArgs(&.{ "--threads", "9", "w.npy" }, 36));
     try std.testing.expectEqual(null, parseArgs(paths[0..3], 36));
+    try std.testing.expect(parseArgs(&(.{ "--threads", "9" } ++ paths ++ .{"--unweighted"}), 36).?.unweighted);
+    try std.testing.expect(!nine.unweighted);
+    try std.testing.expectEqual(null, parseArgs(&(paths ++ .{"--threads"}), 36));
 }

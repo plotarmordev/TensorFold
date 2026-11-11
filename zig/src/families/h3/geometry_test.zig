@@ -340,6 +340,7 @@ test "H3 forward checks step and all four latent slices" {
 test {
     _ = schedule;
     _ = @import("schedule_geometry_test.zig");
+    _ = @import("cascade.zig");
 }
 
 test "H3 serialized legacy six and seven count cases remain admitted" {
