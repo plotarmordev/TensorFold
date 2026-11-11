@@ -5,7 +5,7 @@ const format = @import("src/core/exl3_format.zig");
 const npy = @import("src/core/npy.zig");
 const shard = @import("src/core/shard_edit.zig");
 const loader = @import("src/core/exl3_load.zig");
-const codec = @import("src/core/exlr8_codec.zig");
+const nvfp4 = @import("src/core/quant/nvfp4.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -27,32 +27,13 @@ fn freeArray(gpa: Allocator, a: Array) void {
     gpa.free(a.bytes);
 }
 
-fn e2m1(x: f32) f32 {
-    const values = [_]f32{ 0, 0.5, 1, 1.5, 2, 3, 4, 6 };
-    const sign: f32 = if (x < 0) -1 else 1;
-    const ax = @abs(x);
-    var best: usize = 0;
-    for (values, 0..) |v, i| if (@abs(v - ax) < @abs(values[best] - ax)) { best = i; };
-    return sign * values[best];
-}
-
-/// NVFP4 with E2M1 values, E4M3 block-16 scales and an FP32 tensor scale.
-fn nvfp4(gpa: Allocator, weight: []const f64, k: usize, n: usize) ![]f64 {
-    var amax: f32 = 0;
-    for (weight) |x| amax = @max(amax, @abs(@as(f32, @floatCast(x))));
-    const global: f32 = if (amax > 0) amax / 6 else 1;
-    const q = try gpa.alloc(f64, k * n);
-    for (0..n) |col| for (0..k / 16) |b| {
-        var block_max: f32 = 0;
-        for (0..16) |j| block_max = @max(block_max, @abs(@as(f32, @floatCast(weight[(b * 16 + j) * n + col]))));
-        const scale = codec.e4m3Value(codec.e4m3FromF32(block_max / (6 * global)));
-        for (0..16) |j| {
-            const at = (b * 16 + j) * n + col;
-            const divisor = scale * global;
-            q[at] = if (divisor > 0) e2m1(@floatCast(weight[at] / divisor)) * divisor else 0;
-        }
+/// [rows, cols] row-major to [cols, rows].
+fn transpose(gpa: Allocator, m: []const f64, rows: usize, cols: usize) ![]f64 {
+    const t = try gpa.alloc(f64, m.len);
+    for (0..rows) |r| for (0..cols) |c| {
+        t[c * rows + r] = m[r * cols + c];
     };
-    return q;
+    return t;
 }
 
 fn seconds(io: Io, start: Io.Timestamp) f64 {
@@ -94,11 +75,8 @@ pub fn main(init: std.process.Init) !u8 {
     const n = source.shape[0];
     const k = source.shape[1];
     if (h.shape[0] != k or h.shape[1] != k) return error.HessianShape;
-    const weight = try gpa.alloc(f64, k * n);
+    const weight = try transpose(gpa, source.values, n, k);
     defer gpa.free(weight);
-    for (0..n) |row| {
-        for (0..k) |col| weight[col * n + row] = source.values[row * k + col];
-    }
 
     const started = Io.Clock.awake.now(init.io);
     var result = try encoder.encode(gpa, weight, h.values, k, n, .{ .halves = halves });
@@ -115,12 +93,15 @@ pub fn main(init: std.process.Init) !u8 {
     };
     try shard.create(gpa, model, &.{.{ "format", "exl3" }}, &tensors);
     try verify(gpa, init.io, args[4], result);
-    const nv = try nvfp4(gpa, weight, k, n);
+    const nv_rows = try gpa.alloc(f64, n * k);
+    defer gpa.free(nv_rows);
+    nvfp4.quantize(source.values, k, nv_rows);
+    const nv = try transpose(gpa, nv_rows, n, k);
     defer gpa.free(nv);
     const nv_error = encoder.hessianError(weight, nv, h.values, k, n);
     const bytes = std.mem.sliceAsBytes(result.trellis).len + 2 * (k + n) + 4;
     const ratio = result.error_exl3 / nv_error;
-    try out.print("bits_per_weight={d:.1} shape=[{d},{d}] seconds={d:.3} projected_5900_matrices_hours={d:.3}\n", .{ bits, n, k, elapsed, elapsed * 5900 / 3600 });
+    try out.print("bits_per_weight={d:.1} shape=[{d},{d}] encode_seconds={d:.3} encode_hours_for_5900_matrices={d:.3}\n", .{ bits, n, k, elapsed, elapsed * 5900 / 3600 });
     try out.print("hessian_error exl3={e:.9} plain={e:.9} nvfp4={e:.9} exl3_over_nvfp4={d:.6} bytes={d} nvfp4_bytes_approx={d}\n", .{ result.error_exl3, result.error_plain, nv_error, ratio, bytes, k * n / 2 + k * n / 16 + 4 });
     try out.writeAll("reader=ok reconstruction=bit_exact\n");
     return 0;
