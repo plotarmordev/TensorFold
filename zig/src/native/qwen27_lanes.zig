@@ -469,6 +469,7 @@ pub const Metal = struct {
         defer pool.pop();
         b.round = try Round.init(b.gpa, inputs[0..windows.len], @intCast(r.model.config.conv_kernel), r.slots, @intCast(r.model.config.vocab));
         b.count = windows.len;
+        b.kept_early = false; // a keep the engine never sent after an early one must not pass for this round's
         errdefer b.dropRound();
         b.rows = total;
         if (b.pass_profile and windows.len == 1) std.log.info("q27_offer width={d} rows={d} tree_nodes={d} copy_rows={d}", .{ b.window, total, b.from_tree, total - 1 - b.from_tree });
