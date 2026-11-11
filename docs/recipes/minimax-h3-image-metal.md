@@ -7,8 +7,9 @@ guidance, each with its own output head. Its text encoder is Qwen3-VL's text mod
 24-block ViT run over overlapping 256-pixel tiles.
 
 This page lists what every other way of running it already does for speed, the ideas none of them ship for it on
-Apple silicon, and the one this fork has started. The maintainer's Metal port is on `upstream/lead/h3-image*`; its own
-recipe documents the tools and their gates.
+Apple silicon, and the one this fork has started. The ranking is FAB's (`claude-fable-5-2`), run blind on the facts
+above and the list below. The maintainer's Metal port is on `upstream/lead/h3-image*`; its own recipe documents the
+tools and their gates.
 
 ## Cost per step
 
@@ -54,69 +55,74 @@ what the proof measures. A 2048 canvas is the model's own default size, so a 409
 model knows.
 
 - **Gain.** A half-side step costs 1/5.35 of a 4096 step (attention falls 16x). Six steps with m = 2, 3, 4 low:
-  1.37x, 1.69x, 2.18x faster at 4096; 1.35x, 1.63x, 2.06x at 2048 (half side 1024).
-- **Risk.** Layout is decided at a quarter of the rows. Detail forms in the last, full-size steps, but a distilled
-  trajectory may not forgive the jump: softness, or seams at 2 x 2 blocks.
-- **Proof.** Twenty seed-locked prompts at 4096 x 4096 on one M5, picked before the run: median wall time against the
-  uncascaded run and LPIPS of the decoded pictures against it, per m. Gate: m = 3 at least 1.6x faster with LPIPS at
-  most 0.08.
+  1.37x, 1.69x, 2.18x faster at 4096; 1.35x, 1.63x, 2.06x at 2048 (half side 1024). Lifting twice, 2 steps at a
+  quarter side, 2 at half, 2 at full, gives 2.44x at 4096.
+- **Risk.** Layout is decided at a quarter of the rows. The late heads were distilled expecting fine detail already
+  present at their sigma: soft micro-texture, broken small text, or seams at 2 x 2 blocks.
+- **Proof.** 32 prompts picked before the run, two seeds each, at 4096 x 4096 on one M5: 8 each of small typography,
+  faces and hands, fine texture, and architecture. Against the uncascaded bf16 run: top-octave radial spectrum energy
+  at least 0.90 of it, OCR exact matches on the typography set at most 1 of 16 fewer, LPIPS at most 0.08, and
+  transformer wall time at most 0.50x for m = 4.
 - **Needs weights?** Only to measure. The lift is started here (below).
 
-### 2. Routed attention in the last full-size steps
+### 2. Pooled far-field keys at 4096
 
-At 4096 x 4096 attention is a third of a step. This fork already has FastH3's routed attention on Metal: each
-64-row tile attends the prefix and its top tiles by pooled score (`tf-h3-dit`). H3-Image was not trained with it and
-has no gate for the pooled branch, so nobody runs it there, but its last steps only sharpen a settled picture, where
-attention is most local. Route the target tiles in steps 4 and 5 only, without the pooled branch, keep the text and
-references dense, and pick `keep` by measurement.
+Each 64-row query tile attends full-resolution keys in a 32 x 32-row window around it; picture keys and values
+beyond it are 2 x 2 mean-pooled, with ln 4 added to each pooled logit so one key stands for its four. Text and
+reference rows stay dense. Unlike FastH3's routing nothing is dropped and there is no routing pass, and it is exact
+when the four keys are equal. PixArt-Sigma trains a similar key compression in; nobody applies one, training-free, to
+H3-Image.
 
-- **Gain.** At keep = 20%, a 4096 step's attention falls to about a fifth: 27% off each routed step, 9% off the
-  run alone, about 15% stacked on the cascade (whose last steps are the full-size ones). These are FLOP bounds: the
-  dense prefix and the routing pass come off them.
-- **Risk.** Untrained routing can drop a far tile that mattered: repeated textures and symmetric objects are the
-  first to break. Text and reference rows stay dense.
-- **Proof.** `keep` chosen on ten prompts apart from the twenty, including edits; then on the twenty at 4096, LPIPS
-  against dense steps with the same cascade at most 0.03, and the routed steps' GPU time against those dense ones.
+- **Gain.** At 16,384 rows each query sees 1,024 + 15,360 / 4 = 4,864 keys: attention falls 3.37x (288.6 to 85.7
+  TFLOP a step), a step 1.31x. Stacked on the m = 4 cascade's two full steps: 1,948 TFLOP against 5,142, 2.64x. At
+  2048 attention is 11% of a step, so it stays off below 8,192 rows.
+- **Risk.** Exact long-range copies blur: repeated patterns, a glyph matching another far away. QK-norm bounds the
+  logits, so the error is bounded by the spread of keys inside a pooled block.
+- **Proof.** The 32 prompts, same trajectory as dense: per-block attention output relative L2 at most 1e-2 on dumped
+  activations, PSNR at least 35 dB and LPIPS at most 0.05 on the decoded pictures, attention kernel time at most
+  0.35x dense at 16,384 rows.
 
-### 3. The decoder in 512-pixel tiles on the tensor units
+### 3. Splitting each product's rows between the GPU and the CPU's SME2 units
 
-The decoder's products run without tensor units (about 12 TFLOP/s on an M3 Ultra, by its 13.4 ms a tile), and its
-256-pixel tiles overlap: 441 tiles at 4096 x 4096, 1.78x the picture's area. h3-image-mlx already runs its decoder
-through MLX's GEMMs on an M5 (8.37 s at 4096), so tensor units alone are not new; 512-pixel tiles are (overlap 1.31x),
-at four times each tile's attention per token.
+The linear layers are 66-89% of a step and row-independent. Unified memory lets the CPU's matrix units read the same
+bf16 weights and activations with no copy, so each product's rows split in the measured throughput ratio. Every
+other runner leaves the CPU idle.
 
-- **Gain.** 5.9 s to about 1.5 s at 4096 x 4096 [INFERENCE: the M5 tensor-unit rate on 1,024-wide products].
-- **Risk.** Tensor-unit GEMMs change sum order: within the decoder's float64 gate, not bit-equal. A larger tile changes
-  what each token attends to, so it is checked against the reference decode, not assumed.
-- **Proof.** The decoder's selftest gates unchanged; on five fixed latents, PSNR at least 45 dB against the reference
-  decoder at 4096.
+- **Gain.** 1.07-1.09x at 4096 if SME2 sustains 1.5-2 TFLOP/s beside about 15 on the GPU [INFERENCE: unmeasured].
+- **Risk.** None beyond fp32 summation order; shared memory bandwidth and heat may eat the gain.
+- **Proof.** A 5,376 x 14,336 product at 16,384 rows split against the GPU alone, at least 1.07x; PSNR at least 50
+  dB against GPU-only pictures; no slowdown over three back-to-back 4096 runs.
 
 ### Considered, not ranked
 
+- **FastH3's routed attention in the last steps.** The video engines already ship it, and it drops tiles where
+  pooled far-field keys keep them.
+- **The decoder in larger tiles on the tensor units.** About 2% of a 4096 run.
 - **Caching the prompt's rows, or keeping its encoder apart from the transformer.** SGLang and vLLM-Omni cache
   conditioning; h3-image-mlx and the maintainer's tools run the encoder and the transformer as separate processes.
-- **Reusing an edit reference's rows across steps.** Not exact: its hidden states depend on the moving target rows
-  through attention. A lossy cache stays opt-in under this repository's precision rules.
+- **Reusing a step's residuals or an edit reference's rows across steps.** Six steps, each with its own head, and
+  the reference's hidden states move with the target rows: not exact, so opt-in at most.
+- **Merging similar picture rows.** Merged rows fall outside the 2 x 2 patch distribution the model learned.
 - **Streaming bf16 blocks from the SSD on 24-36 GB Macs.** A block is 0.69 GB; at 4096 a block's compute is fast
   enough that 5-7 GB/s of SSD cannot keep up, so it works but is not fast. Community MLX ports of the video model
   stream this way [INFERENCE: from their READMEs, not run here].
 
 ## Follow-up cards, in order
 
-1. **H3-Image: the resolution cascade in `tf-h3-image` (`cascade=M`).**
-   - Steps 0..M-1 on the half grid's tiles and positions, then `cascade.lift`, then steps M..5 at full size.
+The bar is h3-image-mlx's 356.84 s at 4096 x 4096 on an M5 Pro, at int8; these cards beat it at bf16.
+
+1. **H3-Image: the dense bf16 baseline at 4096 x 4096 on an M5 Pro.**
+   - Wall time per stage published, and the 32 prompts' two-seed reference pictures stored outside the repository.
+2. **H3-Image: the resolution cascade in `tf-h3-image` (`cascade=M`, one or two lifts).**
+   - Low steps on the half (or quarter) grid's tiles and positions, then `cascade.lift`, then the rest at full size.
    - Without `cascade` the run is byte-identical to today's.
-   - At 4096 x 4096 on an M5, twenty seed-locked prompts: M = 3 at least 1.6x faster with LPIPS at most 0.08 against
-     the uncascaded run; the table per M in this recipe.
-2. **H3-Image: routed target attention in the last two steps (`route=KEEP`).**
-   - The existing routed attention kernels, with no pooled branch; text and reference rows dense.
-   - Without `route` the run is byte-identical; at 4096 on an M5, LPIPS against dense steps with the same `cascade`
-     at most 0.03 and each routed step at least 20% faster.
-3. **H3-Image decoder on the M5's tensor units in 512-pixel tiles.**
-   - Today's 4096 x 4096 decode time recorded first on the same M5; the selftest's float64 gates hold and the decode
-     is at least 3x faster than that record.
-4. **H3-Image at 4096 x 4096 at least 3x faster than h3-image-mlx**, cards 1 to 3 together: its teapot prompt, seed
-   42, text encoding through PNG, both on the same M5 (356.84 s on an M5 Pro today, so under 120 s there).
+   - m = 4 passes idea 1's gates with transformer time at most 0.50x card 1's; the table per schedule in this recipe.
+3. **H3-Image: pooled far-field keys at 16,384 rows and above (`far=pool`).**
+   - A kernel test that equal keys give dense attention's output; off below 8,192 rows; idea 2's gates hold.
+4. **H3-Image: GPU and SME2 row split for the linear layers.**
+   - At least 1.07x on idea 3's product with PSNR at least 50 dB.
+5. **H3-Image at 4096 x 4096 in at most 180 s on an M5 Pro, at least 1.98x faster than h3-image-mlx**, cards 2 to 4
+   together, every quality gate green; at 2048 x 2048 faster than the best published Mac figure at that size.
 
 ## The cascade's lift (started here)
 
@@ -137,4 +143,4 @@ variance, the bilinear taps on a ramp, the exact flow identity on two planes, th
 detail, and refusals of odd grids, wrong lengths and out-of-range or NaN sigmas.
 
 Not done: the cascade is not wired into `tf-h3-image`, which is on the maintainer's unmerged branches, and no picture
-has been made with it (card 1).
+has been made with it (card 2).
