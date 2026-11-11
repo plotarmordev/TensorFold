@@ -8,6 +8,7 @@ const lanes = tf.lanes;
 const lb = @import("qwen27_lanes.zig");
 const images = @import("qwen27_images.zig");
 const resume_rules = @import("qwen27_resume.zig");
+const draft_fns = @import("qwen27_drafts.zig");
 const Metal = lb.Metal;
 const Ring = q.tap_ring.Ring;
 const Context = q.dflash.runtime_model.Context;
@@ -40,6 +41,7 @@ pub fn opening(b: *Metal, s: *lanes.Stream, slot: u32) !Fill {
         try clearContext(b, slot);
     }
     s.cached = resumed;
+    draft_fns.mtpOpen(b, slot);
     var at: usize = resumed;
     if (resumed == 0) if (s.reuse.saved) |saved| { // a kept state of this prompt's prefix: the pass starts there
         const st: *q.snapshot.State = @ptrCast(@alignCast(saved));
@@ -130,10 +132,7 @@ pub fn chunk(b: *Metal, s: *lanes.Stream, f: *Fill, _: u32) !bool {
         const session = q.session.Session{ .runner = b.runner, .slot = slot };
         if (decoded) try session.decodeChunk(part, last) else try session.promptChunk(part, last);
         if (b.ringOf(slot)) |g| try ringChunk(b, g, part.len);
-        // the layer's cache takes every chunk but the last, whose final row's next token the first draft request brings
-        if (b.mtp) |m| if (!last) {
-            _ = try m.step(slot, ids[at + 1 .. end + 1]);
-        };
+        try draft_fns.mtpChunk(b, s, slot, at, end);
     }
     charge(b, s, before);
     lanes.prefill_widths.completed(b.gpa, s, part.len);

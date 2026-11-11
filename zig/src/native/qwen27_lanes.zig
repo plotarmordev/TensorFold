@@ -48,6 +48,7 @@ pub const Metal = struct {
     runner: *q.decode_round.Runner,
     draft: ?*Draft,
     mtp: ?*q.mtp.Drafter = null, // --mtp-drafts: the checkpoint's MTP layer drafts in place of DFlash2
+    mtp_cache: draft_fns.MtpCache = .{}, // how far each slot's MTP K/V follows its target rows, and its draft there
     chunk: usize = 128, // prompt rows a pass
     window: u32 = 16, // the device per-stream verification width
     copies: bool = false, // lone context copies leave room past a 15-node tree
@@ -308,7 +309,7 @@ pub const Metal = struct {
         if (b.pass_profile and b.count == 1) std.log.info("q27_keep width={d} rows={d} kept={d}", .{ b.window, b.rows, paths[0].len });
         if (b.advanced) { // the verify kept each window's one row at its position; its logits already sit in row 0
             for (paths) |path| if (path.len != 1) return error.NothingToKeep;
-            return;
+            return draft_fns.mtpKeep(b, paths);
         }
         const pool = mtl.objc.Pool.push();
         defer pool.pop();
@@ -318,6 +319,7 @@ pub const Metal = struct {
         }
         try b.runner.keep(&b.round.?, paths);
         if (b.draft != null) try b.gatherTaps(paths);
+        try draft_fns.mtpKeep(b, paths);
         if (b.count != 1) return;
         // a lone window's last kept row's logits become row 0, where a one-token step leaves them
         const last = paths[0][paths[0].len - 1];
@@ -412,6 +414,7 @@ pub const Metal = struct {
         const slot = try b.slotFor(s);
         const token = try b.value(feed);
         const before = b.runner.gpu_seconds;
+        b.mtp_cache.tapped = null;
         if (b.drafter(slot)) |d| try d.advance(token) else {
             try (q.session.Session{ .runner = b.runner, .slot = slot }).step(token);
             if (b.ringOf(slot)) |g| try b.ringChunk(g, 1);
@@ -487,6 +490,7 @@ pub const Metal = struct {
             @memcpy(o.drafts, b.ids[first + 1 ..][0 .. rows - 1]);
         }
         if (windows.len == 1) @memcpy(b.sampled[0..b.rows], out[0].sampled);
+        b.mtp_cache.tapped = null;
     }
 
     /// How many drafts are the held tree's first nodes with their own parents (0: copies, fills or a chain).

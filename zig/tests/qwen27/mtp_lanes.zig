@@ -50,7 +50,17 @@ test "Ornith MTP lanes: drafted replies are plain decoding's, alone and four at 
     defer for (&plain) |*s| s.deinit(gpa);
     for (&plain) |*s| try run(back, &cfg, io, s[0..1]);
 
-    // alone: a kept row moves the layer's cache on; a refused draft's row never enters it, so later drafts still land
+    // four at once share rounds, each window's kept rows stepping the layer; the longest, left alone, drafts from a
+    // whole cache (one with holes drafts none), so its drafts land as a lone stream's do
+    var together: [lengths.len]lanes.Stream = undefined;
+    try init(&together, true);
+    defer for (&together) |*s| s.deinit(gpa);
+    try run(back, &cfg, io, &together);
+    for (plain, together) |p, t| try std.testing.expectEqualSlices(u32, p.emitted(), t.emitted());
+    try std.testing.expect(together[3].drafted > 0 and together[3].accepted * 2 >= together[3].drafted);
+
+    // alone, in a slot another stream's cache filled: a kept row moves the layer's cache on; a refused draft's row
+    // never enters it, so later drafts still land
     var lone: [1]lanes.Stream = undefined;
     try init(&lone, true);
     defer lone[0].deinit(gpa);
@@ -58,12 +68,4 @@ test "Ornith MTP lanes: drafted replies are plain decoding's, alone and four at 
     try std.testing.expectEqualSlices(u32, plain[3].emitted(), lone[0].emitted());
     try std.testing.expect(lone[0].accepted > 0 and lone[0].accepted < lone[0].drafted);
     try std.testing.expect(lone[0].accepted * 2 >= lone[0].drafted);
-
-    // four at once share rounds undrafted; the longest, left alone, drafts from the rows its shared rounds kept
-    var together: [lengths.len]lanes.Stream = undefined;
-    try init(&together, true);
-    defer for (&together) |*s| s.deinit(gpa);
-    try run(back, &cfg, io, &together);
-    for (plain, together) |p, t| try std.testing.expectEqualSlices(u32, p.emitted(), t.emitted());
-    try std.testing.expect(together[3].drafted > 0);
 }
