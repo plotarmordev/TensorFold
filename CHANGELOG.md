@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Drama 3 on CUDA loads a compact NVFP4 checkpoint (tf-drama-quant's held-expert map) as stored, its experts packed for the NVFP4 kernels and never widened to BF16; the router masks to the held original expert ids and maps its top 8 to their slots. A stock FP8 checkpoint takes the FP8 path unchanged, and a compact map over FP8 experts is refused. This path has not run on a GPU yet: `tools/zig/drama3_compact_gb10.sh` runs the remaining GB10 checks (load, decode and replay, FP8 codes byte-identical to main) and writes a receipt.
+
 - Ornith-1.5-122B's MTP layer drafts once a decode step on Metal: `qwen27.mtp.Drafter` runs it on the target's last-layer rows before the final norm, with its keys and values in its own cache, into its own logits row. Teacher-forced on mlx-lm's greedy replies to the 16 bench prompts and against mlx-lm stepping the same layer on its own K/V cache, 1,912 of its 2,048 drafts equal mlx-lm's best, and every other is among mlx-lm's top eight, at most 5.4 logits below its best (mlx-lm's own stepped and whole-pass drafts differ at 131). `serve` does not draft with it yet. See [the Ornith recipe](docs/recipes/ornith-1.5-122b-metal.md#mtp-layer).
 
 - Ornith-1.5-122B's MTP layer on Metal: `Model.loadMtp` reads the bf16 release's `mtp.*` (fc, attention, shared expert and 256 experts), quantizes it to MLX 4-bit g64 at load and runs it as one more attention block; `zig build test-qwen27-mtp` matches mlx-lm's layer on the same weights at a cosine of 0.996 or better a row. Serving does not draft with it yet. See [the Ornith recipe](docs/recipes/ornith-1.5-122b-metal.md#mtp-layer).
