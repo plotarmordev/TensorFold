@@ -56,8 +56,7 @@ extern "C" __global__ void d3_router(const bf16* __restrict__ sp, int ss, int r_
   }
 }
 
-// d3_router over a compact checkpoint (Metal's d3_router_compact): held original ids (slots[e] >= 0) compete before
-// the softmax and top 8; the picks are their slots. A poisoned sum yields NaN weights, never a dropped expert's slot.
+// d3_router over held ids only (slots[e] >= 0), picks as slots; a poisoned sum gives NaN weights, never a dropped id.
 extern "C" __global__ void d3_router_compact(const bf16* __restrict__ sp, int ss, int r_off, int* __restrict__ picks,
                                              float* __restrict__ weights, const int* __restrict__ slots) {
   const int t = blockIdx.x, e = threadIdx.x;  // 256 threads

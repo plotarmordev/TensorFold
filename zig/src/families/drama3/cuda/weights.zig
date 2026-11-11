@@ -1,5 +1,4 @@
-//! Drama 3's checkpoint on the device: stacked bf16 projections, FP8 experts repacked for drama3_fp8.cu or NVFP4
-//! experts packed for nvfp4_experts.cu as stored (a compact checkpoint's held ones only), a cut lm_head.
+//! Drama 3's checkpoint on the device: bf16 projections, FP8 experts repacked or NVFP4 as stored, a cut lm_head.
 const std = @import("std");
 const staging = @import("stager.zig");
 const cuda = @import("cuda");
@@ -54,6 +53,7 @@ pub const Weights = struct {
     tower: [cfg.tower_layers]TowerLayer,
     heads: [cfg.codebooks - 1]u64, // [4096, 2048]
     nvfp4_layers: usize, // layers whose routed experts are NVFP4 (the engine loads their kernels)
+    compact_layers: usize, // layers whose router masks to held experts (a pruned checkpoint)
     bytes: usize,
 
     pub fn deinit(w: *Weights) void {
@@ -122,10 +122,15 @@ const Loader = struct {
         defer stage.deinit(l.gpa);
         const L = &l.w.layers[li];
         L.experts = .{ .format = .nvfp4, .up = try l.upload(u32, stage.up), .down = try l.upload(u32, stage.down), .up_scale = try l.upload(f32, stage.up_scale), .down_scale = try l.upload(f32, stage.down_scale), .width = cfg.expert_width, .dims = cfg.hidden, .experts = ids.len };
-        const slots = held.slots(li);
-        L.slots = if (ids.len == cfg.experts) 0 else try l.upload(i32, &slots);
+        L.slots = if (compactSlots(held, li)) |slots| try l.upload(i32, &slots) else 0;
+        if (L.slots != 0) l.w.compact_layers += 1;
     }
 };
+
+/// A pruned layer's router slot table; null when every expert is held and the original router serves it.
+pub fn compactSlots(held: *const quant.Held, li: usize) ?[cfg.experts]i32 {
+    return if (held.counts[li] == cfg.experts) null else held.slots(li);
+}
 
 /// NVFP4 when a layer's first held gate is packed bytes; a compact map over FP8 experts is refused.
 pub fn nvfp4Layer(sh: *const Shards, li: usize, held: *const quant.Held) !bool {
@@ -316,6 +321,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []co
     w.bufs = .empty;
     w.bytes = 0;
     w.nvfp4_layers = 0;
+    w.compact_layers = 0;
     errdefer w.deinit();
     errdefer stream.synchronize() catch {};
     var l: Loader = .{ .gpa = gpa, .d = d, .sh = &sh, .w = w, .stager = &stager };
@@ -442,7 +448,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []co
     try stager.finish();
     if (opt.log) {
         std.log.info("drama3: weights on the device: {d:.2} GB", .{@as(f64, @floatFromInt(w.bytes)) / 1e9});
-        std.log.info("drama3: routed experts held {d} of {d}; routed experts NVFP4 in {d} of {d} layers", .{ held.total(), cfg.layers * cfg.experts, w.nvfp4_layers, cfg.layers });
+        std.log.info("drama3: routed experts held {d} of {d}; routed experts NVFP4 in {d} of {d} layers; compact routers in {d} of {d} layers", .{ held.total(), cfg.layers * cfg.experts, w.nvfp4_layers, cfg.layers, w.compact_layers, cfg.layers });
     }
     return w;
 }

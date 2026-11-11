@@ -82,8 +82,7 @@ pub fn backboneLayer(e: *Engine, ln: Lane, li: usize, t: usize, start: usize) !v
     try moe(e, s, L, t);
 }
 
-/// The MoE block: router (over the held experts on a compact checkpoint), gated shared expert and the routed FP8 or
-/// NVFP4 experts, added to the residual stream.
+/// The MoE block: router (held experts only when compact), gated shared expert and routed FP8 or NVFP4 experts.
 fn moe(e: *Engine, s: cuda.Stream, L: *const wts.Layer, t: usize) !void {
     const k = &e.k;
     const mp = cfg.moe_proj;
