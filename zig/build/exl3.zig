@@ -38,6 +38,22 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     host_step.dependOn(&load_check.step);
     host_step.dependOn(&host.step);
     host_step.dependOn(&oracle_tests.step);
+    const encode_mod = b.createModule(.{
+        .root_source_file = b.path("zig/src/core/exl3_encode.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const encode_tests = b.addRunArtifact(b.addTest(.{ .root_module = encode_mod }));
+    host_step.dependOn(&encode_tests.step);
+    const encode_tool = b.addExecutable(.{ .name = "tf-exl3-encode", .root_module = b.createModule(.{
+        .root_source_file = b.path("zig/exl3_encode_tool.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    b.step("tf-exl3-encode", "Calibrated portable EXL3/mul1 encoder and NVFP4 error receipt")
+        .dependOn(&b.addInstallArtifact(encode_tool, .{}).step);
     host_tests.dependOn(host_step);
     const gpu = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("zig/src/core/exl3_projection_gpu_test.zig"),
