@@ -458,7 +458,7 @@ nothing; finite outputs keep their bytes.
 
 ## On an M5 Ultra with the release weights
 
-Measured on TensorFold 1.2.7 at `a1c758603` (`v1.2.6-342-ga1c758603`, this branch with our main and card 43 merged in),
+Measured on TensorFold 1.2.7 at `a1c758603` (`v1.2.7-154-ga1c758603`, this branch with our main and card 43 merged in),
 built with `-Dcpu=apple_m1 -Doptimize=ReleaseFast`. Text to image from the release folder (`text_encoder/`,
 `transformer/`, `vae/`; not the diffusers copies), seed 42, a 24-token prompt, each tool its own process, no other
 model running; other checkouts' builds shared the CPU and disk. Two runs at each size, 2048 then 4096, back to back;
