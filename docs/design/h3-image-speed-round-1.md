@@ -10,9 +10,19 @@ none saw another's proposals:
 | History | What our own past speed rounds (GLM, Nemotron, DeepSeek, Drama, Ornith, the H3 video DiT) teach an image model | GPT-6 Astra |
 | Outside | Papers and other runners, as raw material, for what nobody has combined or run on a Mac | GPT-6 Astra |
 
-The two GPT-6 Astra sweeps ran as separate sessions with separate briefs. Nothing below was run on a GPU: every time
-is a model, every gain is `[INFERENCE]` until a build card measures it. Agreement between sweeps is the confidence
-signal; a lone idea needs its diagnostic first.
+The two GPT-6 Astra sweeps ran as separate sessions with separate briefs. Nothing below was run on a GPU. Agreement
+between sweeps is the confidence signal; a lone idea needs its diagnostic first.
+
+## What this was made on
+
+- **TensorFold 1.2.7**, our main at `eeeb1ae3e` (card 43's catch-up with the maintainer), merged into this branch.
+- **The H3-Image implementation analysed** is the maintainer's unmerged pull requests, at these heads: #2766
+  transformer `9692b83d5331`, #2779 prompt path `0fa460a1c602`, #2780 decoder `9eb514c504ca`, #2781 end to end
+  `fa0e45c77b68`, #2775 VAE host rules `f5dad8bcac70`, #2778 edit encoder `dd4ec5e3c017`, #2796 prompt cache
+  `e782e6f20f30`, #2808 kernel contract `8e31db228219`, #2810 edits `32e520d08f58`.
+- **Measured, inherited:** the M5 Ultra GEMM rates below (Qwen-Image 2.1, FastH3) and h3-image-mlx's 356.84 s on an
+  M5 Pro, all from other runs. **Estimated:** every stage time, gain and cost in this report, until card 34 and the
+  build cards replace them.
 
 ## What a picture costs, by the architecture sweep's model
 
@@ -125,8 +135,10 @@ within-step token bottlenecking (outside).
 - **Cost.** A one-day diagnostic, then 8-12 days. Two small kernels (pool, scatter-add) and a second row count and
   tile map. No new weights; 44 / 176 MB more memory.
 - **A/B.** The shared protocol, sweeping *a*, *b* and the coarse steps on the calibration prompts first.
-- **Speed gate.** Transformer at most card 34's six-step time / 1.5 at 4096; end to end at least x1.5 at 4096.
-- **Quality guard.** Lossy. Off: byte-identical. Both kernels in the float64 contract with planted controls.
+- **Speed gate.** Transformer at most card 34's six-step time / 1.5 at 4096, and the lower 95% bound of the paired
+  end-to-end speed-up at least x1.5 at 4096.
+- **Quality guard.** The full lossy guard. Off: byte-identical. Both kernels in the float64 contract with planted
+  controls.
 - **Risks.** The model never saw a resolution change in depth: blur or a 2 x 2 grid at the late steps. Merged rows
   shift the stream's statistics and may need an RMS-preserving merge.
 
@@ -281,9 +293,12 @@ diagnostic and close as a measured negative if it fails.
   blocks, else record the numbers and close.
 - `tf-h3-image coarse=A:B:STEPS`: pool and scatter-add kernels in the float64 kernel contract with planted controls;
   without `coarse`, the final latent is byte-identical.
-- On the shared corpus at 4096 on this M5 Ultra: transformer at least 1.5x faster than card 34's six steps; LPIPS
-  median at most 0.08 and worst at most 0.15 against the default; no newly wrong OCR text; a table per A, B, STEPS
-  and size in the recipe.
+- On the shared corpus at 4096 on this M5 Ultra: the lower 95% bound of the paired end-to-end speed-up against card
+  34 at least 1.5x (the transformer alone at 1.5x gives only about 1.39x end to end); a table per A, B, STEPS and
+  size in the recipe.
+- The complete lossy guard, every check required: LPIPS median at most 0.08 and worst at most 0.15, PSNR median at
+  least 30 dB, no newly wrong OCR text, object count or spatial relation, and teacher-forced velocity cosine at least
+  0.999 at all six heads. A setting that passes LPIPS and OCR but fails any other check is rejected.
 
 **2. MiniMax-H3-Image: exact shape-specific products, the SwiGLU store and a dense attention path** (`exact-kernels`)
 
