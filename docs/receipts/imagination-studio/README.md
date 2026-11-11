@@ -1,6 +1,6 @@
 # Imagination Studio on the M5 Ultra: install and MiniMax-H3-Image report
 
-Taken on 11 November 2026 on a Mac17,15 (Apple M5 Ultra, 256 GiB, macOS 27.0) in the `agents` account, from
+Taken on 11 November 2026 on a Mac17,15 (Apple M5 Ultra, 256 GiB, macOS 27.0) in an ordinary user account, from
 [drowzeys/Imagination-Studio-by-keys-Wasserman](https://github.com/drowzeys/Imagination-Studio-by-keys-Wasserman)
 (Apache-2.0) 4.4.1 at `ef88a0747686212749768b72d6a796932e8e583d`. No weights were fetched and no model was loaded.
 
@@ -32,8 +32,9 @@ graphics, Finish, the native FastH3 engine, ComfyUI, sudo and system services.
 `bash scripts/app.sh` (what the app bundle runs) serves **http://127.0.0.1:7870**, bound to loopback only:
 `GET /` returned 200 (240 KB) and `/api/state` reported version 4.4.1 with one picture model listed (`qwen`, without
 weights). The page rendered in Chromium with no script errors: Home, the engine list and "Ready. Nothing rolling." The
-app bundle's own launcher could not start the server from a non-GUI shell (`nohup: can't detach from console`); a
-double-click in this account's Aqua session runs the same `scripts/app.sh`. Automatic source updates were turned off
+app bundle's own launcher could not start the server from a non-GUI shell (`nohup: can't detach from console`), so
+only the direct `scripts/app.sh` start was verified; a double-click in this account's Aqua session, which runs the
+same script, was not tried. Automatic source updates were turned off
 through `POST /api/updates/settings {"automatic": false}` so the clone stays at the reported commit. The server was
 stopped after the check.
 
@@ -65,7 +66,7 @@ A new picture model touches, at minimum (FLUX3-K and MOSS-Image are the template
 
 | Area | Files |
 | --- | --- |
-| Registry and queue | `app/server.py` (`IMAGE_MODELS`, `image_models()`, `image_model_env()`, `MAC_COMFY_PEAK_GB`), `app/picture_edit.py`, `app/nodes.py`, `app/revise.py`, `app/director.py`, `app/agents.py`, `mcp/studio-mcp.py` |
+| Registry and queue | `app/server.py` (`IMAGE_MODELS`, `image_models()`, `image_model_env()`, `MAC_COMFY_PEAK_GB`), `app/model_metadata.py` (model to backend, engine and layout), `app/picture_edit.py`, `app/nodes.py`, `app/revise.py`, `app/director.py`, `app/agents.py`, `mcp/studio-mcp.py` |
 | Catalog and install | `app/model_catalog.json`, `app/model_catalog.py`, `app/model_measurements.json`, `app/discover.py`, `app/installs.py`, `oneshot-setup.sh`, `oneshot-setup-cuda.sh`, `scripts/install-checklist.sh`, `scripts/setup-comfy.sh` or a new `scripts/setup-<model>.sh` |
 | Render | `scripts/image.sh`, `scripts/edit.sh`, a renderer (`<model>_generate.py`) or `spark/spark_generate.py` / `spark/spark_edit.py` workflows, `spark/progress_file.py`, `mac/comfy_files.py` |
 | Page | `app/static/index.html`, `nodes.js`, `edit.js`, `revise.js`, `engines.js`, `home.js`, `settings.js` |
@@ -78,8 +79,9 @@ A new picture model touches, at minimum (FLUX3-K and MOSS-Image are the template
 [#243](https://github.com/drowzeys/Imagination-Studio-by-keys-Wasserman/issues/243) (open, no comments, no linked
 PR) asks for MiniMax-H3-Image in "Images only" and "Edit a picture", through ComfyUI on DGX Spark workers: the four
 Comfy-Org int8 repack files (about 57 GB), ComfyUI with
-[Comfy-Org/ComfyUI#17655](https://github.com/Comfy-Org/ComfyUI/pull/17655) (merged as `ede4e5fe8`, after the latest
-tag v0.44.0), a 4 MP default with a 16 MP option. The Studio has no H3-Image code yet.
+[Comfy-Org/ComfyUI#17655](https://github.com/Comfy-Org/ComfyUI/pull/17655) (merged as `ede4e5fe8`, first released
+in [v0.45.0](https://github.com/Comfy-Org/ComfyUI/releases/tag/v0.45.0) on 10 November), a 4 MP default with a 16 MP
+option. The Studio has no H3-Image code yet.
 
 On a Mac there are two routes:
 
@@ -94,10 +96,13 @@ On a Mac there are two routes:
    (`pdd_config.json`), plus a new VAE (CNN encoder, 2D ViT decoder). Its text encoder is H3's Qwen3-VL 32B, which a
    video install already holds.
 
-The BF16 weights at `/Users/agents/models/MiniMax-H3-Image` (pipeline `MiniMaxH3ImagePipeline`; DiT 66.3 GB, text
-encoder 66.7 GB, VAE 2.3 GB, about 135 GB) were 17 GB in, mid-download, at the time of this report; nothing here read
-them. In BF16 the model needs about 135 GB resident, so it needs a 192 GB+ Mac or a quantized encoder and DiT; the int8
-repack (about 57 GB) fits the Studio's 96 GB Mac floor only as the sole loaded model.
+The BF16 weights at `$MODEL_ROOT/MiniMax-H3-Image` (pipeline `MiniMaxH3ImagePipeline`) total about 135 GB on disk by
+the download manifest: DiT 66.3 GB, text encoder 66.7 GB, VAE 2.3 GB. They were 17 GB in, mid-download, at the time of
+this report; nothing here read or loaded them.
+
+Memory was not measured. A tentative estimate from file sizes alone: BF16 would hold about 135 GB of weights before
+activations and workspace, which points to a 192 GB+ Mac; the int8 repack (about 57 GB of files) might fit the
+Studio's 96 GB Mac floor as the sole loaded model. Mac fit is unverified for both.
 
 ## (e) Contribution rules
 
