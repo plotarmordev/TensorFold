@@ -171,19 +171,22 @@ fn rotateBlock(x: []f64, cols: usize, base_r: usize, base_c: usize, axis: usize,
     }
 }
 
-/// Decode W[K,N] as diag(suh) @ H_K @ W_q @ H_N @ diag(svh); scratch holds 2*K*N FP64 values.
+/// Decode W[K,N] as diag(suh) H_K W_q H_N diag(svh); scratch is 2*K*N FP64, only its back half used.
 pub fn dequantize(w: Width, codebook: Codebook, trellis: []const i16, tiles_k: usize, tiles_n: usize, suh: []const f16, svh: []const f16, out: []f64, scratch: []f64) void {
     const k = tiles_k * 16;
     const n = tiles_n * 16;
-    const wq_f64 = scratch[0 .. k * n];
     const wq_f16: []f16 = @as([*]f16, @ptrCast(@alignCast(scratch[k * n ..].ptr)))[0 .. k * n];
     unpack(w, codebook, trellis, tiles_k, tiles_n, wq_f16);
-    for (wq_f64, wq_f16) |*d, s| d.* = @floatCast(s);
-    rotate(wq_f64, k, n, 0);
-    for (wq_f64, 0..) |*v, i| v.* *= @floatCast(suh[i / n]);
-    rotate(wq_f64, k, n, 1);
-    for (wq_f64, 0..) |*v, i| v.* *= @floatCast(svh[i % n]);
-    @memcpy(out, wq_f64);
+    for (out, wq_f16) |*d, s| d.* = @floatCast(s);
+    restore(out, k, n, suh, svh);
+}
+
+/// Rotated-domain W_q [K,N] in place to diag(suh) @ H_K @ W_q @ H_N @ diag(svh); encoders share it to match exactly.
+pub fn restore(wq: []f64, k: usize, n: usize, suh: []const f16, svh: []const f16) void {
+    rotate(wq, k, n, 0);
+    for (wq, 0..) |*v, i| v.* *= @floatCast(suh[i / n]);
+    rotate(wq, k, n, 1);
+    for (wq, 0..) |*v, i| v.* *= @floatCast(svh[i % n]);
 }
 
 // Oracle vectors come from tools/exl3_fixture.py and include one public-checkpoint block.
