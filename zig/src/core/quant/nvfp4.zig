@@ -41,6 +41,32 @@ pub fn reference(h: Host, out: []f64) error{UnexpectedTensor}!void {
     };
 }
 
+/// ModelOpt NVFP4 round trip of `w` [N,K]: global amax/(6*448), e4m3 scale per 16 inputs, e2m1 ties to even.
+pub fn quantize(w: []const f64, k: usize, out: []f64) void {
+    std.debug.assert(k % group == 0 and w.len % k == 0 and out.len == w.len);
+    var amax: f64 = 0;
+    for (w) |x| amax = @max(amax, @abs(x));
+    const global = amax / (6 * 448);
+    for (0..w.len / group) |b| {
+        const in = w[b * group ..][0..group];
+        var block_max: f64 = 0;
+        for (in) |x| block_max = @max(block_max, @abs(x));
+        const step = if (global > 0) fp8.toE4m3(block_max / (6 * global)) * global else 0;
+        for (in, out[b * group ..][0..group]) |x, *q| q.* = if (step > 0) std.math.copysign(nearestE2m1(@abs(x) / step), x) * step else 0;
+    }
+}
+
+/// The e2m1 magnitude nearest m (at most 6 after saturation); a midpoint takes the even code.
+fn nearestE2m1(m: f64) f64 {
+    var best: u8 = 0;
+    for (1..8) |i| {
+        const d = @abs(e2m1(@intCast(i)) - m);
+        const bd = @abs(e2m1(best) - m);
+        if (d < bd or (d == bd and i % 2 == 0)) best = @intCast(i);
+    }
+    return e2m1(best);
+}
+
 test "an NVFP4 stack against hand-decoded values" {
     // two experts of [1, 32]: two scale groups a row; byte 0 holds columns 0 (low) and 1 (high)
     var codes: [2 * 16]u8 = @splat(0);
@@ -74,4 +100,26 @@ test "a reference refuses mismatched expert stacks" {
     };
     var out: [32]f64 = undefined;
     try std.testing.expectError(error.UnexpectedTensor, reference(h, &out));
+}
+
+test "quantize rounds midpoints to the even e2m1 code" {
+    // block 0 holds the amax, so global = 1 and block 1's scale is exactly 1
+    var w: [32]f64 = @splat(0);
+    w[0] = 2688;
+    const ties = [_]f64{ 6, 0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5, -0.75, -5 };
+    const want = [_]f64{ 6, 0, 1, 1, 2, 2, 4, 4, -1, -4 };
+    @memcpy(w[16..][0..ties.len], &ties);
+    var out: [32]f64 = undefined;
+    quantize(&w, 32, &out);
+    try std.testing.expectEqualSlices(f64, &want, out[16..][0..want.len]);
+}
+
+test "quantize keeps a small block's precision beside a large tensor amax" {
+    // global = 1: block 1's scale is exact at 2^-5; amax / 6 as global would flush it below e4m3's smallest subnormal
+    var w: [32]f64 = undefined;
+    @memset(w[0..16], 2688);
+    @memset(w[16..], 0.1875);
+    var out: [32]f64 = undefined;
+    quantize(&w, 32, &out);
+    try std.testing.expectEqualSlices(f64, &w, &out);
 }
