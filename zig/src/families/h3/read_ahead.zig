@@ -1,7 +1,4 @@
 //! Weight bytes read into the page cache before the GPU or a loader touches their mapping.
-//!
-//! A cold mapping fills one fault at a time: 0.06 GB/s on an M5 Ultra's SSD, where 16 readers' 8 MiB preads take
-//! 3-5 GB/s. Core's `checkpoint_prefetch` does the same for core checkpoints on Linux; the H3 tools map their own files.
 const std = @import("std");
 
 /// A byte range of one file.
@@ -62,8 +59,7 @@ fn close(fd: std.c.fd_t) void {
     _ = std.c.close(fd);
 }
 
-/// Every byte of `spans`, by up to 16 readers in 8 MiB pieces: the bytes read, or an error when a file is missing or
-/// shorter than a span.
+/// Read every span with up to 16 readers; missing or short files fail.
 pub fn read(spans: []const Span) !usize {
     if (spans.len == 0) return 0;
     var w: Work = .{ .spans = spans };
