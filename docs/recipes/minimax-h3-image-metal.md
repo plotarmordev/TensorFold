@@ -1,10 +1,11 @@
 # MiniMax-H3-Image on a Mac: what nobody does yet
 
-MiniMax-H3-Image's transformer is MiniMax H3's without audio: 50 single-stream blocks of 5,376, 56 heads of 128, a
-SwiGLU of 14,336, about 17.3 B bf16 parameters. One row covers 32 x 32 pixels (the VAE's 16, then a 2 x 2 patch), so a
-2048 x 2048 canvas is 4,096 picture rows and 4096 x 4096 is 16,384. It is distilled to six Euler steps with no
-guidance, each with its own output head. Its text encoder is Qwen3-VL's text model cut at layer 50; its decoder is a
-24-block ViT run over overlapping 256-pixel tiles.
+MiniMax-H3-Image's transformer is MiniMax H3's without audio: 50 single-stream blocks of 5,376 with attention 7,168
+wide (56 heads of 128), a SwiGLU of 14,336. The full DiT is 33.1 B bf16 parameters: 19.3 B of per-row projections,
+13.0 B of per-block AdaLN tables that depend only on the step, and a 0.8 B text refiner. One row covers 32 x 32
+pixels (the VAE's 16, then a 2 x 2 patch), so a 2048 x 2048 canvas is 4,096 picture rows and 4096 x 4096 is 16,384.
+It is distilled to six Euler steps with no guidance, each with its own output head. Its text encoder is Qwen3-VL's
+text model cut at layer 50; its decoder is a 24-block ViT run over overlapping 256-pixel tiles.
 
 This page lists what every other way of running it already does for speed, the ideas none of them ship for it on
 Apple silicon, and the one this fork has started. The ranking is FAB's (`claude-fable-5-2`), run blind on the facts
@@ -13,12 +14,14 @@ tools and their gates.
 
 ## Cost per step
 
-Per block, N rows: projections 2 N x 346.8 M FLOP, attention about 4 N^2 x 5,376. Over 50 blocks:
+Per block, N rows: projections 2 N x 385.35 M FLOP (QKV 5,376 x 21,504, output 7,168 x 5,376, SwiGLU 5,376 x 28,672
+and 14,336 x 5,376), attention 4 N^2 x 7,168, from `transformer/config.json` and the safetensors shapes. Over 50
+blocks, without the text rows:
 
 | Canvas | Rows | One step | Attention's share |
 |---|---|---|---|
-| 2048 x 2048 | 4,096 | 160 TFLOP | 11% |
-| 4096 x 4096 | 16,384 | 857 TFLOP | 34% |
+| 2048 x 2048 | 4,096 | 182 TFLOP | 13% |
+| 4096 x 4096 | 16,384 | 1,016 TFLOP | 38% |
 
 The decoder is about 1.6 s at 2048 x 2048 on an M3 Ultra (121 tiles of 13.4 ms) and about 5.9 s at 4096 x 4096 (441
 tiles): small beside six transformer steps at that size.
@@ -28,7 +31,7 @@ tiles): small beside six transformer steps at that size.
 - **The maintainer's TensorFold port.** bf16 weights read in place, M5 tensor-unit GEMMs with fp32 sums, dense tiled
   attention, a float64-gated kernel contract. Five separate tools: prompt, vision, edit encoder, transformer, decoder.
 - **vLLM-Omni** ([recipe](https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3-Image)). Sequence and tensor parallel layouts,
-  layer offload for small GPUs, CUDA graphs, a request-level conditioning cache. CUDA only.
+  layer offload for small GPUs, CUDA graphs, a request-level conditioning cache. NVIDIA and AMD Instinct GPUs.
 - **SGLang diffusion** ([cookbook](https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3-Image)). AdaLN tables
   precomputed and their weights freed, CUDA graphs, regional `torch.compile`, fused QK-norm and rotary, batched decoder
   tiles, a conditioning cache, layerwise offload, optional FP8 weights. CUDA only.
@@ -54,9 +57,9 @@ and each step's head is chosen by step, not size. What the positions cannot hide
 what the proof measures. A 2048 canvas is the model's own default size, so a 4096 run's early steps sit at a size the
 model knows.
 
-- **Gain.** A half-side step costs 1/5.35 of a 4096 step (attention falls 16x). Six steps with m = 2, 3, 4 low:
-  1.37x, 1.69x, 2.18x faster at 4096; 1.35x, 1.63x, 2.06x at 2048 (half side 1024). Lifting twice, 2 steps at a
-  quarter side, 2 at half, 2 at full, gives 2.44x at 4096.
+- **Gain.** A half-side step costs 1/5.59 of a 4096 step (attention falls 16x). Six steps with m = 2, 3, 4 low:
+  1.38x, 1.70x, 2.21x faster at 4096; 1.35x, 1.63x, 2.07x at 2048 (half side 1024). Lifting twice, 2 steps at a
+  quarter side, 2 at half, 2 at full, gives 2.46x at 4096.
 - **Risk.** Layout is decided at a quarter of the rows. The late heads were distilled expecting fine detail already
   present at their sigma: soft micro-texture, broken small text, or seams at 2 x 2 blocks.
 - **Proof.** 32 prompts picked before the run, two seeds each, at 4096 x 4096 on one M5: 8 each of small typography,
@@ -73,9 +76,9 @@ reference rows stay dense. Unlike FastH3's routing nothing is dropped and there 
 when the four keys are equal. PixArt-Sigma trains a similar key compression in; nobody applies one, training-free, to
 H3-Image.
 
-- **Gain.** At 16,384 rows each query sees 1,024 + 15,360 / 4 = 4,864 keys: attention falls 3.37x (288.6 to 85.7
-  TFLOP a step), a step 1.31x. Stacked on the m = 4 cascade's two full steps: 1,948 TFLOP against 5,142, 2.64x. At
-  2048 attention is 11% of a step, so it stays off below 8,192 rows.
+- **Gain.** At 16,384 rows each query sees 1,024 + 15,360 / 4 = 4,864 keys: attention falls 3.37x (385 to 114
+  TFLOP a step), a step 1.36x. Stacked on the m = 4 cascade's two full steps: 2,219 TFLOP against 6,097, 2.75x. At
+  2048 attention is 13% of a step, so it stays off below 8,192 rows.
 - **Risk.** Exact long-range copies blur: repeated patterns, a glyph matching another far away. QK-norm bounds the
   logits, so the error is bounded by the spread of keys inside a pooled block.
 - **Proof.** The 32 prompts, same trajectory as dense: per-block attention output relative L2 at most 1e-2 on dumped
@@ -84,11 +87,12 @@ H3-Image.
 
 ### 3. Splitting each product's rows between the GPU and the CPU's SME2 units
 
-The linear layers are 66-89% of a step and row-independent. Unified memory lets the CPU's matrix units read the same
+The linear layers are 62-87% of a step and row-independent. Unified memory lets the CPU's matrix units read the same
 bf16 weights and activations with no copy, so each product's rows split in the measured throughput ratio. Every
 other runner leaves the CPU idle.
 
-- **Gain.** 1.07-1.09x at 4096 if SME2 sustains 1.5-2 TFLOP/s beside about 15 on the GPU [INFERENCE: unmeasured].
+- **Gain.** 1.05-1.07x at 4096 if SME2 sustains 1.5-2 TFLOP/s beside about 18 on the GPU (h3-image-mlx's rate)
+  [INFERENCE: unmeasured].
 - **Risk.** None beyond fp32 summation order; shared memory bandwidth and heat may eat the gain.
 - **Proof.** A 5,376 x 14,336 product at 16,384 rows split against the GPU alone, at least 1.07x; PSNR at least 50
   dB against GPU-only pictures; no slowdown over three back-to-back 4096 runs.
@@ -97,7 +101,7 @@ other runner leaves the CPU idle.
 
 - **FastH3's routed attention in the last steps.** The video engines already ship it, and it drops tiles where
   pooled far-field keys keep them.
-- **The decoder in larger tiles on the tensor units.** About 2% of a 4096 run.
+- **The decoder in larger tiles on the tensor units.** About 1.7% of a 4096 run.
 - **Caching the prompt's rows, or keeping its encoder apart from the transformer.** SGLang and vLLM-Omni cache
   conditioning; h3-image-mlx and the maintainer's tools run the encoder and the transformer as separate processes.
 - **Reusing a step's residuals or an edit reference's rows across steps.** Six steps, each with its own head, and

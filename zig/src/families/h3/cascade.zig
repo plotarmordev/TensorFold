@@ -40,8 +40,7 @@ fn taps(k: usize, len: usize) [2]usize {
 }
 const weights = [2]f32{ 0.75, 0.25 };
 
-/// Half step `x` at sigma `from`, velocity `v` (noise to data), lifted to sigma `to` with the seed's re-pooled noise.
-/// `out` may not overlap `x`, `v` or the noise.
+/// Half step `x` at sigma `from`, velocity `v` (noise to data), lifted to sigma `to`; `out` overlaps no input.
 pub fn lift(x: []const f32, v: []const f32, from: f32, to: f32, full_noise: []const f32, full: Grid, noalias out: []f32) !void {
     const low = try half(full);
     const n = try planes(full_noise.len, full);
