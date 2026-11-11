@@ -280,7 +280,7 @@ const Job = struct {
 /// Encode one [K,N] matrix with a full [K,K] calibration Hessian. The exact-error fallback is tensor-wide.
 /// `reconstructed` comes from the chosen states, not from decoding the packed trellis.
 pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usize, n: usize, width: exl3.Width) !Result {
-    if (k % 128 != 0 or n % 128 != 0 or weight.len != k * n or hessian.len != k * k or width.halves < 4 or width.halves > 8) return error.BadShape;
+    if (k == 0 or n == 0 or k % 128 != 0 or n % 128 != 0 or weight.len != k * n or hessian.len != k * k or width.halves < 4 or width.halves > 8) return error.BadShape;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -296,24 +296,17 @@ pub fn encode(gpa: Allocator, weight: []const f64, hessian: []const f64, k: usiz
     rotateFast(rotated, k, n, 0);
     const svh = try gpa.alloc(f16, n);
     errdefer gpa.free(svh);
-    const scales = try a.alloc(f64, n);
-    var live_sum: f64 = 0;
-    var live: usize = 0;
-    for (scales, 0..) |*scale, j| {
+    for (svh, 0..) |*s, j| {
         var sum: f64 = 0;
         for (0..k) |i| sum += rotated[i * n + j] * rotated[i * n + j];
-        scale.* = @sqrt(sum / @as(f64, @floatFromInt(k))) / 1.24371088;
-        if (scale.* > 1e-12) {
-            live_sum += scale.*;
-            live += 1;
+        // an all-zero output decodes to exactly zero; any other scale would leak codebook noise
+        // through the output Hadamard into every live column of its block
+        if (sum == 0) {
+            s.* = 0;
+            continue;
         }
-    }
-    // a pruned (all-zero) output keeps a tiny scale: at a live column's scale its codebook noise
-    // would leak through the output Hadamard into every live column of its block
-    const dead = if (live == 0) 1.0 else 1e-3 * live_sum / @as(f64, @floatFromInt(live));
-    for (svh, scales, 0..) |*s, scale, j| {
-        // fp16 must not round the scale to zero: the targets would divide by it
-        s.* = @floatCast(@max(if (scale > 1e-12) scale else dead, std.math.floatTrueMin(f16)));
+        // fp16 must not round a live scale to zero: the targets divide by it
+        s.* = @floatCast(@max(@sqrt(sum / @as(f64, @floatFromInt(k))) / 1.24371088, std.math.floatTrueMin(f16)));
         for (0..k) |i| rotated[i * n + j] /= @as(f64, s.*);
     }
     rotateFast(rotated, k, n, 1);
@@ -518,4 +511,19 @@ test "small tensor with a tridiagonal Hessian" {
         }
     }
     try expectWidths(&w, &h, k, n, 1);
+}
+
+test "an all-zero matrix decodes to exactly zero at every width" {
+    const k = 128;
+    const n = 128;
+    const w: [k * n]f64 = @splat(0);
+    var h: [k * k]f64 = @splat(0);
+    for (0..k) |i| h[i * k + i] = 1;
+    for ([_]u16{ 4, 5, 6, 8 }) |halves| try std.testing.expectEqual(@as(f64, 0), try expectBitExact(&w, &h, k, n, halves));
+}
+
+test "an empty dimension is a bad shape" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(error.BadShape, encode(gpa, &.{}, &.{}, 0, 128, .{ .halves = 4 }));
+    try std.testing.expectError(error.BadShape, encode(gpa, &.{}, &.{}, 128, 0, .{ .halves = 4 }));
 }
