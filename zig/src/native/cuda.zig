@@ -539,7 +539,6 @@ test "CUDA host preserves prefill_step, first-before-draft and chunk-invariance 
     try std.testing.expect(!h.backend().chunk_invariant);
 }
 
-
 test "a cancel during a long prompt stops it, and the next request's reply is unchanged (#291)" {
     try @import("cuda_prompt_cancel_test.zig").check(Host, Host.serve);
 }
