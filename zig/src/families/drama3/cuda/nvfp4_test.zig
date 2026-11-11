@@ -1,5 +1,4 @@
-//! The CUDA loader's compact NVFP4 experts on the host: a held map's experts staged in slot order as stored, decoded
-//! from the packed blocks the kernels read and checked against the FP64 scalar reference. No CUDA context.
+//! Compact NVFP4 experts on the host, no CUDA context: staged as stored in held-slot order, decoded against FP64.
 const std = @import("std");
 const core = @import("core");
 const cuda = @import("cuda");
@@ -54,7 +53,53 @@ fn unpacked(blocks: []const u32, parts: usize, part: usize, k: usize, row: usize
     return .{ @intCast((word >> E.slot(h, ii % 4)) & 0xF), scale };
 }
 
-test "compact NVFP4 experts stage as stored in held-slot order and decode to the FP64 reference" {
+/// The served f32 arithmetic: a staged row's dot product (fp32 sums of bf16-exact terms) times its global scale.
+fn servedRow(blocks: []const u32, parts: usize, part: usize, k: usize, row: usize, x: []const f32, global: f32) f32 {
+    var sum: f32 = 0;
+    for (0..k) |i| {
+        const code, const scale = unpacked(blocks, parts, part, k, row, i);
+        sum = @mulAdd(f32, @floatCast(ref.fp4(code) * ref.fp8(scale)), x[i], sum);
+    }
+    return sum * global;
+}
+
+/// Round to nearest even bf16 by the integer trick the kernels' __float2bfloat16_rn performs.
+fn bf(x: f32) f32 {
+    const b: u32 = @bitCast(x);
+    return @bitCast((b +% 0x7fff +% ((b >> 16) & 1)) & 0xffff0000);
+}
+
+/// nvfp4_experts.cu's SwiGLU epilogue, stored as bf16: bf16(bf16(silu(bf16(g))) * bf16(u)).
+fn servedSwiglu(g: f32, u: f32) f32 {
+    const gv = bf(g);
+    return bf(bf(gv / (1 + @exp(-gv))) * bf(u));
+}
+
+/// The CUDA rounding contract in FP64, as drama3's FP8 path (d3_swiglu) and bf16 torch round: silu rounds to bf16.
+fn contractSwiglu(gate: f64, up: f64) f64 {
+    const g = ref.roundBf16(gate);
+    return ref.roundBf16(ref.roundBf16(g / (1 + @exp(-g))) * ref.roundBf16(up));
+}
+
+fn bits(v: f64) u16 {
+    return @truncate(@as(u32, @bitCast(@as(f32, @floatCast(v)))) >> 16);
+}
+
+/// One bf16 step at |v|: the most an f32 sum's last bit can move a bf16-rounded result.
+fn ulp(v: f64) f64 {
+    return if (v == 0) 0x1p-133 else std.math.ldexp(@as(f64, 1), std.math.ilogb(@abs(v)) - 7);
+}
+
+test "SwiGLU rounds silu to bf16 before the up product: the served epilogue and the FP64 contract at a tie" {
+    try testing.expectEqual(@as(f32, -0.00335693359375), servedSwiglu(-4, 0.046875));
+    try testing.expectEqual(@as(f64, -0.00335693359375), contractSwiglu(-4, 0.046875));
+    // unrounded silu (Metal's reference) lands one bf16 step away: this case pins the rounding point
+    try testing.expectEqual(@as(f64, -0.0033721923828125), ref.swiglu(-4, 0.046875));
+    try testing.expectEqual(contractSwiglu(1.0078125, -3), servedSwiglu(1.0078125, -3));
+    try testing.expectEqual(contractSwiglu(-0.5, 0.0009765625), servedSwiglu(-0.5, 0.0009765625));
+}
+
+test "compact NVFP4 experts stage as stored in held-slot order and decode gate-up, SwiGLU, down and combine to FP64" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -75,38 +120,48 @@ test "compact NVFP4 experts stage as stored in held-slot order and decode to the
     var prng = std.Random.DefaultPrng.init(5);
     var x: [cfg.hidden]u16 = undefined;
     for (&x) |*v| v.* = 0x3c00 + prng.random().uintLessThan(u16, 0x400) + (@as(u16, prng.random().int(u1)) << 15);
-    const slots = held.slots(0);
+    var xf: [cfg.hidden]f32 = undefined;
+    for (&xf, x) |*f, b| f.* = @floatCast(ref.fromBf16(b));
+    const slots = wts.compactSlots(&held, 0).?;
     const per_up = stage.up.len / held_ids.len;
     const per_down = stage.down.len / held_ids.len;
-    // every original id the router can pick reaches the slot holding its own weights; the rest are masked
+    const route = [held_ids.len]f32{ 0.5, 0.3125, 0.1875 };
+    var want_moe: [cfg.hidden]f64 = @splat(0);
+    var got_moe: [cfg.hidden]f32 = @splat(0);
     for (slots, 0..) |slot, id| {
-        if (std.mem.indexOfScalar(u8, &held_ids, @intCast(id)) == null) {
+        // an original id the router can pick reaches the slot holding its own weights; the rest are masked
+        const k_id = std.mem.indexOfScalar(u8, &held_ids, @intCast(id)) orelse {
             try testing.expectEqual(@as(i32, -1), slot);
             continue;
-        }
+        };
+        try testing.expectEqual(@as(i32, @intCast(k_id)), slot);
         const s: usize = @intCast(slot);
-        for (projections, shape, 0..) |p, dims, j| {
+        var stored: [3]struct { w: []const u8, sc: []const u8, global: f32 } = undefined;
+        for (projections, &stored, 0..) |p, *t, j| {
             var nb: [3][128]u8 = undefined;
             const base = "model.language_model.layers.0.mlp.experts.{d}.{s}.weight";
-            const w = try sh.get(try std.fmt.bufPrint(&nb[0], base, .{ id, p }));
-            const sc = try sh.get(try std.fmt.bufPrint(&nb[1], base ++ "_scale", .{ id, p }));
             const g = try sh.get(try std.fmt.bufPrint(&nb[2], base ++ "_scale_2", .{ id, p }));
-            const global: f32 = @bitCast(std.mem.readInt(u32, g.bytes[0..4], .little));
-            const up = j < 2;
-            const blocks = if (up) stage.up[s * per_up ..][0..per_up] else stage.down[s * per_down ..][0..per_down];
-            const staged_global = if (up) stage.up_scale[2 * s + j] else stage.down_scale[s];
-            try testing.expectEqual(global, staged_global);
-            const n, const k = dims;
-            for (0..n) |row| {
-                var sum: f64 = 0;
-                for (0..k) |i| {
-                    const code, const scale = unpacked(blocks, if (up) 2 else 1, if (up) j else 0, k, row, i);
-                    sum += ref.fp4(code) * ref.fp8(scale) * ref.fromBf16(x[i]);
-                }
-                try testing.expectEqual(ref.projection(w.bytes, sc.bytes, global, row, k, x[0..k]), sum * staged_global);
-            }
+            t.* = .{ .w = (try sh.get(try std.fmt.bufPrint(&nb[0], base, .{ id, p }))).bytes, .sc = (try sh.get(try std.fmt.bufPrint(&nb[1], base ++ "_scale", .{ id, p }))).bytes, .global = @bitCast(std.mem.readInt(u32, g.bytes[0..4], .little)) };
+            try testing.expectEqual(t.global, if (j < 2) stage.up_scale[2 * s + j] else stage.down_scale[s]);
+        }
+        const up = stage.up[s * per_up ..][0..per_up];
+        const down = stage.down[s * per_down ..][0..per_down];
+        var want_act: [cfg.expert_width]u16 = undefined;
+        var got_act: [cfg.expert_width]f32 = undefined;
+        for (0..cfg.expert_width) |row| {
+            const want = contractSwiglu(ref.projection(stored[0].w, stored[0].sc, stored[0].global, row, cfg.hidden, &x), ref.projection(stored[1].w, stored[1].sc, stored[1].global, row, cfg.hidden, &x));
+            got_act[row] = servedSwiglu(servedRow(up, 2, 0, cfg.hidden, row, &xf, stored[0].global), servedRow(up, 2, 1, cfg.hidden, row, &xf, stored[1].global));
+            // past gate -88 the served expf(-g) overflows and silu is 0 where FP64 keeps ~1e-37
+            try testing.expect(@abs(got_act[row] - want) <= ulp(want) + 0x1p-100);
+            want_act[row] = bits(want);
+        }
+        for (0..cfg.hidden) |row| {
+            want_moe[row] += route[k_id] * ref.projection(stored[2].w, stored[2].sc, stored[2].global, row, cfg.expert_width, &want_act);
+            got_moe[row] = @mulAdd(f32, route[k_id], servedRow(down, 1, 0, cfg.expert_width, row, &got_act, stored[2].global), got_moe[row]);
         }
     }
+    // d3_moe_combine rounds the weighted sum of the fp32 down rows once; an activation's last-bit flip stays below 1%
+    for (want_moe, got_moe) |want, got| try testing.expect(@abs(bf(got) - ref.roundBf16(want)) <= ulp(want) + @abs(want) / 128);
 }
 
 test "a compact map over FP8 experts is refused; a full FP8 layer keeps the FP8 path" {
@@ -124,4 +179,13 @@ test "a compact map over FP8 experts is refused; a full FP8 layer keeps the FP8 
     try testing.expect(!try wts.nvfp4Layer(&sh, 1, &held));
     held.counts[1] = cfg.top_k;
     try testing.expectError(error.CompactFp8Experts, wts.nvfp4Layer(&sh, 1, &held));
+}
+
+test "an unpruned NVFP4 checkpoint keeps the original router in every layer, so it cannot pass as compact" {
+    const full = try quant.heldMetadata(null);
+    for (0..cfg.layers) |li| try testing.expectEqual(@as(?[cfg.experts]i32, null), wts.compactSlots(&full, li));
+    var pruned = full;
+    pruned.counts[7] = cfg.experts - 1;
+    try testing.expectEqual(@as(i32, -1), wts.compactSlots(&pruned, 7).?[cfg.experts - 1]);
+    try testing.expectEqual(@as(?[cfg.experts]i32, null), wts.compactSlots(&pruned, 6));
 }

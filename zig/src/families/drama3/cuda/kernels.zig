@@ -465,8 +465,7 @@ pub const Kernels = struct {
         try cuda.launch.launch(k.fp8a[pi][ei], .{ .grid = .{ .x = @intCast(grid) }, .block = .{ .x = 128 } }, s, &a);
     }
 
-    /// Routed NVFP4 experts on bf16 rows: token rows (`slots` pairs a row) to SwiGLU pair rows, then pair rows to
-    /// fp32 down rows; prompt tiles take the decode form's sums (runFact), so a row's down is the same at every size.
+    /// Routed NVFP4 experts on bf16 rows: SwiGLU pair rows, then fp32 down rows; prompts use runFact's decode sums.
     pub fn nvfp4Experts(k: *const Kernels, s: cuda.Stream, prompt: bool, x: u64, slots: usize, l: cuda.experts.Layer, p: cuda.grouped.Plan, gu: u64, down: u64, items: usize) !void {
         const e = if (k.nvfp4) |*n| n else return error.FormatNotLoaded;
         const up: cuda.experts.Rows = .{ .x = x, .stride = l.dims, .slots = slots };
