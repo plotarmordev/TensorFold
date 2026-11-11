@@ -62,3 +62,8 @@ pub const cuda = [_]CudaRecord{
     .{ .launch = .{ .name = "fp8_experts prompt down f32", .symbol = "_ZN14tf_fp8_experts24fp8_expert_prompt_kernelILi1ELi0ELi4ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi", .image = "fp8_experts", .threads = 128 }, .usage = .{ .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 } } },
     .{ .launch = .{ .name = "fp8_experts prompt down bf16", .symbol = "_ZN14tf_fp8_experts24fp8_expert_prompt_kernelILi1ELi3ELi4ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi", .image = "fp8_experts", .threads = 128 }, .usage = .{ .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 } } },
 };
+
+/// Launches waiting on their first nvcc receipt; qualification refuses them until it lands.
+pub const cuda_pending = [_]CudaRecord{
+    .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
+};
