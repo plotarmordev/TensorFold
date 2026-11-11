@@ -16,7 +16,7 @@ const usage =
     \\  out               grid I32 [3] (t, h, w in patches), rows BF16 [tokens, 5120] and deepstack BF16
     \\                    [3, tokens, 5120], for tf-h3-image-prompt --reference
     \\  selftest          a tiny synthetic Qwen3-VL tower with DeepStack against a float64 host reference, gated;
-    \\                    WORK_DIR (default under TMPDIR) holds its checkpoint while it runs
+    \\                    WORK_DIR (default under TMPDIR) holds a new folder with its checkpoint while it runs
     \\Exit 0: done or every gate passed; 1: a gate failed; 2: bad arguments or input.
     \\
 ;

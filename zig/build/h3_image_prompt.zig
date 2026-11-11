@@ -1,12 +1,19 @@
 //! MiniMax-H3-Image's prompt path: its host rules' tests, a host compile of tf-h3-image-prompt, and the Metal tool.
 const std = @import("std");
 
-/// `test-h3-image-prompt` (the rules, no GPU) and on macOS `compile-h3-image-prompt` (the tool, no shader compiled).
+/// `test-h3-image-prompt` (the rules and the selftests' scratch folder, no GPU) and on macOS `compile-h3-image-prompt`
+/// (the tool, no shader compiled).
 pub fn tests(b: *std.Build, target: std.Build.ResolvedTarget, test_step: *std.Build.Step) void {
     const root = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/picture_prompt_test.zig"), .target = target, .link_libc = true, .imports = &.{ .{ .name = "qwen_vl_rope", .module = rope(b, target) }, .{ .name = "picture", .module = picture(b, target) } } });
     const run = b.addRunArtifact(b.addTest(.{ .root_module = root }));
-    b.step("test-h3-image-prompt", "MiniMax-H3-Image's prompt rules: ids, tags, positions, rotary, Qwen copy sizes, configs").dependOn(&run.step);
+    const fixture = b.createModule(.{ .root_source_file = b.path("zig/src/core/checkpoint_fixture.zig"), .target = target });
+    const scratch = b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_files.zig"), .target = target, .imports = &.{.{ .name = "checkpoint_fixture", .module = fixture }} });
+    const scratch_run = b.addRunArtifact(b.addTest(.{ .root_module = scratch }));
+    const step = b.step("test-h3-image-prompt", "MiniMax-H3-Image's prompt rules: ids, tags, positions, rotary, Qwen copy sizes, configs; the selftests' scratch");
+    step.dependOn(&run.step);
+    step.dependOn(&scratch_run.step);
     test_step.dependOn(&run.step);
+    test_step.dependOn(&scratch_run.step);
     if (target.result.os.tag != .macos) return;
     const metal = b.createModule(.{ .root_source_file = b.path("zig/src/metal/metal.zig"), .target = target, .optimize = .Debug, .link_libc = true });
     metal.linkFramework("Metal", .{});

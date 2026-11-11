@@ -458,29 +458,39 @@ nothing; finite outputs keep their bytes.
 
 ## On an M5 Ultra with the release weights
 
-Text to image from the release folder (`text_encoder/`, `transformer/`, `vae/`; not the diffusers copies), seed 42, a
-24-token prompt, each tool its own process, nothing else large running. Two runs of all six stages back to back, cold:
-each tool maps its weights again, and the page cache does not hold both 62 GB checkpoints at once.
+Measured on TensorFold 1.2.6 at `37843fcfa` (`v1.2.6-249-g37843fcfa`, the #2810 merge), built with `-Dcpu=apple_m1
+-Doptimize=ReleaseFast`. Text to image from the release folder (`text_encoder/`, `transformer/`, `vae/`; not the
+diffusers copies), seed 42, a 24-token prompt, each tool its own process, nothing else large running. Two runs at each
+size, 2048 then 4096, back to back; each tool maps its weights again. Both runs at a size write byte-identical PNGs,
+kept outside the repo: `/Users/agents/projects/tensorfold/h3-image-runs/34/fox-2048-seed42.png` and
+`fox-4096-seed42.png` beside it.
 
-| Stage | 2048 x 2048 | 4096 x 4096 |
-|---|---|---|
-| Prompt path: map, 50 layers, refiner | 16.9-22.8 s (GPU 0.52 s) | 15.2 s (GPU 0.52 s) |
-| Transformer load | 18.7-26.0 s | 30.1 s |
-| Steps 1-6, wall | 1.83-1.90 s each; the first 2.78 s after a cold load | 9.84-10.43 s each; the first 12.08 s |
-| Steps 1-6, GPU | 1.82-1.93 s each | 9.82-10.38 s each |
-| Decoder: weights, 121 / 441 tiles, PNG | 5.5-9.1 s (tiles 1.2 s) | 19.4-27.3 s (tiles 4.3-5.4 s) |
-| Total a picture | 53-70 s | 134 s |
+Seconds; a step's wall time, then its GPU time in brackets.
 
-Peak memory: each tool's own footprint stays under 4.2 GB (the transformer at 4096: 4.1 GB; 2048: 1.3-1.4 GB). The
-weights are read in place, so the machine's used memory rises by about 48 GB for the transformer and 33 GB for the
-text encoder while each runs. Wall time outside the steps is mostly weights read from disk, and at 4096 the decoder
-spends 8-14 s past its tiles writing a 36 MB PNG.
+| Stage | 2048 run 1 | 2048 run 2 | 4096 run 1 | 4096 run 2 |
+|---|---|---|---|---|
+| Prompt path: map, 50 layers, refiner | 31.0 (0.52) | 17.6 (0.45) | 15.0 (0.47) | 14.8 (0.46) |
+| Transformer load | 26.4 | 23.3 | 17.3 | 12.5 |
+| Step 1 | 1.91 (1.88) | 1.89 (1.84) | 10.10 (9.89) | 10.01 (9.82) |
+| Step 2 | 1.85 (1.85) | 1.86 (1.85) | 9.89 (9.88) | 9.86 (9.85) |
+| Step 3 | 1.90 (1.90) | 1.85 (1.85) | 9.90 (9.89) | 9.87 (9.86) |
+| Step 4 | 1.91 (1.90) | 1.85 (1.85) | 9.89 (9.87) | 9.92 (9.90) |
+| Step 5 | 1.91 (1.90) | 1.84 (1.84) | 9.85 (9.84) | 9.89 (9.88) |
+| Step 6 | 1.91 (1.91) | 1.85 (1.85) | 9.87 (9.80) | 9.83 (9.81) |
+| Decoder: weights, 121 / 441 tiles, PNG | 10.7 (tiles 1.18) | 7.2 (tiles 1.18) | 71.2 (tiles 4.19) | 57.2 (tiles 4.13) |
+| Total a picture | 79.7 | 59.5 | 163.6 | 145.4 |
+
+Peak memory footprint per tool: prompt 0.33-0.36 GB, transformer 1.43 GB at 2048 and 4.40-4.43 GB at 4096, decoder
+1.31 GB and 1.52 GB. The weights are read in place, so the machine's used memory rises by about 48 GB for the
+transformer and 33 GB for the text encoder while each runs. Wall time outside the steps is mostly weights read from
+disk (the decoder's 4.3-8.2 s at 2048, 22.8-27.8 s at 4096), and at 4096 the decoder spends 28-36 s past its tiles
+writing a 38 MB PNG.
 
 The maintainer's gates that run here:
 
 | Gate | Result |
 |---|---|
-| `tf-h3-image-prompt selftest` | pass: kernels 99.97-100% bit-equal; whole runs 0.80-1.04 x the float32-sum host's distance |
+| `tf-h3-image-prompt selftest` | pass: kernels 99.97-100% bit-equal; whole runs 0.77-1.03 x the float32-sum host's relative error, 0.57-1.06 x its 1 - cosine |
 | `tf-h3-image-encoder selftest` | pass: layers 2.0e-7 to 8.6e-7 (bound 1e-5); tiled moments 1.6e-6 (bound 1e-4) |
 | `tf-h3-image-decoder selftest` | pass: 24 blocks relative 1.49e-2, worst 16.5 ULP; picture bytes at most 1 apart |
 | `tf-h3-image-contract` | pass: 31 of 31 kernels, 34 of 34 controls red, no limit problems |

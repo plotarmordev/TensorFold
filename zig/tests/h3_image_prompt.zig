@@ -30,7 +30,7 @@ const usage =
     \\  --anchors           with WIDTHxHEIGHT, one per reference: tf-h3-image-encoder's OUT_PREFIX (.grid.json and
     \\                      .anchors.f32, drawn with the same SEED and canvas), written as references and anchors
     \\  selftest          the GPU kernels on a tiny synthetic checkpoint against a float64 host reference, gated;
-    \\                    WORK_DIR (default under TMPDIR) holds the checkpoint while it runs
+    \\                    WORK_DIR (default under TMPDIR) holds a new folder with the checkpoint while it runs
     \\Exit 0: done or every gate passed; 1: a gate failed.
     \\
 ;
@@ -203,9 +203,10 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !u8 {
         @field(b, field) = try front.weight(try std.fmt.allocPrint(a, "token_refiner.blocks.{d}.{s}", .{ i, s[1] }), field, s[2]);
     };
     host_front.blocks = blocks;
-    const text_dir = try std.fs.path.join(a, &.{ dir, "text_encoder" });
-    const front_dir = try std.fs.path.join(a, &.{ dir, "transformer" });
-    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const scratch = try files.Scratch.init(io, a, dir);
+    defer scratch.deinit(io);
+    const text_dir = try std.fs.path.join(a, &.{ scratch.path, "text_encoder" });
+    const front_dir = try std.fs.path.join(a, &.{ scratch.path, "transformer" });
     try text.write(io, text_dir);
     try front.write(io, front_dir);
 
@@ -255,7 +256,7 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !u8 {
     const same = std.mem.eql(u16, enc, again) and std.mem.eql(u16, out, out_again);
     std.debug.print("encoded in {d:.3} s; again, byte for byte the same: {}\n", .{ enc_s, same });
     failed = failed or !same;
-    failed = !try withPicture(&runner, &text_w, io, a, rand, host, dir) or failed;
+    failed = !try withPicture(&runner, &text_w, io, a, rand, host, scratch.path) or failed;
     std.debug.print("{s}\n", .{if (failed) "FAIL" else "PASS every gate"});
     return @intFromBool(failed);
 }

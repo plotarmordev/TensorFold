@@ -131,10 +131,11 @@ pub fn run(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !u8 {
     const gpa = init.gpa;
     var prng = std.Random.DefaultPrng.init(0x5135);
     const rand = prng.random();
-    const text_dir = try std.fs.path.join(a, &.{ dir, "text_encoder" });
-    const model_dir = try std.fs.path.join(a, &.{ dir, "model" });
-    const mlx_dir = try std.fs.path.join(a, &.{ dir, "qwen35" });
-    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const scratch = try files.Scratch.init(io, a, dir);
+    defer scratch.deinit(io);
+    const text_dir = try std.fs.path.join(a, &.{ scratch.path, "text_encoder" });
+    const model_dir = try std.fs.path.join(a, &.{ scratch.path, "model" });
+    const mlx_dir = try std.fs.path.join(a, &.{ scratch.path, "qwen35" });
     try writeAt(io, a, &.{ text_dir, "config.json" }, config_json);
     try writeAt(io, a, &.{ model_dir, "processor", "preprocessor_config.json" }, processor_json);
     const c = try tool.settings(io, a, text_dir, model_dir);
