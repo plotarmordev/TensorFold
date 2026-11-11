@@ -138,8 +138,8 @@ scored under the same Hessian):
 | 3.0 | 0.962, 0.984, 0.948 | 0.941, 0.989, 0.932 | 0.997, 0.990, 0.997 |
 | 4.0 | 0.993, 0.911, 0.940 | 0.973, 0.916, 0.897 | 0.993, 0.99992, 0.992 |
 
-The calibration wins on all 36 matrices, but by little: 2-10% on gate and up, under 1% on down (expert 217 at 4.0
-bits by 0.01%). The search weights only the rotated Hessian's diagonal, with no LDLQ feedback of the
+The calibration wins on all 36 matrices, but by little: 0.7-10% on gate and up, under 1% on down (expert 217 at
+4.0 bits by 0.01%). The search weights only the rotated Hessian's diagonal, with no LDLQ feedback of the
 full H, and the Hadamard rotation evens that diagonal out within each 128-row block (a diagonal H becomes a constant
 one). With only 252-353 rows each Hessian also has rank at most that, against 2048 or 512 inputs.
 
