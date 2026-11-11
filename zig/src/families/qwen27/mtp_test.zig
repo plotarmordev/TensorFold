@@ -117,9 +117,9 @@ test "Ornith MTP drafts: once a step on the target's rows, its greedy drafts mat
         // mlx-lm's greedy reply teacher-forced, so both sides draft from the same tokens
         try s.decodeChunk(seq[0..prompt], true);
         for (0..steps) |k| {
-            const got = if (k == 0) try drafter.step(0, seq[1 .. prompt + 1]) else blk: {
+            const got = if (k == 0) try drafter.step(0, 0, seq[1 .. prompt + 1]) else blk: {
                 try s.step(seq[prompt + k - 1]);
-                break :blk try drafter.step(0, seq[prompt + k ..][0..1]);
+                break :blk try drafter.step(0, 0, seq[prompt + k ..][0..1]);
             };
             const i = (p * steps + k) * candidates;
             // every draft is one of the reference's top picks, near its best: the 4-bit MoE target's rows differ
@@ -130,7 +130,7 @@ test "Ornith MTP drafts: once a step on the target's rows, its greedy drafts mat
         }
         first += len;
     }
-    try std.testing.expectError(error.TapsDiffer, drafter.step(0, ids[ids.len - 1 ..])); // no target pass since the last
-    try std.testing.expectError(error.RoundNotReady, drafter.step(runner.slots, ids[ids.len - 1 ..]));
+    try std.testing.expectError(error.TapsDiffer, drafter.step(0, 1, ids[ids.len - 1 ..])); // past the one tapped row
+    try std.testing.expectError(error.RoundNotReady, drafter.step(runner.slots, 0, ids[ids.len - 1 ..]));
     try std.testing.expect(same * 100 >= steps * lengths.len * 93); // 1,912 of 2,048 seen
 }
