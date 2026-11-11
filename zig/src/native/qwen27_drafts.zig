@@ -1,5 +1,5 @@
 //! The 27B lane backend's drafts: each drafting slot's tree, up to eight in one drafter pass, or the MTP layer's one
-//! draft for a lone stream; and the held trees.
+//! draft a drafting stream's round, lone or shared; and the held trees.
 const std = @import("std");
 const mtl = @import("metal");
 const tf = @import("tensorfold");
@@ -139,7 +139,7 @@ fn mtpDrafts(b: *Metal, d: *q.mtp.Drafter, requests: []const be.DraftRequest) !v
         if (r.rows == null) try promptEnd(b, d, slot, r);
     }
     try keepEarly(b, requests);
-    if (b.round != null) return; // a window without a request: its cache would trail its rows
+    if (b.round != null) return; // a window it could not keep: its cache would trail its rows
     for (requests) |r| {
         const slot = try b.slotFor(r.stream);
         const end = b.runner.offsets[slot];
@@ -148,15 +148,20 @@ fn mtpDrafts(b: *Metal, d: *q.mtp.Drafter, requests: []const be.DraftRequest) !v
     }
 }
 
-/// A lone round settles; a shared one keeps every window's rows once each has its request (the engine asks for all
-/// of them in one batch), and the engine's keep then finds it done.
+/// A lone round settles; a shared one keeps every window's rows once it knows them all (the engine asks for every
+/// drafting stream's in one batch; a plain stream's one-row window keeps its row), and the engine's keep then finds it
+/// done.
 fn keepEarly(b: *Metal, requests: []const be.DraftRequest) !void {
     if (b.count < 2) return b.settleRound();
     var paths: [lb.max_streams][]const u32 = undefined;
-    for (b.windows[0..b.count], paths[0..b.count]) |slot, *path| {
+    for (b.windows[0..b.count], b.widths[0..b.count], paths[0..b.count]) |slot, width, *path| {
         const r = for (requests) |r| {
             if (b.slotOf(r.stream) == slot) break r;
-        } else return;
+        } else {
+            if (width != 1) return;
+            path.* = &.{0};
+            continue;
+        };
         path.* = r.rows orelse return;
     }
     try b.keepPaths(paths[0..b.count]);

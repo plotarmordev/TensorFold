@@ -1,5 +1,6 @@
 //! Ornith's MTP drafts in the lane core on real weights: TF_QWEN27_DIR the MLX 4-bit target, TF_QWEN27_MTP_DIR the bf16
-//! release's folder holding its `mtp.*` shards. Drafted replies are plain decoding's tokens, alone and four at once.
+//! release's folder holding its `mtp.*` shards. Drafted replies are plain decoding's tokens, alone, four at once, and
+//! beside a stream that does not draft.
 const std = @import("std");
 const mtl = @import("metal");
 const tf = @import("tensorfold");
@@ -58,6 +59,17 @@ test "Ornith MTP lanes: drafted replies are plain decoding's, alone and four at 
     try run(back, &cfg, io, &together);
     for (plain, together) |p, t| try std.testing.expectEqualSlices(u32, p.emitted(), t.emitted());
     for (together) |t| try std.testing.expect(t.drafted > 0 and t.accepted > 0);
+
+    // beside a plain stream (the longest reply, so every round of the others' is shared with its one-row window), the
+    // three drafting streams keep drafting and landing drafts
+    var mixed: [lengths.len]lanes.Stream = undefined;
+    try init(&mixed, true);
+    defer for (&mixed) |*s| s.deinit(gpa);
+    mixed[3].drafts = false;
+    try run(back, &cfg, io, &mixed);
+    for (plain, mixed) |p, m| try std.testing.expectEqualSlices(u32, p.emitted(), m.emitted());
+    for (mixed[0..3]) |m| try std.testing.expect(m.accepted > 1);
+    try std.testing.expect(mixed[3].drafted == 0);
 
     // alone, in a slot another stream's cache filled: a kept row moves the layer's cache on; a refused draft's row
     // never enters it, so later drafts still land
