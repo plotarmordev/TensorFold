@@ -92,7 +92,6 @@ extern "C" __global__ void __launch_bounds__(256) tf_ctl_embed_affine(const int*
     tf_embed_affine::rows(ids, w, s, b, out, d, bits, group, scale, keep);
 }
 
-
 // Gate 3: act_rows.cu's MLX activations keeping only the rounding points in `keep`; the exact check must go red.
 extern "C" __global__ void __launch_bounds__(256) tf_ctl_act_round(const __nv_bfloat16* gate, long long g_ld,
                                                                     const __nv_bfloat16* up, long long u_ld,
@@ -590,11 +589,12 @@ extern "C" __global__ void __launch_bounds__(256, 1) tf_ctl_pattn_64(const __nv_
     constexpr int D = 64, WARPS = 8, HPC = 4, NS = 8;
     constexpr bool causal = true;
     constexpr int skip = 0;
-    constexpr bool HPAGED = false, F8 = false, HM = false;
-    constexpr int CAP = 0, PTOK = 1;
+    constexpr bool P256 = false, HPAGED = false, F8 = false, HM = false, IDS = false;
+    constexpr int CAP = 0, PTOK = 1, PN = 0;
     const float *ks = nullptr, *vs = nullptr;
     const int HO = H;
     auto first_row = [] { return blockIdx.x * 16 * (WARPS / HPC); };
 #include "prefill_attention_rows.cuh"
 }
 }  // namespace tf_prefill_attention
+#include "contract_ctl_router.cuh"

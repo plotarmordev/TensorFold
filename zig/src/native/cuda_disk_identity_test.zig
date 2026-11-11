@@ -178,6 +178,28 @@ test "disk identity: Dory's exact zero and absence agree while every other value
         try t.expectEqual(enabled, profileHash(&.{row}, "dory", "cuda", &.{.{ row.id, raw }}));
 }
 
+test "disk identity: Dory's pages count as on when TF_KV_SHARE turns them on with the switch unset" {
+    const rows = [_]api.profile.Entry{ api.profile.entry(.TF_KV_SHARE), api.profile.entry(.TENSORFOLD_DORY_KV_PAGES) };
+    const share: api.profile.Switch = .TF_KV_SHARE;
+    const pages: api.profile.Switch = .TENSORFOLD_DORY_KV_PAGES;
+    const unset = profileHash(&rows, "dory", "cuda", &.{});
+    const enabled = profileHash(&rows, "dory", "cuda", &.{.{ pages, "1" }});
+    try t.expectEqual(enabled, profileHash(&rows, "dory", "cuda", &.{.{ share, "4" }}));
+    try t.expectEqual(enabled, profileHash(&rows, "dory", "cuda", &.{ .{ share, "4" }, .{ pages, "1" } }));
+    try t.expectEqual(unset, profileHash(&rows, "dory", "cuda", &.{.{ share, "0" }}));
+    try t.expectEqual(unset, profileHash(&rows, "dory", "cuda", &.{.{ pages, "0" }}));
+    try t.expect(unset != enabled);
+    try t.expectEqual(profileHash(&rows, "gemma4", "cuda", &.{}), profileHash(&rows, "gemma4", "cuda", &.{.{ share, "4" }}));
+}
+
+test "disk identity: an empty or whitespace-only TF_KV_SHARE leaves Dory's pages unset, as the engine reads it" {
+    const rows = [_]api.profile.Entry{ api.profile.entry(.TF_KV_SHARE), api.profile.entry(.TENSORFOLD_DORY_KV_PAGES) };
+    const share: api.profile.Switch = .TF_KV_SHARE;
+    const unset = profileHash(&rows, "dory", "cuda", &.{});
+    for ([_][:0]const u8{ "", " ", "\t", " \t\r\n" }) |raw|
+        try t.expectEqual(unset, profileHash(&rows, "dory", "cuda", &.{.{ share, raw }}));
+}
+
 const Members = struct {
     const Pair = struct { [:0]const u8, ?[:0]const u8 };
     var values: []const Pair = &.{};
@@ -218,4 +240,31 @@ test "disk identity: slide group hashes all real members in each member's actual
         try t.expectEqual(absent, Members.hash(scope[0], scope[1], &.{.{ "TF_SLIDE_POCKET_KEY", "subject" }}));
         try t.expectEqual(@as(usize, 0), Members.lookups);
     }
+}
+
+test "disk identity: DeepSeek values hash their exact bytes and leave every other identity unchanged" {
+    const entries = api.profile.entries;
+    var legacy: std.ArrayList(api.profile.Entry) = .empty;
+    defer legacy.deinit(t.allocator);
+    for (entries) |e| if (!e.applies("deepseek_v41", "cuda")) try legacy.append(t.allocator, e);
+    for (entries) |e| {
+        if (!e.applies("deepseek_v41", "cuda")) continue;
+        const empty = profileHash(&entries, "deepseek_v41", "cuda", &.{});
+        const zero = profileHash(&entries, "deepseek_v41", "cuda", &.{.{ e.id, "0" }});
+        const one = profileHash(&entries, "deepseek_v41", "cuda", &.{.{ e.id, "1" }});
+        try t.expect(empty != zero and zero != one);
+        try t.expect(one != profileHash(&entries, "deepseek_v41", "cuda", &.{.{ e.id, "01" }}));
+        for (entries) |other| for (other.families) |family| {
+            if (std.mem.eql(u8, family, "deepseek_v41")) continue;
+            for ([_][]const u8{ "cuda", "metal", "hip" }) |backend| {
+                const before = profileHash(legacy.items, family, backend, &.{});
+                try t.expectEqual(before, profileHash(&entries, family, backend, &.{}));
+                try t.expectEqual(before, profileHash(&entries, family, backend, &.{.{ e.id, "1" }}));
+            }
+        };
+    }
+}
+
+test {
+    _ = @import("cuda_disk_policy_test.zig");
 }

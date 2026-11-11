@@ -24,7 +24,7 @@ Shared helpers that hold the cross-family parts:
 - `zig/src/core/bf16_round.zig`: the one fp32-to-bf16 rounding every host copy uses.
 - `zig/src/core/profile.zig` and [profiles](profiles.md): the `--profile` switch registry.
 - `zig/src/core/contract/` and the [kernel contract](kernel-contract.md): the gates a new or ported kernel passes.
-- `zig/src/core/prompt_tail.zig`: the last layer's kept tile ([#2229]).
+- `zig/src/core/prompt_tail.zig`: the last layer's kept tile ([#2229]) and the chunks nothing reads ([#2432]).
 - `zig/src/core/state_walk.zig`: one walk for kept prompt states. Not on main yet: it is on [#2215].
 
 ## The table
@@ -45,11 +45,11 @@ last two hold the families with only a Metal, HIP or scoring backend.
 
 | Optimization | q3.5 | fnext | glm | gem4 | nemo |
 | --- | --- | --- | --- | --- | --- |
-| 1. Prompt tail | done [#2229] | yes | yes | yes | yes |
+| 1. Prompt tail | done [#2229] | yes | yes | open [#2432] | open [#2432] |
 | 2. Paged KV | done C[#1750] M[#1294] | done [#1169] | done [#1163] | done [#1619] | done C[#935] M[#1537] |
 | 3. Prompt store | done [#1357] | yes (host store) | done [#1732] | done [#1883] | yes C open M[#1850] |
 | 4. iGPU states | done [#2113] | done¹ | yes | done¹ | done¹ |
-| 5. State walk | yes | yes | open [#2215] | yes | yes |
+| 5. State walk | open C[#2392] | open C[#2392] | open [#2215] | open C[#2392] | open C[#2392] |
 | 6. KV ledger | done [#2127] | done [#2127] | done [#2127] | done [#2127] | done [#2127] |
 | 7. Host KV tier | yes | open [#1501] | done [#1795] | yes | yes |
 | 8. Disk cache | done C[#1358] | done C[#1359] M[#519] | done M¹ open C[#1411] | yes | done C[#1413] M¹ |
@@ -59,12 +59,12 @@ last two hold the families with only a Metal, HIP or scoring backend.
 | 12. Add + norm | done H[#2099] | no (bound <1 %) | yes | done¹ | done [#796] |
 | 13. MoE grouped | done [#605] | done [#1351] | done [#864] | no (dense) | done [#558] |
 | 14. CUDA graphs | done¹ | done [#1786] | open [#2279] | done [#1174] | done [#615] |
-| 15. MTP | done [#1562] | done [#1925] | done [#1585] | done [#1385] | done [#997] |
+| 15. MTP | done [#1562] | done [#1925] | done [#1585]; wide C open [#2257] | done [#1385] | done [#997] |
 | 16. DFlash(2) | done [#1465] | yes | done [#979] | done C¹ M[#879] | yes |
 | 17. DSpark | yes | yes | yes | yes | yes |
-| 18. Copy drafts | done [#1477] | done [#468] | done [#2146] | done [#2022] | done [#1974] |
-| 19. Shared drafts | done [#1562] | no (null [#1762]) | done [#1779] | done [#1779] | done [#768] |
-| 20. Solo chunks | yes | done C[#1733] M[#2167] | done [#1823] | yes | yes |
+| 18. Copy drafts | done [#1477] | done [#468] | done [#2146]; wide C open [#2257] | done [#2022] | done [#1974] |
+| 19. Shared drafts | done [#1562] | no (null [#1762]) | done [#1779]; cap C open [#2257] | done [#1779] | done [#768] |
+| 20. Solo chunks | yes | done C[#1733] M[#2167] | done [#1823] | done C[#2391] | yes |
 | 21. Read-ahead | done [#1928] | no (row 22) | done [#1616] | done [#1928] | done [#2033] |
 | 22. Direct load | done [#2282] | done [#1901] | yes | done [#2282] | done [#458] |
 | 23. Page drop | done [#1884] | done [#1880] | done [#600] | done [#1884] | done [#1884] |
@@ -72,12 +72,14 @@ last two hold the families with only a Metal, HIP or scoring backend.
 | 25. TP ranks | done H[#655] | done C[#1771] H[#817] | done [#855] | yes | done¹ |
 | 26. Pipeline | open [#2115] | yes | yes | yes | yes |
 | 27. Profiles | done [#1944] | done [#1944] | done [#1959] | done [#1944] | done [#2061] |
+| 28. Scale index | ? | open M[#2760] | ? | ? | ? |
+| 29. DSpine | done C[#2633] | no (no drafter) | no (no drafter) | no (no drafter) | no (no drafter) |
 
 | Optimization | kol1 | spk25 | dory | mm3 | dsv41 |
 | --- | --- | --- | --- | --- | --- |
 | 1. Prompt tail | yes | yes | yes | yes | yes |
 | 2. Paged KV | done [#1620] | done [#1653] | done [#1284] | yes | yes (own pool) |
-| 3. Prompt store | done [#1755] | done [#1756] | yes | yes | yes |
+| 3. Prompt store | done [#1755] | done [#1756] | open [#2430] | yes | yes |
 | 4. iGPU states | done¹ | done¹ | done¹ | done¹ | yes |
 | 5. State walk | yes | yes | yes | yes | yes |
 | 6. KV ledger | done [#2127] | done [#2127] | done [#2127] | yes | yes |
@@ -96,12 +98,14 @@ last two hold the families with only a Metal, HIP or scoring backend.
 | 19. Shared drafts | no (copies) | no (copies) | no (copies) | open [#1426] | done¹ (opt-in) |
 | 20. Solo chunks | yes | yes | yes | yes | yes |
 | 21. Read-ahead | done [#2033] | done [#2033] | yes | done [#2033] | done [#2033] |
-| 22. Direct load | yes | yes | yes | yes | open [#1924] |
+| 22. Direct load | yes | open [#2449] | open [#2449] | yes | open [#1924] |
 | 23. Page drop | done [#1884] | done [#1884] | done [#1884] | done [#1884] | done [#1884] |
 | 24. L2 prefetch | yes | yes | yes | yes | done¹ |
 | 25. TP ranks | yes | no (4B) | yes | done [#1388] | done¹ |
 | 26. Pipeline | yes | no (4B) | yes | yes | yes |
 | 27. Profiles | done [#1944] | done [#1944] | open [#2306] | yes | yes |
+| 28. Scale index | ? | ? | ? | ? | ? |
+| 29. DSpine | no (no drafter) | no (no drafter) | no (no drafter) | no (no drafter) | no (no drafter) |
 
 | Optimization | lfm2m | lfm3 | qwen4 | ling |
 | --- | --- | --- | --- | --- |
@@ -132,6 +136,8 @@ last two hold the families with only a Metal, HIP or scoring backend.
 | 25. TP ranks | yes | no (1.7B) | yes | yes [#850] |
 | 26. Pipeline | yes | no (1.7B) | yes | yes |
 | 27. Profiles | yes | yes | yes | yes |
+| 28. Scale index | ? | ? | ? | ? |
+| 29. DSpine | no (no drafter) | no (no drafter) | no (no drafter) | no (no drafter) |
 
 q3.5 `qwen3_5` (C, M, H, X), fnext `flashnext` (C, M, H), glm `glm` (C, M), gem4 `gemma4` (C, M, X),
 nemo `nemotron` (C, M, H, X), kol1 `kolibri1` (C), spk25 `spark25` (C, M),
@@ -141,8 +147,8 @@ ling `ling` (host package only, no engine yet; CUDA plan in [#850]).
 
 | Optimization | q27 | lfm2 | llama | step5 |
 | --- | --- | --- | --- | --- |
-| 1. Prompt tail | no (Metal) | no (n/a) | no (Metal) | no (Metal) |
-| 2. Paged KV | open M[#2283] | no (scores) | yes | yes |
+| 1. Prompt tail | done M[#2436] | no (n/a) | no (Metal) | no (Metal) |
+| 2. Paged KV | done M[#2283] | no (scores) | yes | yes |
 | 3. Prompt store | yes | no (scores) | yes | yes |
 | 4. iGPU states | no (unified) | no (scores) | no (unified) | no (unified) |
 | 5. State walk | yes | no (scores) | yes | yes |
@@ -155,7 +161,7 @@ ling `ling` (host package only, no engine yet; CUDA plan in [#850]).
 | 12. Add + norm | done M¹ | done¹ | done¹ | yes |
 | 13. MoE grouped | done [#1125] | no (dense) | no (dense) | done¹ |
 | 14. CUDA graphs | no (Metal) | no (scores) | no (Metal) | no (Metal) |
-| 15. MTP | yes | no (scores) | no (no head) | done¹ |
+| 15. MTP | open M[#2464] | no (scores) | no (no head) | done¹ |
 | 16. DFlash(2) | done [#578] | no (scores) | yes | yes |
 | 17. DSpark | yes | no (scores) | yes | yes |
 | 18. Copy drafts | done¹ | no (scores) | done M¹ | done M¹ |
@@ -166,8 +172,10 @@ ling `ling` (host package only, no engine yet; CUDA plan in [#850]).
 | 23. Page drop | done M[#1885] | done [#1884] | done M[#1885] | done M[#1885] |
 | 24. L2 prefetch | no (Metal) | no (scores) | no (Metal) | no (Metal) |
 | 25. TP ranks | open [#1434] | no (small) | yes | yes |
-| 26. Pipeline | yes | no (small) | yes | yes |
+| 26. Pipeline | open M[#2375] | no (small) | yes | yes |
 | 27. Profiles | yes | yes | yes | yes |
+| 28. Scale index | ? | ? | ? | ? |
+| 29. DSpine | open M[#2634] | no (scores) | no (no drafter) | no (no drafter) |
 
 | Optimization | gdsa | kimi | qwen3 |
 | --- | --- | --- | --- |
@@ -198,6 +206,8 @@ ling `ling` (host package only, no engine yet; CUDA plan in [#850]).
 | 25. TP ranks | yes | yes | no (small) |
 | 26. Pipeline | yes | yes | no (small) |
 | 27. Profiles | yes | yes | yes |
+| 28. Scale index | ? | ? | ? |
+| 29. DSpine | no (no drafter) | no (no drafter) | no (prompt) |
 
 q27 `qwen27` (M: Qwen3.8-27B and Qwen3.5-MoE), lfm2 `lfm2` (C: LFM2-VL, scores decisions and writes no text),
 llama `llama` (M), step5 `step5` (M), gdsa `glm_dsa` (M), kimi `kimi_k3` (M, native serving on [#2221]),
@@ -242,13 +252,16 @@ below; these are estimates for planning a port, not results.
 | 25. TP ranks | big | big | big | scale-out: models past one box |
 | 26. Pipeline | none | none | big | fits models across nodes; adds hops |
 | 27. Profiles | none | none | none | names the opt-in switches |
+| 28. Scale index | none | low | 5 % of the weights once prompts read it too | one stream's decode before tensor units |
+| 29. DSpine | none | medium | low | Qwen3.8-27B; agent 2–20 % faster, chat and code 10–19 % slower |
 
 ## The optimizations
 
 1. **Prompt tail on the last layer.** A prompt chunk keeps one row's logits, so past the last layer's keys and values
    only the kept row's 128-row tile needs q, attention, o and the MLP ([#2165]). It saves about 1/layers of a cold
    prompt, less the k/v share. A family is blocked where something else reads every row of the last layer: MTP taps,
-   drafter taps, hidden readouts, or a fused projection that makes k/v and q in one GEMM.
+   drafter taps, hidden readouts, or a fused projection that makes k/v and q in one GEMM. Where only the prompt's last
+   chunk has its logits read, the other chunks keep no tile and stop at their last state write.
 
    | Family | Last layer, layers | Main blocker | Gain | Effort |
    | --- | --- | --- | --- | --- |
@@ -280,6 +293,12 @@ below; these are estimates for planning a port, not results.
    second turn level ([#1357]). [#2211] moved GLM onto the shared store. It can't be combined with
    `--learn-conversations` today. Flash Next already resumes a prefix from the host store's whole-state copies; on the
    shared store a kept 32k state would stop duplicating about 0.9 GiB of attention rows (27 KiB a token).
+
+   Qwen CUDA's host-copy path can instead opt into message-start cuts with `TF_QWEN_REQUEST_STARTS=1`
+   (#2176). Later turns closer than 256 tokens now keep their own history cuts. On a GB10 with Qwen3.8-27B 4-bit and
+   its DFlash2 drafter, turns 2 to 6 of a six-turn chat reused 1,450 to 1,635 prompt tokens and took 0.72 to 1.33 s
+   against 1.78 to 2.10 s unset. Prompt passes are cut at replies, so one of the six replies differed from the unset
+   path; resumed and fresh replies matched with it set. This mode remains incompatible with `TF_QWEN_KV_SHARE`.
 
 4. **Prompt states in device memory on integrated GPUs.** On a GB10 the device and host share memory, so a kept
    state can stay where it is instead of being copied through pinned host memory on every save ([#2043]). On Qwen
@@ -331,7 +350,8 @@ below; these are estimates for planning a port, not results.
 
 13. **MoE grouped plans and expert kernels.** One expert plan sorts a step's rows by expert, and one grouped call runs
     every expert's rows ([#558], [#605], NVFP4 in [#629], EXL3 in [#741]). A family adds only its router and its weight
-    format.
+    format. Wide router calls run on the shared register tiles in `zig/kernels/cuda/common/router_tiles.cuh`, the
+    same fma chain a logit: Nemotron's past 32 rows, and qwen3_5's from 257 rows since [#2499].
 
 14. **CUDA graphs for decode and verify.** Each decode or verify shape is captured once and replayed, which removes the
     host's launch cost from every step. `TENSORFOLD_GEMMA4_GRAPHS=0` (and the same switch for Kolibri, Spark
@@ -339,6 +359,16 @@ below; these are estimates for planning a port, not results.
 
 15. **MTP drafts.** The checkpoint's own MTP head drafts tokens that the target verifies in one pass, with the same
     replies as serial decode. `--mtp-drafts` and `--mtp-confidence` size the drafts on Nemotron and GLM.
+
+    GLM CUDA's proposed 32-row prices, three-draft shared MTP cap and wider copy windows are tracked in [#2257].
+    The TP=2 receipt on two GB10s compares main 52427c023e with an earlier revision of the proposed branch: one-stream code 55.4 to 73.7 tok/s
+    (+33.1%), two-stream chat +3.2%, one-stream chat +1.0%, two-stream code +1.3%, prefill within 0.3% and
+    replies 52/0/0 equal/unequal/unverified. The receipt does not identify the drafter mode, so it qualifies
+    neither drafter separately. TP=1, TP=4, sampled runs, copies on and the shared MTP cap on another chip
+    remain open device cells. The shared step-price correction needs no separate device cell: GLM's shared draft
+    allocator uses the measured overhead including its head time, so changing the modeled step only redistributes
+    that same total between fixed and head components. Its row learning, granted-depth and shared-depth limits are
+    off. The preserved shared step values are still checked on the host; the other proposed behavior retains its gates.
 
 16. **DFlash and DFlash2 drafters.** An external block drafter reads the target's hidden taps and drafts a block (or a
     tree) a step. It needs a trained drafter for each target; see [training a drafter](recipes/training-a-drafter.md).
@@ -374,6 +404,7 @@ below; these are estimates for planning a port, not results.
     | flashnext (M) | 1,024-token reply beside a 64K prompt 48 → 8 s, prompt's first token 90 → 54 s | [#2167] |
     | flashnext (C), one GPU | prompts 15–23 % faster at `--parallel 1`, up to 8,192 rows a pass | [#2246] |
     | glm (C), TP=2 | prompts about 2 % sooner at 8K–128K, two chunks a step, replies unchanged | [#1423] |
+    | gemma4 (C) | first token 31B −4..−5 %, E4B −9..−10 %, opt-in with `TF_GEMMA4_CHUNK_SOLO` | [#2391] |
 
     `TF_GLM_CHUNK_SOLO=4096` is slower with GLM's NVFP4 checkpoint on two GB10s ([#2288]).
 
@@ -395,6 +426,8 @@ below; these are estimates for planning a port, not results.
     | --- | --- | --- |
     | flashnext | cold load 74 → 48 s | [#1901] |
     | flashnext | 50 → 43.5 s, next chunk gathered while one packs | [#1960] |
+    | spark25 (4B 8-bit) | cold load 5.0 → 2.5 s | [#2449] |
+    | dory (NVFP4) | cold load 4.8 → 3.8 s | [#2449] |
 
 23. **Page-cache drop after load.** Every CUDA loader drops its checkpoint's pages once the weights are up, so the
     memory goes back to KV and the prompt cache on unified-memory boxes ([#1884]). TP loaders wait for every rank
@@ -418,6 +451,17 @@ below; these are estimates for planning a port, not results.
 27. **`--profile` switches.** One registry names each opt-in switch with its backend, families, class and evidence,
     and the startup line prints what differs from the defaults ([#1660], [#1944]). Only `stable` is served;
     `fast-exact` and `fast` are refused by name until switches qualify for them.
+28. **Scale index.** An affine checkpoint stores a bf16 scale and bias beside every group's codes, a fifth of the
+    bytes at 4 bits in groups of 32, and a tensor holds few distinct pairs. A 16-bit index a group into the tensor's
+    table of pairs gives a kernel the same two values from fewer bytes. Flash Next's 4-bit expert kernels read it on
+    Macs before tensor units behind `TF_FLASHNEXT_SCALE_INDEX` ([#2760], plan in [#2751]); the prompt gathers and the
+    dense rows still read the stored arrays. `?` cells: the same count has not been run on those checkpoints.
+
+29. **DSpine drafter.** Tencent's DSpine-b16 for Qwen3.8-27B, opt-in by `--drafter` with its folder, never the
+    default. It reuses DFlash2's taps and tap ring and adds a code bridge and an exact-sender table.
+    `core/dspine.zig` and the tree walker in `core/lanes/draft_tree.zig` are on main through the CUDA binding
+    ([#2633]); the Metal binding ([#2634]) is still open. On a GB10, against DFlash2: agent prompts decode 2–20 %
+    faster, chat and code 10–19 % slower. It needs the checkpoint's own DSpine drafter, so other families have none.
 
 [#458]: https://github.com/ashhart/TensorFold/pull/458
 [#468]: https://github.com/ashhart/TensorFold/pull/468
@@ -539,6 +583,8 @@ below; these are estimates for planning a port, not results.
 [#2146]: https://github.com/ashhart/TensorFold/pull/2146
 [#2162]: https://github.com/ashhart/TensorFold/pull/2162
 [#2165]: https://github.com/ashhart/TensorFold/issues/2165
+[#2432]: https://github.com/ashhart/TensorFold/pull/2432
+[#2499]: https://github.com/ashhart/TensorFold/issues/2499
 [#2167]: https://github.com/ashhart/TensorFold/pull/2167
 [#2211]: https://github.com/ashhart/TensorFold/pull/2211
 [#2215]: https://github.com/ashhart/TensorFold/pull/2215
@@ -551,3 +597,16 @@ below; these are estimates for planning a port, not results.
 [#2283]: https://github.com/ashhart/TensorFold/pull/2283
 [#2288]: https://github.com/ashhart/TensorFold/pull/2288
 [#2306]: https://github.com/ashhart/TensorFold/pull/2306
+[#2391]: https://github.com/ashhart/TensorFold/pull/2391
+[#2449]: https://github.com/ashhart/TensorFold/pull/2449
+[#2430]: https://github.com/ashhart/TensorFold/pull/2430
+
+[#2257]: https://github.com/ashhart/TensorFold/pull/2257
+[#2760]: https://github.com/ashhart/TensorFold/pull/2760
+[#2751]: https://github.com/ashhart/TensorFold/issues/2751
+[#2392]: https://github.com/ashhart/TensorFold/pull/2392
+[#2436]: https://github.com/ashhart/TensorFold/pull/2436
+[#2464]: https://github.com/ashhart/TensorFold/pull/2464
+[#2375]: https://github.com/ashhart/TensorFold/pull/2375
+[#2633]: https://github.com/ashhart/TensorFold/pull/2633
+[#2634]: https://github.com/ashhart/TensorFold/pull/2634
