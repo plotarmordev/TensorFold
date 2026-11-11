@@ -39,10 +39,7 @@ const Fixture = struct {
     tmp: testing.TmpDir,
     root: []const u8,
 
-    /// SRC: layers 0-19 in the first shard and 20-39 in the second, each a BF16 norm then its FP8 experts (expert 0's
-    /// gate with an input_scale); an index, config.json, a nested tokenizer file, two safetensors files the index does
-    /// not name and SRC's own provenance.
-    /// `fault` breaks layer 30's last expert in the second shard.
+    /// SRC: FP8 experts in two shards, index, config, nested tokenizer, unindexed safetensors; `fault` breaks one.
     fn init(fault: Fault) !Fixture {
         var f: Fixture = .{ .arena_state = .init(testing.allocator), .tmp = testing.tmpDir(.{}), .root = undefined };
         errdefer f.deinit();
@@ -161,8 +158,7 @@ fn expectEncoded(arena: Allocator, a: *const st.File, b: *const st.File, name: [
     try testing.expectEqualSlices(u8, std.mem.asBytes(&sum.global), g.bytes);
 }
 
-/// DST's shards hold SRC's tensors in SRC's order: other tensors with their bytes, each held expert weight as its
-/// NVFP4 triple (or, kept, with its scale_inv and input_scale as they were), and no tensor of an unheld expert.
+/// DST's shards keep SRC's order and other tensors' bytes, a held expert NVFP4 (or as it was), no unheld expert.
 fn expectShards(f: *Fixture, dst: []const u8, held: ?*const format.Held, nvfp4_experts: bool) !void {
     const arena = f.arena_state.allocator();
     for (0..shards.len) |i| {

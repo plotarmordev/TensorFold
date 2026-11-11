@@ -1,4 +1,4 @@
-//! tf-drama-quant: a new Drama 3 checkpoint, its FP8 routed experts NVFP4 (or kept) and optionally compacted to a held set.
+//! tf-drama-quant: a Drama 3 checkpoint with its FP8 routed experts NVFP4 (or kept), optionally compacted to held ones.
 const std = @import("std");
 const core = @import("core");
 const cfg = @import("config.zig");
@@ -122,8 +122,7 @@ fn encodeAll(gpa: Allocator, jobs: []Job, threads: usize) !void {
 /// A source tensor copied as it is (its index in the shard's header), or an encode job's NVFP4 triple.
 const Item = union(enum) { keep: usize, job: usize };
 
-/// SRC shard `src` rewritten at `out` in its tensor order: SRC's own bytes, or an NVFP4 triple in an expert weight's place.
-/// Each of its tensors must be listed in SRC's index under `shard`; `listed` counts them.
+/// SRC shard `src` written to `out` in order, an expert weight NVFP4; `listed` counts tensors SRC's index maps here.
 fn convertShard(gpa: Allocator, arena: Allocator, io: Io, src: []const u8, out: []const u8, source: *const std.json.ObjectMap, held: ?*const format.Held, o: Options, records: *std.ArrayList(Provenance.Tensor), weight_map: *std.json.ObjectMap, shard: []const u8, listed: *usize) !u64 {
     var file = try st.File.open(gpa, io, src);
     defer file.close(io);
@@ -323,7 +322,7 @@ fn holds(h: *const format.Held, layer: usize, expert: usize) bool {
     return std.mem.indexOfScalar(u8, h.ids[layer][0..h.counts[layer]], std.math.cast(u8, expert) orelse return false) != null;
 }
 
-/// --compact-experts' map as the loader reads it, refused unless SRC's index lists each held projection's weight and scale_inv.
+/// --compact-experts' map as the loader reads it, refused unless SRC's index lists every held weight and scale_inv.
 fn heldExperts(arena: Allocator, io: Io, path: []const u8, map: std.json.ObjectMap, experts: [cfg.layers]usize) !format.Held {
     const text = try Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 20));
     const value = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch return error.BadExpertMap;
@@ -346,8 +345,7 @@ fn heldJson(arena: Allocator, h: *const format.Held) !std.json.Value {
     return .{ .object = layers };
 }
 
-/// SRC's directories and files other than its index's shards by relative path, parents first; a symlink is refused, as it
-/// could reach outside SRC.
+/// SRC's files and directories outside its index's shards, parents first; a symlink is refused, as it could leave SRC.
 const Ancillary = struct { dirs: []const []const u8, files: []const []const u8 };
 
 fn ancillary(gpa: Allocator, arena: Allocator, io: Io, src: []const u8, shards: *const std.StringArrayHashMapUnmanaged(void)) !Ancillary {
