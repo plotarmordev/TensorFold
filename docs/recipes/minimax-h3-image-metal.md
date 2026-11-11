@@ -128,8 +128,9 @@ at four times each tile's attention per token.
 - `lift(x, v, from, to, full_noise, full, out)`: the full canvas at sigma `to` from the last half step's input `x` at
   sigma `from` and its velocity `v`, folding that step's Euler move into the lift. The clean estimate x + from v is
   upsampled bilinearly (half-cell centres, edges clamped). The noise is the seed's full draw with each 2 x 2 block
-  shifted so it pools to the step's own noise estimate x - (1 - from) v: for Gaussian noise that is the exact
-  conditional draw, low frequencies from the half run and fine ones from the seed. `out` may not alias the noise.
+  shifted so it pools to the step's own noise estimate x - (1 - from) v. For an i.i.d. standard Gaussian seed and an
+  estimate that depends on the seed only through its pools, that is the exact conditional draw (up to float32
+  rounding): low frequencies from the half run, fine ones from the seed. `out` may not overlap `x`, `v` or the noise.
 
 `zig build test-h3-geometry -Dh3-filter=cascade` runs its tests with no GPU or weights: the pool's sums and unit
 variance, the bilinear taps on a ramp, the exact flow identity on two planes, the shifted noise's pools and kept

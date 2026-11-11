@@ -101,4 +101,5 @@ test "cascade: refusals" {
     try testing.expectError(error.H3BadCascadeSigma, cascade.lift(&x, &x, 0, 0, &noise, full, &out));
     try testing.expectError(error.H3BadCascadeSigma, cascade.lift(&x, &x, 1.5, 0, &noise, full, &out));
     try testing.expectError(error.H3BadCascadeSigma, cascade.lift(&x, &x, std.math.nan(f32), 0, &noise, full, &out));
+    try testing.expectError(error.H3BadCascadeSigma, cascade.lift(&x, &x, 0.5, std.math.nan(f32), &noise, full, &out));
 }
