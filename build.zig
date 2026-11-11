@@ -171,6 +171,7 @@ pub fn build(b: *std.Build) void {
     _ = server_build.addTo(b, voice_tool, target, optimize);
     const voice_exe = b.addExecutable(.{ .name = "drama3-voice", .root_module = voice_tool });
     b.step("drama3-voice", "Attested Drama voice files from reference WAVs, coded by drama3-generate --encode").dependOn(&b.addInstallArtifact(voice_exe, .{}).step);
+    @import("zig/build/drama3_quant.zig").targets(b, target, optimize, test_step);
     // the backend options are declared for every target, so one build script may pass the same flags on every OS
     const cuda_options = @import("zig/build/options.zig").cuda(b);
     const tp_options = @import("zig/build/options.zig").tp(b);
