@@ -171,7 +171,7 @@ fn rotateBlock(x: []f64, cols: usize, base_r: usize, base_c: usize, axis: usize,
     }
 }
 
-/// Decode W[K,N] as diag(suh) @ H_K @ W_q @ H_N @ diag(svh); scratch holds 2*K*N FP64 values (only the back half is used).
+/// Decode W[K,N] as diag(suh) H_K W_q H_N diag(svh); scratch is 2*K*N FP64, only its back half used.
 pub fn dequantize(w: Width, codebook: Codebook, trellis: []const i16, tiles_k: usize, tiles_n: usize, suh: []const f16, svh: []const f16, out: []f64, scratch: []f64) void {
     const k = tiles_k * 16;
     const n = tiles_n * 16;
