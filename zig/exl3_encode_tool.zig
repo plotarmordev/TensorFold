@@ -1,4 +1,4 @@
-//! tf-exl3-encode WEIGHT.npy HESSIAN.npy BITS OUT_DIR: one calibrated EXL3 group, with its receipt.
+//! tf-exl3-encode WEIGHT.npy HESSIAN.npy BITS OUT_DIR [--unweighted]: one calibrated EXL3 group, with its receipt.
 const std = @import("std");
 const encoder = @import("src/core/exl3_encode.zig");
 const format = @import("src/core/exl3_format.zig");
@@ -61,8 +61,9 @@ pub fn main(init: std.process.Init) !u8 {
     var stdout = Io.File.stdout().writerStreaming(init.io, &out_buf);
     defer stdout.interface.flush() catch {};
     const out = &stdout.interface;
-    if (args.len != 5) {
-        try out.writeAll("usage: tf-exl3-encode WEIGHT.npy HESSIAN.npy {2.0|2.5|3.0|4.0} OUT_DIR\nweight is HF [N,K] f32/f64; Hessian is [K,K] f32/f64\n");
+    const unweighted = args.len == 6 and std.mem.eql(u8, args[5], "--unweighted");
+    if (args.len != 5 and !unweighted) {
+        try out.writeAll("usage: tf-exl3-encode WEIGHT.npy HESSIAN.npy {2.0|2.5|3.0|4.0} OUT_DIR [--unweighted]\nweight is HF [N,K] f32/f64; Hessian is [K,K] f32/f64\n--unweighted also reports the same search with H = I, scored under HESSIAN\n");
         return 2;
     }
     const gpa = init.gpa;
@@ -93,6 +94,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
     try shard.create(gpa, model, &.{.{ "format", "exl3" }}, &tensors);
     try verify(gpa, init.io, args[4], result);
+    const exl3_error = encoder.hessianError(weight, result.reconstructed, h.values, k, n);
     const nv_rows = try gpa.alloc(f64, n * k);
     defer gpa.free(nv_rows);
     nvfp4.quantize(source.values, k, nv_rows);
@@ -100,9 +102,18 @@ pub fn main(init: std.process.Init) !u8 {
     defer gpa.free(nv);
     const nv_error = encoder.hessianError(weight, nv, h.values, k, n);
     const bytes = std.mem.sliceAsBytes(result.trellis).len + 2 * (k + n) + 4;
-    const ratio = result.error_exl3 / nv_error;
+    const ratio = exl3_error / nv_error;
     try out.print("bits_per_weight={d:.1} shape=[{d},{d}] encode_seconds={d:.3} encode_hours_for_5900_matrices={d:.3}\n", .{ bits, n, k, elapsed, elapsed * 5900 / 3600 });
-    try out.print("hessian_error exl3={e:.9} plain={e:.9} nvfp4={e:.9} exl3_over_nvfp4={d:.6} bytes={d} nvfp4_bytes_approx={d}\n", .{ result.error_exl3, result.error_plain, nv_error, ratio, bytes, k * n / 2 + k * n / 16 + 4 });
+    try out.print("hessian_error exl3={e:.9} nvfp4={e:.9} exl3_over_nvfp4={d:.6} bytes={d} nvfp4_bytes_approx={d}\n", .{ exl3_error, nv_error, ratio, bytes, k * n / 2 + k * n / 16 + 4 });
+    if (unweighted) {
+        const identity = try gpa.alloc(f64, k * k);
+        defer gpa.free(identity);
+        for (identity, 0..) |*v, i| v.* = if (i / k == i % k) 1 else 0;
+        var baseline = try encoder.encode(gpa, weight, identity, k, n, .{ .halves = halves });
+        defer baseline.deinit(gpa);
+        const baseline_error = encoder.hessianError(weight, baseline.reconstructed, h.values, k, n);
+        try out.print("unweighted_hessian_error={e:.9} exl3_over_unweighted={d:.6}\n", .{ baseline_error, exl3_error / baseline_error });
+    }
     try out.writeAll("reader=ok reconstruction=bit_exact\n");
     return 0;
 }
