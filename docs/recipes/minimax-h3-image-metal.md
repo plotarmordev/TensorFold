@@ -494,49 +494,54 @@ A cold picture is 3.8x faster at 2048 and 2.3x at 4096. The steps did not change
 at 4096), and are now most of the 4096 picture. The `main` prompt at 4096 found part of the encoder still cached from
 the 2048 run before it (its encoder took 41 s against 76 s at 2048), so its gain is understated.
 
-### Other stacks
+### Other stacks, measured here
 
-What each one does for this model, and what it would take on this Mac:
+Same Mac, prompt, seed 42 and sizes, each stack as its own docs run it, no other model running. *Cold*: from a fresh
+process with the weights on disk, to the PNG written. *Warm*: a second picture in a process that already holds the
+weights (TensorFold: the three tools again, every weight file already in the page cache). Seconds:
 
-- **The maintainer's stacks, SGLang and vLLM-Omni** ([SGLang cookbook](https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3-image),
-  [vLLM-Omni recipe](https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3-Image)): CUDA and ROCm only, so neither runs here.
-  SGLang's measured warm pipeline times for 2048x2048 are 1.934 s on one H200 and 16.21 s on a DGX Spark (GB10), and
-  for 4736x3552 10.133 s and 84.96 s. They exclude startup, the first request, HTTP and PNG encoding. What SGLang
-  does for this model:
-  - keeps the components resident;
-  - precomputes the AdaLN timestep projections and drops their weights (24.6 GiB less memory, same outputs);
-  - fuses QK-norm with rotary;
-  - runs dense FlashAttention;
-  - batches the VAE's decode tiles;
-  - caches the text conditioning across requests;
-  - offers opt-in FP8/MXFP8, CUDA graphs, regional `torch.compile`, and Ulysses or tensor-parallel splits over GPUs.
-- **diffusers** ([docs](https://huggingface.co/docs/diffusers/main/en/api/pipelines/minimax_h3_image)): the
-  `MiniMaxH3ImageModularPipeline` on `main` (0.42.0.dev0, torch 2.15.0) loads on MPS but reads the repository's
-  `transformer_diffusers/` and `vae_diffusers/` copies, not the release folders this Mac holds. Not run yet: those
-  copies came from the Hub at under 1 MB/s.
-- **ComfyUI** ([tutorial](https://docs.comfy.org/tutorials/image/minimax/minimax-h3-image)): a pruned int8 DiT
-  (`minimax_h3_image_pruned_int8_convrot`, 21 GB) and an int8 text encoder (25.28 GB), through `comfy_kitchen`'s
-  layouts. Not run here: its weights came from the Hub at under 1 MB/s, so a single download takes hours.
+| Stack | 2048 cold | 2048 warm | 4096 warm | Seconds per step, 2048 / 4096 |
+|---|---|---|---|---|
+| **TensorFold, read ahead** (bf16, M5 tensor units) | **61** | 27 | **100** | **1.83 / 10.0** |
+| diffusers `main` on MPS (bf16, all resident) | 357 (load 333) | **19.2** | 168 (PNG 25) | not timed |
+| ComfyUI `b2f6707` (int8 DiT and text encoder, fp16 VAE) | 148 | 32.2 | 149 | 3.5 / 17.2 |
 
-TensorFold already has some of this:
+A cold picture is 5.9x diffusers' and 2.4x ComfyUI's at 2048; at 4096 a cold TensorFold picture (123 s) beats both
+stacks' warm ones. Our steps are 1.9x ComfyUI's at 2048 and 1.7x at 4096. The one loss is diffusers' warm 2048:
+19.2 s against our 27, because its process holds the weights while our three tools map and wire theirs each time
+(below, idea 1).
 
-- Its AdaLN tables come once per run from the time embedder and each block's projections (`modulation.zig`), as
-  SGLang's precompute does.
-- Its attention is dense, as SGLang's is.
-- The decoder batches its tiles.
+How each ran:
 
-It has none of the rest: a resident process, a conditioning cache, fp8 or int8, or graph capture.
+- **diffusers** ([docs](https://huggingface.co/docs/diffusers/main/en/api/pipelines/minimax_h3_image)):
+  `MiniMaxH3ImageModularPipeline` on `main` (torch 2.15.0), every component on MPS, no offload. Its transformer was
+  made in memory from the release `transformer/` rather than the 66 GB `transformer_diffusers/` copy: renamed, each
+  head's fused `qkv_proj` rows (head, q/k/v, 128) split into `to_q`/`to_k`/`to_v`, and `fc1`'s two halves swapped
+  (the release holds up then gate), as block 0's rows read from the Hub's copy show. Its 333 s load is safetensors
+  faulting cold mappings into MPS copies, the cost `read_ahead.zig` removes here.
+- **ComfyUI** ([tutorial](https://docs.comfy.org/tutorials/image/minimax/minimax-h3-image)): its text-to-image
+  template with the expander off, posted to a headless server. On a Mac `comfy_kitchen` has only its eager backend:
+  the int8 weights are dequantized before each product, so they halve the bytes read but not the work, and the text
+  encoder runs on the CPU.
+- **SGLang and vLLM-Omni** ([SGLang cookbook](https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3-image),
+  [vLLM-Omni recipe](https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3-Image)): CUDA and ROCm only, so neither runs on a
+  Mac. SGLang's warm 2048 is 1.934 s on an H200 and 16.21 s on a DGX Spark (GB10), excluding startup and PNG
+  encoding. It keeps components resident, precomputes the AdaLN tables (as `modulation.zig` does), fuses QK-norm with
+  rotary, runs dense attention, batches decode tiles, caches text conditioning, and offers FP8, CUDA graphs and
+  multi-GPU splits.
+
+The pictures are not gated against ours: each stack draws its own noise, so only the timings compare.
 
 ### Next, ranked
 
-| # | Idea | Size at 4096 (123 s cold) | Basis |
+| # | Idea | Size | Basis |
 |---|---|---|---|
-| 1 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps; -6 s of load | The steps are compute-bound: a block's GEMMs hold 386 M weights, so a 2048 step is about 183 TFLOP in 1.83 s and a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs; int8 weights with bf16 math would only halve the load. Not bit-identical, so it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000 takes 2048 from 3.434 s to 2.338 s (-32%) and 4K from 18.544 s to 14.445 s (-22%); ComfyUI ships int8 weights. |
-| 2 | One process holding the weights (a server, or the three tools as one), with SGLang's conditioning cache | -20 s cold; a warm 2048 picture near 13 s | Three tools map, wire and convert their weights in turn even with every page cached: the prompt path's 8.6-13.7 s to map and 2.5-6.1 s of encoder wall against 0.3 s of GPU, the transformer's 12.7-16.9 s load, the decoder's 1.0-6.8 s. A repeated prompt would skip the text encoder's 0.3-0.5 s of GPU too. |
-| 3 | PNG writing | -15 s | The decoder's 4096 run spends 18 s of its 24 s after the tiles on one-threaded deflate at the default level (`moss_image/png.zig`); rows compressed in parallel bands, joined as one zlib stream, would take most of it. SGLang's times leave PNG encoding out. |
-| 4 | Attention | up to -15 s | At 16,408 rows attention is about 38% of a step's work (a 2048 step's is 24 of its 183 TFLOP), growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves passes over q and k, under 1% of a step here. |
-| 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones; SGLang's recipe runs all six steps. With six distilled steps, each skip is a sixth of the steps; it needs a gate against the six-step latent. |
-| 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU. SGLang batches its tiles the same way. |
+| 1 | One process holding the weights (a server, or the three tools as one), with SGLang's conditioning cache | warm 2048 from 27 s to about 14 s; 4096 from 100 s to about 85 s | Measured warm here, the GPU is 1.8 + 11 + 1.2 s of a 2048 picture's 27 s; the rest is three tools mapping, wiring and converting weights already in the page cache (transformer load 3.3 s, decoder 5.9 s in all, prompt 3-4 s). diffusers' resident process wins warm 2048 at 19.2 s, so this is the one place another stack is ahead. |
+| 2 | PNG writing | -18 s at 4096, -4 s at 2048 | The decoder's 4096 run spends 18 s after its 5.8 s of tiles on one-threaded deflate at the default level (`moss_image/png.zig`); rows compressed in parallel bands, joined as one zlib stream, would take most of it. diffusers' PIL spends 25 s on the same picture. |
+| 3 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps at 4096 | The steps are compute-bound: a 2048 step is about 183 TFLOP in 1.83 s, a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs. ComfyUI's int8 here shows the other half: dequantized before each product, its steps are 1.7-1.9x slower than our bf16, so int8 weights alone buy only bytes. Not bit-identical; it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000: -32% at 2048, -22% at 4K. |
+| 4 | Attention | up to -15 s at 4096 | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. |
+| 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step at 4096 | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones; SGLang's recipe runs all six steps. Each skip is a sixth of the steps; it needs a gate against the six-step latent. |
+| 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU; SGLang batches its tiles the same way. |
 
 ## On an M5 Ultra with the release weights
 
