@@ -1,4 +1,4 @@
-//! Drama 3's RMS norm rows (d3_rmsnorm with its plain gamma, the gated-norm form) and its CFG mix under the contract on CUDA.
+//! Drama 3's RMS norm rows (d3_rmsnorm, plain gamma and gated-norm form) and its CFG mix under the CUDA contract.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
@@ -180,9 +180,29 @@ pub const Mix = struct {
         }
     }
 
-    /// Three fp32 roundings (c - u, the product, the sum), each at most 2^-24 of the terms it touches: under
-    /// cancellation the error follows those terms (`mag`), not the small result.
+    /// Three fp32 roundings, each at most 2^-24 of the terms they touch, so the bound follows `mag`, not the result.
     pub fn bounds(_: *Mix, _: []const f64, mag: []const f64, allow: []f64) !void {
         for (allow, mag) |*l, m| l.* = 0x1p-22 * m + 0x1p-149;
+    }
+};
+
+/// The drama3 image's registrations: the norm rows and the CFG mix, onto `kernels`.
+pub const Set = struct {
+    mod: ?cuda.Module = null,
+    norm: ?Norm = null,
+    mix: ?Mix = null,
+
+    pub fn add(self: *Set, gpu: check.Gpu, s: cuda.Stream, kernels: *std.ArrayList(g.Kernel)) !void {
+        self.mod = try cuda.Module.load(gpu.d, cuda.kernels.drama3);
+        self.norm = try Norm.init(gpu, s, self.mod.?);
+        try kernels.append(gpu.gpa, self.norm.?.kernel());
+        self.mix = try Mix.init(gpu, s, self.mod.?);
+        try kernels.append(gpu.gpa, self.mix.?.kernel());
+    }
+
+    pub fn deinit(self: *Set) void {
+        if (self.mix) |*m| m.deinit();
+        if (self.norm) |*n| n.deinit();
+        if (self.mod) |*m| m.unload();
     }
 };
