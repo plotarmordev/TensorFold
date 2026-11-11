@@ -1,4 +1,4 @@
-//! tf-exl3-encode [--threads N] WEIGHT.npy HESSIAN.npy BITS OUT_DIR [--unweighted]: one calibrated EXL3 group, with its receipt.
+//! tf-exl3-encode [--threads N] WEIGHT HESSIAN BITS OUT_DIR [--unweighted]: one calibrated EXL3 group and its receipt.
 const std = @import("std");
 const encoder = @import("src/core/exl3_encode.zig");
 const format = @import("src/core/exl3_format.zig");
