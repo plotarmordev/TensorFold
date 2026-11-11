@@ -75,13 +75,13 @@ Facts the proposals rest on, checked in the port's code:
 - **Local:** against card 34's stage times on this M5 Ultra (prompt, each transformer step, decode, load and glue).
   A 1.5x claim needs the lower 95% bound of the paired end-to-end speed-up at 1.5x or better.
 - **External:** h3-image-mlx's teapot prompt, seed 42, at 4096 x 4096: 356.84 s on an M5 Pro (343.6 s of steps,
-  8.37 s of decode). That is a different machine, so it is not an algorithmic comparison: the round's cards rerun
-  h3-image-mlx on this M5 Ultra and gate against that.
+  8.37 s of decode). That is a different machine, so it is not an algorithmic comparison: card 3 below reruns
+  h3-image-mlx on this M5 Ultra, and the round's cards together must be at least 3x faster than that rerun.
 
 ### Quality guards
 
-- **Exact:** byte-identical final latent and PNG, five repeats; a reordered sum also passes the float64 kernel
-  contract with no worse worst-column error.
+- **Exact:** byte-identical final latent and PNG, five repeats. A change that reorders a sum is not exact: it is a
+  separate, labelled candidate that passes the float64 kernel contract with no worse worst-column error.
 - **Lossy:** against the default picture at the same seed, LPIPS median at most 0.08 and worst at most 0.15 (card
   40's cascade bar, so lossy cards compare and stack), PSNR median at least 30 dB, no newly wrong rendered text by
   OCR, object count or spatial relation in the corpus, and teacher-forced velocity cosine at least 0.999 at all six
@@ -94,9 +94,9 @@ Ranked by expected gain times confidence. "Sweeps" counts how many of the three 
 | Rank | Short name | Sweeps | Kind | Transformer | End to end, 2048 / 4096 | Cost |
 |---|---|---|---|---|---|---|
 | 1 | `coarse-core` | 3 | lossy, opt-in | x1.7 planned, x2.9 ceiling | x1.33 / x1.58 planned | 1 + 8-12 days |
-| 2 | `exact-kernels` | 3 | exact | x1.25-1.6 | x1.2-1.5 / x1.2-1.4 | 6-12 days |
+| 2 | `exact-kernels` | 3 | exact | x1.25-1.6 | x1.12-1.29 / x1.20-1.46 | 6-12 days |
 | 3 | `warm-pipeline` | 1 | exact | none | x1.3 / x1.08 | 5-7 days |
-| 4 | `step-reuse` | 3 | lossy, opt-in | x1.2-1.6 | x1.1-1.5 / x1.15-1.55 | 0.5 + 8-14 days |
+| 4 | `step-reuse` | 3 | lossy, opt-in | x1.2-1.6 | x1.08-1.29 / x1.16-1.46 | 0.5 + 8-14 days |
 | 5 | `far-field-keys` | 1 | lossy, opt-in | x1.38 at 4096 | x1.05 / x1.30 | 5-7 days |
 | 6 | `pv-gate` | 1 | bounded, opt-in | x1.10-1.18 at 4096 | x1.03 / x1.08-1.15 | 1 + 3-4 days |
 | 7 | `m5-prompt` | 1 | exact | none | x1.05-1.08 / x1.01-1.02 | 5-9 days |
@@ -143,11 +143,11 @@ architecture and outside).
 - **Beyond what exists.** The tensor units are already in use; this is measured, H3-specific scheduling and one
   fusion nobody ships for it. No precision change.
 - **Expected gain.** Projections x1.3-1.8, attention x1.5-2.5 on the dense path; transformer x1.25-1.6; end to end
-  x1.2-1.5 / x1.2-1.4.
+  x1.12-1.29 / x1.20-1.46. A component of the stack, not a 1.5x card alone.
 - **Cost.** 6-12 days; no weights; no new memory.
 - **A/B.** Production-shape products and attention replayed from captured inputs first, then the shared protocol.
-- **Speed gate.** Production-shape replay shows at least x1.3 on the projection sum before full runs; then at least
-  card 34's six-step time / 1.3 at both sizes.
+- **Speed gate.** Production-shape replay shows at least x1.3 on the projection sum before full runs; then the six
+  steps take at most card 34's six-step time / 1.3 at both sizes.
 - **Quality guard.** Exact.
 - **Risks.** Past rounds found tile tables that did not transfer between models and fusions that were exact but
   slower; this card measures headroom first and stops if replay shows under x1.2.
@@ -270,13 +270,15 @@ Our own speed rounds on other models set these limits. Each needs the named new 
 
 ## Ready cards
 
-Aimed at a large gain: the first three together target at least 2x at 4096 against card 34 on this Mac. Order is
-the order to build; cards 1, 4 and 5 start with a diagnostic and close as a measured negative if it fails.
+Aimed at a large gain: cards 1-3 together target at least 2x end to end at 4096 against card 34 on this Mac (the
+cost model gives about 2.3x at their planned gains). Order is the order to build; cards 1, 4 and 5 start with a
+diagnostic and close as a measured negative if it fails.
 
 **1. MiniMax-H3-Image: the middle blocks on a half-side lattice inside each step** (`coarse-core`)
 
-- A one-day diagnostic first: per block and step, the share of stream energy inside 2 x 2 groups on ten calibration
-  prompts; go only if under 10% for the middle blocks, else record the numbers and close.
+- A one-day diagnostic first: per block and step, on ten calibration prompts, the fraction of the picture rows'
+  squared norm that lies in each row's difference from its 2 x 2 group mean; go only if under 10% for the middle
+  blocks, else record the numbers and close.
 - `tf-h3-image coarse=A:B:STEPS`: pool and scatter-add kernels in the float64 kernel contract with planted controls;
   without `coarse`, the final latent is byte-identical.
 - On the shared corpus at 4096 on this M5 Ultra: transformer at least 1.5x faster than card 34's six steps; LPIPS
@@ -287,16 +289,18 @@ the order to build; cards 1, 4 and 5 start with a diagnostic and close as a meas
 
 - Production-shape replay of the four projection classes and dense attention, before and after; stop with a
   recorded negative if the projection sum gains under 1.2x.
-- Final latent and PNG byte-identical, or float64 contract with no worse worst-column error for a reordered sum.
-- Six-step time at least 1.3x faster than card 34's at 2048 and 4096.
+- Final latent and PNG byte-identical; a sum-reordering variant only as a separate labelled option that passes the
+  float64 contract with no worse worst-column error.
+- The six steps take at most card 34's six-step time / 1.3 at 2048 and 4096.
 
 **3. MiniMax-H3-Image: one resident process with overlapped loads** (`warm-pipeline`)
 
 - One process runs prompt, transformer and decoder; Metal libraries prebuilt; AdaLN tables kept per checkpoint and
   schedule; step weights paged in during the text encoder; PNG compressed in parallel.
 - PNG byte-identical to the five-tool chain; cold and warm times recorded.
-- Non-step time at most a third of card 34's at 2048; the same-machine rerun of h3-image-mlx at 4096 recorded beside
-  cards 1-3 together.
+- Non-step time at most a third of card 34's at 2048.
+- h3-image-mlx rerun on this M5 Ultra with its teapot prompt, seed 42, at 4096; with cards 1-3 together, end to end
+  at least 2x faster than card 34's at 4096 and at least 3x faster than that rerun.
 
 **4. MiniMax-H3-Image: head-aware reuse of middle-block work across steps** (`step-reuse`)
 
@@ -307,6 +311,8 @@ the order to build; cards 1, 4 and 5 start with a diagnostic and close as a meas
 
 **5. MiniMax-H3-Image: pooled far-field keys** (`far-field-keys`)
 
+- A one-day diagnostic first: on teacher-forced inputs at 4096, per block, the attention output cosine of pooled
+  far keys against dense; go at 0.999 or better in every block, else record and close.
 - Pooling kernel and fixed per-query lists in the float64 contract; off: byte-identical.
 - At 4096: step at least 1.3x faster than card 34's; per-block attention cosine against dense recorded; the lossy
   guard; an A/B against card 40's routed attention at equal step time.
