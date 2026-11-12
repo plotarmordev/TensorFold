@@ -485,13 +485,13 @@ picture.
 
 | Size | Build | Prompt | Transformer (load) | Decoder | Picture |
 |---|---|---|---|---|---|
-| 2048 | `main` | 87 | 116 (102.9) | 26 | 229 |
+| 2048 | retained baseline, binary revision unrecorded | 87 | 116 (102.9) | 26 | 229 |
 | 2048 | read ahead | 29 | 28 (12.7) | 4 | **61** |
-| 4096 | `main` | 45 | 135 (75.6) | 108 | 288 |
+| 4096 | retained baseline, binary revision unrecorded | 45 | 135 (75.6) | 108 | 288 |
 | 4096 | read ahead | 13 | 78 (16.9) | 32 | **123** |
 
 A cold picture is 3.8x faster at 2048 and 2.3x at 4096. The steps did not change (1.83-1.86 s at 2048, 9.9-10.1 s
-at 4096), and are now most of the 4096 picture. The `main` prompt at 4096 found part of the encoder still cached from
+at 4096), and are now most of the 4096 picture. The retained baseline prompt at 4096 found part of the encoder still cached from
 the 2048 run before it (its encoder took 41 s against 76 s at 2048), so its gain is understated.
 
 ### Other stacks, measured here
@@ -503,9 +503,9 @@ not a quality-qualified ranking. The endpoint includes PNG saving:
 
 | Stack | 2048 first picture | 2048 warm | 4096 warm | Seconds per step, 2048 / 4096 |
 |---|---|---|---|---|
-| TensorFold, read ahead (bf16, M5 tensor units) | 61 | 27 | 100 | 1.83 / 10.0 |
+| TensorFold, read ahead (diagnostic; binary revision unrecorded) | 61 | 27 | 100 | 1.83 / 10.0 |
 | diffusers with custom checkpoint conversion on MPS | 358.6 (load/conversion 333.2) | 20.0 | 167.7 | not timed |
-| ComfyUI `b2f6707` (int8 DiT and text encoder, fp16 VAE) | 148 | 32.2 (seed 43; excluded) | 149 | 3.5 / 17.2 |
+| ComfyUI `b2f6707` (int8 DiT and text encoder, fp16 VAE) | 148 | 32.2 (seed 43; excluded from warm comparison) | 149 | 3.5 / 17.2 |
 
 In these diagnostic timings, TensorFold's 27 s exceeds the converted diffusers runner's 20.0 s; neither comparison
 is quality-qualified. No further native optimization has landed or been measured to close this gap.
@@ -574,8 +574,55 @@ torch.mps.synchronize()
 
 No `state_dict` conversion belongs in this comparison. Time initialization through the final synchronization,
 then each complete request through `image.save(...)` returning. Save latent receipts outside the request timer.
-State OS page-cache conditions separately from process-cold startup. Loader configuration was inspected, but the
-normal-loader picture measurement still waits for all pinned files to finish downloading and pass SHA-256 checks.
+The pinned files finished downloading and passed the fetcher's SHA-256 verification before the normal-loader run
+below. The OS page cache was not evicted after download and verification; this is process-cold, not storage-cold.
+
+#### Documented diffusers loader, matched inputs
+
+Same versions and machine as above, Python 3.12.16. All components loaded with the documented calls above,
+without checkpoint conversion, and remained resident on MPS. The command was
+`nice -n 10 "$DIFFUSERS_VENV/bin/python" diffusers_documented.py`; the local measurement runner used this loop
+after loading the pipeline (paths supplied locally; no weights or output images are published):
+
+```python
+for size in (2048, 2048, 4096, 4096):
+    noise = load_file(str(cases / f"base-{size}-a.safetensors"))["noise"]
+    noise = noise.reshape(size // 32, size // 32, 24, 2, 2)
+    noise = noise.permute(2, 0, 3, 1, 4).reshape(1, 24, size // 16, size // 16).contiguous()
+    start = time.perf_counter()
+    state = pipe(prompt=prompt, height=size, width=size, latents=noise,
+                 generator=torch.Generator().manual_seed(42), output=["images", "latents"])
+    torch.mps.synchronize()
+    image_done = time.perf_counter()
+    state.get("images")[0].save(output_png)
+    png_done = time.perf_counter()
+    # Outside the request timer; this output is already unpacked NCHW.
+    state.get("latents").float().cpu().numpy().tofile(output_latent)
+```
+
+Initialization from `from_pretrained` through MPS synchronization took **129.383 s**; startup including Python
+imports from the runner's first timestamp took **144.460 s**. First timestamp through first PNG written was
+**169.447 s**, including preparation of the matched noise. These are not the old 333.2 s conversion measurement.
+
+| Size / request | Inference through MPS synchronization | PNG save | Request through PNG written |
+|---|---|---|---|
+| 2048 first | 24.122 s | 0.695 s | 24.817 s |
+| 2048 repeat | 15.806 s | 0.827 s | 16.633 s |
+| 4096 first, after 2048 | 91.225 s | 10.813 s | 102.038 s |
+| 4096 repeat | 97.944 s | 5.696 s | 103.640 s |
+
+All requests used seed 42 and the exact native initial noise; each executed six steps. Both repeats produced
+identical final latent values and decoded pixels. The initial capture runner mistakenly unpacked the already-NCHW
+output a second time; that pure permutation was inverted before comparison, without changing any values. The
+snippet above shows the correct direct capture. Against the native baseline, both repeats at each size give:
+
+| Size | Latent cosine | Latent relative error | RGB maximum absolute difference | RGB MAE | Fixed diagnostic gate |
+|---|---|---|---|---|---|
+| 2048 | 0.9965921509572248 | 0.08261069531715759 | 237 | 3.2704102198282876 | **FAIL image**, pass latent |
+| 4096 | 0.9960658854188926 | 0.08869195143972416 | 255 | 3.564861317475637 | **FAIL image**, pass latent |
+
+This closes the missing normal-loader measurement, not the quality-qualified speed claim. The fixed pixel gate
+fails for diffusers as well as ComfyUI; it is not waived. No additional native speed improvement is established.
 
 #### ComfyUI matched-input diagnostic rerun
 
