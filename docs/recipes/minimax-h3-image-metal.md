@@ -235,15 +235,15 @@ samples. A separate 16-byte generation in `/tmp/tensorfold-speech.lock.stamp` de
 between lock polls. Missing, malformed or inaccessible signals invalidate timings; uncoordinated forwards do too.
 Both processes must use this protocol; an old speech binary cannot certify clean timings. Speech remains best-effort
 on filesystem errors: if both publishing and invalidating a generation fail, a short request can remain unobserved.
-Speech retries its shared hold for up to 50 ms past a render's microsecond exclusive probe instead of losing it, and
-never waits for GPU work. The prompt encoder (`tf-h3-image-prompt`, the server's first stage) waits before each pass
-with three queued, and the decoder (`tf-h3-image-decoder`, its last) before each batch of tiles; both print the seconds
-they waited.
+Speech waits for its shared hold only behind a render's exclusive probe, which lasts microseconds and never spans GPU
+work, so it never synthesizes unprotected. The prompt encoder (`tf-h3-image-prompt`, the server's first stage) waits
+before each pass with three queued, and the decoder (`tf-h3-image-decoder`, its last) before each batch of tiles; both
+print the seconds they waited.
 
 ### Speech contention receipt, 12 November 2026
 
 Apple M5 Ultra, 256 GiB RAM, macOS 27.0 (26A425), Zig 0.17.0, ReleaseFast with `-Dcpu=apple_m1`.
-The branch's isolated Drama 3 NVFP4 server used the consented Capri catalog, CFG 1.5 with paired submission,
+The branch's isolated Drama 3 NVFP4 server served the Capri catalog in `synth.json`, CFG 1.5 with paired submission,
 one lane and context 8192. The live release server was not changed. More than 170 GiB was free before loading.
 The client timed from sending each HTTP request until reading the first two PCM bytes, not response headers.
 
@@ -283,7 +283,8 @@ reached first PCM in 3.019 s idle; the next took 0.429 s. During the render (fir
 | Back to back over the decoder | 1.030, 0.517, 0.590, 0.517 | 441 tiles waited 9.30 s; all six steps `true` |
 
 Each run's seed-42 rows matched the 12 November baseline byte-for-byte (`b3726693...`). The prompt encoder runs
-0.3 s a request at this size, too short to target from the client; `test-h3-image-server` covers it with a held turn.
+0.3 s a request at this size, too short to target from the client; `test-h3-image-server` has speech arrive after
+its first pass and checks the next waits.
 The isolated server was stopped afterward; the live release server was not changed.
 
 ## Gates, fixed before any run
