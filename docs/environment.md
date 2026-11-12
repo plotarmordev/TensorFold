@@ -23,6 +23,7 @@ Diagnostics quote and escape the supplied text so it cannot create another termi
 | `TF_Q27_COPY_ROWS` | Whole u32 count; zero disables copied rows; default 48 |
 | `TF_Q27_DRAFT_SLOTS` | Whole u32 count, clamped to 1 through the lane stream limit; default 8. DFlash2 can draft for at most the smaller of this count and the admitted streams, and none without a drafter. |
 | `TF_MTP_DRAFTS` | Whole u32 count, clamped to 1 through the drafter's window less one; existing depth when unset |
+| `TF_DSPINE_WINDOW` | Qwen3.8-27B on CUDA with a DSpine `--drafter`: whole row count 16 through 8192 that narrows the drafter's sliding window; it must be at least the block (16) and at most the checkpoint's own `sliding_window`, else the drafter is refused when it opens; unset or blank keeps the checkpoint's (8192 for tencent/Qwen3.8-27B-DSpine-b16) |
 | `TF_DRAFT_NODES` | Whole native-size nonnegative count, capped by the drafter's window; zero disables trees |
 | `TF_QMMF_HALF_BELOW` | Whole native-size nonnegative block count; zero disables half tiles; default 96 |
 | `TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS` | Exactly `0` or `1`, checked when the CUDA backend starts; default off ([profiles](profiles.md)) |
@@ -74,6 +75,46 @@ The `TF_GLM_*` rows are checked when GLM's CUDA family opens, on every rank, so 
 Common server settings are checked before checkpoint resolution, including when no request would use them yet.
 Direct family readers also refuse malformed values when called without the server.
 
+## Flash Next
+
+Flash Next checks these 29 settings when its engine loads, before any device or checkpoint work: a malformed value
+stops the start with the variable, the supplied text and the accepted forms.
+
+| Variable | Accepted explicit value |
+| --- | --- |
+| `TF_FLASHNEXT_PROMPT_BF16` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_WINDOW_GRAPH` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_LANE_PARTS` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_KEEP_INPASS` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_FIRST_EARLY` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_GPU_TOPK` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_GDN_FUSED` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_GDN_LANES` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_BATCH_HEADS` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_SAMPLED_HEADS` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_SHARED_DRAFTS` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_SHARED_SIDE` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_HC_FUSE` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_KEEP_LATE` | Exactly `0` or `1`; unset or blank leaves the choice to the loader |
+| `TF_FLASHNEXT_DECODE_GRAPH` | Exactly `0` or `1`; default off |
+| `TF_FLASHNEXT_ATTN_LANES` | Exactly `0` or `1`; default off |
+| `TF_FLASHNEXT_WARM_AHEAD` | Exactly `0` or `1`; default off |
+| `TF_FLASHNEXT_TABLE_WARM` | Exactly `0` or `1`; default off |
+| `TF_FLASHNEXT_PROFILE` | Exactly `0` or `1`; default off |
+| `TF_FLASHNEXT_VERIFY_HOST_LOGITS` | Exactly `0` or `1`; default off |
+| `TF_FLASHNEXT_DRAFTS` | Whole draft count; default 6, then clamped to 1 through 15 |
+| `TF_FLASHNEXT_DRAFTS_GREEDY` | Whole draft count; default 8, then clamped to 1 through 15 |
+| `TF_FLASHNEXT_GREEDY_WIDE` | Whole round width; default 4 |
+| `TF_FLASHNEXT_WINDOW_ROWS` | Whole row count; default the shared round's rows, capped by them |
+| `TF_FLASHNEXT_READOUT_ROWS` | Whole row count; default 64; `0` never takes the tiles |
+| `TF_FLASHNEXT_FACT_ROWS` | Whole row count; default 64; `0` never takes the tiles |
+| `TF_FLASHNEXT_KV_PAGE_TEST` | Whole page size the kernels take: whole blocks of the indexer's ratio up to the window; unset or blank leaves the plain caches |
+| `TF_FLASHNEXT_CONFIDENCE` | Finite number, negative values included; default -0.4, the chain's own stop |
+| `TF_FLASHNEXT_PROMPT` | Exactly `rows` for the rows path; unset or blank keeps the plain path |
+
+An on-by-default switch keeps the same kernels and bits as off; only the launch count changes.
+The two row counts and the two draft counts keep their existing clamps after parsing.
+
 ## Existing lenient switches
 
 These settings retain their existing boolean policies rather than gaining new aliases or refusals:
@@ -88,6 +129,9 @@ These settings retain their existing boolean policies rather than gaining new al
 - GLM: `GLM_EHPROJ_NAX` retains its first-character `0` disabling rule, `TF_GLM_DFLASH2_PROF` enables by presence,
   even empty or `0`, and `TF_KV_POISON` (also read by Nemotron) is on only for exact `1`.
 - The existing tool-grammar, rows-sync, log-time, memory-pressure and XPU-MTP boolean policies are unchanged.
+- Flash Next keeps its lenient readers where they are: `TF_FLASHNEXT_TP` and `TF_FLASHNEXT_LOGITS` take a path,
+  `TF_FLASHNEXT_OWNED` a list, `TF_FLASHNEXT_DEPTH_LOG` and `TF_TP_TRACE`/`TF_TP_LOCAL`/`TF_TP_STATS` select by presence,
+  and the tool-only sampling settings of the MTP check and the `FZ_` developer switches keep their semantics.
 
 The profile registry reports selected arithmetic/experimental overrides; it does not change their parsing or defaults.
 See [profiles](profiles.md) for classes, scopes and grouped slide-learning names.

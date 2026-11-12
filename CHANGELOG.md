@@ -2,6 +2,46 @@
 
 Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](RELEASE-NOTES-1.0.0.md) for the native binary's supported models and migration details.
 
+## Unreleased
+
+- Server: `--profile fast` refuses as not planned, since a speed mode that changes output tokens is not shipped; `--profile fast-exact` now names the token gates it still needs, and an unknown spelling is told that `stable` is the only served profile (#2794). Thanks to @devopsfortunato.
+- Prompt cache: long conversations survive 8 to 16 agents sending follow-ups at once. Redundant states are evicted before each conversation's newest one, admission never evicts a state a queued request resumes, concurrent keeps reserve their room, and the default budget scales with the room left after streams on Metal and unified-memory CUDA (discrete CUDA hosts keep 8 GiB, Flash Next's batch host 16 GiB). On Qwen3.8-27B with DFlash2 at 16 agents, a follow-up's median first token drops from 546 s to 16.5 s on an M3 Ultra and from 90-114 s to 28 s on a GB10, with every reply unchanged (#2699).
+- Qwen3.8-27B on Metal: three glue kernels nothing launched (`q27_norm`, `q27_mlp`, `q27_gdn_post`) and their host mirrors are removed; saved prompt states on Metal are recomputed once after upgrading, since their identity covers the kernel sources (#2816, part of #2251). Thanks to @jschmied.
+
+- Pipeline stages: the shared stage driver pipelines rounds, so rank 0 sends round r + 1 while the later stages still run round r, and a stage that echoes a round short or empty is refused by name; tokens are checked equal to one engine on the same binary (#2579, part of #2005). Thanks to @jschmied.
+
+- GLM-5.3-Flash on CUDA: tensor-parallel shares and layer sums go through one mesh layer (declared shares, one reduction boundary over a `Collective`), with the same gathers, bytes and order and tokens equal to main at TP=2; an aborted `tp_group` call now ends as `Aborted` instead of stopping the process (#2789, part of #2560). Thanks to @laudney.
+
+- Tensor parallel on CUDA: with `TF_ROCE=1` on every rank, three ranks or more take the one-shot RoCE all-gather for decode-sized gathers, byte-equal to NCCL's, falling back to NCCL with one warning when a peer can't be reached, and GLM-5.3-Flash's DFlash2 drafter MLP splits across every rank; without it they keep NCCL, two ranks run as before, and MiniMax-M3 keeps NCCL at three ranks or more. With `TF_ROCE=1`, GLM-5.3-Flash decode is about 6% faster at one and two streams on three GB10s (four streams level) and 12.9%, 10.4% and 6.6% faster at one, two and four streams on four GB10s, with the target's tokens unchanged; drafter acceptance can move slightly, since the split MLP sums in another order (#2205). Thanks to @shanedertrain.
+
+- Flash Next: twenty-nine `TF_FLASHNEXT_*` settings refuse a malformed value by name at startup, before any device work on CUDA, and a Metal load refuses them too; blank `TF_FLASHNEXT_KV_PAGE_TEST` and `TF_FLASHNEXT_KEEP_LATE` read as unset, and a non-finite confidence is refused (#2585, part of #2370). Thanks to @devopsfortunato.
+- Flash Next on CUDA: twenty-nine `TF_FLASHNEXT_*` settings refuse a malformed value by name at startup, before any
+  device or checkpoint work, through the shared environment table: unset and blank keep the default, a valid value keeps
+  its meaning, and the switches are exactly `0` or `1` (#2585, for #2370). Thanks to @devopsfortunato.
+- MOSS-Image on Metal: `tf-moss-image-generate` makes a picture from options alone (`--prompt`, `--negative`, `--width`, `--height`, `--steps`, `--seed`, `--guidance`) at the card's defaults, and refuses skip-layer guidance by name; `tf-moss-image` still runs a reference case (#2719, for #1531). Thanks to @devopsfortunato.
+- `tf-moss-image-generate` makes a MOSS-Image picture from options alone (`--prompt`, `--negative`, `--width`, `--height`, `--steps`, `--seed`, `--guidance`) at the card's defaults, and refuses skip-layer guidance by name; `tf-moss-image` still runs a reference case (#1531).
+- Tensor parallel: `fabric/tp` gains a TCP transport for hosts without RDMA (`Kind.tcp`), the same collective contract over one stream socket a pair of ranks, failing by name on a desynchronised call, a late frame or a lost peer; `tf-tp-test tcp-host` checks two hosts bit for bit over it. No serving backend can select it in this release, so every engine is unchanged (#2718, part of #2065). Thanks to @Shoestring-dev.
+
+- Tests: `zig build tf-tp-check` builds a checker for the per-rank collective and logits dumps of a mixed Metal and CUDA tensor-parallel run (dump versions 1 to 3), and `zig build test-tp-check` runs its tests on synthetic dumps. Nothing in this release writes those dumps, so serving is unchanged (#2321, part of #1236). Thanks to @ThinkOffApp.
+- Tests: `zig build tf-tp-check` builds a checker for the dumps each rank of a mixed Metal and CUDA tensor-parallel run
+  writes, and `zig build test-tp-check` runs its tests (#2321, part of #1236). Thanks to @ThinkOffApp.
+- Tests: `core/lanes` gains a shared depth sweep any core drafter can run, a fresh run at each depth from 1 to the block and one zig-zag run, each checked against a reference pass, so an adapter that ignores its hold depth or drafts past its block fails (#2729, part of #2460). Thanks to @jschmied and @EugeneClaw.
+
+- CUDA: `TF_DSPINE_WINDOW=N` (16 to 8,192, opt-in) narrows a Qwen3.8-27B DSpine drafter's sliding window to N rows without editing the checkpoint; a value outside the block size and the checkpoint's own window is refused when the drafter opens, and unset keeps the checkpoint's window. Drafts are verified, so replies are unchanged (#2705, after #2633). Thanks to @jschmied.
+
+- Metal: Spark2.5's and Llama's bf16 decode matvec kernels come from one source, with the same compiled code; Qwen3.8-27B saved prompt states on Metal are recomputed once after upgrading (#2792, part of #2251). Thanks to @jschmied.
+
+
+
+- Metal: the image towers' and Spark2.5's and Llama's prompt GEMMs share one `gemm_nax` kernel macro, with the same preprocessed source; Qwen3.8-27B saved prompt states on Metal are recomputed once after upgrading (#2787, part of #2251). Thanks to @jschmied.
+
+- GLM-5.3-Flash on Metal: the TP2 sparse-attention and KDA-rows kernels are the full kernels' templates at 32 heads, with the same compiled code; saved GLM prompt states on Metal are recomputed once after upgrading (#2786, part of #2251). Thanks to @jschmied.
+
+- Metal: Qwen 3.5, LFM2-MoE, MiniMax-M3 (with its DFlash2 and DSpark drafters), Step-5 and Spark-X read MLX affine modules through one core reader, `core/quant/mlx_affine.zig`, and LFM3 takes its modules' stored shapes from it while keeping its own checks; loads are unchanged, and a module the reader refuses now reports `UnexpectedAffineTensor` and is named in the log (#2583, part of #2460). Thanks to @jschmied.
+
+
+- HIP on gfx12 under `--policy matrix=on`: Qwen3 dense checkpoints load each layer's gate and up weights interleaved as one weight, and one WMMA product writes silu(gate) x up in its epilogue instead of two products and `tf_silu_mul`, with the same output bytes: Qwen3-Reranker-8B ranks 16 documents in 0.657 to 0.661 s instead of 0.687 to 0.697 s and Qwen3-Embedding-8B embeds 100 short inputs in 0.901 to 0.911 s instead of 0.940 to 0.948 s on a Radeon AI PRO R9700. The kernel contract checks both fused blocks byte for byte against the unfused launches (part of #2245). Thanks to @laudney.
+- Nemotron on Macs: the masked prompt shader calls the shared `tf_paged_row` page helper again, so its prompt sources compile; #2322 had used the name #2283 retired the same day (#2548).
 ## 1.2.7
 
 - GLM-5.3-Flash on CUDA: with `TF_GLM_LAYERS=N`, serve's start-up memory check counts the weights by tensor from the shard headers, only those the load reads (the first N layers, the MTP layer when drafts are on, the embedding, norm and head), where it counted every checkpoint file. A 20-layer thin load of the 163.6 GiB checkpoint now counts 66.6 GiB without drafts. Unset, the count is the files' as before (#2788, fixes #2745). Thanks to @wojo.
@@ -40,6 +80,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 - Internal: one core reader for ModelOpt projection parts (weight, NVFP4 or FP8 scales, input scale), with shape checks and refusals that name the module and tensor, now serves Dory's NVFP4 and bf16 projections, Qwen 3.5/3.6's NVFP4 experts and `check-precision`; Dory's MXFP8, Nemotron, Qwen 3.5/3.6's other ModelOpt projections and GLM keep their own readers, and the loaded weights are unchanged (#2691, part of #2460). Thanks to @jschmied.
 
+- `tf-drama-quant`, built by `zig build` on every OS: a CPU converter of a Drama 3 checkpoint's FP8 routed experts to NVFP4 for the Metal engine, with `--compact-experts MAP` to keep only the experts a map lists (written as the index's `drama_experts`, refused unless well formed). Other tensors and files come through unchanged, the output appears only once complete, and `quant-provenance.json` records the source, the tool's commit and each projection's error. `zig build test-drama3-quant` checks it on a synthetic checkpoint. See [Quantized checkpoints](docs/quantization.md#drama-3s-routed-experts-to-nvfp4-tf-drama-quant).
 - Drama 3 on CUDA loads a compact NVFP4 checkpoint (tf-drama-quant's held-expert map) as stored, its experts packed for the NVFP4 kernels and never widened to BF16; the router masks to the held original expert ids and maps its top 8 to their slots. A stock FP8 checkpoint takes the FP8 path unchanged, and a compact map over FP8 experts is refused. The NVFP4 SwiGLU rounds silu to BF16 before the up product, as the FP8 path does. This path has not run on a GPU yet: `tools/zig/drama3_compact_gb10.sh PRE_FEATURE_COMMIT ...` runs the remaining GB10 checks (a pruned load, decode and replay, batched prefill, `d3_router_compact` under `tf-cuda-test kernel-contract` with an unmasked control, FP8 codes byte-identical to the pre-feature commit, the router's resource record) and writes a receipt.
 
 - `serve --mtp-drafts 1 --drafter DIR` drafts Ornith-1.5-122B with its MTP layer on Metal, in place of DFlash2, for every stream, lone or in shared rounds: every target pass steps the layer over each drafting stream's kept rows, each stream holds the layer's one draft a round and the next round verifies it, and a refused draft's row never enters the layer's cache. `zig build test-qwen27-mtp-lanes` checks drafted replies equal plain decoding four streams at once, each drafting and accepting in shared rounds, then three drafting beside a plain one, and then alone in a reused slot (47 of 48 drafts land over its 96-token reply). See [the Ornith recipe](docs/recipes/ornith-1.5-122b-metal.md#mtp-layer).
