@@ -165,8 +165,7 @@ pub const Case = struct {
         const map = try picture.tiles(a, text + held, target);
 
         // the transformer's case: these rows, the float projections, the step heads, and placeholder tables
-        // a copy: callers may release `pic` before the case's free run reads its noise
-        const noise = try a.dupe(f32, pic.values(f32, try pic.at("noise", .f32, target * width), target * width));
+        const noise = pic.values(f32, try pic.at("noise", .f32, target * width), target * width);
         const reference = try optional(pic, f32, "velocity", .f32, steps * target * width);
         const anchors: ?[]const f32 = if (held > 0) pic.values(f32, try pic.at("anchors", .f32, held * width), held * width) else null;
         const geometry = [_]i32{ @intCast(map.prefix), @intCast(map.target), @intCast(map.target), @intCast(text), 0, @intCast(target), @intCast(held) };

@@ -15,7 +15,6 @@ pub const rules = prompt.rules;
 pub const tensors = prompt.tensors;
 pub const weights = prompt.weights;
 pub const reference = prompt.reference;
-pub const kernels = prompt.kernels;
 pub const Runner = prompt.Runner;
 pub const Vision = prompt.Vision;
 
