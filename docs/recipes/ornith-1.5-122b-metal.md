@@ -1,5 +1,8 @@
 # Ornith-1.5-122B on Metal (one 256 GB M5 Ultra)
 
+DFlash2 is the fastest measured mode at both one and four streams. MTP preserves the target's tokens but did not
+improve throughput in this benchmark; lone-stream drafting also stopped during the run (details below).
+
 The native Metal engine serves [Ornith-1.5-122B](https://huggingface.co/ornith-ai/Ornith-1.5-122B), a Qwen3.5-MoE
 (`qwen3_5_moe`: 48 layers, Gated DeltaNet with gated attention every fourth layer, 256 routed experts of 1,024 with
 eight picked, a shared expert) through the 27B's engine (`zig/src/families/qwen27/`, #1125), from the publisher's
@@ -17,34 +20,77 @@ The MLX weights are affine 4-bit in groups of 64, with the router and the shared
 ## Run
 
 ```sh
-tensorfold-native serve ~/models/Ornith-1.5-122B-MLX-4bit --drafter ~/models/Ornith-1.5-122B-DFlash2 \
-  --name bench --parallel 4 --context 32768
+TF_QWEN27_SLOT_RESUME=0 tensorfold-native serve ~/models/Ornith-1.5-122B-MLX-4bit \
+  --drafter ~/models/Ornith-1.5-122B-DFlash2 --name bench --parallel 4 --context 32768 \
+  --prompt-cache-gib 0 --no-thinking
 ```
 
-`--no-drafts` decodes one token a round. Loading takes about 10 s from a warm page cache (55 s cold). Between requests,
-`/health`'s `memory.active` reports 70.6 / 71.1 GiB without drafts and 71.6 / 72.1 GiB with DFlash2 at one / four
-streams of 32,768 tokens, out of the 179 GiB the 70% cap allows on 256 GiB, plus a 16 GiB prompt cache by default.
-Idle and peak health snapshots are in [health.txt](../receipts/ornith-122b-metal/health.txt).
+This is the measured fresh-state configuration: both the prompt cache and slot-0 standing-state reuse are off.
+Use `--parallel 1` for a dedicated one-stream server. `--no-drafts` replaces `--drafter` for plain decoding;
+`--mtp-drafts 1 --drafter ~/models/Ornith-1.5-122B-mtp` selects MTP instead. MTP and DFlash2 do not combine:
+the Metal loader selects one draft source, and in MTP mode `--drafter` names the MTP shards.
+The historical [health snapshots](../receipts/ornith-122b-metal/health.txt) used the older build and cache settings,
+not this fresh-state configuration.
 
 ## Speed
 
-Greedy, 256 tokens per request, the first four of `tools/bench_prompts.json`'s 16 prompts (request `i` takes prompt
-`i`: `quicksort-raw`, `rust-reverse-words`, `multiply-17-23`, `sleep-tips`), median of three. Each server was a fresh
-boot. "Peak" is `/health`'s `memory.peak` after the run.
+Measured on 12 November 2026: Mac17,15, Apple M5 Ultra, 256 GiB, macOS 27.0 (26A425), Zig 0.17.0,
+`tensorfold-native 1.2.7` built with `zig build native -Dcpu=apple_m1` from
+`630390e6e0eda36d162b10e17336c61a7ef3da46`. Binary SHA-256:
+`4a49920da475c987bafd9dae0f2caa5fad96b1fa497c1b1ff85984612b4afdb6`.
+Checkpoint revisions are those above; no weight or arithmetic changes were made for these measurements.
 
-| Drafts | Streams | Server | tok/s per stream | Aggregate tok/s | First token (median, max) | Tokens a round | Peak |
-| --- | ---: | --- | ---: | ---: | --- | ---: | ---: |
-| none | 1 | `--parallel 1` | 91.5 | 91.5 | 0.041 s, 0.042 s | 1.0 | 71.1 GiB |
-| none | 1 | `--parallel 4` | 89.4 | 89.4 | 0.038 s, 0.05 s | 1.0 | |
-| none | 4 | `--parallel 4` | 53.6 | 211.8 | 0.131 s, 0.26 s | 1.0 | 74.6 GiB |
-| DFlash2 | 1 | `--parallel 1` | 241.8 | 241.8 | 0.043 s, 0.043 s | 6.2 | 72.2 GiB |
-| DFlash2 | 1 | `--parallel 4` | 239.3 | 239.3 | 0.040 s, 0.05 s | 6.2 | |
-| DFlash2 | 4 | `--parallel 4` | 76.1 | 254.9 | 0.110 s, 0.25 s | 3.3 | 76.7 GiB |
+Greedy, seed 1234, 256 tokens, EOS ignored, thinking off, one 16-token warmup, three repetitions.
+One stream sends `quicksort-raw`; four streams send the first four entries of `tools/bench_prompts.json`:
+`quicksort-raw`, `rust-reverse-words`, `multiply-17-23`, `sleep-tips`. A fresh server was used for each mode/capacity,
+with the flags in **Run**. `uptime` was checked before every timed group; groups waited when one-minute load exceeded
+36. Recorded starts in this matrix were 19.3–34.3. The machine was shared: this gate is not GPU isolation.
 
-DFlash2 drafts for one stream at a time (the server says `DFlash2 drafts for one of them`), so its four-stream gain
-over plain decoding is 1.20x against 2.64x on the dedicated one-stream servers (2.68x at one stream on the
-four-stream servers). Every drafted reply's token SHA-256 equals its `"draft": false` run, and every concurrent
-reply equals its solo run.
+Rates are medians of three groups (per-stream rates pool their requests); decode excludes first-token latency.
+TTFT is client-observed first content, not startup or prefill-only time. Acceptance is summed
+`speculative.accepted / speculative.drafted` over timed replies only, excluding warmups and equality controls.
+
+| Mode | Streams | Server capacity | tok/s per stream | Aggregate tok/s | First token: median / max | Accepted / proposed |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| plain | 1 | 1 | 90.1 | 90.1 | 0.040 / 0.043 s | — (0/0) |
+| plain | 1 | 4 | 87.9 | 87.9 | 0.040 / 0.040 s | — (0/0) |
+| plain | 4 | 4 | 54.2 | 210.4 | 0.136 / 0.249 s | — (0/0) |
+| DFlash2 | 1 | 1 | 236.5 | 236.5 | 0.042 / 0.042 s | 63.2% (645/1,021) |
+| DFlash2 | 1 | 4 | 240.1 | 240.1 | 0.041 / 0.076 s | 66.7% (643/964) |
+| DFlash2 | 4 | 4 | 78.5 | 257.3 | 0.123 / 0.255 s | 70.1% (2,159/3,081) |
+| MTP selected, then no drafts | 1 | 1 | 66.1 | 66.1 | 0.047 / 0.048 s | 70.8% (34/48), first repetition only |
+| MTP selected, no drafts | 1 | 4 | 53.0 | 53.0 | 0.050 / 0.070 s | — (0/0) |
+| MTP | 4 | 4 | 43.9 | 155.2 | 0.157 / 0.290 s | 60.5% (1,486/2,455) |
+
+DFlash2 was 2.62× plain on dedicated one-stream servers and 1.22× plain in four-stream aggregate throughput.
+This build admits DFlash2 drafts on all four streams, unlike the older receipt's one drafting stream.
+MTP's lone-stream rows are **not sustained MTP throughput**: proposals stopped partway through the first full
+request, and later requests proposed none, even with both cache controls off. Four-stream replies all proposed
+drafts. The MTP aggregate varied substantially: 149.3, 185.4 and 155.2 tok/s; plain was 210.3, 210.4 and 216.8,
+DFlash2 262.4, 253.4 and 257.3. Do not interpret the MTP timing as an isolated kernel comparison.
+
+A separate one-stream diagnostic restarted the MTP server before each repetition (same 16-token warmup,
+then one 256-token request). All three requests proposed drafts and matched plain's token hash:
+70.5, 90.9 and 85.7 tok/s, median **85.7 tok/s**; TTFT median/max **0.047/0.051 s**;
+**68.8% acceptance (97/141)**. Recorded start loads were 18.9–32.1 after waiting out loads above 36.
+Even these requests proposed only 40–53 drafts over 219–228 rounds, so this is not sustained-drafting speed.
+Restarting did not establish an MTP advantage over plain, and is not a serving recommendation.
+
+Reproduce each four-capacity cell with the corresponding server mode above:
+
+```sh
+python3 tools/bench_concurrent.py http://127.0.0.1:8080 bench \
+  --levels 1,4 --tokens 256 --reps 3 --temperatures 0 --seed 1234 \
+  --prompts tools/bench_prompts.json --alone --serial --output bench.json
+```
+
+For dedicated one-stream cells use `--parallel 1`, `--levels 1`, and omit `--alone --serial`.
+For the plain four-capacity run, omit `--serial` as well (its solo controls already use plain decoding).
+The benchmark client does not retain draft counters in its JSON: capture the final response's `speculative`
+object or the server's `accepted=X/Y` lines, excluding the warmup, solo controls and `draft:false` controls.
+On the four-capacity servers, all 45 timed replies matched their solo token SHA-256 (15 per mode), and all eight
+drafted-mode solo controls matched `draft:false` (four per mode). No timed request failed or was unmeasured.
+Their 256-token hashes also matched the earlier [plain receipt](../receipts/ornith-122b-metal/bench-plain.json).
 
 ## Quality against the publisher's reference
 
@@ -58,6 +104,27 @@ The same prompt ids through mlx-lm 0.32.2 (MLX 0.32.4) on the same weights, gree
   greedy replies diverge.
 - Scored by mlx-lm's teacher-forced forward of the publisher's weights, TensorFold's continuations have a mean NLL of
   0.1126 a token, mlx-lm's own 0.1187: TensorFold's replies are as likely under the reference as the reference's own.
+
+Repeated on 12 November with the build above: plain and DFlash2's 16 × 128 token arrays were identical.
+MTP was additionally checked in four concurrent groups of four prompts, rather than relying on its silent solo
+path: all 16 replies proposed drafts (863 accepted of 1,336 proposed) and all 2,048 token IDs equalled plain.
+The leading match against the saved mlx-lm reference remained 636/2,048. A new teacher-forced scoring pass with
+mlx-lm 0.32.2 / MLX 0.32.4 reproduced mean NLL **0.1126066** for those common native continuations and
+**0.1186612** for the reference's own. This is unchanged reference quality, not token identity with mlx-lm.
+
+SHA-256 of the 2,048 token IDs concatenated in fixture order as little-endian uint32:
+
+| Continuations | SHA-256 |
+| --- | --- |
+| plain, DFlash2, active four-stream MTP | `af952baa7023863a2ea3b8773bf489080106c76a6dd10af91509731558818a9e` |
+| mlx-lm reference | `cbe5b72dd3ee625a508259772f5b812dccd3913ca2dab894bdb83c62f47e1266` |
+
+The public prompt fixture's file SHA-256 is
+`b44ae199fd64830124fa224087a389e96823b958d60eafefc22c78e9199c3e18`.
+Reference generation and NLL formulas are the existing
+[`mlx_ref.py`](../receipts/ornith-122b-metal/mlx_ref.py) and
+[`score_nll.py`](../receipts/ornith-122b-metal/score_nll.py); the new scoring pass used saved continuations
+after stopping the native server, so only one model process occupied the GPU.
 
 ## MTP layer
 
@@ -102,6 +169,6 @@ in a reused slot, where the reply keeps 47 of 48 drafts over 96 tokens.
 
 ## Not covered
 
-- MTP drafts' speed in `serve`: they verify, and match plain decoding, but were not timed here. They do not draft after
-  a resumed or restored prompt.
+- Sustained lone-stream MTP drafting: the served measurements above exposed zero-proposal requests. Turning off
+  slot resume did not resolve it; the underlying cause was not established. Resumed/restored MTP remains unqualified.
 - Images, sampled replies and prompts longer than the bench's (under 50 tokens) were not measured here.
