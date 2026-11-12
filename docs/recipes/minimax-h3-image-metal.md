@@ -235,6 +235,10 @@ samples. A separate 16-byte generation in `/tmp/tensorfold-speech.lock.stamp` de
 between lock polls. Missing, malformed or inaccessible signals invalidate timings; uncoordinated forwards do too.
 Both processes must use this protocol; an old speech binary cannot certify clean timings. Speech remains best-effort
 on filesystem errors: if both publishing and invalidating a generation fail, a short request can remain unobserved.
+Speech retries its shared hold for up to 50 ms past a render's microsecond exclusive probe instead of losing it, and
+never waits for GPU work. The prompt encoder (`tf-h3-image-prompt`, the server's first stage) waits before each pass
+with three queued, and the decoder (`tf-h3-image-decoder`, its last) before each batch of tiles; both print the seconds
+they waited.
 
 ### Speech contention receipt, 12 November 2026
 
@@ -265,6 +269,22 @@ Cold reference conditioning remains outside the demonstrated latency bound: firs
 14.819 s while building 1284 cached reference rows, versus 0.528 s on the next idle request. A cold request during
 a render took 15.332 s. The five sub-three-second results therefore establish warm live-voice contention relief,
 not a cold-start guarantee. Generation checks now bracket the complete wall interval, including output copies.
+
+### Every stage of the resident server, 13 November 2026
+
+Same machine, speech server and client, from this branch on port 18899; `tf-h3-image-server` drew card 34's prompt at
+4096x4096, seeds 42 and 43. The server's first request after start, with its reference rows still unbuilt in memory,
+reached first PCM in 3.019 s idle; the next took 0.429 s. During the render (first PCM, all HTTP 200):
+
+| Where the notes landed | First PCM (s) | The render's own record |
+|---|---|---|
+| Denoising, one note every 17.5 s | 0.806, 1.208, 1.179, 1.204, 1.147 | five steps waited 2.37-2.76 s each, all `timing_valid=false`; one clean step `true` |
+| Back to back over step 6 | 0.412-1.131 (twelve notes) | step 6 waited 23.14 s, `false`; steps 1-5 `true` |
+| Back to back over the decoder | 1.030, 0.517, 0.590, 0.517 | 441 tiles waited 9.30 s; all six steps `true` |
+
+Each run's seed-42 rows matched the 12 November baseline byte-for-byte (`b3726693...`). The prompt encoder runs
+0.3 s a request at this size, too short to target from the client; `test-h3-image-server` covers it with a held turn.
+The isolated server was stopped afterward; the live release server was not changed.
 
 ## Gates, fixed before any run
 
