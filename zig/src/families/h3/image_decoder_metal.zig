@@ -7,6 +7,7 @@ const kernels = @import("h3_image_decoder_kernels");
 pub const host = @import("image_decoder.zig");
 pub const vae = @import("picture_vae.zig");
 pub const reference = @import("image_decoder_reference.zig");
+const read_ahead = @import("read_ahead.zig");
 
 const W = host.width;
 const F = host.ffn;
@@ -115,6 +116,12 @@ pub const Decoder = struct {
             return err;
         };
         const data = map.bytes[8 + len ..];
+        const spans = try a.alloc(read_ahead.Span, items.len);
+        for (spans, items) |*s, it| {
+            const e = header.get(it.name).?;
+            s.* = .{ .path = path, .lo = 8 + len + e.begin, .hi = 8 + len + e.end };
+        }
+        _ = try read_ahead.read(spans);
         const out = d.params();
         for (items) |it| {
             const e = header.get(it.name).?;

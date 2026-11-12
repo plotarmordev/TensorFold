@@ -450,6 +450,9 @@ the United States of America. Read it before use.
 
 `zig build compile-h3-host` compiles both H3 tools without the Metal compiler.
 
+`zig build test-h3-image-prompt` also checks the read-ahead: spans across pieces and files are read once, and a short
+or missing file fails.
+
 ## Kernel contract
 
 The edit encoder's, prompt path's and image decoder's kernels are registered with the kernel contract
@@ -462,6 +465,264 @@ The contract found one fault, now fixed: the prompt path's attention filled a ro
 key at weight 0, so an infinite value there gave 0 x Inf = NaN where float64 keeps the infinity. A padded key now adds
 nothing; finite outputs keep their bytes.
 
+## Speed: a byte-identical cold-start win
+
+A first picture after the weights leave the page cache spent most of its time waiting on disk, not the GPU. Each tool
+maps its bf16 weights and Metal reads them in place, so the first touch of every 16 KiB page is a fault served by one
+small read. On the M5 Ultra's SSD a 2.3 GB file read that way takes 40 s (0.06 GB/s); 16 threads each `pread`ing 8 MiB
+pieces take 0.7 s (3.2 GB/s). Faulting the mapping from 16 threads stays at 0.38 GB/s.
+
+So each tool now reads the bytes it is about to use into the page cache first (`h3/read_ahead.zig`), then runs
+unchanged on the same mapping: the transformer reads its whole shards when `Model.load` opens them; the prompt path
+reads its 50 text layers, embedding, `condition_proj` and token refiner; the decoder reads its tensors before its
+bf16 conversion. A missing or short file fails the load. The load stays zero-copy; only the faults are gone.
+
+**Card 35 ships the cold-start improvement:** 229 to 61 s at 2048x2048 and 288 to 123 s at 4096x4096.
+The lead's 12 November scope decision keeps the unchanged native path as the strict quality oracle and makes
+cross-stack picture differences descriptive, not an acceptance gate. No further engine change is part of this round.
+Warm 2048 still loses to the documented diffusers/MPS path: **27 s versus 16.633 s**, both including PNG writing.
+Card **46, “MiniMax-H3-Image: warm 2048 picture faster than diffusers on this Mac”**, owns that gap, drawing on
+card 40's cascade or card 42's idea sweep. Residency alone is not projected to close it (see the ranked ideas).
+
+### Gates, fixed before the runs
+
+Same machine, build flags, seed 42, prompt (`prompt.txt` of card 34) and sizes for both builds. The case, final
+latent and PNG of the new build must be **byte-identical** to the old build's: the change only decides when pages
+are read, so any difference is a bug. Both sizes passed: `cmp` found no difference in any of the three files.
+
+### Measured
+
+Before each run, every weight file (`text_encoder/`, `transformer/`, `vae/`) was evicted from the page cache
+(`msync(MS_INVALIDATE)` on a mapping). Wall seconds per tool, as `date` around each process; the last column is the
+picture.
+
+| Size | Build | Prompt | Transformer (load) | Decoder | Picture |
+|---|---|---|---|---|---|
+| 2048 | retained baseline, binary revision unrecorded | 87 | 116 (102.9) | 26 | 229 |
+| 2048 | read ahead | 29 | 28 (12.7) | 4 | **61** |
+| 4096 | retained baseline, binary revision unrecorded | 45 | 135 (75.6) | 108 | 288 |
+| 4096 | read ahead | 13 | 78 (16.9) | 32 | **123** |
+
+A cold picture is 3.8x faster at 2048 and 2.3x at 4096. The steps did not change (1.83-1.86 s at 2048, 9.9-10.1 s
+at 4096), and are now most of the 4096 picture. The retained baseline prompt at 4096 found part of the encoder still cached from
+the 2048 run before it (its encoder took 41 s against 76 s at 2048), so its gain is understated.
+
+### Other stacks, measured here
+
+The comparison stacks in the approved scope are diffusers on MPS and ComfyUI's int8 repack. The native cold-start
+win above is measured against our unchanged path, not a claim to beat every stack on every workload. The earlier
+cross-stack timings below are retained as diagnostics: diffusers included a custom checkpoint conversion, and
+ComfyUI's warm 2048 used seed 43 rather than 42. The endpoint includes PNG saving:
+
+| Stack | 2048 first picture | 2048 warm | 4096 warm | Seconds per step, 2048 / 4096 |
+|---|---|---|---|---|
+| TensorFold, read ahead (diagnostic; binary revision unrecorded) | 61 | 27 | 100 | 1.83 / 10.0 |
+| diffusers with custom checkpoint conversion on MPS | 358.6 (load/conversion 333.2) | 20.0 | 167.7 | not timed |
+| ComfyUI `b2f6707` (int8 DiT and text encoder, fp16 VAE) | 148 | 32.2 (seed 43; excluded from warm comparison) | 149 | 3.5 / 17.2 |
+
+The documented-loader and matched-input reruns below supersede the converted diffusers runner and seed-43 warm
+ComfyUI comparison. Native warm 4096 took 100 s versus documented diffusers' 103.640 s repeat; this small observed
+advantage is a single-run comparison, not a noise-controlled speedup. No warm-2048 improvement is claimed here.
+
+How each ran:
+
+- **diffusers** ([docs](https://huggingface.co/docs/diffusers/main/en/api/pipelines/minimax_h3_image)):
+  `MiniMaxH3ImageModularPipeline`, diffusers `0905b667fe3f37f43b6ef9c6e05ad20636206938` (`0.42.0.dev0`),
+  torch `2.15.0`, transformers `5.22.2`, safetensors `0.8.0`, Pillow `13.0.0`; components resident on MPS.
+  The local runner loaded the text encoder, tokenizer, processor, VAE and scheduler, then built the transformer
+  with `state_dict("mps")`: QKV splitting, concatenation, key renaming and gate/up rearrangement were inside the
+  333.2 s load timer. That number cannot be attributed entirely to page faults and cannot represent the unchanged
+  documented loader. The first request took 24.2 s plus 1.2 s to save PNG (358.6 s including load); the warm request
+  took 19.2 s plus 0.8 s to save PNG. The 4096 request took 142.8 s plus 24.9 s to save PNG.
+- **ComfyUI** ([tutorial](https://docs.comfy.org/tutorials/image/minimax/minimax-h3-image)): its text-to-image
+  template with the expander off, posted to a headless server. On a Mac `comfy_kitchen` has only its eager backend:
+  the int8 weights are dequantized before each product, so they halve the bytes read but not the work, and the text
+  encoder runs on the CPU.
+- **SGLang and vLLM-Omni** ([SGLang cookbook](https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3-image),
+  [vLLM-Omni recipe](https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3-Image)): CUDA and ROCm only, so neither runs on a
+  Mac. SGLang's warm 2048 is 1.934 s on an H200 and 16.21 s on a DGX Spark (GB10), excluding startup and PNG
+  encoding. It keeps components resident, precomputes the AdaLN tables (as `modulation.zig` does), fuses QK-norm with
+  rotary, runs dense attention, batches decode tiles, caches text conditioning, and offers FP8, CUDA graphs and
+  multi-GPU splits.
+
+Identical seed numbers alone are insufficient for picture comparison: unpacking the native case's noise to
+`[1, 24, H/16, W/16]` and comparing it with torch `2.15.0` CPU `randn` at seed 42 finds a maximum absolute difference
+of `2.205371856689453e-6` at both sizes. The reruns below inject the exact native initial latent, preserve the prompt
+and schedule, and retain numerical final-latent and decoded-RGB results. ComfyUI repeats keep seed 42 and disable
+execution caching, rather than change the seed to force execution.
+
+The branch's merge base is the card-34 fork at `49e08ffd4ab70802d291324a314a4cdc00efa25f`; the retained baseline
+executables do not have an independently recorded source revision. The lead removed the unidentified maintainer
+image stack from this card's comparison scope: upstream HEAD `eab305db0091a23b28122caadc8bf069f53d211e` has neither
+this image recipe nor the image decoder module. No result against that stack is claimed.
+
+#### Review rerun protocol
+
+Before the cross-stack reruns, the diagnostic bounds were fixed at final normalized latent cosine **>= 0.99** and
+decoded RGB maximum absolute difference **<= 1**, with finite latents and matching shapes. The image bound failed;
+those failures remain recorded below. On 12 November, the lead explicitly replaced cross-stack pass/fail acceptance
+with descriptive PSNR and SSIM, since different stacks have different rounding. This is a scope decision, not a
+retroactive pass under the old bound. The native optimization gate remains byte identity for case, latent and PNG.
+
+`tools/zig/h3_image_compare.py` compares raw normalized F32 latents, or ComfyUI `SaveLatent` files, and decoded PNGs:
+
+```sh
+python tools/zig/h3_image_compare.py baseline.latent.f32 candidate.latent.f32 baseline.png candidate.png --size 2048
+python tools/zig/h3_image_compare.py baseline.latent.f32 candidate.latent baseline.png candidate.png --size 4096
+```
+
+It exits nonzero on a failed gate. Both retained native sizes give cosine 1, relative error 0, pixel maximum 0 and
+pixel MAE 0; separate byte comparisons also pass. A planted negated latent and black image fail both gates
+(cosine -1, pixel maximum 255). These checks validate the comparator, not a new cross-stack speed claim.
+
+The normal diffusers loader resolves `transformer_diffusers/` and `vae_diffusers/` from the pinned checkpoint
+`fbde899fffb5c5225ee8dd7027680113746af42e`. Its required replacement invocation is:
+
+```python
+pipe = ModularPipeline.from_pretrained(model_dir)
+pipe.load_components(dtype=torch.bfloat16)
+pipe.to("mps")
+torch.mps.synchronize()
+```
+
+No `state_dict` conversion belongs in this comparison. Time initialization through the final synchronization,
+then each complete request through `image.save(...)` returning. Save latent receipts outside the request timer.
+The pinned files finished downloading and passed the fetcher's SHA-256 verification before the normal-loader run
+below. The OS page cache was not evicted after download and verification; this is process-cold, not storage-cold.
+
+#### Documented diffusers loader, matched inputs
+
+Same versions and machine as above, Python 3.12.16. All components loaded with the documented calls above,
+without checkpoint conversion, and remained resident on MPS. The command was
+`nice -n 10 "$DIFFUSERS_VENV/bin/python" diffusers_documented.py`; the local measurement runner used this loop
+after loading the pipeline (paths supplied locally; no weights or output images are published):
+
+```python
+for size in (2048, 2048, 4096, 4096):
+    noise = load_file(str(cases / f"base-{size}-a.safetensors"))["noise"]
+    noise = noise.reshape(size // 32, size // 32, 24, 2, 2)
+    noise = noise.permute(2, 0, 3, 1, 4).reshape(1, 24, size // 16, size // 16).contiguous()
+    start = time.perf_counter()
+    state = pipe(prompt=prompt, height=size, width=size, latents=noise,
+                 generator=torch.Generator().manual_seed(42), output=["images", "latents"])
+    torch.mps.synchronize()
+    image_done = time.perf_counter()
+    state.get("images")[0].save(output_png)
+    png_done = time.perf_counter()
+    # Outside the request timer; this output is already unpacked NCHW.
+    state.get("latents").float().cpu().numpy().tofile(output_latent)
+```
+
+Initialization from `from_pretrained` through MPS synchronization took **129.383 s**; startup including Python
+imports from the runner's first timestamp took **144.460 s**. First timestamp through first PNG written was
+**169.447 s**, including preparation of the matched noise. These are not the old 333.2 s conversion measurement.
+
+| Size / request | Inference through MPS synchronization | PNG save | Request through PNG written |
+|---|---|---|---|
+| 2048 first | 24.122 s | 0.695 s | 24.817 s |
+| 2048 repeat | 15.806 s | 0.827 s | 16.633 s |
+| 4096 first, after 2048 | 91.225 s | 10.813 s | 102.038 s |
+| 4096 repeat | 97.944 s | 5.696 s | 103.640 s |
+
+All requests used seed 42 and the exact native initial noise; each executed six steps. Both repeats produced
+identical final latent values and decoded pixels. The initial capture runner mistakenly unpacked the already-NCHW
+output a second time; that pure permutation was inverted before comparison, without changing any values. The
+snippet above shows the correct direct capture. Against the native baseline, both repeats at each size give:
+
+| Size | Latent cosine | Latent relative error | RGB maximum absolute difference | RGB MAE | Fixed diagnostic gate |
+|---|---|---|---|---|---|
+| 2048 | 0.9965921509572248 | 0.08261069531715759 | 237 | 3.2704102198282876 | **FAIL image**, pass latent |
+| 4096 | 0.9960658854188926 | 0.08869195143972416 | 255 | 3.564861317475637 | **FAIL image**, pass latent |
+
+This closes the missing normal-loader measurement. It does not make the old cross-stack pixel diagnostic pass.
+At 2048, native storage-cold 61 s is below diffusers process-cold 169.447 s despite the latter's un-evicted page cache.
+There is no standalone process-cold 4096 diffusers run: adding its measured 129.383 s load to the 102.038 s first
+4096 request gives **231.421 s as an estimate**, not a measured first-picture total. The native 123 s storage-cold
+4096 result must not be presented as a directly measured cold-versus-cold win over that estimate.
+
+#### ComfyUI matched-input diagnostic rerun
+
+ComfyUI `b2f670744386d36d39c41cc37cd1e30151046222`, Python `3.12.16`, torch `2.15.0`, transformers `5.22.2`,
+safetensors `0.8.0`, Pillow `13.0.0`, comfy-kitchen `0.2.41`; macOS `27.0` build `26A425`, M5 Ultra, 256 GiB.
+The template used the same int8 transformer/text encoder and fp16 VAE, expander off, Euler/simple, six steps, CFG 1.
+The server ran with `--cache-none`; every history entry recorded `execution_cached: {nodes: []}` and every run
+executed six steps. All four saved PNG prompt metadata records contain seed **42**.
+
+Only the benchmark noise source was replaced, before starting ComfyUI's `main.py`; no sampler or model arithmetic
+was changed. For each native case, the hook returned this exact tensor from `comfy.sample.prepare_noise`:
+
+```python
+noise = load_file(f"base-{size}-a.safetensors")["noise"]
+noise = noise.reshape(size // 32, size // 32, 24, 2, 2)
+noise = noise.permute(2, 0, 3, 1, 4).reshape(latent.shape).contiguous()
+assert seed == 42 and noise_inds is None and noise.dtype == latent.dtype
+return noise
+```
+
+`SaveLatent` captured sampler output and `SaveImage` captured decoder output. ComfyUI's H3 latent format has scale
+factor 1; comparison uses its normalized `[1, 24, 1, H/16, W/16]` tensor directly against the native F32 latent.
+The two repeats at each size produced identical latent values and decoded pixels. PNG file hashes differ because
+the recorded output-prefix metadata differs.
+
+| Size | Latent cosine | Latent relative error | RGB maximum absolute difference | RGB MAE | Fixed diagnostic gate |
+|---|---|---|---|---|---|
+| 2048, both repeats | 0.9947039242567004 | 0.10285523962274952 | 255 | 4.653071403503418 | **FAIL image**, pass latent |
+| 4096, both repeats | 0.9931320414034048 | 0.11718428606255665 | 255 | 5.589069624741872 | **FAIL image**, pass latent |
+
+The observed client intervals were 123.944 / 46.855 s at 2048 and 149.556 / 186.907 s at 4096. These include HTTP
+polling and latent saving as well as PNG saving, and `--cache-none` reloads graph components; they are **not** the
+resident-warm or process-cold timing boundaries above. Downloads shared the disk during these diagnostics. Do not
+use these intervals for a speed ranking. The old pixel diagnostic remains failed, not relabelled as passed. The
+earlier ComfyUI first-picture 2048 observation was 148 s versus native 61 s; no independent process-cold 4096
+ComfyUI total was recorded. These limitations do not change the measured native before/after cold-start win.
+
+#### Cross-stack picture differences (descriptive, not gates)
+
+Measured on 12 November from the retained matched-noise PNGs above, not from a new inference run. Each pair uses
+seed 42, card 34's prompt, the same native initial noise and six steps. Native baseline and read-ahead case, latent
+and PNG bytes were rechecked equal at both sizes. Each stack's two reruns also decode to identical RGB pixels, so
+both repeats give the same metrics. These values neither imply pixel equality nor replace the native byte gate.
+
+| Native picture versus | Size | PSNR (dB) | SSIM |
+|---|---|---|---|
+| Documented diffusers/MPS | 2048 | 30.150806 | 0.979374 |
+| Documented diffusers/MPS | 4096 | 28.598143 | 0.972045 |
+| ComfyUI int8 repack | 2048 | 28.009878 | 0.966418 |
+| ComfyUI int8 repack | 4096 | 26.307662 | 0.959728 |
+
+Decode PNGs with Pillow `13.0.0` to RGB uint8 without resizing, linearizing or color-profile conversion. PSNR is
+`10 * log10(255**2 / MSE)`, pooling all RGB samples. SSIM averages the three channel scores, using an 11x11 Gaussian
+window, sigma 1.5, population covariance, K1=0.01 and K2=0.03, with no downsampling; the five-pixel border is excluded
+from the mean by scikit-image. Measurement versions: Python `3.12.16`, NumPy `2.5.4`, SciPy `1.18.1`, scikit-image
+`0.26.0`. Reproduce each row with the corresponding pair of retained PNGs:
+
+```python
+import numpy as np
+from PIL import Image
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+
+a = np.asarray(Image.open(native_png).convert("RGB"))
+b = np.asarray(Image.open(stack_png).convert("RGB"))
+assert a.shape == b.shape
+print(peak_signal_noise_ratio(a, b, data_range=255))
+print(structural_similarity(a, b, channel_axis=-1, data_range=255, win_size=11,
+                           gaussian_weights=True, sigma=1.5, use_sample_covariance=False))
+```
+
+Local receipt names: native `base-{size}-a.png` (equal to `new-{size}-a.png`); documented diffusers
+`documented-{size}-{1,2}.png`; ComfyUI `matched-{size}-{1,2}_00002_.png`. No weights, latents or pictures are published.
+
+### Next, ranked
+
+| # | Idea | Size | Basis |
+|---|---|---|---|
+| 1 | One process holding the weights, with SGLang's conditioning cache | about -6 s at warm 2048 from residency alone; 4096 upper estimate -15 s | Projection, not a landed result: warm 2048 loader logs total about 6.3 s (prompt 0.8, transformer 3.3, decoder 2.2). Removing those from 27 s leaves about 21 s, not 14 s; PNG and CPU work remain. Conditioning caching needs separate accounting and cannot omit prompt work in an uncached comparison. |
+| 2 | PNG writing | upper estimate -18 s at 4096, -4 s at 2048 | Time after decoder tiles includes single-threaded deflate (`moss_image/png.zig`). Parallel bands could remove much of it but change compressed bytes, so they do not satisfy this card's fixed PNG byte-identity gate. Any separate decoded-pixel gate requires explicit approval before runs. |
+| 3 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps at 4096 | The steps are compute-bound: a 2048 step is about 183 TFLOP in 1.83 s, a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs. ComfyUI's int8 here shows the other half: dequantized before each product, its steps are 1.7-1.9x slower than our bf16, so int8 weights alone buy only bytes. Not bit-identical; it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000: -32% at 2048, -22% at 4K. |
+| 4 | Attention | up to -15 s at 4096 | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. |
+| 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step at 4096 | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones; SGLang's recipe runs all six steps. Each skip is a sixth of the steps; it needs a gate against the six-step latent. |
+| 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU; SGLang batches its tiles the same way. |
+
 ## On an M5 Ultra with the release weights
 
 Measured on TensorFold 1.2.7 at `a1c758603` (`v1.2.7-154-ga1c758603`, this branch with our main and card 43 merged in),
@@ -469,7 +730,7 @@ built with `-Dcpu=apple_m1 -Doptimize=ReleaseFast`. Text to image from the relea
 `transformer/`, `vae/`; not the diffusers copies), seed 42, a 24-token prompt, each tool its own process, no other
 model running; other checkouts' builds shared the CPU and disk. Two runs at each size, 2048 then 4096, back to back;
 each tool maps its weights again. Both runs at a size write the same bytes as the first build's PNGs, kept outside the
-repo: `/Users/agents/projects/tensorfold/h3-image-runs/34/fox-2048-seed42.png` and `fox-4096-seed42.png` beside it.
+repo as `h3-image-runs/34/fox-2048-seed42.png` and `fox-4096-seed42.png` beside it.
 
 Seconds; a step's wall time, then its GPU time in brackets.
 
