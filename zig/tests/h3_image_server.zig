@@ -25,13 +25,14 @@ const Binding = struct {
     references: usize,
     tags: []const i32,
 
-    fn init(gpa: std.mem.Allocator, folder: *const image_tool.Folder, case: *const image_tool.Case, tags: []const i32) !Binding {
+    fn init(gpa: std.mem.Allocator, folder: *const image_tool.Folder, case: *const image_tool.Case, tags: []const i32, weights: ?mtl.ResidencySet) !Binding {
         const arena = try gpa.create(std.heap.ArenaAllocator);
         errdefer gpa.destroy(arena);
         arena.* = .init(gpa);
         errdefer arena.deinit();
         const model = try folder.bind(arena.allocator(), arena.allocator(), case);
         errdefer model.release();
+        if (weights) |set| model.queue.addResidencySet(set);
         return .{ .arena = arena, .model = model, .canvas = case.canvas, .rows = case.rows, .references = case.layout.references.len, .tags = try arena.allocator().dupe(i32, tags) };
     }
 
@@ -47,6 +48,39 @@ const Binding = struct {
         gpa.destroy(b.arena);
     }
 };
+
+/// `binding` for `case`: its text rows replaced when the layout fits, else released and bound anew; true when reused.
+fn rebind(gpa: std.mem.Allocator, folder: *const image_tool.Folder, binding: *?Binding, case: *const image_tool.Case, tags: []const i32, weights: ?mtl.ResidencySet) !bool {
+    if (binding.*) |*b| if (b.fits(case, tags)) {
+        try b.model.retext(case.file);
+        return true;
+    };
+    if (binding.*) |*b| b.release();
+    binding.* = null;
+    binding.* = try Binding.init(gpa, folder, case, tags, weights);
+    return false;
+}
+
+/// Every weight file in one residency set on the three stages' queues. macOS unwires GPU memory idle for a second or
+/// two, so without it each stage's first commit of a request re-wires its weights: 0.3-0.7 s of step 1, up to 1.8 s
+/// of the prompt. With no keepalive, a request after a longer pause still re-wires once, in its prompt. Null, and the
+/// server runs as before, when the weights pass 70% of RAM or the set is unsupported.
+fn holdWeights(init: std.process.Init, a: std.mem.Allocator, encoder: *const prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae) !?mtl.resident.Resident {
+    var buffers: std.ArrayList(mtl.Buffer) = .empty;
+    for ([_][]const h3.Tensors{ encoder.text_w.shards.files, encoder.front_w.shards.files, folder.ck.shards, (&folder.heads)[0..1] }) |mapped|
+        for (mapped) |f| try buffers.append(a, f.buffer);
+    try buffers.append(a, vae.d.weights);
+    const held = mtl.resident.Resident.hold(init.gpa, init.io, encoder.device, encoder.runner.queue, buffers.items, "h3 image weights") catch |err| {
+        std.debug.print("weights not held resident: {s}\n", .{@errorName(err)});
+        return null;
+    } orelse {
+        std.debug.print("weights not held resident: past 70% of RAM\n", .{});
+        return null;
+    };
+    vae.d.queue.addResidencySet(held.held.set);
+    std.debug.print("{d:.1} GiB of weights held resident\n", .{mtl.ResidencySet.gibs(held.held.bytes)});
+    return held;
+}
 
 pub fn main(init: std.process.Init) !u8 {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -65,6 +99,9 @@ pub fn main(init: std.process.Init) !u8 {
     const vae = try decoder_tool.Vae.load(init, a, args[2]);
     defer vae.d.deinit();
     std.debug.print("loaded the prompt encoder, transformer weights and decoder in {d:.1} s; ready\n", .{mtl.clock.seconds() - loading});
+    var resident = try holdWeights(init, a, &encoder, &folder, &vae);
+    defer if (resident) |*r| r.deinit();
+    const weights: ?mtl.ResidencySet = if (resident) |r| r.held.set else null;
 
     var binding: ?Binding = null;
     defer if (binding) |*b| b.release();
@@ -82,7 +119,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (fields.len == 0) continue;
         var request = std.heap.ArenaAllocator.init(init.gpa);
         defer request.deinit();
-        serve(init, request.allocator(), &encoder, &folder, &vae, &binding, fields) catch |err| {
+        serve(init, request.allocator(), &encoder, &folder, &vae, &binding, weights, fields) catch |err| {
             std.debug.print("request failed: {s}\n", .{@errorName(err)});
         };
     }
@@ -110,7 +147,7 @@ fn nextLine(in: *std.Io.Reader) !?[]const u8 {
 }
 
 /// One request line: its prompt's case, the six steps on the bound (or a new) transformer, its PNG, a timing line.
-fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae, binding: *?Binding, line: []const u8) !void {
+fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae, binding: *?Binding, weights: ?mtl.ResidencySet, line: []const u8) !void {
     var it = std.mem.tokenizeAny(u8, line, " \t");
     const size = try prompt_tool.size(it.next() orelse return error.BadRequest);
     const seed = try std.fmt.parseInt(u64, it.next() orelse return error.BadRequest, 10);
@@ -133,14 +170,7 @@ fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Enc
     defer case.file.deinit();
     const tags = pic.values(i32, try pic.at("text_tags", .i32, case.layout.text), case.layout.text);
     const cased = mtl.clock.seconds();
-    const reused = if (binding.*) |*b| b.fits(&case, tags) else false;
-    if (reused) {
-        try binding.*.?.model.retext(case.file);
-    } else {
-        if (binding.*) |*b| b.release();
-        binding.* = null;
-        binding.* = try Binding.init(init.gpa, folder, &case, tags);
-    }
+    const reused = try rebind(init.gpa, folder, binding, &case, tags, weights);
     const bound = mtl.clock.seconds();
 
     const out = try image_tool.free(a, binding.*.?.model, folder, &case, prefix);
@@ -265,20 +295,13 @@ fn buildCase(init: std.process.Init, a: std.mem.Allocator, dir: std.Io.Dir, dir_
 }
 
 fn freshLatent(a: std.mem.Allocator, folder: *const image_tool.Folder, case: *const image_tool.Case, tags: []const i32, prefix: []const u8) ![]f32 {
-    var b = try Binding.init(testing.allocator, folder, case, tags);
+    var b = try Binding.init(testing.allocator, folder, case, tags, null);
     defer b.release();
     return (try image_tool.free(a, b.model, folder, case, prefix)).latent;
 }
 
-fn residentLatent(a: std.mem.Allocator, folder: *const image_tool.Folder, binding: *?Binding, case: *const image_tool.Case, tags: []const i32, prefix: []const u8) ![]f32 {
-    const reused = if (binding.*) |*b| b.fits(case, tags) else false;
-    if (reused) {
-        try binding.*.?.model.retext(case.file);
-    } else {
-        if (binding.*) |*b| b.release();
-        binding.* = null;
-        binding.* = try Binding.init(testing.allocator, folder, case, tags);
-    }
+fn residentLatent(a: std.mem.Allocator, folder: *const image_tool.Folder, binding: *?Binding, case: *const image_tool.Case, tags: []const i32, weights: mtl.ResidencySet, prefix: []const u8) ![]f32 {
+    _ = try rebind(testing.allocator, folder, binding, case, tags, weights);
     return (try image_tool.free(a, binding.*.?.model, folder, case, prefix)).latent;
 }
 
@@ -307,7 +330,7 @@ fn residentFixture(init: std.process.Init, a: std.mem.Allocator, dir: std.Io.Dir
     return .{ .folder = folder, .cases = cases };
 }
 
-test "resident binding matches fresh bindings across prompts, rows and canvas" {
+test "resident binding, its weights held resident, matches fresh bindings across prompts, rows and canvas" {
     const device = try mtl.Device.init();
     if (!device.tensorUnits()) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -333,32 +356,36 @@ test "resident binding matches fresh bindings across prompts, rows and canvas" {
         for (f.folder.ck.shards) |*shard| shard.deinit();
         testing.allocator.free(f.folder.ck.shards);
     }
+    const weights = try device.residencySet(f.folder.ck.shards.len);
+    defer weights.deinit();
+    for (f.folder.ck.shards) |shard| weights.add(shard.buffer);
+    weights.commit();
     var binding: ?Binding = null;
     defer if (binding) |*b| b.release();
 
     const fresh_a = try freshLatent(a, &f.folder, &f.cases[0].case, f.cases[0].tags, try std.fmt.allocPrint(a, "{s}/fresh-a", .{dir_path}));
-    const resident_a = try residentLatent(a, &f.folder, &binding, &f.cases[0].case, f.cases[0].tags, try std.fmt.allocPrint(a, "{s}/resident-a", .{dir_path}));
+    const resident_a = try residentLatent(a, &f.folder, &binding, &f.cases[0].case, f.cases[0].tags, weights, try std.fmt.allocPrint(a, "{s}/resident-a", .{dir_path}));
     try expectSameLatent(fresh_a, resident_a);
 
     // a different prompt of the same length reuses the binding and replaces its text rows
     try testing.expect(binding.?.fits(&f.cases[1].case, f.cases[1].tags));
     const fresh_b = try freshLatent(a, &f.folder, &f.cases[1].case, f.cases[1].tags, try std.fmt.allocPrint(a, "{s}/fresh-b", .{dir_path}));
-    const resident_b = try residentLatent(a, &f.folder, &binding, &f.cases[1].case, f.cases[1].tags, try std.fmt.allocPrint(a, "{s}/resident-b", .{dir_path}));
+    const resident_b = try residentLatent(a, &f.folder, &binding, &f.cases[1].case, f.cases[1].tags, weights, try std.fmt.allocPrint(a, "{s}/resident-b", .{dir_path}));
     try expectSameLatent(fresh_b, resident_b);
 
     // a changed token count and a changed canvas each release the binding and bind anew
     try testing.expect(!binding.?.fits(&f.cases[2].case, f.cases[2].tags));
     const fresh_c = try freshLatent(a, &f.folder, &f.cases[2].case, f.cases[2].tags, try std.fmt.allocPrint(a, "{s}/fresh-c", .{dir_path}));
-    const resident_c = try residentLatent(a, &f.folder, &binding, &f.cases[2].case, f.cases[2].tags, try std.fmt.allocPrint(a, "{s}/resident-c", .{dir_path}));
+    const resident_c = try residentLatent(a, &f.folder, &binding, &f.cases[2].case, f.cases[2].tags, weights, try std.fmt.allocPrint(a, "{s}/resident-c", .{dir_path}));
     try expectSameLatent(fresh_c, resident_c);
 
     try testing.expect(!binding.?.fits(&f.cases[3].case, f.cases[3].tags));
     const fresh_d = try freshLatent(a, &f.folder, &f.cases[3].case, f.cases[3].tags, try std.fmt.allocPrint(a, "{s}/fresh-d", .{dir_path}));
-    const resident_d = try residentLatent(a, &f.folder, &binding, &f.cases[3].case, f.cases[3].tags, try std.fmt.allocPrint(a, "{s}/resident-d", .{dir_path}));
+    const resident_d = try residentLatent(a, &f.folder, &binding, &f.cases[3].case, f.cases[3].tags, weights, try std.fmt.allocPrint(a, "{s}/resident-d", .{dir_path}));
     try expectSameLatent(fresh_d, resident_d);
 
     // back to the first request: a fresh binding again, the same latent
-    const resident_a2 = try residentLatent(a, &f.folder, &binding, &f.cases[0].case, f.cases[0].tags, try std.fmt.allocPrint(a, "{s}/resident-a2", .{dir_path}));
+    const resident_a2 = try residentLatent(a, &f.folder, &binding, &f.cases[0].case, f.cases[0].tags, weights, try std.fmt.allocPrint(a, "{s}/resident-a2", .{dir_path}));
     try expectSameLatent(fresh_a, resident_a2);
 }
 
@@ -402,7 +429,7 @@ test "a failed bind releases every Metal object it made" {
     try testing.expectEqual(baseline, device.allocated());
 
     var binding_alloc = std.testing.FailingAllocator.init(testing.allocator, .{ .resize_fail_index = 0 });
-    var bound = try Binding.init(binding_alloc.allocator(), &f.folder, &f.cases[0].case, &.{});
+    var bound = try Binding.init(binding_alloc.allocator(), &f.folder, &f.cases[0].case, &.{}, null);
     const tag_count = bound.arena.queryCapacity() / @sizeOf(i32) + 1;
     bound.release();
     try testing.expectEqual(baseline, device.allocated());
@@ -414,7 +441,7 @@ test "a failed bind releases every Metal object it made" {
         .fail_index = binding_alloc.alloc_index,
         .resize_fail_index = 0,
     });
-    try testing.expectError(error.OutOfMemory, Binding.init(tag_alloc.allocator(), &f.folder, &f.cases[0].case, tags));
+    try testing.expectError(error.OutOfMemory, Binding.init(tag_alloc.allocator(), &f.folder, &f.cases[0].case, tags, null));
     try testing.expect(tag_alloc.has_induced_failure);
     try testing.expectEqual(tag_alloc.allocated_bytes, tag_alloc.freed_bytes);
     try testing.expectEqual(baseline, device.allocated());
