@@ -1,0 +1,23 @@
+{
+ "status": "ok",
+ "model": "bench",
+ "model_ids": [
+  "bench"
+ ],
+ "max_batch_size": 1,
+ "warming": false,
+ "memory": {
+  "active": 77570984744,
+  "cache": 0,
+  "peak": 77570984744
+ },
+ "live": {
+  "connections": 0,
+  "waiting": 0,
+  "decode_tokens_per_second": 60.5,
+  "prefill_tokens_per_second": 0.0
+ },
+ "version": "1.2.7",
+ "backend": "metal",
+ "device": "Apple M5 Ultra"
+}

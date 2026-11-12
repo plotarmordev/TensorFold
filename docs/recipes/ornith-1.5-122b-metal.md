@@ -6,7 +6,8 @@ improve throughput in this benchmark; lone-stream drafting also stopped during t
 The native Metal engine serves [Ornith-1.5-122B](https://huggingface.co/ornith-ai/Ornith-1.5-122B), a Qwen3.5-MoE
 (`qwen3_5_moe`: 48 layers, Gated DeltaNet with gated attention every fourth layer, 256 routed experts of 1,024 with
 eight picked, a shared expert) through the 27B's engine (`zig/src/families/qwen27/`, #1125), from the publisher's
-MLX 4-bit weights, with incoai's DFlash2 drafter. Receipts are in [docs/receipts/ornith-122b-metal](../receipts/ornith-122b-metal/README.md).
+MLX 4-bit weights, with incoai's DFlash2 drafter. Receipts are in [docs/receipts/ornith-122b-metal](../receipts/ornith-122b-metal/README.md)
+and, for the 12 November speed and quality figures, [docs/receipts/ornith-122b-metal-mtp](../receipts/ornith-122b-metal-mtp/README.md).
 
 ## Checkpoint
 
@@ -86,8 +87,9 @@ python3 tools/bench_concurrent.py http://127.0.0.1:8080 bench \
 
 For dedicated one-stream cells use `--parallel 1`, `--levels 1`, and omit `--alone --serial`.
 For the plain four-capacity run, omit `--serial` as well (its solo controls already use plain decoding).
-The benchmark client does not retain draft counters in its JSON: capture the final response's `speculative`
-object or the server's `accepted=X/Y` lines, excluding the warmup, solo controls and `draft:false` controls.
+The benchmark client does not retain draft counters in its JSON: the
+[receipts](../receipts/ornith-122b-metal-mtp/README.md) keep each reply's `speculative` object in `*.raw.json`, and
+their `check.py` recomputes every row above, the acceptance counts and the restarted-MTP figures from them.
 On the four-capacity servers, all 45 timed replies matched their solo token SHA-256 (15 per mode), and all eight
 drafted-mode solo controls matched `draft:false` (four per mode). No timed request failed or was unmeasured.
 Their 256-token hashes also matched the earlier [plain receipt](../receipts/ornith-122b-metal/bench-plain.json).
@@ -121,10 +123,10 @@ SHA-256 of the 2,048 token IDs concatenated in fixture order as little-endian ui
 
 The public prompt fixture's file SHA-256 is
 `b44ae199fd64830124fa224087a389e96823b958d60eafefc22c78e9199c3e18`.
-Reference generation and NLL formulas are the existing
-[`mlx_ref.py`](../receipts/ornith-122b-metal/mlx_ref.py) and
-[`score_nll.py`](../receipts/ornith-122b-metal/score_nll.py); the new scoring pass used saved continuations
-after stopping the native server, so only one model process occupied the GPU.
+Reference generation is the existing [`mlx_ref.py`](../receipts/ornith-122b-metal/mlx_ref.py). The new scoring pass,
+[`score_saved.py`](../receipts/ornith-122b-metal-mtp/score_saved.py), scores the continuations saved in
+`quality-plain.json` after the native server stopped, so only one model process occupied the GPU; its per-prompt
+rows are `score-nll.json`, and `check.py` recomputes the token equality, MTP counts, hashes and means above.
 
 ## MTP layer
 

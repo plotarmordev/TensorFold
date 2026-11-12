@@ -1,0 +1,82 @@
+[
+ {
+  "name": "quicksort-raw",
+  "tensorfold": 0.10522647202014923,
+  "mlx_lm": 0.10522647202014923
+ },
+ {
+  "name": "rust-reverse-words",
+  "tensorfold": 0.04992153123021126,
+  "mlx_lm": 0.08376026153564453
+ },
+ {
+  "name": "multiply-17-23",
+  "tensorfold": 0.05549061298370361,
+  "mlx_lm": 0.05186409875750542
+ },
+ {
+  "name": "sleep-tips",
+  "tensorfold": 0.06549185514450073,
+  "mlx_lm": 0.09810809046030045
+ },
+ {
+  "name": "js-debounce-raw",
+  "tensorfold": 0.11460037529468536,
+  "mlx_lm": 0.11460037529468536
+ },
+ {
+  "name": "linear-equation",
+  "tensorfold": 0.10551918298006058,
+  "mlx_lm": 0.09040753543376923
+ },
+ {
+  "name": "fishing-village",
+  "tensorfold": 0.21387913823127747,
+  "mlx_lm": 0.17942780256271362
+ },
+ {
+  "name": "sql-left-join",
+  "tensorfold": 0.05308888852596283,
+  "mlx_lm": 0.0784684494137764
+ },
+ {
+  "name": "rectangle",
+  "tensorfold": 0.08451637625694275,
+  "mlx_lm": 0.10599397867918015
+ },
+ {
+  "name": "dinner-idea",
+  "tensorfold": 0.16006703674793243,
+  "mlx_lm": 0.1410023272037506
+ },
+ {
+  "name": "c-primes-raw",
+  "tensorfold": 0.0865524560213089,
+  "mlx_lm": 0.10459712147712708
+ },
+ {
+  "name": "prime-221",
+  "tensorfold": 0.08825825154781342,
+  "mlx_lm": 0.05157988518476486
+ },
+ {
+  "name": "heist-story",
+  "tensorfold": 0.17201341688632965,
+  "mlx_lm": 0.2110201120376587
+ },
+ {
+  "name": "bash-line-count",
+  "tensorfold": 0.19742323458194733,
+  "mlx_lm": 0.2577531039714813
+ },
+ {
+  "name": "sum-1-250",
+  "tensorfold": 0.0782245546579361,
+  "mlx_lm": 0.06639185547828674
+ },
+ {
+  "name": "blue-sky",
+  "tensorfold": 0.17143294215202332,
+  "mlx_lm": 0.15837721526622772
+ }
+]
