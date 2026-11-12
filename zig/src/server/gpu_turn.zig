@@ -9,21 +9,16 @@ pub const Turn = struct { io: std.Io, at: []const u8 = path };
 /// How often waiting batch work looks again; one poll is the most speech's end can be missed by.
 const poll: std.Io.Duration = .fromMilliseconds(20);
 
-/// Batch work's exclusive probes hold the lock for microseconds; speech retries past them for this long at most.
-const probe_grace: std.Io.Duration = .fromMilliseconds(50);
-
-/// Best-effort shared hold: speech still runs if the lock is unavailable, and never waits for batch work's GPU time.
+/// Shared hold; best effort only when the lock file cannot be opened. It blocks only behind batch work's exclusive
+/// probes, which `free` and `mark` take with tryLock and release at once, never across GPU work.
 pub fn speak(io: std.Io, at: []const u8) ?std.Io.File {
     defer stamp(io, at);
     const file = open(io, at) catch return null;
-    const until = std.Io.Clock.awake.now(io).addDuration(probe_grace);
-    while (true) {
-        if (file.tryLock(io, .shared) catch false) return file;
-        if (until.compare(.lte, std.Io.Clock.awake.now(io))) break;
-        io.sleep(.fromMilliseconds(1), .awake) catch break;
-    }
-    file.close(io);
-    return null;
+    file.lock(io, .shared) catch {
+        file.close(io);
+        return null;
+    };
+    return file;
 }
 
 pub fn done(io: std.Io, held: ?std.Io.File) void {
@@ -143,7 +138,7 @@ test "batch work waits for every speech hold to end, and not at all without one"
     try std.testing.expectEqual(@as(f64, 0), yield(io, lock));
 }
 
-test "speech gives up only behind a lasting exclusive holder, and the file it makes is open to every user" {
+test "speech waits out a batch probe however long it is held, and the file it makes is open to every user" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -152,48 +147,25 @@ test "speech gives up only behind a lasting exclusive holder, and the file it ma
     const lock = try std.fs.path.join(std.testing.allocator, &.{ at, "speech.lock" });
     defer std.testing.allocator.free(lock);
 
-    const holder = try open(io, lock);
-    defer holder.close(io);
-    if (@import("builtin").os.tag != .windows) try std.testing.expectEqual(@as(u32, 0o644), (try holder.stat(io)).permissions.toMode() & 0o777);
+    const prober = try open(io, lock);
+    defer prober.close(io);
+    if (@import("builtin").os.tag != .windows) try std.testing.expectEqual(@as(u32, 0o644), (try prober.stat(io)).permissions.toMode() & 0o777);
     const before = mark(io, lock);
-    try holder.lock(io, .exclusive);
-    const started = std.Io.Clock.awake.now(io);
-    try std.testing.expect(speak(io, lock) == null);
-    try std.testing.expect(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds() < std.time.ns_per_s);
-    holder.unlock(io);
-    try std.testing.expect(!clean(io, lock, before));
-}
-
-test "speech keeps its hold when it arrives during a batch probe" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const at = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
-    defer std.testing.allocator.free(at);
-    const lock = try std.fs.path.join(std.testing.allocator, &.{ at, "speech.lock" });
-    defer std.testing.allocator.free(lock);
-
-    // a probe as `free` and `mark` take it, held across speech's first try so the race always happens
-    const Probe = struct {
-        held: std.atomic.Value(bool) = .init(false),
-        fn run(p: *@This(), file: std.Io.File) void {
-            file.lock(std.testing.io, .exclusive) catch return;
-            p.held.store(true, .release);
-            // spun, not slept: a sleeping thread may wake several times late and outlast `probe_grace`
-            const until = std.Io.Clock.awake.now(std.testing.io).addDuration(.fromMilliseconds(10));
-            while (until.compare(.gt, std.Io.Clock.awake.now(std.testing.io))) {}
+    // a probe as `free` and `mark` take it, descheduled for 200 ms while speech arrives
+    try prober.lock(io, .exclusive);
+    const Release = struct {
+        fn run(file: std.Io.File) void {
+            std.Io.sleep(std.testing.io, .fromMilliseconds(200), .awake) catch {};
             file.unlock(std.testing.io);
         }
     };
-    const prober = try open(io, lock);
-    defer prober.close(io);
-    var probe: Probe = .{};
-    const thread = try std.Thread.spawn(.{}, Probe.run, .{ &probe, prober });
-    defer thread.join();
-    while (!probe.held.load(.acquire)) std.Thread.yield() catch {};
-    const turn = speak(io, lock) orelse return error.NoHold;
-    defer done(io, turn);
+    const thread = try std.Thread.spawn(.{}, Release.run, .{prober});
+    const turn = speak(io, lock);
+    thread.join();
+    const held = turn orelse return error.NoHold;
+    defer done(io, held);
     try std.testing.expect(!free(io, prober));
+    try std.testing.expect(!clean(io, lock, before));
 }
 
 test "timed work excludes speech completed entirely between polls and preexisting speech" {
