@@ -4,7 +4,6 @@ const mtl = @import("metal");
 const st = @import("safetensors");
 const h3 = @import("h3");
 const fixture = @import("checkpoint_fixture");
-const gpu_turn = @import("gpu_turn");
 
 const picture = h3.picture;
 
@@ -232,13 +231,11 @@ pub fn main(init: std.process.Init) !void {
     defer case.deinit();
 
     const loading = mtl.clock.seconds();
-    const model = try h3.Model.load(gpa, transformer_dir, shards, &case, .{});
+    const model = try h3.Model.load(gpa, transformer_dir, shards, &case, .{ .give_way = init.io });
     if (!model.base or model.step_heads != steps or model.audio != 0) return error.H3NotPictureModel;
     model.dense = true;
     const schedule = h3.schedule.Schedule{ .sigmas = pdd.sigmas, .timesteps = pdd.timesteps };
     _ = try h3.modulation.reschedule(model, a, schedule, schedule, false);
-    var io = init.io;
-    model.pause = .{ .ctx = &io, .wait = yieldToSpeech };
     std.debug.print("{s}: {d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, {d} timesteps, loaded in {d:.1} s\n", .{ device.name(), canvas.width, canvas.height, rows, text, held, target, map.prefix + map.target, model.blocks.len, steps, model.lines / h3.schedule.modalities, mtl.clock.seconds() - loading });
 
     const velocity = try a.alloc(f32, target * width);
@@ -284,9 +281,4 @@ pub fn main(init: std.process.Init) !void {
     }
     if (gate.failed) std.process.exit(1);
     if (!gate.gated and mode != .free) std.process.exit(2);
-}
-
-fn yieldToSpeech(ctx: *anyopaque) f64 {
-    const io: *const std.Io = @ptrCast(@alignCast(ctx));
-    return gpu_turn.yield(io.*, gpu_turn.path);
 }

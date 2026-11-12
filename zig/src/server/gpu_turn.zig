@@ -21,20 +21,22 @@ pub fn done(io: std.Io, held: ?std.Io.File) void {
     if (held) |file| file.close(io);
 }
 
-/// Waits while any speech request holds the turn; the seconds waited. An unusable lock file waits for nothing.
+/// Waits while any speech request holds the turn; the seconds waited, exactly 0 when none held it, so a timed
+/// sample marked by a nonzero wait overlapped speech. An unusable lock file waits for nothing.
 pub fn yield(io: std.Io, at: []const u8) f64 {
     const file = open(io, at) catch return 0;
     defer file.close(io);
+    if (free(io, file)) return 0;
     const started = std.Io.Clock.awake.now(io);
-    while (true) {
-        const free = file.tryLock(io, .exclusive) catch break;
-        if (free) {
-            file.unlock(io);
-            break;
-        }
-        io.sleep(poll, .awake) catch break;
-    }
+    while (!free(io, file)) io.sleep(poll, .awake) catch break;
     return @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / 1e9;
+}
+
+/// Whether no speech holds the turn; an error counts as free, as speech never depends on batch work seeing it.
+fn free(io: std.Io, file: std.Io.File) bool {
+    const got = file.tryLock(io, .exclusive) catch return true;
+    if (got) file.unlock(io);
+    return got;
 }
 
 /// Read-only so the speech server's and a render's users can share one file; flock needs no write access.
@@ -59,7 +61,7 @@ test "batch work waits for every speech hold to end, and not at all without one"
     const lock = try std.fs.path.join(std.testing.allocator, &.{ at, "speech.lock" });
     defer std.testing.allocator.free(lock);
 
-    try std.testing.expect(yield(io, lock) < 0.015);
+    try std.testing.expectEqual(@as(f64, 0), yield(io, lock));
     const first = speak(io, lock) orelse return error.NoHold;
     const second = speak(io, lock) orelse return error.NoHold; // two voices at once share the turn
     const Ender = struct {
@@ -74,7 +76,7 @@ test "batch work waits for every speech hold to end, and not at all without one"
     const waited = yield(io, lock);
     ender.join();
     try std.testing.expect(waited >= 0.29);
-    try std.testing.expect(yield(io, lock) < 0.015);
+    try std.testing.expectEqual(@as(f64, 0), yield(io, lock));
 }
 
 test "speech never waits on an exclusive holder, and the file it makes is open to every user" {
