@@ -50,6 +50,13 @@ conditioning, not just comparing row counts.
 Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
 A bad request prints its error and the server reads the next line.
 
+At startup the server puts every weight file it maps (text encoder, refiner, transformer, step heads) and the decoder's
+bf16 weights in one residency set on the three stages' queues (`holdWeights`), and prints the GiB it holds: 117.6 on
+the release folder, the refiner's shard counted twice since it is mapped twice. macOS unwires GPU memory idle for a
+second or two, so without the set each stage's first commit re-wires its weights on every request. Weights past 70% of
+RAM, or a macOS without residency sets, leave the server running as before. There is no keepalive: a request after a
+pause of more than a second or two re-wires once, in its prompt (about 1.4 s more, measured after 20 and 60 s).
+
 Run `zig build test-h3-image-server -Doptimize=Debug` or `-Doptimize=ReleaseSafe` for the synthetic resident gates.
 Both pass all four tests: fresh/reused latent parity across prompt and layout changes, failed-bind cleanup including
 the final tag allocation, over-long-line recovery, and the shared serializer's scratch cleanup. Picture fixtures use
@@ -502,8 +509,8 @@ bf16 conversion. A missing or short file fails the load. The load stays zero-cop
 The lead's 12 November scope decision keeps the unchanged native path as the strict quality oracle and makes
 cross-stack picture differences descriptive, not an acceptance gate. No further engine change is part of this round.
 Card 50's resident server (above) brings warm 2048 to **16.4-16.6 s**, level with that diffusers/MPS path; see
-[Resident, measured](#resident-measured). Card **46, “MiniMax-H3-Image: warm 2048 picture faster than diffusers on
-this Mac”**, owns beating it, drawing on card 40's cascade or card 42's idea sweep.
+[Resident, measured](#resident-measured). Card 51 holds its weights resident and brings it to **12.7-13.0 s**; see
+[Weights held resident, measured](#weights-held-resident-measured).
 
 ### Gates, fixed before the runs
 
@@ -752,6 +759,30 @@ rest is tokenizing and host work. The one-shot tools spend 9.4 s, 17.3 s and 2.4
 `tf-h3-image ... free` and `tf-h3-image-decoder` at seed 42: `cmp` found no difference in the prompt case, the
 transformer case, the latent (sha1 `f3563c56…`) or the PNG. Request 3 (reused binding, new seed) matches the one-shot
 latent at seed 7 (sha1 `04e3c4f1…`).
+
+### Weights held resident, measured
+
+Card 51, same machine, ReleaseFast, card 34's `prompt.txt`, seed 42, 2048x2048, weights in the page cache. Each build
+ran one server process with five requests back to back; the first binds the transformer, the other four reuse it.
+The unchanged build was rebuilt from `origin/main` and run just after the new one, at a load average of 5.6 to 8.8:
+
+| Build | Request | Prompt | Step 1 wall (GPU) | 6 steps | Decoder (PNG) | Picture |
+|---|---|---|---|---|---|---|
+| unchanged | 1, bound | 0.39 | 1.86 (1.84) | 11.09 | 1.40 | 13.67 |
+| unchanged | 2-5, reused | 0.37-0.38 | 2.20-2.24 (1.85-1.87) | 11.45-11.49 | 1.39-1.40 | 13.24-13.28 |
+| weights resident | 1, bound | 0.28 | 1.87 (1.85) | 11.12 | 1.42 | 13.02 |
+| weights resident | 2-5, reused | 0.22 | 1.85-1.86 (1.85) | 11.10-11.15 | 1.38-1.42 | **12.70-12.77** |
+
+Warm runs 2-5 of the resident build: 12.77, 12.75, 12.72 and 12.70 s, all under the documented diffusers/MPS 2048
+repeat's 16.633 s. Step 1's wall now equals its GPU time, and the prompt's 50 layers take 0.21 s of wall for 0.21 s
+of GPU. Earlier the same day, at a load average of 28 to 40, the unchanged build's warm requests took 13.75-15.45 s
+(prompt 0.51-2.08 s, step 1 2.55-2.63 s wall); card 50's 16.38-16.63 s above was another such run. The set removes
+most of that spread: the resident build's warm requests were 12.71-13.11 s across two runs.
+
+**Gate: byte-identical to the unchanged build.** All four warm latents and PNGs of each build are `cmp`-equal, and
+equal to card 50's one-shot seed-42 latent. `tools/zig/h3_image_compare.py` gives latent cosine 1.0, relative error
+0, pixel maximum 0. `zig build test-h3-image-server` runs the resident side of its parity test on queues holding the
+checkpoint's residency set.
 
 ### Next, ranked
 
