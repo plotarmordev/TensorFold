@@ -259,7 +259,9 @@ fn buildCase(init: std.process.Init, a: std.mem.Allocator, dir: std.Io.Dir, dir_
     var pic = try h3.Tensors.open(testing.allocator, device, pic_path);
     defer pic.deinit();
     const prefix = try std.fmt.allocPrint(a, "{s}/{s}", .{ dir_path, spec.name });
-    const case = try image_tool.Case.write(init, a, folder, &pic, prefix);
+    var case = try image_tool.Case.write(init, a, folder, &pic, prefix);
+    // the noise is a view into `pic`, which closes on return
+    case.noise = try a.dupe(f32, case.noise);
     const tags = try a.dupe(i32, pic.values(i32, try pic.at("text_tags", .i32, case.layout.text), case.layout.text));
     return .{ .case = case, .tags = tags };
 }
