@@ -3,6 +3,9 @@ const std = @import("std");
 
 pub const path = "/tmp/tensorfold-speech.lock";
 
+/// Where batch work gives way: the speech lock (tests point `at` at their own).
+pub const Turn = struct { io: std.Io, at: []const u8 = path };
+
 /// How often waiting batch work looks again; one poll is the most speech's end can be missed by.
 const poll: std.Io.Duration = .fromMilliseconds(20);
 

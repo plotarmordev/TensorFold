@@ -91,7 +91,7 @@ pub const Folder = struct {
     hidden: usize,
     layers: usize,
     /// Every model bound from the folder gives way to live speech between blocks.
-    io: std.Io,
+    turn: h3.gpu_turn.Turn,
 
     pub fn open(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !Folder {
         // the folder: the image pipeline, an audio-free transformer, the distilled schedule and its heads
@@ -106,12 +106,12 @@ pub const Folder = struct {
         var name: [32]u8 = undefined;
         var layers: usize = 0;
         while (ck.entry(try std.fmt.bufPrint(&name, "blocks.{d}.norm1.weight", .{layers})) != null) layers += 1;
-        return .{ .dir = dir, .ck = ck, .heads = heads, .pdd = pdd, .hidden = hidden, .layers = layers, .io = init.io };
+        return .{ .dir = dir, .ck = ck, .heads = heads, .pdd = pdd, .hidden = hidden, .layers = layers, .turn = .{ .io = init.io } };
     }
 
     /// A model for `case`'s rows over the folder's weights, its AdaLN tables for the distilled schedule.
     pub fn bind(f: *const Folder, gpa: std.mem.Allocator, a: std.mem.Allocator, case: *const Case) !*h3.Model {
-        const model = try h3.Model.bind(gpa, f.ck, case.file, .{ .give_way = f.io });
+        const model = try h3.Model.bind(gpa, f.ck, case.file, .{ .give_way = f.turn });
         errdefer model.release();
         if (!model.base or model.step_heads != f.pdd.steps() or model.audio != 0) return error.H3NotPictureModel;
         model.dense = true;

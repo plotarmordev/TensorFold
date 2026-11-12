@@ -5,7 +5,7 @@ const st = @import("safetensors");
 const tensors = @import("tensors.zig");
 const kernels = @import("h3_kernels");
 const block = @import("block.zig");
-const gpu_turn = @import("gpu_turn");
+pub const gpu_turn = @import("gpu_turn");
 pub const modulation = @import("modulation.zig");
 pub const schedule = @import("schedule.zig");
 pub const geometry = @import("geometry.zig");
@@ -31,7 +31,7 @@ pub const gate_m = 5;
 pub const Block = struct { q: Ref, k: Ref, v: Ref, compress: Ref, out: Ref, fc1: Ref, fc2: Ref, norm1: Ref, norm2: Ref, norm_q: Ref, norm_k: Ref, tables: Ref };
 
 /// Shader overrides and optional per-block yielding to live speech.
-pub const Options = struct { defines: []const u8 = "", give_way: ?std.Io = null };
+pub const Options = struct { defines: []const u8 = "", give_way: ?gpu_turn.Turn = null };
 
 /// A timing is valid only with a working speech signal and no speech or waiting anywhere in the forward.
 pub const Timing = struct { wall: f64, gpu: f64, paused: f64, timing_valid: bool };
@@ -124,7 +124,7 @@ pub const Model = struct {
     qkv: mtl.Buffer,
     profile: bool = false,
     spent: [stages.len]f64 = @splat(0),
-    give_way: ?std.Io,
+    give_way: ?gpu_turn.Turn,
     paused: f64,
 
     pub fn pipeline(self: *const Model, comptime name: []const u8) mtl.Pipeline {
@@ -322,7 +322,7 @@ pub const Model = struct {
         inline for (stages, 0..) |s, i| if (comptime std.mem.eql(u8, s, stage)) {
             self.spent[i] += pass.cb.gpuSeconds();
         };
-        if (self.give_way) |io| self.paused += gpu_turn.yield(io, gpu_turn.path);
+        if (self.give_way) |t| self.paused += gpu_turn.yield(t.io, t.at);
         pass.cb = self.queue.commandBuffer();
         pass.enc = pass.cb.compute(.concurrent);
     }
@@ -376,10 +376,10 @@ pub const Model = struct {
         try geometry.forward(self.rows, self.video * self.video_in, self.audio * self.audio_in, self.adaln.len, self.times.len, step, video.len, audio.len, video_velocity.len, audio_velocity.len);
         // this step's output head (its byte offsets), before anything is encoded
         const at = try geometry.headOffsets(self.step_heads, step, self.adaln.len / self.rows, self.video_in, self.hidden);
-        const mark = if (self.give_way) |io| gpu_turn.mark(io, gpu_turn.path) else null;
+        const mark = if (self.give_way) |t| gpu_turn.mark(t.io, t.at) else null;
         const started = mtl.clock.seconds();
         self.paused = 0;
-        if (self.give_way) |io| self.paused += gpu_turn.yield(io, gpu_turn.path);
+        if (self.give_way) |t| self.paused += gpu_turn.yield(t.io, t.at);
         const rows = self.rows;
         const hidden = self.hidden;
         // each row's line in the blocks' tables and in the final layer's, for this step
@@ -406,7 +406,7 @@ pub const Model = struct {
         var n: usize = 0;
         for (0..self.blocks.len) |index| {
             block.run(self, &pass, index);
-            const io = self.give_way orelse continue;
+            const t = self.give_way orelse continue;
             pass.enc.end();
             pass.cb.commit();
             if (n == queued.len) {
@@ -416,7 +416,7 @@ pub const Model = struct {
             }
             queued[n] = pass.cb;
             n += 1;
-            self.paused += gpu_turn.yield(io, gpu_turn.path);
+            self.paused += gpu_turn.yield(t.io, t.at);
             pass.cb = self.queue.commandBuffer();
             pass.enc = pass.cb.compute(.concurrent);
         }
@@ -449,11 +449,11 @@ pub const Model = struct {
         const final = try finish(pass.cb);
         gpu += final;
         if (self.profile) self.spent[stages.len - 1] += final;
-        if (self.give_way) |io| self.paused += gpu_turn.yield(io, gpu_turn.path);
+        if (self.give_way) |t| self.paused += gpu_turn.yield(t.io, t.at);
         @memcpy(video_velocity, self.video_velocity.slice(f32, video_velocity.len));
         @memcpy(audio_velocity, self.audio_velocity.slice(f32, audio_velocity.len));
         const wall = mtl.clock.seconds() - started;
-        const timing_valid = if (self.give_way) |io| self.paused == 0 and gpu_turn.clean(io, gpu_turn.path, mark) else false;
+        const timing_valid = if (self.give_way) |t| self.paused == 0 and gpu_turn.clean(t.io, t.at, mark) else false;
         return .{ .wall = wall, .gpu = gpu, .paused = self.paused, .timing_valid = timing_valid };
     }
 

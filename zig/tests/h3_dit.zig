@@ -58,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
     defer case.deinit();
     const loading = mtl.clock.seconds();
     // Last: dense, profile, tables, steps=N, revoice=N, from=K (case holds step K), once (one step), a define.
-    var options = h3.Options{ .give_way = init.io };
+    var options = h3.Options{ .give_way = .{ .io = init.io } };
     var defines: [256]u8 = undefined;
     var used: usize = 0;
     var dense = false;
