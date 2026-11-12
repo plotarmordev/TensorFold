@@ -192,8 +192,9 @@ units, as the clip tool does.
 
 It makes way for live speech on the same GPU. The speech server holds a shared flock on `/tmp/tensorfold-speech.lock`
 while it synthesizes (`zig/src/server/gpu_turn.zig`). The tool submits each block as its own command buffer, with three
-queued, and it waits between blocks while that lock is held. A voice then waits about 0.6 s at 4096 x 4096 instead of
-a 10 s step. The run resumes on the same rows, and its latent is unchanged. Each step line ends with
+queued, and it waits between blocks while that lock is held. During a 4096 x 4096 render, five streamed Drama 3 voice
+notes then reached first audio in 1.3 to 1.6 s, against 9.5 to 10.8 s without it, and 0.45 s on an idle GPU. The run
+resumes on the same rows, and its latent is byte-identical. Each step line ends with
 `s waited for speech`. That wait counts in the step's wall time, so a timed run leaves out every step where it is not 0.
 
 ## Gates, fixed before any run
