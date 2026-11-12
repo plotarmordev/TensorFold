@@ -451,7 +451,41 @@ test "a failed bind releases every Metal object it made" {
     try testing.expect(device.allocated() <= ceiling);
 }
 
-/// Speech holding `lock` for `ms` from now, released from its own thread; join it after the stage.
+/// An io whose `nth` exclusive tryLock (a stage's speech probe) first takes speech for `ms` on the real io: speech
+/// arrives mid-stage, after the passes probed before it were submitted. One at a time; `join` after the stage.
+const Arrival = struct {
+    var base: std.Io = undefined;
+    var vtable: std.Io.VTable = undefined;
+    var lock: []const u8 = undefined;
+    var nth: usize = 0;
+    var hold_ms: i64 = 0;
+    var speech: ?std.Thread = null;
+
+    fn at(io: std.Io, path: []const u8, probe: usize, ms: i64) h3.gpu_turn.Turn {
+        base = io;
+        vtable = io.vtable.*;
+        vtable.fileTryLock = tryLock;
+        lock = path;
+        nth = probe;
+        hold_ms = ms;
+        speech = null;
+        return .{ .io = .{ .userdata = io.userdata, .vtable = &vtable }, .at = path };
+    }
+
+    fn tryLock(userdata: ?*anyopaque, file: std.Io.File, kind: std.Io.File.Lock) std.Io.File.LockError!bool {
+        if (kind == .exclusive and nth > 0) {
+            nth -= 1;
+            if (nth == 0) speech = speakFor(base, lock, hold_ms) catch null;
+        }
+        return base.vtable.fileTryLock(userdata, file, kind);
+    }
+
+    fn join() !void {
+        (speech orelse return error.NoSpeechArrived).join();
+    }
+};
+
+/// Speech holding `lock` for `ms` from now, released from its own thread.
 fn speakFor(io: std.Io, lock: []const u8, ms: i64) !std.Thread {
     const held = h3.gpu_turn.speak(io, lock) orelse return error.NoSpeechHold;
     return std.Thread.spawn(.{}, struct {
@@ -462,7 +496,7 @@ fn speakFor(io: std.Io, lock: []const u8, ms: i64) !std.Thread {
     }.release, .{ io, held, ms });
 }
 
-test "prompt encoder, denoising and decoder each wait while speech holds the turn, their output unchanged" {
+test "speech arriving during the prompt encoder, denoising or the decoder holds its next pass, output unchanged" {
     const io = testing.io;
     const device = try mtl.Device.init();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -471,9 +505,9 @@ test "prompt encoder, denoising and decoder each wait while speech holds the tur
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
-    const turn: h3.gpu_turn.Turn = .{ .io = io, .at = try std.fs.path.join(a, &.{ dir_path, "speech.lock" }) };
-    const hold_ms = 300;
-    const least = 0.2; // seconds a held stage must have waited: the hold less the time to reach its first yield
+    const lock = try std.fs.path.join(a, &.{ dir_path, "speech.lock" });
+    const hold_ms = 500;
+    const least = 0.25; // seconds the next pass must wait: the hold less any delay before its probe, with room to spare
 
     // the prompt encoder and the token refiner, on the prompt selftest's tiny checkpoint
     var prng = std.Random.DefaultPrng.init(0x5133);
@@ -494,16 +528,16 @@ test "prompt encoder, denoising and decoder each wait while speech holds the tur
     const text = try a.alloc(u16, T * prompt_tool.tiny_front.hidden);
     try runner.encode(&text_w, ids, pos, null, rows);
     try runner.refine(&front_w, rows, text);
-    runner.give_way = turn;
     const held_rows = try a.alloc(u16, rows.len);
     const held_text = try a.alloc(u16, text.len);
-    var speech = try speakFor(io, turn.at, hold_ms);
+    // the second probe: speech arrives once the first of the two layers (or of the refiner's three passes) is submitted
+    runner.give_way = Arrival.at(io, lock, 2, hold_ms);
     try runner.encode(&text_w, ids, pos, null, held_rows);
-    speech.join();
+    try Arrival.join();
     try testing.expect(runner.paused >= least);
-    speech = try speakFor(io, turn.at, hold_ms);
+    runner.give_way = Arrival.at(io, lock, 2, hold_ms);
     try runner.refine(&front_w, held_rows, held_text);
-    speech.join();
+    try Arrival.join();
     try testing.expect(runner.paused >= least);
     try testing.expectEqualSlices(u16, rows, held_rows);
     try testing.expectEqualSlices(u16, text, held_text);
@@ -517,11 +551,10 @@ test "prompt encoder, denoising and decoder each wait while speech holds the tur
     for (latent, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 17)) / 8 - 1;
     const pixels = try a.alloc(f32, 3 * 20 * 28 * h3.vae.cell_pixels * h3.vae.cell_pixels);
     _ = try d.decode(a, &config, latent, 20, 28, 2, 1, pixels);
-    d.give_way = turn;
     const held_pixels = try a.alloc(f32, pixels.len);
-    speech = try speakFor(io, turn.at, hold_ms);
+    d.give_way = Arrival.at(io, lock, 2, hold_ms); // after the first of four tiles
     const took = try d.decode(a, &config, latent, 20, 28, 2, 1, held_pixels);
-    speech.join();
+    try Arrival.join();
     try testing.expect(took.paused >= least);
     try testing.expectEqualSlices(f32, pixels, held_pixels);
 
@@ -544,16 +577,17 @@ test "prompt encoder, denoising and decoder each wait while speech holds the tur
         for (f.folder.ck.shards) |*shard| shard.deinit();
         testing.allocator.free(f.folder.ck.shards);
     }
-    f.folder.turn = turn;
+    f.folder.turn = .{ .io = io, .at = lock };
     const case = &f.cases[0].case;
     var b = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null);
     defer b.release();
     const velocity = try a.alloc(f32, case.noise.len);
     _ = try b.model.forward(case.noise, &.{}, 0, velocity, &.{});
     const held_velocity = try a.alloc(f32, velocity.len);
-    speech = try speakFor(io, turn.at, hold_ms);
+    // the third probe, after `mark` and the forward's first yield: speech arrives once the first block is submitted
+    b.model.give_way = Arrival.at(io, lock, 3, hold_ms);
     const step = try b.model.forward(case.noise, &.{}, 0, held_velocity, &.{});
-    speech.join();
+    try Arrival.join();
     try testing.expect(step.paused >= least and !step.timing_valid);
     try testing.expectEqualSlices(f32, velocity, held_velocity);
 }
