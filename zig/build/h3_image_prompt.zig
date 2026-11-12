@@ -39,7 +39,7 @@ fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
     return b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_prompt.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "h3_prompt", .module = prompt }, .{ .name = "tokenizer", .module = tokenizer }, .{ .name = "checkpoint_fixture", .module = fixture }, .{ .name = "moss_noise", .module = b.createModule(.{ .root_source_file = b.path("zig/src/families/moss_image/noise.zig"), .target = target, .optimize = optimize }) } } });
 }
 
-fn rope(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
+pub fn rope(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
     return b.createModule(.{ .root_source_file = b.path("zig/src/core/qwen_vl/rope.zig"), .target = target });
 }
 
