@@ -67,7 +67,7 @@ pub const Runner = struct {
     gpu: f64 = 0,
     /// When set, passes wait while live speech holds the turn: a few queued, never the whole run ahead of it.
     give_way: ?gpu_turn.Turn = null,
-    /// Seconds the last encode and refine waited for speech.
+    /// Seconds the last encode or refine waited for speech.
     paused: f64 = 0,
 
     pub fn init(device: mtl.Device) !Runner {

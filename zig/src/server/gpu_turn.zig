@@ -179,7 +179,9 @@ test "speech keeps its hold when it arrives during a batch probe" {
         fn run(p: *@This(), file: std.Io.File) void {
             file.lock(std.testing.io, .exclusive) catch return;
             p.held.store(true, .release);
-            std.Io.sleep(std.testing.io, .fromMilliseconds(5), .awake) catch {};
+            // spun, not slept: a sleeping thread may wake several times late and outlast `probe_grace`
+            const until = std.Io.Clock.awake.now(std.testing.io).addDuration(.fromMilliseconds(10));
+            while (until.compare(.gt, std.Io.Clock.awake.now(std.testing.io))) {}
             file.unlock(std.testing.io);
         }
     };
@@ -187,10 +189,10 @@ test "speech keeps its hold when it arrives during a batch probe" {
     defer prober.close(io);
     var probe: Probe = .{};
     const thread = try std.Thread.spawn(.{}, Probe.run, .{ &probe, prober });
+    defer thread.join();
     while (!probe.held.load(.acquire)) std.Thread.yield() catch {};
     const turn = speak(io, lock) orelse return error.NoHold;
     defer done(io, turn);
-    thread.join();
     try std.testing.expect(!free(io, prober));
 }
 
