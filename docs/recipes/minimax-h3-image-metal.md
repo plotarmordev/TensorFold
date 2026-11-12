@@ -40,10 +40,13 @@ printf '2048x2048 42 out/a prompt.txt\n2048x2048 7 out/b prompt.txt\n' |
   zig-out/bin/tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR
 ```
 
-A request line is `WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt`. The transformer's kernels and buffers depend on the
-picture's layout (canvas and text tags), so a request with the last one's layout keeps them and only replaces the
-prompt's text rows (`Model.retext`); another layout releases them and binds anew over the same mapped weights. Each
-request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
+A request line is `WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt`. This server accepts text-to-image requests only, not
+reference images or editing cases. The transformer's kernels and buffers depend on the picture's layout (canvas
+and text tags), so a request with the last one's layout keeps them and only replaces the prompt's text rows
+(`Model.retext`); another layout releases them and binds anew over the same mapped weights. `Binding.fits` assumes
+there are no reference rows: canvas and tags then determine all row counts and rotary positions. Supporting edits
+would also require checking reference geometry and refreshing reference conditioning, not just comparing row counts.
+Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
 A bad request prints its error and the server reads the next line.
 
 ## Edit, end to end

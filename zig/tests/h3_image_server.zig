@@ -32,6 +32,7 @@ const Binding = struct {
         return .{ .arena = arena, .model = model, .canvas = case.canvas, .tags = try arena.allocator().dupe(i32, tags) };
     }
 
+    // Text-to-image only: serve creates no reference rows; canvas and tags determine every row and rotary position.
     fn fits(b: *const Binding, case: *const image_tool.Case, tags: []const i32) bool {
         return std.meta.eql(b.canvas, case.canvas) and std.mem.eql(i32, b.tags, tags);
     }
