@@ -19,6 +19,10 @@ It needs the M5's tensor units and refuses to load without them. `dense` makes e
 and leaves the pooled branch out (not how the checkpoint was trained; for kernel work only). `profile` times one more
 forward stage by stage.
 
+Like `tf-h3-image`, it waits between blocks while live speech holds `/tmp/tensorfold-speech.lock`
+([the picture recipe](minimax-h3-image-metal.md#run-a-case)). Each step line and the profile's heading print the
+seconds waited; a timing whose wait is not 0 overlapped speech, so a benchmark leaves it out.
+
 ## Arithmetic
 
 - Block projections: the prefill kernels' `tfp::gemm_nax` (MLX 0.32.3's NAX GEMM), bf16 x w^T as the checkpoint
