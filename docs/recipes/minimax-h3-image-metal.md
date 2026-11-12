@@ -217,11 +217,12 @@ It writes `out/case.latent.f32`, the normalised latent [24, rows, columns] in fl
 decoder. `once` runs the first teacher-forced step alone; `free` runs only the free run. It needs the M5's tensor
 units, as the clip tool does.
 
-It makes way for live speech on the same GPU. The speech server holds a shared flock on `/tmp/tensorfold-speech.lock`
-while it synthesizes (`zig/src/server/gpu_turn.zig`). The tool submits each block as its own command buffer, with three
-queued, and it waits before the forward, between blocks, after profile stages and after the step's output while
-that lock is held. During an earlier 4096 x 4096 render, five streamed Drama 3 voice notes reached first audio in
-1.3 to 1.6 s, against 9.5 to 10.8 s without yielding. The run resumes on the same rows with a byte-identical latent.
+It and `tf-h3-image-server` make way for live speech on the same GPU. The speech server holds a shared flock on
+`/tmp/tensorfold-speech.lock` while it synthesizes (`zig/src/server/gpu_turn.zig`). The tools submit each block as its
+own command buffer, with three queued, and wait before the forward, between blocks, after profile stages and after the
+step's output while that lock is held. During an earlier 4096 x 4096 render, five streamed Drama 3 voice notes reached
+first audio in 1.3 to 1.6 s, against 9.5 to 10.8 s without yielding. The run resumes on the same rows with a
+byte-identical latent.
 Each step and profile prints `timing_valid`: benchmarks must exclude every `false` sample, including zero-wait
 samples. A separate 16-byte generation in `/tmp/tensorfold-speech.lock.stamp` detects speech that starts and ends
 between lock polls. Missing, malformed or inaccessible signals invalidate timings; uncoordinated forwards do too.
