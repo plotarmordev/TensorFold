@@ -88,7 +88,7 @@ and all of suh; by inputs, rows of tiles and of suh and all of svh, and add the 
 `zig build tf-exl3-encode -Doptimize=ReleaseFast` builds the portable CPU encoder. It needs neither torch nor CUDA:
 
 ```sh
-zig-out/bin/tf-exl3-encode WEIGHT.npy HESSIAN.npy 2.0 OUT_DIR [--unweighted]
+zig-out/bin/tf-exl3-encode [--threads N] WEIGHT.npy HESSIAN.npy 2.0 OUT_DIR [--unweighted]
 ```
 
 `WEIGHT.npy` is the Hugging Face `[N,K]` matrix and `HESSIAN.npy` is its full `[K,K]` calibration Hessian; both
@@ -109,9 +109,10 @@ those rows.
 
 Each 16x16 tile is a tail-biting trellis: a 128-wide beam weighted by the rotated Hessian's diagonal runs once over
 the tile turned by half to choose the state where the ring closes, then again with the ring's wrapped bits forced to
-that state, so every tile closes (closing costs about a tenth over the free beam's error). Tile rows run on every
-core. An all-zero output column (Drama's gate and up experts have about a fifth pruned) gets a zero scale and
-decodes to exactly zero: any other scale would spread its codebook noise through the output Hadamard into the
+that state, so every tile closes (closing costs about a tenth over the free beam's error). Threads take the next
+tile from a shared counter and then the full-Hessian errors by output column, so the bytes are the same at any
+thread count. An all-zero output column (Drama's gate and up experts have about a fifth pruned) gets a zero scale
+and decodes to exactly zero: any other scale would spread its codebook noise through the output Hadamard into the
 whole block.
 
 ### Drama 3 experts on this Mac
@@ -162,6 +163,31 @@ seconds per expert, so these are upper bounds:
 All of 2.0, 2.5 and 3.0 together take 101 to 208 hours (4 to 9 days) by that range: slow but within reach on the
 CPU, so a Metal path is left to its own card if the conversion needs it. This is a CPU reference converter, not a
 claim of CUDA quantizer quality or throughput.
+
+### Workers and threads
+
+`--threads N` (1 to 64, every core by default) sets the threads of one encode; workers are the encodes run at once,
+one matrix each. Keep workers × threads at or under the Mac's 36 cores (12 performance and 24 efficiency): more
+threads than cores only add switching, and a second encode at the default 36 doubles the count. Reading the arrays,
+writing, reloading and the NVFP4 quantizer run on one thread per encode, so several workers keep the cores busier
+than one wide encode:
+
+```sh
+ls experts/*.weight.npy | sed 's/\.weight\.npy$//' |
+  xargs -P 12 -I{} zig-out/bin/tf-exl3-encode --threads 3 {}.weight.npy {}.hessian.npy 2.0 {}.exl3
+```
+
+Twelve gate-shaped `[512,2048]` matrices at 2.0 bits on the M5 Ultra above (load average 70 to 117 from other work,
+so compare the rows, not the seconds):
+
+| workers × threads | wall seconds for 12 |
+|---|---|
+| 1 × 36 | 201 |
+| 4 × 9 | 152 |
+| 12 × 3 | 130 |
+
+Use 12 × 3 for a batch, and the default 1 × 36 for a single matrix. 6 × 6, 9 × 4 and 18 × 2 also fill the cores
+without going over.
 
 ## Using it
 

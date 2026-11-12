@@ -4,6 +4,9 @@ const core = @import("core");
 const cfg = @import("../config.zig");
 const Tensor = core.safetensors.Tensor;
 
+/// The index metadata key of a compact checkpoint's map: `{"layer": [held expert ids, ascending]}` for all 40 layers.
+pub const experts_key = "drama_experts";
+
 pub const Held = struct {
     counts: [cfg.layers]u16 = @splat(cfg.experts),
     ids: [cfg.layers][cfg.experts]u8 = @splat(identity),
@@ -45,7 +48,7 @@ pub fn heldMetadata(metadata: ?std.json.Value) !Held {
     const meta = metadata orelse return .{};
     if (meta != .object) return error.BadExpertMap;
     if (meta.object.get("drama_head_rows") != null) return error.UnsupportedCompactHead;
-    return if (meta.object.get("drama_experts")) |v| try parseHeld(v) else .{};
+    return if (meta.object.get(experts_key)) |v| try parseHeld(v) else .{};
 }
 
 /// The stored experts are exactly the map's: none unlisted, and every listed one's three projections present.

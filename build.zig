@@ -113,6 +113,10 @@ pub fn build(b: *std.Build) void {
         @import("zig/build/qwen35_cache_host.zig").compileHost(b, step5_mods.metal, step5_mods.engine, step5_mods.lanes);
     }
     @import("zig/build/h3_host.zig").tests(b, target, test_step);
+    @import("zig/build/h3_image_prompt.zig").tests(b, target, test_step);
+    @import("zig/build/h3_image_decoder.zig").compileHost(b, target);
+    @import("zig/build/h3_image_contract.zig").steps(b, target, optimize);
+    @import("zig/build/h3_image_vision.zig").steps(b, target, optimize, test_step);
     @import("zig/build/ling_host.zig").tests(b, target, test_step);
     @import("zig/build/digest.zig").steps(b, test_step, draft_ids, build_options);
     @import("zig/build/flashnext_budget.zig").steps(b, test_step);
@@ -167,6 +171,7 @@ pub fn build(b: *std.Build) void {
     _ = server_build.addTo(b, voice_tool, target, optimize);
     const voice_exe = b.addExecutable(.{ .name = "drama3-voice", .root_module = voice_tool });
     b.step("drama3-voice", "Attested Drama voice files from reference WAVs, coded by drama3-generate --encode").dependOn(&b.addInstallArtifact(voice_exe, .{}).step);
+    @import("zig/build/drama3_quant.zig").targets(b, target, optimize, test_step);
     // the backend options are declared for every target, so one build script may pass the same flags on every OS
     const cuda_options = @import("zig/build/options.zig").cuda(b);
     const tp_options = @import("zig/build/options.zig").tp(b);
@@ -198,6 +203,7 @@ pub fn build(b: *std.Build) void {
     @import("zig/build/sessions.zig").add(b, test_step);
     @import("zig/build/sessions_writes.zig").steps(b);
     @import("zig/build/tp.zig").add(b, target, optimize, test_step, tp_options);
+    @import("zig/build/tp_check.zig").add(b, target, test_step);
     @import("zig/build/gradient_host.zig").add(b);
     @import("zig/build/living_tools_host.zig").steps(b);
     cuda_build.hostTests(b, draft_ids, build_options, test_step, target.result.os.tag != .macos);

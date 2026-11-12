@@ -164,6 +164,31 @@ GLM-5.3-Flash's CUDA engine reads csf0_v1 for its routed experts (`mlp.experts.N
 `down_proj`), every expert of a layer in that form, and loads its block 32 kernels only for such a checkpoint
 (`Bizuayeu/GLM-5.3-Flash-Jammed-XSFP4` is one).
 
+## Drama 3's routed experts to NVFP4: tf-drama-quant
+
+`zig build` installs `tf-drama-quant`, a CPU converter for a Drama 3 checkpoint whose routed experts are block FP8
+(`weight` e4m3 with a `weight_scale_inv` every 128 × 128):
+
+```sh
+tf-drama-quant SRC_CHECKPOINT DST_DIR [--experts nvfp4|keep] [--compact-experts MAP]
+```
+
+With `--experts nvfp4` (the default) each expert projection's FP8 values, decoded in f64, are encoded to ModelOpt
+NVFP4: `weight` u8 `[n, k/2]`, `weight_scale` e4m3 `[n, k/16]` and a scalar f32 `weight_scale_2`, whose largest block
+scale lands on e4m3's 448; its `weight_scale_inv` and `input_scale` are dropped. `--experts keep` copies them as they
+are. Every other tensor keeps its bytes, shard and order, and every other file in SRC is copied. A symlink in SRC is
+refused (a Hugging Face cache snapshot holds them), so convert from a `--local-dir` download.
+
+`--compact-experts MAP` writes only the experts MAP holds, under their own names, and records MAP in the index
+metadata as `drama_experts`, which the Metal loader reads to route over them. MAP is a JSON object of all 40 layers,
+each a list of 8 to 256 expert ids in ascending order with no repeats, every one present in SRC; any other map is
+refused before anything is written, as is a SRC that is already compact.
+
+DST is written as `DST_DIR.partial` and renamed to DST_DIR once complete; a failed run removes it, and an existing
+DST_DIR is refused before anything is written. `quant-provenance.json` records SRC as given, the commit the tool was
+built from, the SHA-256 of `config.json` and of MAP (with MAP's file name), SRC's own `quant-provenance.json` verbatim,
+and each encoded projection's amax, global scale and relative error against its FP8 source.
+
 ## Native safetensors metadata
 
 The shared Zig safetensors index retains up to five dimensions, including temporal patch convolutions
