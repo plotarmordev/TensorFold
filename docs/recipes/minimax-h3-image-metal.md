@@ -190,6 +190,12 @@ It writes `out/case.latent.f32`, the normalised latent [24, rows, columns] in fl
 decoder. `once` runs the first teacher-forced step alone; `free` runs only the free run. It needs the M5's tensor
 units, as the clip tool does.
 
+It makes way for live speech on the same GPU. The speech server holds a shared flock on `/tmp/tensorfold-speech.lock`
+while it synthesizes (`zig/src/server/gpu_turn.zig`). The tool submits each block as its own command buffer, with three
+queued, and it waits between blocks while that lock is held. A voice then waits about 0.6 s at 4096 x 4096 instead of
+a 10 s step. The run resumes on the same rows, and its latent is unchanged. Each step line ends with
+`s waited for speech`. That wait counts in the step's wall time, so a timed run leaves out every step where it is not 0.
+
 ## Gates, fixed before any run
 
 These are the bounds `tf-h3-image` checks (`picture.gates`). It exits 1 when one fails, and 2 when the case holds no
