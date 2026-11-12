@@ -1,0 +1,4 @@
+# MiniMax-H3-Image: resident server
+
+- `tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR` loads the prompt encoder, the transformer's weights and the image decoder once, then makes one picture per stdin line (`WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt`). Each request writes the same files as the three one-shot tools. A request with the previous one's canvas, text length and tags reuses the transformer's kernels and buffers, and only its text rows are replaced. The output latent is byte-identical to the one-shot tools'.
+- `h3.Model.load` is now `open` (the weights, read ahead once) plus `bind` (a picture layout's kernels and buffers), with `release` and `retext` alongside. `tf-h3-image`, `tf-h3-image-prompt` and `tf-h3-image-decoder` share their load and per-picture steps with the server.
