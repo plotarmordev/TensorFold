@@ -717,6 +717,31 @@ Local receipt names: native `base-{size}-a.png` (equal to `new-{size}-a.png`); d
 | 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step at 4096 | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones; SGLang's recipe runs all six steps. Each skip is a sixth of the steps; it needs a gate against the six-step latent. |
 | 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU; SGLang batches its tiles the same way. |
 
+### Card 40's cascade, measured: rejected by its latent gate
+
+Card 46 wired `h3/cascade.zig` into `tf-h3-image` as an opt-in `cascade=M`: steps 0 to M-1 on the half-side canvas
+from the seed's pooled noise, step M-1's Euler move folded into `cascade.lift`, then steps M to 5 at full size. The
+gate, fixed before the run: the final latent's cosine at least 0.99 against the unchanged six-step run on the same
+case. Without the flag the case and latent were `cmp`-identical to the unchanged path's.
+
+Seed 42, card 34's prompt, 2048 x 2048, M5 Ultra, warm page cache:
+
+| M | Half-size steps (s each) | Second load (s) | Latent cosine | RGB MAE |
+|---|---|---|---|---|
+| 1 | 0.53 | 2.3-5.4 | 0.7619 | 34.0 |
+| 2 | 0.52 | 2.3-5.4 | 0.7082 | 40.7 |
+| 3 | 0.53-0.68 | 2.3-5.4 | 0.7045 | 41.9 |
+
+Every M fails. The lift is not at fault: the pictures are clean and sharp, but a different picture. The fox, the
+trees and the light all move. The distilled schedule spends its first step at sigma 1 to 0.968, and that step fixes the
+layout; a half canvas fixes another one, and nothing after the lift moves it back. Even then the cascade would not
+beat diffusers in three processes: a half step saves 1.3 s of a 1.85 s step, while the half grid's own transformer
+load (shaders built for its tile count, the checkpoint read again) costs 2.3 s or more. The flag was not merged.
+
+So card 46's warm-2048 gap stays open. Under a 0.99 latent gate, what could still close it is one resident process for
+the prompt, transformer and decoder (idea 1 above). It would go after the 15-25 s that the 27-37 s warm pictures
+measured here spend outside the 11 s of steps and the 1.2 s of decoder tiles, rather than change the steps.
+
 ## On an M5 Ultra with the release weights
 
 Measured on TensorFold 1.2.7 at `a1c758603` (`v1.2.7-154-ga1c758603`, this branch with our main and card 43 merged in),
