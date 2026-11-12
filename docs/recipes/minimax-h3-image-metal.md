@@ -270,22 +270,26 @@ Cold reference conditioning remains outside the demonstrated latency bound: firs
 a render took 15.332 s. The five sub-three-second results therefore establish warm live-voice contention relief,
 not a cold-start guarantee. Generation checks now bracket the complete wall interval, including output copies.
 
-### Every stage of the resident server, 13 November 2026
+### Five voice notes during a resident render, 13 November 2026
 
-Same machine, speech server and client, from this branch on port 18899; `tf-h3-image-server` drew card 34's prompt at
-4096x4096, seeds 42 and 43. The server's first request after start, with its reference rows still unbuilt in memory,
-reached first PCM in 3.019 s idle; the next took 0.429 s. During the render (first PCM, all HTTP 200):
+Same machine, speech server and client, built from `b82e132` and served on port 18899; `tf-h3-image-server` drew
+card 34's prompt at 4096x4096, seed 42. The server's first request after start, with its reference rows still unbuilt
+in memory, reached first PCM in 2.879 s idle; the next took 0.414 s. Five notes then went out 15 s apart during the
+render, all HTTP 200 with the render running at the start and end of each:
 
-| Where the notes landed | First PCM (s) | The render's own record |
-|---|---|---|
-| Denoising, one note every 17.5 s | 0.806, 1.208, 1.179, 1.204, 1.147 | five steps waited 2.37-2.76 s each, all `timing_valid=false`; one clean step `true` |
-| Back to back over step 6 | 0.412-1.131 (twelve notes) | step 6 waited 23.14 s, `false`; steps 1-5 `true` |
-| Back to back over the decoder | 1.030, 0.517, 0.590, 0.517 | 441 tiles waited 9.30 s; all six steps `true` |
+| Note | First PCM (s) | PCM bytes |
+|---:|---:|---:|
+| 1 | 1.375 | 245760 |
+| 2 | 1.142 | 192512 |
+| 3 | 0.687 | 225280 |
+| 4 | 1.165 | 188416 |
+| 5 | 1.355 | 225280 |
 
-Each run's seed-42 rows matched the 12 November baseline byte-for-byte (`b3726693...`). The prompt encoder runs
-0.3 s a request at this size, too short to target from the client; `test-h3-image-server` has speech arrive after
-its first pass and checks the next waits.
-The isolated server was stopped afterward; the live release server was not changed.
+Steps 1-3, 5 and 6 waited 2.27-3.21 s each and reported `timing_valid=false`; step 4 waited zero and reported
+`true`, with 10.04 s on the GPU like the others. The render resumed after each wait and exited 0; its latent matched
+card 34's `t2i-4096.latent.f32` and its rows the 12 November baseline (`b3726693...`) byte-for-byte. The prompt
+encoder and decoder are too short at this spacing to catch a note; `test-h3-image-server` has speech arrive during
+each stage. The isolated server was stopped afterward; the live release server was not changed.
 
 ## Gates, fixed before any run
 
