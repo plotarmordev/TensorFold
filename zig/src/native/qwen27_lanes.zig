@@ -1,5 +1,5 @@
-//! The 27B's lane core backend: a stream a runner slot, shared rounds across slots, DFlash2 trees for slot 0 or the
-//! checkpoint's MTP layer's one draft a drafting stream's round.
+//! The 27B's lane core: a stream a runner slot, shared rounds, DFlash2 trees for the first TF_Q27_DRAFT_SLOTS streams
+//! or the checkpoint's MTP layer's one draft a drafting stream's round.
 const std = @import("std");
 const platform = @import("sys");
 const mtl = @import("metal");
@@ -163,7 +163,7 @@ pub const Metal = struct {
         return .{ .ptr = b, .defer_lone_draft = b.runner.slots == 1, .first_before_draft = b.tensor_units, .vtable = &.{ .prefill = prefillFn, .prefill_step = slots.prefillStep, .cancel_prefill = slots.cancelPrefill, .first = firstFn, .first_masked = firstMaskedFn, .queue = queueFn, .read = readFn, .verify = verifyFn, .keep = keepFn, .draft = draft_fns.draftFn, .draft_capacity = draft_fns.capacityFn, .probabilities = draft_fns.probabilitiesFn, .tree = draft_fns.treeFn, .release = releaseFn, .reports_fill = true } };
     }
 
-    /// What the round loop reads at setup: slot 0's stream drafts trees; every stream verifies copies.
+    /// What the round loop reads at setup: up to TF_Q27_DRAFT_SLOTS streams draft trees; every stream verifies copies.
     pub fn facts(b: *const Metal) lanes.Model {
         const drafting = b.draft != null or b.mtp != null;
         const shared = b.runner.slots > 1;
