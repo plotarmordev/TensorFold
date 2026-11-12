@@ -19,8 +19,8 @@ const usage =
     \\               timesteps, deltas and rotary_cos / rotary_sin for the exact checks
     \\  once         the first step alone, teacher-forced; free: the free run alone, a picture's generation
     \\Exit 0: every gate passed (or a free run had none); 1: a gate failed; 2: no reference to gate (inconclusive).
-    \\Between transformer blocks it waits while the speech server speaks; a step's "waited for speech" seconds
-    \\are in its wall time, so a benchmark leaves out every step whose wait is not 0.
+    \\Between transformer blocks it waits while the speech server speaks. Exclude timing_valid=false steps
+    \\from benchmarks, even when their wait is 0: speech can start and finish between polls.
     \\
 ;
 
@@ -254,7 +254,7 @@ pub fn main(init: std.process.Init) !void {
             const ok = picture.stepPasses(d);
             gate.gated = true;
             gate.failed = gate.failed or !ok;
-            std.debug.print("step {d}/{d} teacher-forced: cosine {d:.6}, relative error {d:.5}, worst row {d:.5} ({s}), {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech\n", .{ k + 1, steps, d.cosine, d.relative, d.worst_row, if (ok) "pass" else "FAIL", took.wall, took.gpu, took.paused });
+            std.debug.print("step {d}/{d} teacher-forced: cosine {d:.6}, relative error {d:.5}, worst row {d:.5} ({s}), {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech, timing_valid={}\n", .{ k + 1, steps, d.cosine, d.relative, d.worst_row, if (ok) "pass" else "FAIL", took.wall, took.gpu, took.paused, took.timing_valid });
             if (k == 0) try write(a, args[3], ".first-velocity.f32", velocity);
         }
     }
@@ -264,7 +264,7 @@ pub fn main(init: std.process.Init) !void {
         for (0..steps) |k| {
             const took = try model.forward(x, &.{}, k, velocity, &.{});
             picture.euler(x, velocity, pdd.deltas[k]);
-            std.debug.print("step {d}/{d}: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech\n", .{ k + 1, steps, took.wall, took.gpu, took.paused });
+            std.debug.print("step {d}/{d}: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech, timing_valid={}\n", .{ k + 1, steps, took.wall, took.gpu, took.paused, took.timing_valid });
         }
         try write(a, args[3], ".rows.f32", x);
         const out = try a.alloc(f32, x.len);

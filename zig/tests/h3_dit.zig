@@ -132,13 +132,13 @@ pub fn main(init: std.process.Init) !void {
         // reference audio rows are clean and never stepped
         const held = model.held_audio * model.audio_in;
         advance(audio[held..], av[held..], audio_step[2 * step], audio_step[2 * step + 1]);
-        std.debug.print("step {d}/{d}: {d:.3} s wall, {d:.3} s on the GPU, {d:.2} s waited for speech\n", .{ step + 1, steps, took.wall, took.gpu, took.paused });
+        std.debug.print("step {d}/{d}: {d:.3} s wall, {d:.3} s on the GPU, {d:.2} s waited for speech, timing_valid={}\n", .{ step + 1, steps, took.wall, took.gpu, took.paused, took.timing_valid });
     }
     try write(gpa, args[4], ".video.f32", video);
     try write(gpa, args[4], ".audio.f32", audio);
     if (!profile and !quick) return;
     model.profile = true;
     const took = try model.forward(video_start, audio_start, 0, vv, av);
-    std.debug.print("one forward by stage, each in its own command buffer ({d:.2} s waited for speech):\n", .{took.paused});
+    std.debug.print("one forward by stage, each in its own command buffer ({d:.2} s waited for speech, timing_valid={}):\n", .{ took.paused, took.timing_valid });
     for (h3.stages, model.spent) |stage, seconds| std.debug.print("  {s}: {d:.3} s\n", .{ stage, seconds });
 }

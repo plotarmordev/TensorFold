@@ -30,12 +30,11 @@ pub const gate_m = 5;
 /// A block's projections, (N, K) bf16 read in place; in the released layout q holds every head's fused [q, k, v] rows.
 pub const Block = struct { q: Ref, k: Ref, v: Ref, compress: Ref, out: Ref, fc1: Ref, fc2: Ref, norm1: Ref, norm2: Ref, norm_q: Ref, norm_k: Ref, tables: Ref };
 
-/// `defines` goes ahead of the kernels' source (a probe or a knock-out under test). With `give_way`, each block is
-/// its own command buffer and the forward waits between them while live speech holds the GPU's turn (`gpu_turn`).
+/// Shader overrides and optional per-block yielding to live speech.
 pub const Options = struct { defines: []const u8 = "", give_way: ?std.Io = null };
 
-/// `paused`: seconds the forward waited for speech; not 0 means speech overlapped it, so a benchmark leaves it out.
-pub const Timing = struct { wall: f64, gpu: f64, paused: f64 = 0 };
+/// A timing is valid only with a working speech signal and no speech or waiting anywhere in the forward.
+pub const Timing = struct { wall: f64, gpu: f64, paused: f64, timing_valid: bool };
 
 /// Where a profiled forward's GPU time went.
 pub const stages = [_][]const u8{ "rows in", "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "quantize", "attention out", "mlp in", "mlp out", "final" };
@@ -126,6 +125,7 @@ pub const Model = struct {
     profile: bool = false,
     spent: [stages.len]f64 = @splat(0),
     give_way: ?std.Io,
+    paused: f64,
 
     pub fn pipeline(self: *const Model, comptime name: []const u8) mtl.Pipeline {
         inline for (kernels.names, 0..) |n, i| if (comptime std.mem.eql(u8, n, name)) return self.pipelines[i];
@@ -150,6 +150,7 @@ pub const Model = struct {
         self.profile = false;
         self.spent = @splat(0);
         self.give_way = options.give_way;
+        self.paused = 0;
         self.checkpoint = try Checkpoint.open(gpa, device, checkpoint_dir, shards);
         const ck = &self.checkpoint;
         try ck.readAhead(gpa);
@@ -287,6 +288,7 @@ pub const Model = struct {
         inline for (stages, 0..) |s, i| if (comptime std.mem.eql(u8, s, stage)) {
             self.spent[i] += pass.cb.gpuSeconds();
         };
+        if (self.give_way) |io| self.paused += gpu_turn.yield(io, gpu_turn.path);
         pass.cb = self.queue.commandBuffer();
         pass.enc = pass.cb.compute(.concurrent);
     }
@@ -341,6 +343,9 @@ pub const Model = struct {
         // this step's output head (its byte offsets), before anything is encoded
         const at = try geometry.headOffsets(self.step_heads, step, self.adaln.len / self.rows, self.video_in, self.hidden);
         const started = mtl.clock.seconds();
+        const mark = if (self.give_way) |io| gpu_turn.mark(io, gpu_turn.path) else null;
+        self.paused = 0;
+        if (self.give_way) |io| self.paused += gpu_turn.yield(io, gpu_turn.path);
         const rows = self.rows;
         const hidden = self.hidden;
         // each row's line in the blocks' tables and in the final layer's, for this step
@@ -362,9 +367,7 @@ pub const Model = struct {
         if (self.audio > 0) self.rowsIn(enc.*, self.audio_latents, self.w_audio_in, self.b_audio_in, self.audio, self.audio_in, media);
         self.rowsIn(enc.*, self.video_latents, self.w_video_in, self.b_video_in, self.video, self.video_in, media + self.audio);
         self.lap(&pass, "rows in");
-        var paused: f64 = 0;
-        // the oldest of `queued` blocks is waited on while the newer ones run: a loaded host's late wake-ups never
-        // leave the GPU idle, and speech waits at most that many blocks
+        // Keep blocks queued to hide host wake-up latency without submitting the entire forward ahead of speech.
         var queued: [3]mtl.CommandBuffer = undefined;
         var n: usize = 0;
         for (0..self.blocks.len) |index| {
@@ -379,7 +382,7 @@ pub const Model = struct {
             }
             queued[n] = pass.cb;
             n += 1;
-            paused += gpu_turn.yield(io, gpu_turn.path);
+            self.paused += gpu_turn.yield(io, gpu_turn.path);
             pass.cb = self.queue.commandBuffer();
             pass.enc = pass.cb.compute(.concurrent);
         }
@@ -412,11 +415,11 @@ pub const Model = struct {
         const final = try finish(pass.cb);
         gpu += final;
         if (self.profile) self.spent[stages.len - 1] += final;
-        // speech that began after the last block's look overlapped the drain and the output: it marks this step
-        if (self.give_way) |io| paused += gpu_turn.yield(io, gpu_turn.path);
+        if (self.give_way) |io| self.paused += gpu_turn.yield(io, gpu_turn.path);
+        const timing_valid = if (self.give_way) |io| self.paused == 0 and gpu_turn.clean(io, gpu_turn.path, mark) else false;
         @memcpy(video_velocity, self.video_velocity.slice(f32, video_velocity.len));
         @memcpy(audio_velocity, self.audio_velocity.slice(f32, audio_velocity.len));
-        return .{ .wall = mtl.clock.seconds() - started, .gpu = gpu, .paused = paused };
+        return .{ .wall = mtl.clock.seconds() - started, .gpu = gpu, .paused = self.paused, .timing_valid = timing_valid };
     }
 
     /// Waits for a committed command buffer; its GPU seconds.

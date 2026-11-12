@@ -192,11 +192,14 @@ units, as the clip tool does.
 
 It makes way for live speech on the same GPU. The speech server holds a shared flock on `/tmp/tensorfold-speech.lock`
 while it synthesizes (`zig/src/server/gpu_turn.zig`). The tool submits each block as its own command buffer, with three
-queued, and it waits between blocks, and once more after the step's output, while that lock is held. During a
-4096 x 4096 render, five streamed Drama 3 voice notes then reached first audio in 1.3 to 1.6 s, against 9.5 to 10.8 s
-without it, and 0.45 s on an idle GPU. The run resumes on the same rows, and its latent is byte-identical. Each step
-line ends with `s waited for speech`: exactly 0 when no speech overlapped the step. That wait counts in the step's
-wall time, so a timed run leaves out every step where it is not 0.
+queued, and it waits before the forward, between blocks, after profile stages and after the step's output while
+that lock is held. During an earlier 4096 x 4096 render, five streamed Drama 3 voice notes reached first audio in
+1.3 to 1.6 s, against 9.5 to 10.8 s without yielding. The run resumes on the same rows with a byte-identical latent.
+Each step and profile prints `timing_valid`: benchmarks must exclude every `false` sample, including zero-wait
+samples. A separate 16-byte generation in `/tmp/tensorfold-speech.lock.stamp` detects speech that starts and ends
+between lock polls. Missing, malformed or inaccessible signals invalidate timings; uncoordinated forwards do too.
+Both processes must use this protocol; an old speech binary cannot certify clean timings. Speech remains best-effort
+on filesystem errors: if both publishing and invalidating a generation fail, a short request can remain unobserved.
 
 ## Gates, fixed before any run
 
