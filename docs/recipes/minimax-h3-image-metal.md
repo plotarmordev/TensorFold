@@ -459,7 +459,7 @@ The contract found one fault, now fixed: the prompt path's attention filled a ro
 key at weight 0, so an infinite value there gave 0 x Inf = NaN where float64 keeps the infinity. A padded key now adds
 nothing; finite outputs keep their bytes.
 
-## Speed: weights read ahead, and what is next
+## Speed: a byte-identical cold-start win
 
 A first picture after the weights leave the page cache spent most of its time waiting on disk, not the GPU. Each tool
 maps its bf16 weights and Metal reads them in place, so the first touch of every 16 KiB page is a fault served by one
@@ -470,6 +470,13 @@ So each tool now reads the bytes it is about to use into the page cache first (`
 unchanged on the same mapping: the transformer reads its whole shards when `Model.load` opens them; the prompt path
 reads its 50 text layers, embedding, `condition_proj` and token refiner; the decoder reads its tensors before its
 bf16 conversion. A missing or short file fails the load. The load stays zero-copy; only the faults are gone.
+
+**Card 35 ships the cold-start improvement:** 229 to 61 s at 2048x2048 and 288 to 123 s at 4096x4096.
+The lead's 12 November scope decision keeps the unchanged native path as the strict quality oracle and makes
+cross-stack picture differences descriptive, not an acceptance gate. No further engine change is part of this round.
+Warm 2048 still loses to the documented diffusers/MPS path: **27 s versus 16.633 s**, both including PNG writing.
+Card **46, “MiniMax-H3-Image: warm 2048 picture faster than diffusers on this Mac”**, owns that gap, drawing on
+card 40's cascade or card 42's idea sweep. Residency alone is not projected to close it (see the ranked ideas).
 
 ### Gates, fixed before the runs
 
@@ -496,10 +503,10 @@ the 2048 run before it (its encoder took 41 s against 76 s at 2048), so its gain
 
 ### Other stacks, measured here
 
-The earlier comparison is **not an acceptance receipt**. Its diffusers cold run converted the release checkpoint
-in memory rather than using the documented loader, and its warm ComfyUI 2048 image used seed 43, not 42. Neither
-run established the required matched-input quality gates. The retained timings below are diagnostic observations,
-not a quality-qualified ranking. The endpoint includes PNG saving:
+The comparison stacks in the approved scope are diffusers on MPS and ComfyUI's int8 repack. The native cold-start
+win above is measured against our unchanged path, not a claim to beat every stack on every workload. The earlier
+cross-stack timings below are retained as diagnostics: diffusers included a custom checkpoint conversion, and
+ComfyUI's warm 2048 used seed 43 rather than 42. The endpoint includes PNG saving:
 
 | Stack | 2048 first picture | 2048 warm | 4096 warm | Seconds per step, 2048 / 4096 |
 |---|---|---|---|---|
@@ -507,8 +514,9 @@ not a quality-qualified ranking. The endpoint includes PNG saving:
 | diffusers with custom checkpoint conversion on MPS | 358.6 (load/conversion 333.2) | 20.0 | 167.7 | not timed |
 | ComfyUI `b2f6707` (int8 DiT and text encoder, fp16 VAE) | 148 | 32.2 (seed 43; excluded from warm comparison) | 149 | 3.5 / 17.2 |
 
-In these diagnostic timings, TensorFold's 27 s exceeds the converted diffusers runner's 20.0 s; neither comparison
-is quality-qualified. No further native optimization has landed or been measured to close this gap.
+The documented-loader and matched-input reruns below supersede the converted diffusers runner and seed-43 warm
+ComfyUI comparison. Native warm 4096 took 100 s versus documented diffusers' 103.640 s repeat; this small observed
+advantage is a single-run comparison, not a noise-controlled speedup. No warm-2048 improvement is claimed here.
 
 How each ran:
 
@@ -531,25 +539,24 @@ How each ran:
   rotary, runs dense attention, batches decode tiles, caches text conditioning, and offers FP8, CUDA graphs and
   multi-GPU splits.
 
-The earlier cross-stack quality waiver is withdrawn. Identical seed numbers are insufficient: unpacking the native
-case's noise to `[1, 24, H/16, W/16]` and comparing it with torch `2.15.0` CPU `randn` at seed 42 finds a maximum
-absolute difference of `2.205371856689453e-6` at both sizes. A valid comparison must inject the exact same initial
-latent, preserve the prompt and schedule, and retain final-latent and decoded-RGB numerical results. ComfyUI warm
-repeats must keep seed 42 and disable execution caching, rather than change the seed to force execution.
+Identical seed numbers alone are insufficient for picture comparison: unpacking the native case's noise to
+`[1, 24, H/16, W/16]` and comparing it with torch `2.15.0` CPU `randn` at seed 42 finds a maximum absolute difference
+of `2.205371856689453e-6` at both sizes. The reruns below inject the exact native initial latent, preserve the prompt
+and schedule, and retain numerical final-latent and decoded-RGB results. ComfyUI repeats keep seed 42 and disable
+execution caching, rather than change the seed to force execution.
 
 The branch's merge base is the card-34 fork at `49e08ffd4ab70802d291324a314a4cdc00efa25f`; the retained baseline
-executables do not have an independently recorded source revision. Neither establishes an unchanged maintainer
-image stack. Upstream HEAD `eab305db0091a23b28122caadc8bf069f53d211e` has neither this image recipe nor the image
-decoder module. That does not prove no maintainer implementation exists; its exact runnable revision and command
-remain unidentified. The cross-stack acceptance is still open.
+executables do not have an independently recorded source revision. The lead removed the unidentified maintainer
+image stack from this card's comparison scope: upstream HEAD `eab305db0091a23b28122caadc8bf069f53d211e` has neither
+this image recipe nor the image decoder module. No result against that stack is claimed.
 
 #### Review rerun protocol
 
-Before new cross-stack inference, fix the diagnostic bounds at final normalized latent cosine **>= 0.99** and
-decoded RGB maximum absolute difference **<= 1**, with finite latents and matching shapes. These reuse the recipe's
-latent and decoder bounds; applying the pixel bound across whole pipelines is deliberately strict, not an approved
-perceptual-quality equivalence. A failure is not waived. The native optimization gate above remains byte identity
-for the case, latent and PNG, not this looser diagnostic.
+Before the cross-stack reruns, the diagnostic bounds were fixed at final normalized latent cosine **>= 0.99** and
+decoded RGB maximum absolute difference **<= 1**, with finite latents and matching shapes. The image bound failed;
+those failures remain recorded below. On 12 November, the lead explicitly replaced cross-stack pass/fail acceptance
+with descriptive PSNR and SSIM, since different stacks have different rounding. This is a scope decision, not a
+retroactive pass under the old bound. The native optimization gate remains byte identity for case, latent and PNG.
 
 `tools/zig/h3_image_compare.py` compares raw normalized F32 latents, or ComfyUI `SaveLatent` files, and decoded PNGs:
 
@@ -621,8 +628,11 @@ snippet above shows the correct direct capture. Against the native baseline, bot
 | 2048 | 0.9965921509572248 | 0.08261069531715759 | 237 | 3.2704102198282876 | **FAIL image**, pass latent |
 | 4096 | 0.9960658854188926 | 0.08869195143972416 | 255 | 3.564861317475637 | **FAIL image**, pass latent |
 
-This closes the missing normal-loader measurement, not the quality-qualified speed claim. The fixed pixel gate
-fails for diffusers as well as ComfyUI; it is not waived. No additional native speed improvement is established.
+This closes the missing normal-loader measurement. It does not make the old cross-stack pixel diagnostic pass.
+At 2048, native storage-cold 61 s is below diffusers process-cold 169.447 s despite the latter's un-evicted page cache.
+There is no standalone process-cold 4096 diffusers run: adding its measured 129.383 s load to the 102.038 s first
+4096 request gives **231.421 s as an estimate**, not a measured first-picture total. The native 123 s storage-cold
+4096 result must not be presented as a directly measured cold-versus-cold win over that estimate.
 
 #### ComfyUI matched-input diagnostic rerun
 
@@ -656,7 +666,45 @@ the recorded output-prefix metadata differs.
 The observed client intervals were 123.944 / 46.855 s at 2048 and 149.556 / 186.907 s at 4096. These include HTTP
 polling and latent saving as well as PNG saving, and `--cache-none` reloads graph components; they are **not** the
 resident-warm or process-cold timing boundaries above. Downloads shared the disk during these diagnostics. Do not
-use these intervals for a speed ranking. The failed pixel gate remains failed; no threshold was changed afterward.
+use these intervals for a speed ranking. The old pixel diagnostic remains failed, not relabelled as passed. The
+earlier ComfyUI first-picture 2048 observation was 148 s versus native 61 s; no independent process-cold 4096
+ComfyUI total was recorded. These limitations do not change the measured native before/after cold-start win.
+
+#### Cross-stack picture differences (descriptive, not gates)
+
+Measured on 12 November from the retained matched-noise PNGs above, not from a new inference run. Each pair uses
+seed 42, card 34's prompt, the same native initial noise and six steps. Native baseline and read-ahead case, latent
+and PNG bytes were rechecked equal at both sizes. Each stack's two reruns also decode to identical RGB pixels, so
+both repeats give the same metrics. These values neither imply pixel equality nor replace the native byte gate.
+
+| Native picture versus | Size | PSNR (dB) | SSIM |
+|---|---|---|---|
+| Documented diffusers/MPS | 2048 | 30.150806 | 0.979374 |
+| Documented diffusers/MPS | 4096 | 28.598143 | 0.972045 |
+| ComfyUI int8 repack | 2048 | 28.009878 | 0.966418 |
+| ComfyUI int8 repack | 4096 | 26.307662 | 0.959728 |
+
+Decode PNGs with Pillow `13.0.0` to RGB uint8 without resizing, linearizing or color-profile conversion. PSNR is
+`10 * log10(255**2 / MSE)`, pooling all RGB samples. SSIM averages the three channel scores, using an 11x11 Gaussian
+window, sigma 1.5, population covariance, K1=0.01 and K2=0.03, with no downsampling; the five-pixel border is excluded
+from the mean by scikit-image. Measurement versions: Python `3.12.16`, NumPy `2.5.4`, SciPy `1.18.1`, scikit-image
+`0.26.0`. Reproduce each row with the corresponding pair of retained PNGs:
+
+```python
+import numpy as np
+from PIL import Image
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+
+a = np.asarray(Image.open(native_png).convert("RGB"))
+b = np.asarray(Image.open(stack_png).convert("RGB"))
+assert a.shape == b.shape
+print(peak_signal_noise_ratio(a, b, data_range=255))
+print(structural_similarity(a, b, channel_axis=-1, data_range=255, win_size=11,
+                           gaussian_weights=True, sigma=1.5, use_sample_covariance=False))
+```
+
+Local receipt names: native `base-{size}-a.png` (equal to `new-{size}-a.png`); documented diffusers
+`documented-{size}-{1,2}.png`; ComfyUI `matched-{size}-{1,2}_00002_.png`. No weights, latents or pictures are published.
 
 ### Next, ranked
 
