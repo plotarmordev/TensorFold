@@ -50,6 +50,12 @@ conditioning, not just comparing row counts.
 Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
 A bad request prints its error and the server reads the next line.
 
+Run `zig build test-h3-image-server -Doptimize=Debug` or `-Doptimize=ReleaseSafe` for the synthetic resident gates.
+Both pass all four tests: fresh/reused latent parity across prompt and layout changes, failed-bind cleanup including
+the final tag allocation, over-long-line recovery, and the shared serializer's scratch cleanup. Picture fixtures use
+the aligned safetensors serializer so these checks run with alignment safety enabled. The line-reader gate checks
+that the next request is read, not full image generation after an oversized line.
+
 ## Edit, end to end
 
 An edit adds two tools before the prompt: the edit encoder makes each reference's latent rows, and the vision tool

@@ -152,6 +152,7 @@ fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Enc
 
 const testing = std.testing;
 const fixture = @import("checkpoint_fixture");
+const files = @import("h3_image_files.zig");
 
 /// A tiny synthetic MiniMax-H3-Image transformer: one block, hidden 256, inner 256, mlp 256, six steps.
 const synthetic = struct {
@@ -245,7 +246,7 @@ fn pictureCase(a: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const 
     try entries.append(a, .{ .name = "text_tags", .dtype = "I32", .shape = &.{text}, .bytes = std.mem.sliceAsBytes(tags) });
     const grid = try h3.picture.gridOf(.{ .width = @intCast(canvas[0]), .height = @intCast(canvas[1]) });
     try s.add(a, &entries, "noise", "F32", &.{ try h3.picture.gridRows(grid) * s.width }, seed + 100);
-    try fixture.write(a, io, dir, name, entries.items);
+    try dir.writeFile(io, .{ .sub_path = name, .data = try files.image(a, entries.items) });
 }
 
 const Spec = struct { name: []const u8, canvas: [2]i32, text: usize, seed: u32 };
