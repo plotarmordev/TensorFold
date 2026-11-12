@@ -31,6 +31,7 @@ const Binding = struct {
         arena.* = .init(gpa);
         errdefer arena.deinit();
         const model = try folder.bind(arena.allocator(), arena.allocator(), case);
+        errdefer model.release();
         return .{ .arena = arena, .model = model, .canvas = case.canvas, .rows = case.rows, .references = case.layout.references.len, .tags = try arena.allocator().dupe(i32, tags) };
     }
 
@@ -397,6 +398,24 @@ test "a failed bind releases every Metal object it made" {
     var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = counting.alloc_index - 1 });
     try testing.expectError(error.OutOfMemory, h3.Model.bind(failing.allocator(), f.folder.ck, f.cases[0].case.file, .{}));
     try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+    try testing.expectEqual(baseline, device.allocated());
+
+    var binding_alloc = std.testing.FailingAllocator.init(testing.allocator, .{ .resize_fail_index = 0 });
+    var bound = try Binding.init(binding_alloc.allocator(), &f.folder, &f.cases[0].case, &.{});
+    const tag_count = bound.arena.queryCapacity() / @sizeOf(i32) + 1;
+    bound.release();
+    try testing.expectEqual(baseline, device.allocated());
+    const tags = try a.alloc(i32, tag_count);
+    @memset(tags, 1);
+
+    // Force the tag copy to grow the arena, then fail that allocation after the model has bound successfully.
+    var tag_alloc = std.testing.FailingAllocator.init(testing.allocator, .{
+        .fail_index = binding_alloc.alloc_index,
+        .resize_fail_index = 0,
+    });
+    try testing.expectError(error.OutOfMemory, Binding.init(tag_alloc.allocator(), &f.folder, &f.cases[0].case, tags));
+    try testing.expect(tag_alloc.has_induced_failure);
+    try testing.expectEqual(tag_alloc.allocated_bytes, tag_alloc.freed_bytes);
     try testing.expectEqual(baseline, device.allocated());
 }
 
