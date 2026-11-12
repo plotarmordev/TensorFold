@@ -1,5 +1,10 @@
 # Working on TensorFold
 
+Swarm cards worked in `plotarmordev/TensorFold` are local: do not run `atc check`, `atc claim` or `atc start` for them.
+A local card number is never an upstream issue number.
+
+The ATC instructions below and in the linked contributor workflows apply only to work intended for upstream `ashhart/TensorFold`.
+
 TensorFold uses Agent Traffic Control to coordinate contributors and coding agents.
 Before editing, read [CONTRIBUTING.md](CONTRIBUTING.md) and follow the [ATC contributor instructions](docs/atc/SKILL.md).
 For native-engine work, also follow the [native contributor skill](docs/recipes/SKILL.md); read any additional AGENTS.md in the folders you change.

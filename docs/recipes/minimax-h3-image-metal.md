@@ -29,6 +29,33 @@ zig-out/bin/tf-h3-image-decoder MODEL_DIR out/case.latent.f32 128 128 out/case.p
 3. `tf-h3-image-decoder` decodes the latent. Its rows and columns are the canvas over 16. It resizes the picture back
    to the requested size when that differs from the canvas.
 
+### Resident: one process, every picture warm
+
+`tf-h3-image-server` loads the prompt encoder, the transformer's weights and the decoder once, then makes one picture
+per stdin line, writing the same files as the three tools above:
+
+```sh
+zig build tf-h3-image-server -Dcpu=apple_m1 -Doptimize=ReleaseFast
+printf '2048x2048 42 out/a prompt.txt\n2048x2048 7 out/b prompt.txt\n' |
+  zig-out/bin/tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR
+```
+
+A request line is `WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt`. This server accepts text-to-image requests only, not
+reference images or editing cases. The transformer's kernels and buffers depend on the picture's layout (canvas,
+rows and text tags), so a request with the last one's layout keeps them and only replaces the prompt's text rows
+(`Model.retext`); another layout releases them and binds anew over the same mapped weights. `Binding.fits` compares
+the canvas, row count, reference count and tags; it assumes there are no reference rows, so those determine all
+rotary positions. Supporting edits would also require checking reference geometry and refreshing reference
+conditioning, not just comparing row counts.
+Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
+A bad request prints its error and the server reads the next line.
+
+Run `zig build test-h3-image-server -Doptimize=Debug` or `-Doptimize=ReleaseSafe` for the synthetic resident gates.
+Both pass all four tests: fresh/reused latent parity across prompt and layout changes, failed-bind cleanup including
+the final tag allocation, over-long-line recovery, and the shared serializer's scratch cleanup. Picture fixtures use
+the aligned safetensors serializer so these checks run with alignment safety enabled. The line-reader gate checks
+that the next request is read, not full image generation after an oversized line.
+
 ## Edit, end to end
 
 An edit adds two tools before the prompt: the edit encoder makes each reference's latent rows, and the vision tool
@@ -515,9 +542,9 @@ bf16 conversion. A missing or short file fails the load. The load stays zero-cop
 **Card 35 ships the cold-start improvement:** 229 to 61 s at 2048x2048 and 288 to 123 s at 4096x4096.
 The lead's 12 November scope decision keeps the unchanged native path as the strict quality oracle and makes
 cross-stack picture differences descriptive, not an acceptance gate. No further engine change is part of this round.
-Warm 2048 still loses to the documented diffusers/MPS path: **27 s versus 16.633 s**, both including PNG writing.
-Card **46, “MiniMax-H3-Image: warm 2048 picture faster than diffusers on this Mac”**, owns that gap, drawing on
-card 40's cascade or card 42's idea sweep. Residency alone is not projected to close it (see the ranked ideas).
+Card 50's resident server (above) brings warm 2048 to **16.4-16.6 s**, level with that diffusers/MPS path; see
+[Resident, measured](#resident-measured). Card **46, “MiniMax-H3-Image: warm 2048 picture faster than diffusers on
+this Mac”**, owns beating it, drawing on card 40's cascade or card 42's idea sweep.
 
 ### Gates, fixed before the runs
 
@@ -747,11 +774,31 @@ print(structural_similarity(a, b, channel_axis=-1, data_range=255, win_size=11,
 Local receipt names: native `base-{size}-a.png` (equal to `new-{size}-a.png`); documented diffusers
 `documented-{size}-{1,2}.png`; ComfyUI `matched-{size}-{1,2}_00002_.png`. No weights, latents or pictures are published.
 
+### Resident, measured
+
+Card 50, on the M5 Ultra above, ReleaseFast, card 34's `prompt.txt`, weights already in the page cache. One server
+process served three 2048x2048 requests: seed 42, seed 42 again, then seed 7. Seconds from its timing lines:
+
+| Request | Prompt | Case | Transformer | 6 steps | Decoder (PNG) | Picture |
+|---|---|---|---|---|---|---|
+| startup, once | | | | | | 29.7 (all three loads) |
+| 1, seed 42 | 3.42 | 1.07 | 2.15 (bound) | 11.14 | 1.81 | 19.59 |
+| 2, seed 42 | 1.97 | 0.01 | 0.00 (reused) | 12.61 | 2.04 | **16.63** |
+| 3, seed 7 | 1.18 | 0.16 | 0.00 (reused) | 12.37 | 2.67 | **16.38** |
+
+No request after startup loads a model: the prompt's 50 text layers on the GPU take 0.30 s of its 1.1-3.4 s, the
+rest is tokenizing and host work. The one-shot tools spend 9.4 s, 17.3 s and 2.4 s loading on every picture.
+
+**Gate: byte-identical to the one-shot tools.** Requests 1 and 2 against the one-shot `tf-h3-image-prompt`,
+`tf-h3-image ... free` and `tf-h3-image-decoder` at seed 42: `cmp` found no difference in the prompt case, the
+transformer case, the latent (sha1 `f3563c56…`) or the PNG. Request 3 (reused binding, new seed) matches the one-shot
+latent at seed 7 (sha1 `04e3c4f1…`).
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
 |---|---|---|---|
-| 1 | One process holding the weights, with SGLang's conditioning cache | about -6 s at warm 2048 from residency alone; 4096 upper estimate -15 s | Projection, not a landed result: warm 2048 loader logs total about 6.3 s (prompt 0.8, transformer 3.3, decoder 2.2). Removing those from 27 s leaves about 21 s, not 14 s; PNG and CPU work remain. Conditioning caching needs separate accounting and cannot omit prompt work in an uncached comparison. |
+| 1 | SGLang's conditioning cache | under -2 s at warm 2048 | Residency landed with card 50: warm 2048 went from 27 s to 16.4-16.6 s, more than the 6.3 s of loader logs the projection counted, since each one-shot tool also re-reads its files and rebuilds its kernels. A conditioning cache would skip only the prompt (1.2-2.0 s warm); it needs separate accounting and cannot omit prompt work in an uncached comparison. |
 | 2 | PNG writing | upper estimate -18 s at 4096, -4 s at 2048 | Time after decoder tiles includes single-threaded deflate (`moss_image/png.zig`). Parallel bands could remove much of it but change compressed bytes, so they do not satisfy this card's fixed PNG byte-identity gate. Any separate decoded-pixel gate requires explicit approval before runs. |
 | 3 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps at 4096 | The steps are compute-bound: a 2048 step is about 183 TFLOP in 1.83 s, a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs. ComfyUI's int8 here shows the other half: dequantized before each product, its steps are 1.7-1.9x slower than our bf16, so int8 weights alone buy only bytes. Not bit-identical; it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000: -32% at 2048, -22% at 4K. |
 | 4 | Attention | up to -15 s at 4096 | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. |
