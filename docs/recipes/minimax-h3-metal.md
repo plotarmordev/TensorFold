@@ -20,8 +20,9 @@ and leaves the pooled branch out (not how the checkpoint was trained; for kernel
 forward stage by stage.
 
 Like `tf-h3-image`, it waits between blocks while live speech holds `/tmp/tensorfold-speech.lock`
-([the picture recipe](minimax-h3-image-metal.md#run-a-case)). Each step line and the profile's heading print the
-seconds waited; a timing whose wait is not 0 overlapped speech, so a benchmark leaves it out.
+([the picture recipe](minimax-h3-image-metal.md#run-a-case)). Each step line and the profile's heading print
+`timing_valid` and seconds waited. Exclude every `timing_valid=false` sample, even with zero wait: a whole speech
+request can finish between polls. The generation checks bracket the entire wall interval, including output copies.
 
 ## Arithmetic
 

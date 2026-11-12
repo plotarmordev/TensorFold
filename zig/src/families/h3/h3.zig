@@ -342,8 +342,8 @@ pub const Model = struct {
         try geometry.forward(self.rows, self.video * self.video_in, self.audio * self.audio_in, self.adaln.len, self.times.len, step, video.len, audio.len, video_velocity.len, audio_velocity.len);
         // this step's output head (its byte offsets), before anything is encoded
         const at = try geometry.headOffsets(self.step_heads, step, self.adaln.len / self.rows, self.video_in, self.hidden);
-        const started = mtl.clock.seconds();
         const mark = if (self.give_way) |io| gpu_turn.mark(io, gpu_turn.path) else null;
+        const started = mtl.clock.seconds();
         self.paused = 0;
         if (self.give_way) |io| self.paused += gpu_turn.yield(io, gpu_turn.path);
         const rows = self.rows;
@@ -416,10 +416,11 @@ pub const Model = struct {
         gpu += final;
         if (self.profile) self.spent[stages.len - 1] += final;
         if (self.give_way) |io| self.paused += gpu_turn.yield(io, gpu_turn.path);
-        const timing_valid = if (self.give_way) |io| self.paused == 0 and gpu_turn.clean(io, gpu_turn.path, mark) else false;
         @memcpy(video_velocity, self.video_velocity.slice(f32, video_velocity.len));
         @memcpy(audio_velocity, self.audio_velocity.slice(f32, audio_velocity.len));
-        return .{ .wall = mtl.clock.seconds() - started, .gpu = gpu, .paused = self.paused, .timing_valid = timing_valid };
+        const wall = mtl.clock.seconds() - started;
+        const timing_valid = if (self.give_way) |io| self.paused == 0 and gpu_turn.clean(io, gpu_turn.path, mark) else false;
+        return .{ .wall = wall, .gpu = gpu, .paused = self.paused, .timing_valid = timing_valid };
     }
 
     /// Waits for a committed command buffer; its GPU seconds.

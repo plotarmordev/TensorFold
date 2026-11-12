@@ -201,6 +201,36 @@ between lock polls. Missing, malformed or inaccessible signals invalidate timing
 Both processes must use this protocol; an old speech binary cannot certify clean timings. Speech remains best-effort
 on filesystem errors: if both publishing and invalidating a generation fail, a short request can remain unobserved.
 
+### Speech contention receipt, 12 November 2026
+
+Apple M5 Ultra, 256 GiB RAM, macOS 27.0 (26A425), Zig 0.17.0, ReleaseFast with `-Dcpu=apple_m1`.
+The branch's isolated Drama 3 NVFP4 server used the consented Capri catalog, CFG 1.5 with paired submission,
+one lane and context 8192. The live release server was not changed. More than 170 GiB was free before loading.
+The client timed from sending each HTTP request until reading the first two PCM bytes, not response headers.
+
+The reference cache was warmed before starting `tf-h3-image MODEL_DIR CASE OUT free`. The case was card 35's
+4096-square, seed-42, 24-text-row case (SHA-256 `af4f85f19ebeb4e4af5beada167d8e8fd00bf1b880541b88a60c0a2b5b6dd66b`).
+Five sequential requests, seeds 42–46, used `stream=true` and `response_format="pcm"`:
+
+| Public input | First PCM (s) | PCM bytes | Status |
+|---|---:|---:|---:|
+| The little boat crossed the harbor before the sun came up. | 1.168 | 212992 | 200 |
+| A blue bicycle waited beside the garden gate. | 1.174 | 180224 | 200 |
+| Please put the fresh apples in the bowl on the table. | 1.208 | 196608 | 200 |
+| We can take the quiet path through the woods today. | 1.265 | 180224 | 200 |
+| The train will arrive at the station in a few minutes. | 1.357 | 192512 | 200 |
+
+The render was running at the start and end of every request. Step 1 waited 12.68 s and reported
+`timing_valid=false`; steps 2–6 waited zero and reported `true`. The render exited 0 and its final rows matched
+the uncoordinated baseline byte-for-byte (SHA-256 `b3726693636bbe7ce77eac8da41868bd959262646bfc5ac889e2c939ee1cd5fd`).
+The server drained and stopped afterward. This is a transformer-step benchmark exclusion check, not a clip-profile
+receipt: a valid audio/video clip case is still required to exercise `tf-h3-dit` directly.
+
+Cold reference conditioning remains outside the demonstrated latency bound: first PCM without a render took
+14.819 s while building 1284 cached reference rows, versus 0.528 s on the next idle request. A cold request during
+a render took 15.332 s. The five sub-three-second results therefore establish warm live-voice contention relief,
+not a cold-start guarantee. Generation checks now bracket the complete wall interval, including output copies.
+
 ## Gates, fixed before any run
 
 These are the bounds `tf-h3-image` checks (`picture.gates`). It exits 1 when one fails, and 2 when the case holds no
