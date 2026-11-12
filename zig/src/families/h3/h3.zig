@@ -66,7 +66,7 @@ pub const Model = struct {
     lines: usize,
     rot: usize,
     blocks: []Block,
-    prompt: []const u16,
+    prompt: []u16,
     adaln: []const i32,
     times: []const i32,
     final_table: Ref,
@@ -134,8 +134,22 @@ pub const Model = struct {
 
     /// `checkpoint_dir`: the FastH3 transformer folder of `shards` files. `case`: tools/zig/h3_case.py's output.
     pub fn load(gpa: std.mem.Allocator, checkpoint_dir: []const u8, shards: usize, case: *Tensors, options: Options) !*Model {
+        return bind(gpa, try open(gpa, checkpoint_dir, shards), case, options);
+    }
+
+    /// The checkpoint's shards mapped and read into the page cache: the weights every `bind` reads in place.
+    pub fn open(gpa: std.mem.Allocator, checkpoint_dir: []const u8, shards: usize) !Checkpoint {
         const device = try mtl.Device.init();
         if (!@import("source.zig").available(device)) return error.NeedsTensorUnits;
+        const ck = try Checkpoint.open(gpa, device, checkpoint_dir, shards);
+        try ck.readAhead(gpa);
+        return ck;
+    }
+
+    /// A model over `checkpoint`'s weights for `case`'s rows: kernels built for its tiles, its buffers and tables.
+    /// Host copies come from `gpa`; `release` frees the Metal objects and leaves the checkpoint open.
+    pub fn bind(gpa: std.mem.Allocator, checkpoint: Checkpoint, case: *Tensors, options: Options) !*Model {
+        const device = try mtl.Device.init();
         const self = try gpa.create(Model);
         self.gpa = gpa;
         self.device = device;
@@ -145,9 +159,8 @@ pub const Model = struct {
         self.qkv = undefined;
         self.profile = false;
         self.spent = @splat(0);
-        self.checkpoint = try Checkpoint.open(gpa, device, checkpoint_dir, shards);
+        self.checkpoint = checkpoint;
         const ck = &self.checkpoint;
-        try ck.readAhead(gpa);
         self.base = ck.entry("blocks.0.attn.qkv_proj.weight") != null;
         const prefix = if (self.base) "blocks" else "transformer_blocks";
         const to_q = ck.entry(if (self.base) "blocks.0.attn.qkv_proj.weight" else "transformer_blocks.0.attn.to_q.weight") orelse return error.MissingTensor;
@@ -248,6 +261,22 @@ pub const Model = struct {
             b.tables = try self.held(try std.fmt.bufPrint(&name, "tables.{d}", .{i}), .bf16, 6 * self.lines * hidden);
         }
         return self;
+    }
+
+    /// A new prompt's text rows from `case`, on a binding whose rows, tags and canvas it shares.
+    pub fn retext(self: *Model, case: *const Tensors) !void {
+        const from = try case.at("text", .bf16, self.prompt.len);
+        @memcpy(std.mem.sliceAsBytes(self.prompt), case.map.bytes[from.offset..][0 .. self.prompt.len * 2]);
+    }
+
+    /// The binding's kernels, queue and buffers; the checkpoint's shards stay mapped for the next `bind`.
+    pub fn release(self: *Model) void {
+        for (self.pipelines) |p| p.deinit();
+        for (self.blocks) |b| b.tables.buffer.deinit();
+        inline for (.{ "final_table", "final_norm", "w_video_in", "b_video_in", "w_video_out", "b_video_out", "cos", "sin", "slot", "sizes" }) |f| @field(self, f).buffer.deinit();
+        if (self.audio > 0) inline for (.{ "w_audio_in", "b_audio_in", "w_audio_out", "b_audio_out" }) |f| @field(self, f).buffer.deinit();
+        inline for (.{ "row_of", "all_tiles", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "normed", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
+        self.queue.deinit();
     }
 
     /// Block `i` of the released MiniMax-H3 layout.
