@@ -147,6 +147,7 @@ pub const Model = struct {
         self.spent = @splat(0);
         self.checkpoint = try Checkpoint.open(gpa, device, checkpoint_dir, shards);
         const ck = &self.checkpoint;
+        try ck.readAhead(gpa);
         self.base = ck.entry("blocks.0.attn.qkv_proj.weight") != null;
         const prefix = if (self.base) "blocks" else "transformer_blocks";
         const to_q = ck.entry(if (self.base) "blocks.0.attn.qkv_proj.weight" else "transformer_blocks.0.attn.to_q.weight") orelse return error.MissingTensor;
