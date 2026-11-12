@@ -4,6 +4,7 @@ const mtl = @import("metal");
 const st = @import("safetensors");
 const h3 = @import("h3");
 const fixture = @import("checkpoint_fixture");
+const gpu_turn = @import("gpu_turn");
 
 const picture = h3.picture;
 
@@ -19,6 +20,8 @@ const usage =
     \\               timesteps, deltas and rotary_cos / rotary_sin for the exact checks
     \\  once         the first step alone, teacher-forced; free: the free run alone, a picture's generation
     \\Exit 0: every gate passed (or a free run had none); 1: a gate failed; 2: no reference to gate (inconclusive).
+    \\Between transformer blocks it waits while the speech server speaks; a step's "waited for speech" seconds
+    \\are in its wall time, so a benchmark leaves out every step whose wait is not 0.
     \\
 ;
 
@@ -234,6 +237,8 @@ pub fn main(init: std.process.Init) !void {
     model.dense = true;
     const schedule = h3.schedule.Schedule{ .sigmas = pdd.sigmas, .timesteps = pdd.timesteps };
     _ = try h3.modulation.reschedule(model, a, schedule, schedule, false);
+    var io = init.io;
+    model.pause = .{ .ctx = &io, .wait = yieldToSpeech };
     std.debug.print("{s}: {d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, {d} timesteps, loaded in {d:.1} s\n", .{ device.name(), canvas.width, canvas.height, rows, text, held, target, map.prefix + map.target, model.blocks.len, steps, model.lines / h3.schedule.modalities, mtl.clock.seconds() - loading });
 
     const velocity = try a.alloc(f32, target * width);
@@ -252,7 +257,7 @@ pub fn main(init: std.process.Init) !void {
             const ok = picture.stepPasses(d);
             gate.gated = true;
             gate.failed = gate.failed or !ok;
-            std.debug.print("step {d}/{d} teacher-forced: cosine {d:.6}, relative error {d:.5}, worst row {d:.5} ({s}), {d:.2} s wall, {d:.2} s GPU\n", .{ k + 1, steps, d.cosine, d.relative, d.worst_row, if (ok) "pass" else "FAIL", took.wall, took.gpu });
+            std.debug.print("step {d}/{d} teacher-forced: cosine {d:.6}, relative error {d:.5}, worst row {d:.5} ({s}), {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech\n", .{ k + 1, steps, d.cosine, d.relative, d.worst_row, if (ok) "pass" else "FAIL", took.wall, took.gpu, took.paused });
             if (k == 0) try write(a, args[3], ".first-velocity.f32", velocity);
         }
     }
@@ -262,7 +267,7 @@ pub fn main(init: std.process.Init) !void {
         for (0..steps) |k| {
             const took = try model.forward(x, &.{}, k, velocity, &.{});
             picture.euler(x, velocity, pdd.deltas[k]);
-            std.debug.print("step {d}/{d}: {d:.2} s wall, {d:.2} s GPU\n", .{ k + 1, steps, took.wall, took.gpu });
+            std.debug.print("step {d}/{d}: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech\n", .{ k + 1, steps, took.wall, took.gpu, took.paused });
         }
         try write(a, args[3], ".rows.f32", x);
         const out = try a.alloc(f32, x.len);
@@ -279,4 +284,9 @@ pub fn main(init: std.process.Init) !void {
     }
     if (gate.failed) std.process.exit(1);
     if (!gate.gated and mode != .free) std.process.exit(2);
+}
+
+fn yieldToSpeech(ctx: *anyopaque) f64 {
+    const io: *const std.Io = @ptrCast(@alignCast(ctx));
+    return gpu_turn.yield(io.*, gpu_turn.path);
 }

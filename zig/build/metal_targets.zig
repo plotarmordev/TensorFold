@@ -429,7 +429,7 @@ pub fn metalTargets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "h3", .module = h3_mod }, .{ .name = "safetensors", .module = h3_safetensors }, .{ .name = "checkpoint_fixture", .module = b.createModule(.{ .root_source_file = b.path("zig/src/core/checkpoint_fixture.zig"), .target = target, .optimize = optimize }) } },
+        .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "h3", .module = h3_mod }, .{ .name = "safetensors", .module = h3_safetensors }, .{ .name = "checkpoint_fixture", .module = b.createModule(.{ .root_source_file = b.path("zig/src/core/checkpoint_fixture.zig"), .target = target, .optimize = optimize }) }, .{ .name = "gpu_turn", .module = b.createModule(.{ .root_source_file = b.path("zig/src/server/gpu_turn.zig"), .target = target, .optimize = optimize }) } },
     }) });
     b.step("tf-h3-image", "MiniMax-H3-Image's Metal transformer on a picture case: six distilled steps, teacher-forced and gated").dependOn(&b.addInstallArtifact(h3_image, .{}).step);
     @import("h3_image_encoder.zig").tool(b, target, optimize, metal);
