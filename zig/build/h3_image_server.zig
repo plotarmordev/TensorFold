@@ -2,7 +2,7 @@
 const std = @import("std");
 const prompt = @import("h3_image_prompt.zig");
 
-pub fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, metal: *std.Build.Module, h3_kernels: *std.Build.Module, sources: *std.Build.Module) void {
+pub fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, metal: *std.Build.Module, h3_kernels: *std.Build.Module, sources: *std.Build.Module, test_step: *std.Build.Step) void {
     const st = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = target, .optimize = optimize });
     // core's picture files have one owner: the PNG writer, which the prompt path's Qwen copy reads them through
     const writer = b.createModule(.{ .root_source_file = b.path("zig/src/picture_writer.zig"), .target = target, .optimize = optimize, .link_libc = true });
@@ -29,4 +29,8 @@ pub fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
         .{ .name = "picture_writer", .module = writer },
     } }) });
     b.step("tf-h3-image-server", "MiniMax-H3-Image resident: prompt encoder, transformer and decoder loaded once, one picture a stdin line").dependOn(&b.addInstallArtifact(exe, .{}).step);
+    const tests = b.addTest(.{ .root_module = exe.root_module });
+    const run = b.addRunArtifact(tests);
+    b.step("test-h3-image-server", "The resident server's binding reuse, failed-bind unwind and over-long line reader").dependOn(&run.step);
+    test_step.dependOn(&run.step);
 }

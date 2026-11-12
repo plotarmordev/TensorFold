@@ -108,6 +108,7 @@ pub const Folder = struct {
     /// A model for `case`'s rows over the folder's weights, its AdaLN tables for the distilled schedule.
     pub fn bind(f: *const Folder, gpa: std.mem.Allocator, a: std.mem.Allocator, case: *const Case) !*h3.Model {
         const model = try h3.Model.bind(gpa, f.ck, case.file, .{});
+        errdefer model.release();
         if (!model.base or model.step_heads != f.pdd.steps() or model.audio != 0) return error.H3NotPictureModel;
         model.dense = true;
         const schedule = h3.schedule.Schedule{ .sigmas = f.pdd.sigmas, .timesteps = f.pdd.timesteps };

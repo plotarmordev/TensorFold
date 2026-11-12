@@ -151,14 +151,13 @@ pub const Model = struct {
     pub fn bind(gpa: std.mem.Allocator, checkpoint: Checkpoint, case: *Tensors, options: Options) !*Model {
         const device = try mtl.Device.init();
         const self = try gpa.create(Model);
+        // zeroed first: a failure part-way leaves every field `release` touches at a null object
+        @memset(std.mem.asBytes(self), 0);
         self.gpa = gpa;
+        errdefer self.release();
         self.device = device;
         self.queue = try device.queue();
         self.case = case;
-        self.dense = false;
-        self.qkv = undefined;
-        self.profile = false;
-        self.spent = @splat(0);
         self.checkpoint = checkpoint;
         const ck = &self.checkpoint;
         self.base = ck.entry("blocks.0.attn.qkv_proj.weight") != null;
@@ -247,6 +246,7 @@ pub const Model = struct {
         self.audio_velocity = try device.buffer(@max(self.audio * self.audio_in, 1) * 4, shared);
 
         self.blocks = try gpa.alloc(Block, layers);
+        @memset(std.mem.sliceAsBytes(self.blocks), 0);
         for (self.blocks, 0..) |*b, i| {
             if (self.base) {
                 try self.baseBlock(b, i);
@@ -269,7 +269,8 @@ pub const Model = struct {
         @memcpy(std.mem.sliceAsBytes(self.prompt), case.map.bytes[from.offset..][0 .. self.prompt.len * 2]);
     }
 
-    /// The binding's kernels, queue and buffers; the checkpoint's shards stay mapped for the next `bind`.
+    /// The binding's kernels, queue and buffers, its host copies and the model itself; the checkpoint's shards stay
+    /// mapped for the next `bind`.
     pub fn release(self: *Model) void {
         for (self.pipelines) |p| p.deinit();
         for (self.blocks) |b| b.tables.buffer.deinit();
@@ -277,6 +278,11 @@ pub const Model = struct {
         if (self.audio > 0) inline for (.{ "w_audio_in", "b_audio_in", "w_audio_out", "b_audio_out" }) |f| @field(self, f).buffer.deinit();
         inline for (.{ "row_of", "all_tiles", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "normed", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
         self.queue.deinit();
+        self.gpa.free(self.blocks);
+        self.gpa.free(self.prompt);
+        self.gpa.free(self.adaln);
+        self.gpa.free(self.times);
+        self.gpa.destroy(self);
     }
 
     /// Block `i` of the released MiniMax-H3 layout.
