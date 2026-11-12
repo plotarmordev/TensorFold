@@ -16,6 +16,7 @@ pub fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
         .{ .name = "h3_image_decoder_kernels", .module = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/image_decoder.zig") }) },
         .{ .name = "qwen_vl_rope", .module = prompt.rope(b, target) },
         .{ .name = "picture", .module = writer },
+        .{ .name = "gpu_turn", .module = b.createModule(.{ .root_source_file = b.path("zig/src/server/gpu_turn.zig"), .target = target, .optimize = optimize }) },
     } });
     const exe = b.addExecutable(.{ .name = "tf-h3-image-server", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_server.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{
         .{ .name = "metal", .module = metal },
