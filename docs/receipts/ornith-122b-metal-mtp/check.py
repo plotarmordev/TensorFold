@@ -28,25 +28,28 @@ for mode in ("plain", "dflash", "mtp"):
             spec = [r["speculative"] for r in runs]
             print(f'{mode:6} {par}   {cell["streams"]}       {cell["per_stream_tps"]:6.1f}       {cell["aggregate_tps"]:6.1f}    '
                   f'{cell["request"]["ttft_s"]:.3f}/{max(r["ttft_s"] for r in runs):.3f}  '
-                  f'{ratio(sum(s["accepted"] for s in spec), sum(s["drafted"] for s in spec))}  '
+                  f'{ratio(sum(s.get("accepted", 0) for s in spec), sum(s.get("drafted", 0) for s in spec))}  '
                   f'reps {[round(r["aggregate_tps"], 1) for r in cell["reps"]]}')
 
-# MTP on a server restarted before each one-stream request, against plain's reply to the same prompt
-plain_sha = load("bench-plain-p1-fresh.raw.json")["runs"][-1]["token_sha256"]
-restart = [load(f"bench-mtp-p1-restart-{i}.raw.json")["runs"][-1] for i in range(3)]
-assert all(r["token_sha256"] == plain_sha for r in restart)
-print("MTP restarted: tok/s", [round(r["decode_tps"], 1) for r in restart],
-      f'median {statistics.median(r["decode_tps"] for r in restart):.1f}, '
-      f'ttft median/max {statistics.median(r["ttft_s"] for r in restart):.3f}/{max(r["ttft_s"] for r in restart):.3f}, '
-      + ratio(sum(r["speculative"]["accepted"] for r in restart), sum(r["speculative"]["drafted"] for r in restart))
-      + ", tokens equal plain")
+# MTP on two more fresh one-stream servers: each timed reply's tok/s and accepted/drafted, all the same tokens
+for tag in ("rerun", "rerun2"):
+    doc, timed = load(f"bench-mtp-p1-{tag}.json"), load(f"bench-mtp-p1-{tag}.raw.json")["runs"][-3:]
+    assert all(r["token_sha256"] == timed[0]["token_sha256"] for r in timed)
+    print(f'mtp p1 {tag}: {doc["cells"][0]["per_stream_tps"]} tok/s, replies',
+          [(round(r["decode_tps"], 1), r["speculative"]["accepted"], r["speculative"]["drafted"]) for r in timed])
 
-# Quality: 16 prompts x 128 greedy tokens; MTP ran as four concurrent groups of four
-plain, dflash, mtp = load("quality-plain.json"), load("quality-dflash.json"), load("quality-mtp-shared.json")
-assert [r["ids"] for r in plain] == [r["ids"] for r in dflash] == [r["ids"] for r in mtp]
-assert all(r["speculative"]["drafted"] > 0 for r in mtp)
-print("quality: plain, DFlash2 and MTP ids equal,", sum(len(r["ids"]) for r in plain), "tokens; MTP",
-      ratio(sum(r["speculative"]["accepted"] for r in mtp), sum(r["speculative"]["drafted"] for r in mtp)))
+# Quality: 16 prompts x 128 greedy tokens. The 12 November ids, then this build's drafted replies against plain's
+# server token SHA-256: DFlash2 one stream, MTP one stream and in four concurrent groups of four
+plain, dflash = load("quality-plain.json"), load("quality-dflash.json")
+assert [r["ids"] for r in plain] == [r["ids"] for r in dflash]
+print("quality: plain and DFlash2 ids equal,", sum(len(r["ids"]) for r in plain), "tokens")
+for name in ("dflash-p1", "mtp-p1", "mtp-p4"):
+    rows = load(f"quality-{name}.json")
+    assert [r["name"] for r in rows] == [r["name"] for r in plain]
+    assert all(r["tokens"] == 128 and r["token_sha256"] == p["runtime"]["token_sha256"] for r, p in zip(rows, plain))
+    spec = [r["speculative"] for r in rows]
+    print(f"{name}: all 16 replies equal plain;", sum(s.get("drafted", 0) > 0 for s in spec), "drafted,",
+          ratio(sum(s.get("accepted", 0) for s in spec), sum(s.get("drafted", 0) for s in spec)))
 print("leading match against mlx-lm", sum(r["lead"] for r in plain), "/", sum(len(r["reference_ids"]) for r in plain))
 print("native ids sha256", u32_sha(plain, "ids"))
 print("mlx-lm ids sha256", u32_sha(plain, "reference_ids"))
