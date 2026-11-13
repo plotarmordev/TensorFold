@@ -110,6 +110,25 @@ test "h3 runtime: keep exceeds actual video choices before dispatch" {
     try std.testing.expectEqual(@as(usize, 0), mock.at);
 }
 
+test "h3 runtime: a dense-only model refuses a routed forward before dispatch" {
+    const m = try mock.model();
+    defer mock.clean(m);
+    m.gated = false;
+    var in = mock.input();
+    var slots = [_]i32{ 0, 64 };
+    var sizes = [_]i32{ 1, 1 };
+    in.tiles = 2;
+    in.prefix_tiles = 1;
+    in.keep = 1;
+    in.slot = @intFromPtr(&slots);
+    in.sizes = @intFromPtr(&sizes);
+    try std.testing.expectError(error.BadH3Ungated, m.forward(&in));
+    try std.testing.expectEqual(@as(usize, 0), mock.at);
+    in.keep = 0;
+    in.prefix_tiles = 0;
+    _ = try m.plan(&in);
+}
+
 test "h3 runtime: host optional attention output uses separate device storage and host readback" {
     const m = try mock.model();
     defer mock.clean(m);

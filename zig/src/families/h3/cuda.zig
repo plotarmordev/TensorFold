@@ -32,7 +32,8 @@ pub fn seconds() f64 {
     return @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) * 1e-9;
 }
 
-/// A block's bf16 projections (N, K) as stored, `qkvc` qkv_proj then the gate; `norms`: norm1, norm2, q and k norms.
+/// A block's bf16 projections (N, K) as stored, `qkvc` qkv_proj then the gate when the checkpoint has one;
+/// `norms`: norm1, norm2, q and k norms.
 pub const Block = struct { qkvc: cuda.DeviceBuffer, out: cuda.DeviceBuffer, fc1: cuda.DeviceBuffer, fc2: cuda.DeviceBuffer, norms: cuda.DeviceBuffer };
 
 pub const Model = struct {
@@ -48,6 +49,8 @@ pub const Model = struct {
     heads: usize,
     mlp: usize,
     blocks: []Block,
+    /// The blocks carry attn.to_gate_compress, which routed forwards need; MiniMax-H3-Image's dense blocks do not.
+    gated: bool,
     geometry: geometry.Geometry = .{},
     profile: bool = false,
     spent: [stages.len]f64 = @splat(0),

@@ -231,7 +231,8 @@ test "h3 metadata: exact projection shape is checked before pinned and device al
     try std.testing.expectEqual(@as(usize, 0), Mock.host_live);
 }
 
-fn blockFixture(dir: std.Io.Dir, ids: []const usize, missing_norm: ?usize) ![:0]u8 {
+/// `gated` false: the dense-only layout of MiniMax-H3-Image's blocks, no attn.to_gate_compress.
+fn blockFixture(dir: std.Io.Dir, ids: []const usize, missing_norm: ?usize, gated: bool) ![:0]u8 {
     const a = std.testing.allocator;
     const io = std.testing.io;
     const names = [_][]const u8{ "attn.qkv_proj.weight", "attn.to_gate_compress.weight", "attn.out_proj.weight", "mlp.fc1.weight", "mlp.fc2.weight", "norm1.weight", "norm2.weight", "attn.q_norm.weight", "attn.k_norm.weight" };
@@ -241,8 +242,9 @@ fn blockFixture(dir: std.Io.Dir, ids: []const usize, missing_norm: ?usize) ![:0]
     try header.appendSlice(a, "{");
     var offset: usize = 0;
     var count: usize = 0;
-    for (ids) |id| for (names, shapes) |name, shape| {
+    for (ids) |id| for (names, shapes, 0..) |name, shape, k| {
         if (missing_norm == id and std.mem.eql(u8, name, "norm1.weight")) continue;
+        if (!gated and k == 1) continue;
         const n = shape[0] * shape[1] * 2;
         try header.print(a, "{s}\"blocks.{d}.{s}\":{{\"dtype\":\"BF16\",\"shape\":[{d},{d}],\"data_offsets\":[{d},{d}]}}", .{ if (count == 0) "" else ",", id, name, shape[0], shape[1], offset, offset + n });
         count += 1;
@@ -263,7 +265,7 @@ fn blockFixture(dir: std.Io.Dir, ids: []const usize, missing_norm: ?usize) ![:0]
 fn badBlocks(ids: []const usize, missing: ?usize, comptime absent: []const u8) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const path = try blockFixture(tmp.dir, ids, missing);
+    const path = try blockFixture(tmp.dir, ids, missing, true);
     defer std.testing.allocator.free(path);
     var m = Mock.model();
     const result = weights.read(&m, path.ptr);
@@ -286,7 +288,7 @@ test "h3 blocks: valid one and two contiguous complete blocks load and release" 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     for (1..3) |n| {
-        const path = try blockFixture(tmp.dir, (&[_]usize{ 0, 1 })[0..n], null);
+        const path = try blockFixture(tmp.dir, (&[_]usize{ 0, 1 })[0..n], null, true);
         defer std.testing.allocator.free(path);
         var m = Mock.model();
         try weights.read(&m, path.ptr);
@@ -295,6 +297,32 @@ test "h3 blocks: valid one and two contiguous complete blocks load and release" 
         weights.free(&m);
         try std.testing.expectEqual(@as(usize, 0), Mock.live());
     }
+}
+
+test "h3 blocks: a dense-only checkpoint loads q, k and v alone and refuses the gate" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try blockFixture(tmp.dir, &.{ 0, 1 }, null, false);
+    defer std.testing.allocator.free(path);
+    var m = Mock.model();
+    try weights.read(&m, path.ptr);
+    defer weights.free(&m);
+    try std.testing.expect(!m.gated);
+    try std.testing.expectEqual(@as(usize, 2), m.blocks.len);
+    // q, k and v of 128 rows over a hidden of 1, bf16: no room kept for a gate
+    try std.testing.expectEqual(@as(usize, 3 * 128 * 2), m.blocks[1].qkvc.len);
+    try std.testing.expectError(error.NoGate, weights.set(&m, 0, .gate_compress, 0x1000, 128, 1));
+}
+
+test "h3 blocks: a fused qkv product lands stacked, every head's q before any k" {
+    // two heads, rows of one byte: stored (head, [q, k, v], 128) as the release keeps it
+    const f: weights.Fused = .{ .heads = 2, .row = 1 };
+    var stored: [6 * 128]u8 = undefined;
+    for (&stored, 0..) |*b, i| b.* = @intCast(i / 128);
+    var stacked: [stored.len]u8 = undefined;
+    for (&stacked, 0..) |*b, at| b.* = stored[f.source(at)];
+    // stored parts: head 0's q k v are 0 1 2, head 1's are 3 4 5; stacked: q0 q1 k0 k1 v0 v1
+    for ([_]u8{ 0, 3, 1, 4, 2, 5 }, 0..) |want, p| try std.testing.expect(std.mem.allEqual(u8, stacked[p * 128 ..][0..128], want));
 }
 
 test "h3 ownership: failed per-copy wait retains destinations until recovery" {

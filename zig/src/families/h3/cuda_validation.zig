@@ -32,6 +32,7 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
     if (m.heads > 65535 or tiles > 65535) return error.BadH3Scalar;
     if (own0 >= own1 or own1 > tiles or rows > try product(&.{ own1 - own0, 64 }) or rows < own1 - own0) return error.BadH3Dimensions;
     if (in.prefix_tiles > tiles or (in.keep != 0 and in.keep > tiles - in.prefix_tiles)) return error.BadH3Keep;
+    if (in.keep != 0 and !m.gated) return error.BadH3Ungated;
     // CUDA's rotary argument is a half-width within a 128-wide head.
     if (in.rot > 64) return error.BadH3Rotary;
     const count: usize = if (in.blocks == 0) m.blocks.len else in.blocks;
