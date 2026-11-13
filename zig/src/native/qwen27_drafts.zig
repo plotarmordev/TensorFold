@@ -129,21 +129,19 @@ pub fn mtpKeep(b: *Metal, paths: []const []const u32) !void {
 }
 
 /// A prompt's end steps its last chunk's taps with the first token. The round is kept here, ahead of the engine's
-/// keep, so the layer steps every kept chain before each stream holds its draft from its cache's end.
+/// keep, so the layer steps every kept chain before each stream holds its draft from its cache's end. The held tree
+/// goes only after that keep: a lone window kept whole is kept here alone, and its landings count against that tree.
 fn mtpDrafts(b: *Metal, d: *q.mtp.Drafter, requests: []const be.DraftRequest) !void {
     const pool = mtl.objc.Pool.push();
     defer pool.pop();
+    for (requests) |r| if (r.rows == null) try promptEnd(b, d, try b.slotFor(r.stream), r);
+    try keepEarly(b, requests);
+    const kept = b.round == null; // a window it could not keep: its cache would trail its rows
     for (requests) |r| {
         const slot = try b.slotFor(r.stream);
         b.dropTreeOf(slot);
-        if (r.rows == null) try promptEnd(b, d, slot, r);
-    }
-    try keepEarly(b, requests);
-    if (b.round != null) return; // a window it could not keep: its cache would trail its rows
-    for (requests) |r| {
-        const slot = try b.slotFor(r.stream);
         const end = b.runner.offsets[slot];
-        if (r.depth == 0 or b.mtp_cache.ends[slot] != end or b.runner.capacity - end < 2) continue;
+        if (!kept or r.depth == 0 or b.mtp_cache.ends[slot] != end or b.runner.capacity - end < 2) continue;
         b.trees[slot] = try chain(b.gpa, b.mtp_cache.drafts[slot]);
     }
 }
