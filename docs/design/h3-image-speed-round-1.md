@@ -121,8 +121,8 @@ sweep that turned the same idea down.
 | 5 | `gemm-schedule` | 1, one dissent | exact | x1.05-1.3 / x1.05-1.13 | small | 1 + 3-5 days |
 
 They work on different time: the PNG tail, the number of blocks run, the cold reads, attention's arithmetic and the
-products' schedule, so cards 1-4 stack. With `exact-png` and `block-budget` at their planning settings, warm 4096
-falls from about 100 s to 45-60 s (x1.65-2.2); with `one-read` added, cold 2048 falls from 61 s to about 35 s. Warm
+products' schedule, so cards 1-4 stack. With `exact-png` and `block-budget` across their expected ranges, warm 4096
+falls from about 100 s to 36-60 s (x1.65-2.8); with `one-read` added, cold 2048 falls from 61 s to about 35 s. Warm
 2048 moves only with `block-budget`.
 
 ### 1. `exact-png`: the same PNG bytes from every core, streamed behind the decoder
@@ -182,7 +182,7 @@ keeps.
   0.99 or better. Then masks of increasing depth cut under the shared protocol; an all-keep mask is first proved
   byte-identical.
 - **Speed gate.** Six steps at most 6.9 s at 2048 and 42 s at 4096 (card 34's / 1.6 and / 1.4), and the warm 2048
-  picture at most 8.5 s, mask bookkeeping and forecasts counted.
+  picture at most 8.4 s (card 51's 12.70 s / 1.5), mask bookkeeping and forecasts counted.
 - **Quality guard.** Lossy, on free-running pictures only.
 - **Risks.** A distilled model may need every block at every step; the diagnostic stops the card in a day. Small text
   and fine texture go first.
@@ -242,6 +242,8 @@ the code refutes (the products already read from device memory).
   keeping each output's MMA chain and bf16 store.
 - **Expected gain.** Transformer x1.1-1.35 at best; unknown until the bf16 tensor-unit peak is measured.
 - **Cost.** A one-day roofline probe, then 3-5 days.
+- **A/B.** Every production projection shape captured, the 24 text rows and ragged tails included; counters and
+  per-projection GPU time before choosing a variant; then the shared protocol, cold compilation charged apart.
 - **Speed gate.** At least 1.2x on the projection sum in production-shape replay, then six steps at most card 34's /
   1.1.
 - **Quality guard.** Exact.
@@ -254,7 +256,7 @@ the code refutes (the products already read from device memory).
 |---|---|---|
 | Resolution cascade, routed late attention, 512-pixel decoder tiles | all | Card 40's design |
 | Pooled far-field keys; GPU and SME2 row split | all | Main's ideas page claims them |
-| Read-ahead, resident server, resident weights, re-wiring per request | all | Cards 35, 50 and 51 |
+| Read-ahead, resident server, resident weights, re-wiring per request | architecture, history | Cards 35, 50 and 51 |
 | int8 / fp8 / fp4 / GGUF weights or activations in the linear layers | all | h3-image-mlx ships W8A8; lossy weight formats refused upstream; dequantized int8 is slower here |
 | Lossless 12-bit bf16 weights decoded in the product | history | Earlier GPU decode was neither exact nor faster; these steps are compute-bound |
 | Lossless checkpoint compression for cold reads | history | Unmeasured entropy and decode cost; `one-read` attacks the same time exactly |
@@ -280,7 +282,7 @@ the code refutes (the products already read from device memory).
 | Neural Engine or Core ML offload | architecture, outside | Cannot share the Metal stream; fp16 arithmetic; a rewrite |
 | Overlapping the decoder with the steps; drafting the next step | architecture, outside | The decoder needs the final latent; nothing verifies a continuous draft cheaply |
 | Spatial tiling of 4096 into 2048 windows | architecture | Breaks global coherence; pooled far keys do it better |
-| Batching several pictures; multi-device sequence parallelism | all | Throughput, or a second device; not one picture's time on one GPU |
+| Batching several pictures; multi-device sequence parallelism | history, outside | Throughput, or a second device; not one picture's time on one GPU |
 | Conditioning and prompt caching | history, outside | Shipped elsewhere and near #2796; a fresh prompt cannot hit it |
 | Exploiting the relative rotary lattice | architecture | Content differs at each offset, so no product is saved |
 | Mixture-of-experts, Mamba-scan and KV-page wins from other models | history | Not the structure of this dense image transformer |
@@ -329,7 +331,7 @@ negative if it fails.
 - `tf-h3-image blocks=MASK` with identity and forecast fills and an explicit residual boundary; without it, or with
   an all-keep mask, the final latent is byte-identical.
 - On the shared corpus on this M5 Ultra: six steps at most 6.9 s at 2048 and 42 s at 4096, warm 2048 picture at
-  most 8.5 s in the resident server; a table per mask and size in the recipe.
+  most 8.4 s in the resident server; a table per mask and size in the recipe.
 - The complete lossy guard on free-running pictures, alone and stacked with card 1.
 
 **3. MiniMax-H3-Image: one reader for every stage's weights, in compute order** (`one-read`)
