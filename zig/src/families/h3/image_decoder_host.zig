@@ -64,6 +64,11 @@ pub const Decoder = struct {
 
     /// The raw latent [24, rows, cols] decoded to `out` [3, 16 rows, 16 cols]: a tile a worker, blended in fp32.
     pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, out: []f32) !void {
+        return d.decodeWith(a, c, raw, rows, cols, layers, out, std.Thread, std.Thread.getCpuCount() catch 1);
+    }
+
+    /// `decode` with up to `workers` workers (64 at most) from `Thread`, which a test swaps for one whose spawn fails.
+    pub fn decodeWith(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, out: []f32, comptime Thread: type, workers: usize) !void {
         if (raw.len != try host.latentLength(rows, cols)) return error.H3BadLatentLength;
         const t = try host.tiles(a, c, rows, cols);
         if (layers > d.plan.layers) return error.H3BadTiles;
@@ -77,7 +82,7 @@ pub const Decoder = struct {
         const sin = try a.alloc(u16, cos.len);
         try host.rotary(t.h, t.w, c.rope_theta, cos, sin);
         const pixels = 3 * t.rows[0].len * t.cols[0].len;
-        const count = @min(t.total(), 64, std.Thread.getCpuCount() catch 1);
+        const count = @min(t.total(), 64, @max(workers, 1));
         const stream = try a.alloc([]f32, count);
         const proj = try a.alloc([]f32, count);
         const bits = try a.alloc([]u16, count);
@@ -100,18 +105,19 @@ pub const Decoder = struct {
                 while (k < work.tiles.total()) : (k += of) work.one(me, k);
             }
         };
-        var threads: [64]std.Thread = undefined;
-        var made: usize = 0;
-        for (1..count) |me| {
-            threads[made] = std.Thread.spawn(.{}, Job.run, .{ &w, me, count }) catch {
-                w.failed.store(true, .monotonic);
-                for (threads[0..made]) |th| th.join();
-                return;
-            };
-            made += 1;
+        {
+            var threads: [64]Thread = undefined;
+            var made: usize = 0;
+            defer for (threads[0..made]) |th| th.join(); // every picture slot settled before the assembly blends them
+            for (1..count) |me| {
+                threads[made] = Thread.spawn(.{}, Job.run, .{ &w, me, count }) catch |err| {
+                    w.stop();
+                    return err;
+                };
+                made += 1;
+            }
+            Job.run(&w, 0, count);
         }
-        Job.run(&w, 0, count);
-        for (threads[0..made]) |th| th.join(); // every picture slot settled before the assembly blends them
         if (w.failed.load(.monotonic)) return error.H3BadTiles;
         var assembly = try vae.Assembler.init(a, t.rows, t.cols, 3, out);
         for (0..t.total()) |k| {

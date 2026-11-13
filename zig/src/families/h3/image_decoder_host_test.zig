@@ -50,3 +50,36 @@ test "the host image decoder: tiles across cores, the reference chain tile by ti
     try decoder.decode(a, &c, latent, 7, 7, 2, got);
     try std.testing.expectEqualSlices(f32, want, got);
 }
+
+/// std.Thread whose second spawn fails, as when the process runs out of threads.
+const Exhausted = struct {
+    inner: std.Thread,
+    var spawned: usize = 0;
+
+    pub fn spawn(config: std.Thread.SpawnConfig, comptime f: anytype, args: anytype) std.Thread.SpawnError!Exhausted {
+        spawned += 1;
+        if (spawned > 1) return error.ThreadQuotaExceeded;
+        return .{ .inner = try std.Thread.spawn(config, f, args) };
+    }
+
+    pub fn join(self: Exhausted) void {
+        self.inner.join();
+    }
+};
+
+test "the host image decoder fails, not a partial picture, when a worker cannot be spawned" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const c: vae.Config = .{ .mean = @splat(0), .std = @splat(1), .tile = 64, .overlap = 16, .rope_theta = 100 };
+    var decoder = try d.Decoder.init(std.testing.allocator, 2);
+    defer decoder.deinit();
+    try decoder.synthetic(a, 0x5eed);
+    const latent = try a.alloc(f32, try host.latentLength(7, 7));
+    @memset(latent, 0.5);
+    const got = try a.alloc(f32, 3 * 112 * 112);
+    @memset(got, -7);
+    try std.testing.expectError(error.ThreadQuotaExceeded, decoder.decodeWith(a, &c, latent, 7, 7, 2, got, Exhausted, 4));
+    try std.testing.expectEqual(@as(usize, 2), Exhausted.spawned);
+    for (got) |v| try std.testing.expectEqual(@as(f32, -7), v);
+}
