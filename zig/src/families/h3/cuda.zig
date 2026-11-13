@@ -4,7 +4,8 @@ const report = @import("report.zig");
 const cuda = @import("cuda");
 const weights = @import("cuda_weights.zig");
 pub const geometry = @import("cuda_geometry.zig");
-const host = @import("cuda_host.zig");
+pub const checkpoint = @import("checkpoint.zig");
+pub const host = @import("cuda_host.zig");
 const Gemms = @import("cuda_gemm.zig").Gemms;
 
 pub const head_dim = 128;
@@ -61,6 +62,8 @@ pub const Model = struct {
     hosts: std.AutoHashMapUnmanaged(usize, cuda.HostBuffer) = .empty,
     load_stage: cuda.copy_source.Stage = .{},
     load_failed: bool = false,
+    /// The monotonic second when driver setup finished; `loaded_seconds` measures the weight read after it.
+    opened: f64 = 0,
     retained_next: ?*Model = null,
 
     fn function(self: *const Model, comptime name: []const u8) cuda.Function {
@@ -74,8 +77,26 @@ pub const Model = struct {
 
     /// `path`: FastH3's transformer in one safetensors file (ComfyUI's layout: blocks.N.attn.qkv_proj.weight ...).
     pub fn load(gpa: std.mem.Allocator, path: [*:0]const u8) !*Model {
+        const self = try setup(gpa);
+        try self.loadWeights(path);
+        self.loaded_seconds = seconds() - self.opened;
+        return self;
+    }
+
+    /// `load` over a checkpoint's already-open shards (the released MiniMax-H3's model-NNNNN-of-COUNT files).
+    pub fn loadSharded(gpa: std.mem.Allocator, ck: *checkpoint.Shards) !*Model {
+        const self = try setup(gpa);
+        weights.readSyncedShards(self, ck.*) catch |err| {
+            self.tryDeinit() catch @import("cuda_load_retained.zig").keep(self);
+            return err;
+        };
+        self.loaded_seconds = seconds() - self.opened;
+        return self;
+    }
+
+    /// The driver, context, kernels and GEMM handles before the weights are read.
+    fn setup(gpa: std.mem.Allocator) !*Model {
         try @import("cuda_load_retained.zig").admit();
-        const started = seconds();
         const self = try gpa.create(Model);
         var ordinary_cleanup = true;
         errdefer if (ordinary_cleanup) gpa.destroy(self);
@@ -103,8 +124,7 @@ pub const Model = struct {
         self.gemms = try Gemms.init(gpa, d);
         errdefer if (ordinary_cleanup) self.gemms.deinit();
         ordinary_cleanup = false;
-        try self.loadWeights(path);
-        self.loaded_seconds = seconds() - started;
+        self.opened = seconds();
         return self;
     }
 

@@ -45,10 +45,10 @@ pub const Checkpoint = struct {
         const size = Ops.lseek(fd, 0, 2);
         if (size < 16) return error.CannotOpen;
         const len = std.math.cast(usize, size) orelse return error.CheckpointTooLarge;
-        const at = Ops.mmap(null, len, 1, 2, fd, 0) orelse return error.CannotMap;
-        if (@intFromPtr(at) == std.math.maxInt(usize)) return error.CannotMap;
-        errdefer _ = Ops.munmap(at, len);
-        const bytes = @as([*]const u8, @ptrCast(at))[0..len];
+        const mapped = Ops.mmap(null, len, 1, 2, fd, 0) orelse return error.CannotMap;
+        if (@intFromPtr(mapped) == std.math.maxInt(usize)) return error.CannotMap;
+        errdefer _ = Ops.munmap(mapped, len);
+        const bytes = @as([*]const u8, @ptrCast(mapped))[0..len];
         const n = st.headerSize(std.mem.readInt(u64, bytes[0..8], .little), len) catch return error.BadHeader;
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
         errdefer arena.deinit();
@@ -61,6 +61,42 @@ pub const Checkpoint = struct {
         _ = c.munmap(@ptrCast(@constCast(self.bytes.ptr)), self.bytes.len);
     }
 
+    /// The tensor `name` of `dtype` and `count` values: its bytes as stored.
+    pub fn at(self: *const Checkpoint, name: []const u8, dtype: st.DType, count: usize) ![]const u8 {
+        const e = self.names.get(name) orelse {
+            report.say("no tensor {s}", .{name});
+            return error.MissingTensor;
+        };
+        if (e.dtype != dtype or e.end - e.begin != count * dtype.size()) {
+            report.say("tensor {s}: unexpected type or size", .{name});
+            return error.BadTensor;
+        }
+        if (self.data > self.bytes.len or e.end > self.bytes.len - self.data) return error.BadHeader;
+        return self.bytes[self.data + e.begin ..][0 .. e.end - e.begin];
+    }
+
+    /// The tensor `name` (float32 or bf16) as float32 values on the host.
+    pub fn floats(self: *const Checkpoint, a: std.mem.Allocator, name: []const u8) ![]f32 {
+        const e = self.names.get(name) orelse {
+            report.say("no tensor {s}", .{name});
+            return error.MissingTensor;
+        };
+        if (self.data > self.bytes.len or e.end > self.bytes.len - self.data) return error.BadHeader;
+        const from = self.bytes[self.data + e.begin ..];
+        const out = try a.alloc(f32, (e.end - e.begin) / e.dtype.size());
+        for (out, 0..) |*o, i| o.* = switch (e.dtype) {
+            .f32 => @bitCast(std.mem.readInt(u32, from[4 * i ..][0..4], .little)),
+            .bf16 => @bitCast(@as(u32, std.mem.readInt(u16, from[2 * i ..][0..2], .little)) << 16),
+            else => return error.BadTensor,
+        };
+        return out;
+    }
+
+    /// A one-file view through the sharded interface; closed by this checkpoint's `deinit`.
+    pub fn shards(self: *Checkpoint) Shards {
+        return .{ .files = self[0..1], .owned = false };
+    }
+
     pub fn bf16(self: *const Checkpoint, name: []const u8) !Entry {
         const span = locate(self.names, name) catch |e| {
             report.say("tensor {s}: {t}", .{ name, e });
@@ -68,6 +104,99 @@ pub const Checkpoint = struct {
         };
         if (self.data > self.bytes.len or span.end > self.bytes.len - self.data) return error.BadHeader;
         return .{ .rows = span.rows, .cols = span.cols, .bytes = self.bytes[self.data + span.start .. self.data + span.end] };
+    }
+};
+
+/// The block count advertised in one header: null when it names no block, an error when it names them badly.
+pub fn blockCount(a: std.mem.Allocator, header: []const u8) !?usize {
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, header, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.BadBlocks;
+    const obj = parsed.value.object;
+    var last: ?usize = null;
+    for (obj.keys()) |key| {
+        if (!std.mem.startsWith(u8, key, "blocks.")) continue;
+        const rest = key[7..];
+        const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return error.BadBlocks;
+        const id = std.fmt.parseInt(usize, rest[0..dot], 10) catch return error.BadBlocks;
+        if (dot == 0 or (dot > 1 and rest[0] == '0')) return error.BadBlocks;
+        last = @max(last orelse 0, id);
+    }
+    return if (last) |n| n + 1 else null;
+}
+
+/// A checkpoint in shards, each mapped once; a tensor is found in whichever holds it.
+pub const Shards = struct {
+    files: []Checkpoint,
+    /// `open` allocated the list; a single file's `shards()` view borrows it.
+    owned: bool = true,
+
+    /// `dir`'s `count` shards named `{stem}-{i:05}-of-{count:05}.safetensors`, both released and diffusers stems.
+    pub fn open(gpa: std.mem.Allocator, dir: []const u8, count: usize) !Shards {
+        if (count == 0 or dir.len == 0) return error.BadShardIndex;
+        const files = try gpa.alloc(Checkpoint, count);
+        var made: usize = 0;
+        errdefer {
+            for (files[0..made]) |*file| file.deinit();
+            gpa.free(files);
+        }
+        var path: [1024]u8 = undefined;
+        var stem: []const u8 = "model";
+        for (files, 1..) |*file, i| {
+            const text = try std.fmt.bufPrint(&path, "{s}/{s}-{d:0>5}-of-{d:0>5}.safetensors", .{ dir, stem, i, count });
+            path[text.len] = 0;
+            file.* = Checkpoint.open(@ptrCast(text.ptr)) catch |err| first: {
+                if (i > 1 or std.mem.eql(u8, stem, "diffusion_pytorch_model")) return err;
+                stem = "diffusion_pytorch_model";
+                const again = try std.fmt.bufPrint(&path, "{s}/{s}-{d:0>5}-of-{d:0>5}.safetensors", .{ dir, stem, i, count });
+                path[again.len] = 0;
+                break :first try Checkpoint.open(@ptrCast(again.ptr));
+            };
+            made += 1;
+        }
+        return .{ .files = files };
+    }
+
+    /// Unmaps every shard and frees the list when `open` allocated it.
+    pub fn deinit(self: *Shards, gpa: std.mem.Allocator) void {
+        for (self.files) |*file| file.deinit();
+        if (self.owned) gpa.free(self.files);
+        self.files = &.{};
+    }
+
+    pub fn entry(self: *const Shards, name: []const u8) ?st.Entry {
+        for (self.files) |*file| if (file.names.get(name)) |e| return e;
+        return null;
+    }
+
+    /// The bf16 tensor `name` in whichever shard holds it.
+    pub fn bf16(self: *const Shards, name: []const u8) !Checkpoint.Entry {
+        for (self.files) |*file| if (file.names.get(name) != null) return file.bf16(name);
+        report.say("tensor {s}: {t}", .{ name, error.MissingTensor });
+        return error.MissingTensor;
+    }
+
+    /// The tensor `name` of `dtype` and `count` values: its bytes as stored, in whichever shard holds it.
+    pub fn at(self: *const Shards, name: []const u8, dtype: st.DType, count: usize) ![]const u8 {
+        for (self.files) |*file| if (file.names.get(name) != null) return file.at(name, dtype, count);
+        report.say("no tensor {s}", .{name});
+        return error.MissingTensor;
+    }
+
+    /// The tensor `name` (float32 or bf16) as float32 values, in whichever shard holds it.
+    pub fn floats(self: *const Shards, a: std.mem.Allocator, name: []const u8) ![]f32 {
+        for (self.files) |*file| if (file.names.get(name) != null) return file.floats(a, name);
+        report.say("no tensor {s}", .{name});
+        return error.MissingTensor;
+    }
+
+    /// The deepest block index across every shard's header; a shard may hold no block tensors.
+    pub fn layers(self: *const Shards, a: std.mem.Allocator) !usize {
+        var last: ?usize = null;
+        for (self.files) |*file| {
+            if (try blockCount(a, file.header)) |n| last = @max(last orelse 0, n);
+        }
+        return last orelse error.BadBlocks;
     }
 };
 
@@ -158,4 +287,47 @@ test "a tensor is found by core's index: not a dtype in another field, not a loo
     try std.testing.expectEqual(Span{ .rows = 1, .cols = 1, .start = 0, .end = 2 }, try locate(spaced, "a"));
     for ([_][]const u8{ "{\"w\":{\"dtype\":\"BF16\",", "{\"w\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}x", "{\"w\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]},\"w\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}" }) |bad|
         if (indexOf(a, bad, 2)) |_| return error.TestUnexpectedResult else |_| {};
+}
+fn safetensors(a: std.mem.Allocator, header: []const u8, data: []const u8) ![]u8 {
+    const out = try a.alloc(u8, 8 + header.len + data.len);
+    std.mem.writeInt(u64, out[0..8], header.len, .little);
+    @memcpy(out[8..][0..header.len], header);
+    @memcpy(out[8 + header.len ..], data);
+    return out;
+}
+
+test "a sharded checkpoint finds a tensor in whichever shard holds it and counts blocks across the headers" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    // shard 1: norm1 only; shard 2: a bf16 matrix and an f32 vector
+    const one = try safetensors(a, "{\"blocks.0.norm1.weight\":{\"dtype\":\"BF16\",\"shape\":[4],\"data_offsets\":[0,8]}}", &.{ 0, 60, 0, 62, 0, 64, 0, 66 });
+    const two = try safetensors(a, "{\"blocks.2.norm1.weight\":{\"dtype\":\"BF16\",\"shape\":[2],\"data_offsets\":[0,4]},\"w\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[4,12]}}", &.{ 0, 66, 0, 68, 0, 0, 128, 63, 0, 0, 0, 64 });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "model-00001-of-00002.safetensors", .data = one });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "model-00002-of-00002.safetensors", .data = two });
+    var shards = try Shards.open(a, dir, 2);
+    defer shards.deinit(a);
+    try std.testing.expectEqual(@as(usize, 3), try shards.layers(a));
+    const e = try shards.bf16("blocks.2.norm1.weight");
+    try std.testing.expectEqual(@as(usize, 1), e.rows);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 66, 0, 68 }, e.bytes);
+    try std.testing.expectError(error.MissingTensor, shards.bf16("none"));
+    const f = try shards.floats(a, "w");
+    try std.testing.expectEqualSlices(f32, &.{ 1.0, 2.0 }, f);
+    const g = try shards.at("blocks.0.norm1.weight", .bf16, 4);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 60, 0, 62, 0, 64, 0, 66 }, g);
+}
+
+test "shard headers with no blocks, a gapped id and a bad id" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqual(@as(?usize, null), try blockCount(a, "{\"time_embedder.proj_in.weight\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}"));
+    try std.testing.expectEqual(@as(?usize, 2), try blockCount(a, "{\"blocks.0.a\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]},\"blocks.1.b\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}"));
+    try std.testing.expectEqual(@as(?usize, 10), try blockCount(a, "{\"blocks.9.a\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}"));
+    try std.testing.expectError(error.BadBlocks, blockCount(a, "{\"blocks.01.a\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]},\"blocks.1.a\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}"));
+    try std.testing.expectError(error.BadShardIndex, Shards.open(a, "x", 0));
 }

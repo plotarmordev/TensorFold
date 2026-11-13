@@ -3,22 +3,32 @@ const std = @import("std");
 const cuda = @import("cuda");
 const h3 = @import("cuda.zig");
 const Checkpoint = @import("checkpoint.zig").Checkpoint;
+const Shards = @import("checkpoint.zig").Shards;
 const Model = h3.Model;
 
 const staging_bytes = 64 << 20;
 
-/// Reads the model's sizes from `path`, allocates its blocks and fills them from the checkpoint.
+/// Reads the model's sizes from `path`, allocates its blocks and fills them from the one checkpoint file.
 pub fn read(self: *Model, path: [*:0]const u8) !void {
-    const d = &self.driver;
     var ck = try Checkpoint.open(path);
     defer ck.deinit();
+    try readFrom(self, ck.shards());
+}
+
+/// `read` over a checkpoint's already-open shards, searched by tensor name.
+pub fn readShards(self: *Model, ck: Shards) !void {
+    try readFrom(self, ck);
+}
+
+fn readFrom(self: *Model, ck: Shards) !void {
+    const d = &self.driver;
     var name: [128]u8 = undefined;
     const qkv0 = try ck.bf16("blocks.0.attn.qkv_proj.weight");
     const fc2_0 = try ck.bf16("blocks.0.mlp.fc2.weight");
     if (qkv0.rows % 3 != 0) return error.BadGeometry;
-    const gated = ck.names.get("blocks.0." ++ names[gate]) != null;
+    const gated = ck.entry("blocks.0." ++ names[gate]) != null;
     const plan = try layout(qkv0.cols, qkv0.rows / 3, fc2_0.cols, gated);
-    const layers = try blockCount(self.gpa, ck.header);
+    const layers = try ck.layers(self.gpa);
     // Validate every shape and byte extent before allocating any device or pinned memory.
     for (0..layers) |i| for (names, plan.shapes, 0..) |suffix, shape, k| {
         if (!gated and k == gate) continue;
@@ -72,23 +82,6 @@ pub fn read(self: *Model, path: [*:0]const u8) !void {
     }
 }
 
-// Enumerate advertised block keys, so a missing norm cannot truncate the model before shape validation.
-fn blockCount(gpa: std.mem.Allocator, header: []const u8) !usize {
-    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, header, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.BadBlocks;
-    const obj = parsed.value.object;
-    var last: ?usize = null;
-    for (obj.keys()) |key| {
-        if (!std.mem.startsWith(u8, key, "blocks.")) continue;
-        const rest = key[7..];
-        const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return error.BadBlocks;
-        const id = std.fmt.parseInt(usize, rest[0..dot], 10) catch return error.BadBlocks;
-        if (dot == 0 or (dot > 1 and rest[0] == '0') or id >= obj.count()) return error.BadBlocks;
-        last = @max(last orelse 0, id);
-    }
-    return (last orelse return error.BadBlocks) + 1;
-}
 
 const names = [_][]const u8{ "attn.qkv_proj.weight", "attn.to_gate_compress.weight", "attn.out_proj.weight", "mlp.fc1.weight", "mlp.fc2.weight", "norm1.weight", "norm2.weight", "attn.q_norm.weight", "attn.k_norm.weight" };
 /// The routing gate's place in `names`: absent from dense-only checkpoints.
@@ -128,6 +121,13 @@ fn allocateBlock(d: *const cuda.Driver, sizes: [5]usize) !h3.Block {
 /// The load is published only after all uploaded weights have synchronized.
 pub fn readSynced(self: *Model, path: [*:0]const u8) !void {
     try read(self, path);
+    errdefer free(self);
+    try self.ctx.synchronize();
+}
+
+/// `readSynced` over a checkpoint's already-open shards.
+pub fn readSyncedShards(self: *Model, ck: Shards) !void {
+    try readFrom(self, ck);
     errdefer free(self);
     try self.ctx.synchronize();
 }
