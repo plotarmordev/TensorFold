@@ -99,8 +99,11 @@ The Mac's two runs are bit-identical; the CUDA picture differs by the blocks' bf
 0.996). The Metal decoder on the CUDA latent gives the same PSNR at both sizes, so the CPU decoder matches Metal's and
 the gap is the transformer's. The first transformer step pays cuBLASLt's algorithm search (4–7 s).
 
-mmh3 on a Spark, closest settings (4096², six steps, BF16 attention, no draft steps): 8.8 s a step, 63 s in all,
-with INT8 linear layers. Its ~24 s is three PDMD-LoRA steps as half-size drafts plus one full step with INT8/FP8
-attention: other weights and another composition, not comparable. TensorFold's BF16 step is 18.5 s, 2.1x mmh3's
+mmh3 ([`9c0652f`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/docs/image.md#speed),
+its own Spark figures, its prompt and seed 1) cannot match these settings exactly: its CUDA linear layers are INT8 or
+NVFP4 only (`--linear-precision int8|nvfp4`), from its own INT8 ConvRot DiT, so there is no BF16 run to compare. Its
+nearest, `mmh3 image --width 4096 --height 4096` with the defaults (six steps, BF16 attention, INT8 linear, no draft
+steps), takes 8.8 s a step and 63 s in all. Its ~24 s is three PDMD-LoRA steps as half-size drafts plus one full
+step with INT8/FP8 attention: other weights and another composition. TensorFold's BF16 step is 18.5 s, 2.1x mmh3's
 INT8 step. A whole TensorFold 4096² picture takes 1,128 s against mmh3's 63 s: 1,005 s of it are the CPU prompt,
 the host load and the CPU decoder (mmh3 decodes 4096² in 2.9 s on the GPU).
