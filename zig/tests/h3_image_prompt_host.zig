@@ -148,12 +148,13 @@ const Shards = struct {
             std.debug.print("no tensor {s}\n", .{name});
             return error.MissingTensor;
         };
+        const gop = try s.files.getOrPut(s.gpa, file);
+        if (gop.found_existing) return gop.value_ptr;
+        errdefer s.files.swapRemoveAt(gop.index);
         var path: [1024]u8 = undefined;
         const text = std.fmt.bufPrint(path[0 .. path.len - 1], "{s}/{s}", .{ s.dir, file }) catch return error.NameTooLong;
         path[text.len] = 0;
-        const opened = ck.Checkpoint.open(@ptrCast(&path)) catch |err| return err;
-        const gop = try s.files.getOrPut(s.gpa, file);
-        if (!gop.found_existing) gop.value_ptr.* = opened;
+        gop.value_ptr.* = try ck.Checkpoint.open(@ptrCast(&path));
         return gop.value_ptr;
     }
 
