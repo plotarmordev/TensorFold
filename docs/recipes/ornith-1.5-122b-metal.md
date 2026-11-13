@@ -61,14 +61,15 @@ replies of a shared round carry that round's counters, so each four-stream group
 | **DFlash2** | 1 | 1 | **244.2** | **244.2** | 0.039 / 0.040 s | 65.1% (645/991) |
 | **DFlash2** | 1 | 4 | **245.3** | **245.3** | 0.039 / 0.039 s | 66.2% (642/970) |
 | **DFlash2** | 4 | 4 | **72.2** | **252.3** | 0.119 / 0.243 s | 72.9% (544/746) |
-| MTP, drafting fades¹ | 1 | 1 | 61.4 | 61.4 | 0.056 / 0.080 s | 74.8% (80/107) |
-| MTP, not drafting¹ | 1 | 4 | 82.7 | 82.7 | 0.038 / 0.038 s | — (0/0) |
-| MTP | 4 | 4 | 58.4 | 213.7 | 0.115 / 0.234 s | 65.8% (388/590) |
+| MTP, drafting not sustained (known issue)¹ | 1 | 1 | 61.4 | 61.4 | 0.056 / 0.080 s | 74.8% (80/107); drafts/rounds per run 107/175, 0/255, 0/255 |
+| MTP, drafting not sustained (known issue)¹ | 1 | 4 | 82.7 | 82.7 | 0.038 / 0.038 s | — (0/0); drafts/rounds per run 0/255, 0/255, 0/255 |
+| MTP | 4 | 4 | 58.4 | 213.7 | 0.115 / 0.234 s | 65.8% (388/590); drafts/rounds per group 193/117, 204/144, 193/117 |
 
 ¹ Not a measurement of sustained MTP drafting. A lone MTP stream drafts on a server's first requests and then
-stops: the one-stream server's three timed replies proposed 107, 0 and 0 drafts (63.3, 50.0 and 61.4 tok/s), the
-four-capacity server's lone replies none. Its draft is priced from shared-round costs until it reaches zero and is
-never measured again; the fix and its regression test over consecutive served requests are a follow-up engine card.
+stops: the one-stream server's three timed replies proposed 107 drafts in 175 rounds, then 0 in 255 and 0 in 255
+(63.3, 50.0 and 61.4 tok/s); the four-capacity server's lone replies proposed none. Its draft is priced from
+shared-round costs until it reaches zero and is never measured again; the fix and its regression test over consecutive
+served requests are a separate engine card.
 Sustained one-stream MTP speed, TTFT and acceptance are unmeasured until it lands. The one-stream MTP server also ran
 in the same minutes as a plain one-stream run disturbed to 62.0 tok/s, and was not repeated.
 

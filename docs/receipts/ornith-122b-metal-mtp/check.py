@@ -8,13 +8,19 @@ load = lambda name: json.loads((here / name).read_text())
 def u32_sha(rows, key):
     return hashlib.sha256(b"".join(struct.pack("<I", t) for r in rows for t in r[key])).hexdigest()
 
-def counted(runs, streams):
-    """Accepted/proposed over `runs`, in groups of `streams` concurrent replies. A shared round's counters are the whole
-    round's, stamped on each member that reports them, so each group counts once (its first reported counters)."""
-    spec = [next((r["speculative"] for r in runs[g:g + streams] if r["speculative"].get("drafted") is not None), {})
+def groups(runs, streams):
+    """Each group of `streams` concurrent replies' counters. A shared round's counters are the whole round's, stamped on
+    each member that reports them, so a group counts once (its first reported counters)."""
+    return [next((r["speculative"] for r in runs[g:g + streams] if r["speculative"].get("drafted") is not None), {})
             for g in range(0, len(runs), streams)]
+
+def counted(runs, streams):
+    """Accepted/proposed over `runs`, then drafts proposed/rounds per group."""
+    spec = groups(runs, streams)
     accepted, drafted = sum(s.get("accepted", 0) for s in spec), sum(s.get("drafted", 0) for s in spec)
-    return f"{100 * accepted / drafted:.1f}% ({accepted}/{drafted})" if drafted else f"- ({accepted}/{drafted})"
+    rate = f"{100 * accepted / drafted:.1f}%" if drafted else "-"
+    per_group = ", ".join(f"{s.get('drafted', 0)}/{s.get('rounds', 0)}" for s in spec)
+    return f"{rate} ({accepted}/{drafted}); drafts/rounds {per_group}"
 
 # Speed: each server's raw runs end with its timed replies (after the warmup and any equality controls)
 print("mode   par streams tok/s/stream aggregate ttft median/max accepted/proposed")
@@ -35,11 +41,11 @@ for mode in ("plain", "dflash", "mtp"):
                   f'{counted(runs, cell["streams"])}  '
                   f'reps {[round(r["aggregate_tps"], 1) for r in cell["reps"]]}')
 
-# Lone MTP reply by reply: drafting fades after the server's first requests, so these rows are mostly plain decoding
+# Lone MTP replies: drafting is not sustained after the server's first requests (known issue)
 for par in (1, 4):
     timed = load(f"bench-mtp-p{par}-fresh.raw.json")["runs"][-(3 if par == 1 else 15):][:3]
-    print(f"mtp p{par} lone replies (tok/s, accepted, drafted):",
-          [(round(r["decode_tps"], 1), r["speculative"]["accepted"], r["speculative"]["drafted"]) for r in timed])
+    print(f"mtp p{par} lone replies (tok/s, accepted, drafted, rounds):",
+          [(round(r["decode_tps"], 1), *(r["speculative"][k] for k in ("accepted", "drafted", "rounds"))) for r in timed])
 
 # Every timed 256-token quicksort-raw reply, in every mode and capacity, has the same tokens
 shas = {r["token_sha256"] for mode in ("plain", "dflash", "mtp") for par in (1, 4)

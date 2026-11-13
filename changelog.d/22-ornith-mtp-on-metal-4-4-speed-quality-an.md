@@ -1,6 +1,6 @@
 ### Ornith Metal: measured draft modes and reference quality
 
 - Update the 122B recipe with plain, DFlash2 and MTP throughput, first-token latency and accepted/proposed draft counts at one and four streams, including the measured build, settings and equality receipts.
-- Keep DFlash2 as the fastest measured default: 244.2 tok/s on a dedicated one-stream server (plain 92.9) and 252.3 aggregate tok/s with four streams (plain 191.0). Metal selects MTP instead of DFlash2; they do not combine. MTP gives 213.7 aggregate tok/s at four streams; a lone MTP stream stops drafting after a server's first requests, so its one-stream rows are labelled as mostly plain decoding until the engine fix lands.
+- Keep DFlash2 as the fastest measured default: 244.2 tok/s on a dedicated one-stream server (plain 92.9) and 252.3 aggregate tok/s with four streams (plain 191.0). Metal selects MTP instead of DFlash2; they do not combine. MTP gives 213.7 aggregate tok/s at four streams; a lone MTP stream stops drafting after a server's first requests, so its one-stream rows are labelled "drafting not sustained (known issue)" with each run's drafts proposed per round.
 - MTP and DFlash2 replies equal plain decoding's on all 16 quality prompts; mlx-lm teacher-forced quality is unchanged: native mean NLL 0.1126066 versus the reference's 0.1186612, 636/2,048 leading-token matches.
 - Remove the dashboard source-text test and its build registration: it pinned UI wording (including the removed “Paged prefix cache” label), not dashboard behavior, and blocked the required full-suite gate.
