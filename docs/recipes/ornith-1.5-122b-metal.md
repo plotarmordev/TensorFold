@@ -1,8 +1,8 @@
 # Ornith-1.5-122B on Metal (one 256 GB M5 Ultra)
 
-**Serve with DFlash2: 247 tok/s on one stream (2.7× plain) and 267 tok/s across four (1.2× plain), same tokens as plain.**
-MTP keeps plain's tokens and now drafts on a lone stream too, but it is slower than plain alone (78.5 against 92.8
-tok/s) and only level with it at four streams (226.6 against 220.6), so it is not the default.
+**Serve with DFlash2: 244 tok/s on one stream (2.6× plain) and 252 tok/s across four (1.3× plain), same tokens as plain.**
+MTP keeps plain's tokens but trails DFlash2: at four streams it gives 213.7 tok/s against DFlash2's 252.3 (plain
+191.0), and a lone MTP stream stops drafting after its first requests (see **Speed**), so it is not the default.
 
 The native Metal engine serves [Ornith-1.5-122B](https://huggingface.co/ornith-ai/Ornith-1.5-122B), a Qwen3.5-MoE
 (`qwen3_5_moe`: 48 layers, Gated DeltaNet with gated attention every fourth layer, 256 routed experts of 1,024 with
@@ -38,43 +38,45 @@ not this fresh-state configuration.
 
 Measured on 13 November 2026: Mac17,15, Apple M5 Ultra, 256 GiB, macOS 27.0 (26A425), Zig 0.17.0,
 `tensorfold-native 1.2.7` built with `zig build native -Dcpu=apple_m1` from
-`ed18f8a08ee245e7026c8c8b5e0252f6ebe51a21`. Binary SHA-256:
-`23a1d9885cd69b5c0057a254939c65eb10db9b384ba113c6fec5d033bf26b7a5`.
+`9f7f42296606694443cc04e23a033c556dc459b8`. Binary SHA-256:
+`796fe94664b8824b920450037e66d17373ba5ee4f99ed125ccda54b7f7fcbeb4`.
 Checkpoint revisions are those above; no weight or arithmetic changes were made for these measurements.
 
 Greedy, seed 1234, 256 tokens, EOS ignored, thinking off, one 16-token warmup, three repetitions.
 One stream sends `quicksort-raw`; four streams send the first four entries of `tools/bench_prompts.json`:
 `quicksort-raw`, `rust-reverse-words`, `multiply-17-23`, `sleep-tips`. A fresh server was used for each mode/capacity,
-with the flags in **Run**. `uptime` was checked before every timed group; groups waited when one-minute load exceeded
-36. Recorded starts in this matrix were 11.7–33.8. The machine was shared: this gate is not GPU isolation.
+with the flags in **Run**. `uptime` was checked before every request; requests waited when one-minute load exceeded
+36. Recorded loads in this matrix were 10.8–14.9. The machine was shared: this gate is not GPU isolation.
 
 Rates are medians of three groups (per-stream rates pool their requests); decode excludes first-token latency.
 TTFT is client-observed first content, not startup or prefill-only time. Acceptance is summed
-`speculative.accepted / speculative.drafted` over timed replies only, excluding warmups and equality controls.
+`speculative.accepted / speculative.drafted` over timed replies only, excluding warmups and equality controls. The four
+replies of a shared round carry that round's counters, so each four-stream group counts once.
 
 | Mode | Streams | Server capacity | tok/s per stream | Aggregate tok/s | First token: median / max | Accepted / proposed |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
-| plain | 1 | 1 | 92.8 | 92.8 | 0.038 / 0.038 s | — (0/0) |
-| plain | 1 | 4 | 95.1 | 95.1 | 0.037 / 0.038 s | — (0/0) |
-| plain | 4 | 4 | 56.1 | 220.6 | 0.108 / 0.220 s | — (0/0) |
-| **DFlash2** | 1 | 1 | **247.3** | **247.3** | 0.040 / 0.041 s | 69.9% (642/919) |
-| **DFlash2** | 1 | 4 | **250.7** | **250.7** | 0.038 / 0.039 s | 72.3% (638/883) |
-| **DFlash2** | 4 | 4 | **82.0** | **267.1** | 0.117 / 0.241 s | 66.0% (1,262/1,911) |
-| MTP | 1 | 1 | 78.5 | 78.5 | 0.040 / 0.042 s | 72.0% (36/50) |
-| MTP | 1 | 4 | 83.3 | 83.3 | 0.038 / 0.039 s | 100% (1/1) |
-| MTP | 4 | 4 | 60.0 | 226.6 | 0.115 / 0.240 s | 54.3% (672/1,238) |
+| plain | 1 | 1 | 92.9 | 92.9 | 0.039 / 0.040 s | — (0/0) |
+| plain | 1 | 4 | 82.9 | 82.9 | 0.050 / 0.055 s | — (0/0) |
+| plain | 4 | 4 | 48.4 | 191.0 | 0.118 / 0.234 s | — (0/0) |
+| **DFlash2** | 1 | 1 | **244.2** | **244.2** | 0.039 / 0.040 s | 65.1% (645/991) |
+| **DFlash2** | 1 | 4 | **245.3** | **245.3** | 0.039 / 0.039 s | 66.2% (642/970) |
+| **DFlash2** | 4 | 4 | **72.2** | **252.3** | 0.119 / 0.243 s | 72.9% (544/746) |
+| MTP, drafting fades¹ | 1 | 1 | 61.4 | 61.4 | 0.056 / 0.080 s | 74.8% (80/107) |
+| MTP, not drafting¹ | 1 | 4 | 82.7 | 82.7 | 0.038 / 0.038 s | — (0/0) |
+| MTP | 4 | 4 | 58.4 | 213.7 | 0.115 / 0.234 s | 65.8% (388/590) |
 
-DFlash2 is 2.66× plain on dedicated one-stream servers and 1.21× plain in four-stream aggregate throughput, the fastest
+¹ Not a measurement of sustained MTP drafting. A lone MTP stream drafts on a server's first requests and then
+stops: the one-stream server's three timed replies proposed 107, 0 and 0 drafts (63.3, 50.0 and 61.4 tok/s), the
+four-capacity server's lone replies none. Its draft is priced from shared-round costs until it reaches zero and is
+never measured again; the fix and its regression test over consecutive served requests are a follow-up engine card.
+Sustained one-stream MTP speed, TTFT and acceptance are unmeasured until it lands. The one-stream MTP server also ran
+in the same minutes as a plain one-stream run disturbed to 62.0 tok/s, and was not repeated.
+
+DFlash2 is 2.63× plain on dedicated one-stream servers and 1.32× plain in four-stream aggregate throughput, the fastest
 mode at both. MTP and DFlash2 do not combine (see **Run**), so there is no joint row.
-
-MTP drafts on lone requests now: on 12 November a lone stream proposed drafts on its first request and none after,
-because its draft was priced from shared-round costs until it reached zero and was never measured again. A lone
-stream's drafts are now priced from its own measured windows, as on CUDA. Two more fresh one-stream MTP servers gave
-61.1 tok/s (57.3, 61.1, 75.7 per reply; 58/71, 51/68 and 30/45 drafts) and 79.4 tok/s (79.0, 79.4, 83.9;
-39/52, 0/0 and 1/3). The replies that drafted most ran slowest, so the measured pricing backs drafts off and lone MTP
-stays below plain rather than above it.
-At four streams, MTP's 226.6 tok/s (repetitions 221.7, 226.6, 227.8) is within run-to-run spread of plain's 220.6
-(220.6, 221.9, 220.5) and 15% below DFlash2's 267.1.
+At four streams, MTP's 213.7 tok/s (repetitions 220.5, 213.7, 212.1) is 12% above plain's 191.0 (185.6, 191.0, 199.0)
+and 15% below DFlash2's 252.3 (258.6, 252.3, 248.6). Plain's four-stream aggregate measured 220.6 on the 12–13
+November runs of an earlier build with the same plain path; the spread is the shared machine's.
 
 Reproduce each four-capacity cell with the corresponding server mode above:
 
@@ -88,12 +90,12 @@ For dedicated one-stream cells use `--parallel 1`, `--levels 1`, and omit `--alo
 For the plain four-capacity run, omit `--serial` as well (its solo controls already use plain decoding).
 The benchmark client does not retain draft counters in its JSON: the
 [receipts](../receipts/ornith-122b-metal-mtp/README.md) keep each reply's `speculative` object in `*.raw.json`, and
-their `check.py` recomputes every row above, the acceptance counts and the extra MTP runs from them.
+their `check.py` recomputes every row above, the acceptance counts and the lone MTP replies from them.
 On the four-capacity servers, all 45 timed replies matched their solo token SHA-256 (15 per mode), and all eight
 drafted-mode solo controls matched `draft:false` (four per mode). No timed request failed or was unmeasured.
-Every 256-token `quicksort-raw` reply in every mode has the same token SHA-256 as the 12 November build's.
-The first plain four-capacity run's repetitions spread 151.9–215.5 tok/s on the shared machine; the table uses its
-repeat on a fresh server.
+Every timed 256-token `quicksort-raw` reply in every mode has the same token SHA-256 as the 12 November build's.
+The first plain one-stream server measured 62.0 tok/s while the drafted four-capacity servers' `draft:false` controls
+ran at 85.0–92.1; the table uses its repeat on a fresh server.
 
 ## Quality against the publisher's reference
 
@@ -108,9 +110,10 @@ The same prompt ids through mlx-lm 0.32.2 (MLX 0.32.4) on the same weights, gree
 - Scored by mlx-lm's teacher-forced forward of the publisher's weights, TensorFold's continuations have a mean NLL of
   0.1126 a token, mlx-lm's own 0.1187: TensorFold's replies are as likely under the reference as the reference's own.
 
-The 12 November build's plain and DFlash2 16 × 128 token arrays were identical. On this build, every reply to the 16
+The 12 November build's plain and DFlash2 16 × 128 token arrays were identical. On build `ed18f8a08` (this one plus
+lone-MTP draft pricing, which changes how many drafts a lone stream proposes, not its tokens), every reply to the 16
 prompts carried that plain reply's token SHA-256: DFlash2 one at a time (1,548 of 2,922 drafts accepted), MTP one at
-a time (9 replies drafted; 49 of 69 accepted) and MTP in four concurrent groups of four (13 drafted; 751 of 1,112).
+a time (9 replies drafted; 49 of 69 accepted) and MTP in four concurrent groups of four (226 of 337 accepted).
 The leading match against the saved mlx-lm reference therefore remains 636/2,048. A teacher-forced scoring pass with
 mlx-lm 0.32.2 / MLX 0.32.4 gives mean NLL **0.1126066** for those common native continuations and **0.1186612** for
 the reference's own. This is unchanged reference quality, not token identity with mlx-lm.
@@ -173,4 +176,6 @@ in a reused slot, where the reply keeps 47 of 48 drafts over 96 tokens.
 ## Not covered
 
 - Resumed or restored MTP prompts, which draft nothing (see **MTP layer**).
+- Sustained one-stream MTP: a lone stream stops drafting after a server's first requests (see **Speed**); its speed,
+  TTFT and acceptance wait for that engine fix.
 - Images, sampled replies and prompts longer than the bench's (under 50 tokens) were not measured here.
