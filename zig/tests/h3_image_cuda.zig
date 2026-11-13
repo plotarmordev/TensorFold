@@ -120,8 +120,8 @@ pub fn main(init: std.process.Init) !void {
     defer heads.deinit();
     const w_out = values(f32, try heads.at("video_out.weight", .f32, steps * width * hidden));
     const b_out = values(f32, try heads.at("video_out.bias", .f32, steps * width));
-    const w_in = try ck.floats(a, "video_patch_proj.weight");
-    const b_in = try ck.floats(a, "video_patch_proj.bias");
+    const w_in = values(f32, try ck.at("video_patch_proj.weight", .f32, hidden * width));
+    const b_in = values(f32, try ck.at("video_patch_proj.bias", .f32, hidden));
 
     // each row's line in the blocks' tables and in the final layer's, for every step of the schedule
     const adaln = try a.alloc(i32, steps * count);
