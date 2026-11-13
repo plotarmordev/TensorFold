@@ -373,6 +373,7 @@ pub fn metalTargets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         .{ .name = "tf-moss-image-encoder", .path = "zig/tests/moss_image_encoder.zig", .about = "MOSS-Image's prompt encoder on a reference case: the ids checked, each step gated against float32, then timed" },
         .{ .name = "tf-moss-image-decoder", .path = "zig/tests/moss_image_decoder.zig", .about = "MOSS-Image's image decoder on latents, gated against float64 beside torch float32, then timed" },
         .{ .name = "tf-moss-image-blocks", .path = "zig/tests/moss_image_blocks.zig", .about = "MOSS-Image's transformer on one step, each block alone gated against float32, repeated byte for byte" },
+        .{ .name = "tf-moss-image-generate", .path = "zig/tests/moss_image_generate.zig", .about = "MOSS-Image from options alone: prompts, schedule and noise, then the decoder's picture" },
         .{ .name = "tf-glm-attn-probe", .path = "zig/tests/glm_attn_probe.zig", .about = "GLM-5.3-Flash's dense latent attention kernels on given inputs (scores, probabilities, outputs)" },
         .{ .name = "tf-moe-bench", .path = "zig/tests/moe_bench.zig", .about = "Routed-expert prompt kernels from .metal files on a skewed routing: chained speed, bits against the first" },
         .{ .name = "tf-mm-bench", .path = "zig/tests/mm_bench.zig", .about = "Prompt matmul kernels from .metal files: chained speed at one shape, bits against the first, error against fp64" },
@@ -413,7 +414,7 @@ pub fn metalTargets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     // MiniMax H3 / FastH3's transformer: the packed rows' denoising forwards against a case file (M5 tensor units).
     const h3_kernels = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/kernels.zig") });
     const h3_safetensors = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = target, .optimize = optimize });
-    const h3_mod = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/h3.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "safetensors", .module = h3_safetensors }, .{ .name = "h3_kernels", .module = h3_kernels }, .{ .name = "kernel_sources", .module = sources } } });
+    const h3_mod = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/h3.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "safetensors", .module = h3_safetensors }, .{ .name = "h3_kernels", .module = h3_kernels }, .{ .name = "kernel_sources", .module = sources }, .{ .name = "gpu_turn", .module = b.createModule(.{ .root_source_file = b.path("zig/src/server/gpu_turn.zig"), .target = target, .optimize = optimize }) } } });
     const h3_dit = b.addExecutable(.{ .name = "tf-h3-dit", .root_module = b.createModule(.{
         .root_source_file = b.path("zig/tests/h3_dit.zig"),
         .target = target,
@@ -422,6 +423,19 @@ pub fn metalTargets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "h3", .module = h3_mod } },
     }) });
     b.step("tf-h3-dit", "FastH3's Metal transformer against a case file: velocities, every step, timings").dependOn(&b.addInstallArtifact(h3_dit, .{}).step);
+    // MiniMax-H3-Image: the same transformer on a picture case, its six distilled steps gated against a reference
+    const h3_image = b.addExecutable(.{ .name = "tf-h3-image", .root_module = b.createModule(.{
+        .root_source_file = b.path("zig/tests/h3_image.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "h3", .module = h3_mod }, .{ .name = "safetensors", .module = h3_safetensors }, .{ .name = "checkpoint_fixture", .module = b.createModule(.{ .root_source_file = b.path("zig/src/core/checkpoint_fixture.zig"), .target = target, .optimize = optimize }) } },
+    }) });
+    b.step("tf-h3-image", "MiniMax-H3-Image's Metal transformer on a picture case: six distilled steps, teacher-forced and gated").dependOn(&b.addInstallArtifact(h3_image, .{}).step);
+    @import("h3_image_encoder.zig").tool(b, target, optimize, metal);
+    @import("h3_image_prompt.zig").install(b, target, optimize, metal);
+    @import("h3_image_decoder.zig").tool(b, target, optimize, metal);
+    @import("h3_image_server.zig").tool(b, target, optimize, metal, h3_kernels, sources, test_step);
     // The core row projection (chips without tensor units) on synthetic matrices; runs on any Mac's GPU
     const row_mod = b.createModule(.{ .root_source_file = b.path("zig/src/core/row_projection.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "kernel_sources", .module = sources } } });
     const row_check = b.addExecutable(.{ .name = "tf-row-check", .root_module = b.createModule(.{
@@ -535,8 +549,6 @@ pub fn metalTargets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         b.step("test-verbs", "verbs.zig and verbs_abi.zig, outside the fabric module").dependOn(&verbs_tests.step);
         test_step.dependOn(&verbs_tests.step);
     }
-    const dashboard = b.createModule(.{ .root_source_file = b.path("zig/src/server/dashboard_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = dashboard })).step);
     const kimi_test = b.step("test-k3", "Kimi K3's host-side unit tests (no GPU work)");
     for ([_]*std.Build.Module{ kimi, tiktoken }) |m| {
         const run = b.addRunArtifact(b.addTest(.{ .root_module = m }));

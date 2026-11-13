@@ -14,6 +14,8 @@ const slot_state = @import("qwen27_slots.zig");
 const Resident = @import("resident.zig").Resident;
 const lb = @import("qwen27_lanes.zig");
 pub const lanes_backend = lb;
+const startup = @import("qwen27_startup.zig");
+const StartupLine = startup.StartupLine;
 const disk = @import("qwen27_disk.zig");
 const images = @import("qwen27_images.zig");
 const Allocator = std.mem.Allocator;
@@ -25,6 +27,7 @@ pub const Options = struct {
     drafter: ?[]const u8 = null,
     drafter_name: ?[]const u8 = null,
     drafter_bits: u8 = 0,
+    mtp: ?[]const u8 = null, // --mtp-drafts: the bf16 release's folder holding the checkpoint's `mtp.*` shards
     cache_gib: ?f64 = null,
     cache_over_cap: bool = false,
     decode_share: ?f64 = null, // --decode-share: the reply's share of a fill step's wall time beside live decoders
@@ -41,6 +44,7 @@ pub const Host = struct {
     runner: q.decode_round.Runner,
     trace: ?tf.gpu_profile.Trace = null, // TF_Q27_PROFILE: rounds' class GPU times to the log, gpu_seconds in replies
     draft: ?*lb.Draft = null,
+    mtp: ?q.mtp.Drafter = null,
     back: *lb.Metal,
     cfg: lanes.Config,
     clock: lanes.backend.WallClock,
@@ -303,6 +307,10 @@ pub fn open(gpa: Allocator, io: std.Io, dir: []const u8, o: Options, a: Allocato
     };
     const model = try q.model.Model.loadDeferred(gpa, io, dir, 128);
     errdefer model.deinit();
+    if (o.mtp) |m| model.loadMtp(io, m) catch |err| {
+        why.* = try std.fmt.allocPrint(a, "--mtp-drafts: the MTP layer cannot load from {s} ({s})", .{ m, @errorName(err) });
+        return err;
+    };
     var with = o;
     // the tower before the slots: their room and the cache's budget count it as taken
     if (o.vision) |v| with.images = try images.open(gpa, io, model, dir, v, a, why);
@@ -381,6 +389,7 @@ pub fn attach(parent: Allocator, io: std.Io, model: *q.model.Model, drafter: ?*q
     h.model = model;
     h.owns_model = false;
     h.draft = null;
+    h.mtp = null;
     h.cache = null;
     h.resident = null;
     h.disk_stage = null;
@@ -396,19 +405,22 @@ pub fn attach(parent: Allocator, io: std.Io, model: *q.model.Model, drafter: ?*q
     if (draft_model) |d| h.draft = try lb.Draft.attach(gpa, &h.runner, d, owns_draft);
     draft_owned = false;
     errdefer if (h.draft) |d| d.deinit();
+    if (model.weights.mtp != null) h.mtp = try q.mtp.Drafter.init(&h.runner);
+    errdefer if (h.mtp) |*d| d.deinit();
     h.back = try lb.Metal.init(gpa, &h.runner, h.draft);
+    if (h.mtp) |*d| h.back.mtp = d;
     errdefer h.back.deinit();
     h.back.chunk = h.runner.promptRows(@min(rows, row_policy.requested(model.device.generation(), model.config.moe(), value)));
     h.back.grow = .{ .ctx = h, .room = Host.roomFor, .added = Host.added };
     h.back.vision = o.images;
-    if (h.draft != null) try h.back.measure(io);
+    if (h.draft != null or h.mtp != null) try h.back.measure(io);
     h.cfg = try lanes.Config.init(gpa, h.back.facts(), window, h.back.nodes);
     errdefer h.cfg.deinit(gpa);
     h.clock = .{ .io = io };
     h.core = lanes.Engine.init(gpa, &h.cfg, h.back.backend(), h.clock.clock());
     errdefer h.core.deinit();
     const offer: ?api.Vision = if (o.images) |v| .{ .ctx = h, .prepare = Host.prepareImage, .image_token = v.c.image_token, .markers = &v.markers, .image_tokens = v.capacity, .max_images = v.max_images, .explain = tf.qwen_vl.geometry.problem } else null;
-    h.host = api.LaneHost.init(gpa, io, &h.core, .{ .name = "qwen27", .draft_sources = .{ .drafter = if (h.draft != null) .{ .kind = "DFlash2", .name = o.drafter_name orelse o.drafter orelse "" } else null }, .structures = @import("qwen27_masks.zig").supported, .lanes = slots, .context_window = capacity, .prefill_step = @intCast(h.back.chunk), .decode_share = o.decode_share, .vision = offer });
+    h.host = api.LaneHost.init(gpa, io, &h.core, .{ .name = "qwen27", .draft_sources = .{ .mtp = h.mtp != null, .drafter = if (h.draft != null) .{ .kind = "DFlash2", .name = o.drafter_name orelse o.drafter orelse "" } else null }, .structures = @import("qwen27_masks.zig").supported, .lanes = slots, .context_window = capacity, .prefill_step = @intCast(h.back.chunk), .decode_share = o.decode_share, .vision = offer });
     h.host.memory = .{ .ctx = h, .read = readMemory };
     h.host.explain = .{ .text = words };
     h.host.decoded_rows = true; // a reply's rows prefill with the bits decoding gave them, with the cache on or off
@@ -447,51 +459,46 @@ pub fn attach(parent: Allocator, io: std.Io, model: *q.model.Model, drafter: ?*q
     if (h.trace) |*t| t.enabled = true; // serving rounds count from here: measure() timed whole, unsplit buffers
     try h.host.start();
     tf.startup_receipt.span(.model_ready).end();
-    std.log.info("{f}", .{StartupLine{ .streams = slots, .context = capacity, .draft_slots = if (h.draft != null) h.back.draft_slots else 0, .images = o.images != null }});
+    std.log.info("{f}", .{StartupLine{ .streams = slots, .context = capacity, .draft_slots = if (h.draft != null) h.back.draft_slots else 0, .mtp = h.mtp != null, .images = o.images != null }});
     return h;
 }
-
-const StartupLine = struct {
-    streams: u32,
-    context: u32,
-    draft_slots: u32,
-    images: bool,
-
-    pub fn format(line: StartupLine, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        try w.print("Qwen3.8-27B: {d} stream{s} of {d} tokens", .{ line.streams, if (line.streams == 1) "" else "s", line.context });
-        const drafts = @min(line.streams, line.draft_slots);
-        if (drafts > 0) try w.print(", DFlash2 drafts for {d} stream{s}", .{ drafts, if (drafts == 1) "" else "s" });
-        if (line.images) try w.writeAll(", images read");
-    }
-};
 
 test "qwen27 startup: draft stream count, singular text and optional suffixes" {
     const limit = try lb.draftSlots();
     const limited = platform.c.getenv("TF_Q27_DRAFT_SLOTS") != null;
     try std.testing.expectEqual(@as(u32, if (limited) 1 else 8), limit);
-    const cases = [_]struct { u32, []const u8, []const u8 }{
-        .{ 1, "1 stream", "1 stream" },
-        .{ 2, "2 streams", "2 streams" },
-        .{ 9, "9 streams", "8 streams" },
-        .{ 16, "16 streams", "8 streams" },
+    // the wording: the smaller of the stream count and the draft-slot setting
+    const wording = [_]struct { streams: u32, slots: u32, want: []const u8 }{
+        .{ .streams = 1, .slots = 0, .want = "" },
+        .{ .streams = 1, .slots = 1, .want = "DFlash2 drafts for the only stream" },
+        .{ .streams = 1, .slots = 8, .want = "DFlash2 drafts for the only stream" },
+        .{ .streams = 1, .slots = 99, .want = "DFlash2 drafts for the only stream" },
+        .{ .streams = 2, .slots = 0, .want = "" },
+        .{ .streams = 2, .slots = 1, .want = "DFlash2 drafts for 1 of 2 streams" },
+        .{ .streams = 2, .slots = 8, .want = "DFlash2 drafts for both streams" },
+        .{ .streams = 2, .slots = 99, .want = "DFlash2 drafts for both streams" },
+        .{ .streams = 4, .slots = 1, .want = "DFlash2 drafts for 1 of 4 streams" },
+        .{ .streams = 4, .slots = 8, .want = "DFlash2 drafts for all 4 streams" },
+        .{ .streams = 4, .slots = 99, .want = "DFlash2 drafts for all 4 streams" },
+        .{ .streams = 16, .slots = 1, .want = "DFlash2 drafts for 1 of 16 streams" },
+        .{ .streams = 16, .slots = 8, .want = "DFlash2 drafts for 8 of 16 streams" },
+        .{ .streams = 16, .slots = 99, .want = "DFlash2 drafts for all 16 streams" },
     };
-    var mismatches: usize = 0;
-    for (cases) |case| {
-        for ([_]bool{ false, true }) |drafter| {
-            for ([_]bool{ false, true }) |with_images| {
-                var draft: [64]u8 = undefined;
-                const suffix = if (drafter) try std.fmt.bufPrint(&draft, ", DFlash2 drafts for {s}", .{if (limited) "1 stream" else case[2]}) else "";
-                var expected: [192]u8 = undefined;
-                const want = try std.fmt.bufPrint(&expected, "Qwen3.8-27B: {s} of 4096 tokens{s}{s}", .{ case[1], suffix, if (with_images) ", images read" else "" });
-                var actual: [192]u8 = undefined;
-                const got = try std.fmt.bufPrint(&actual, "{f}", .{StartupLine{ .streams = case[0], .context = 4096, .draft_slots = if (drafter) limit else 0, .images = with_images }});
-                std.testing.expectEqualStrings(want, got) catch {
-                    mismatches += 1;
-                };
-            }
-        }
+    var buf: [64]u8 = undefined;
+    for (wording) |case| try std.testing.expectEqualStrings(case.want, try startup.draftWording(&buf, case.streams, case.slots));
+    // the whole line: the wording, a drafter's absence and the optional suffixes
+    const lines = [_]struct { streams: u32, slots: u32, images: bool, want: []const u8 }{
+        .{ .streams = 1, .slots = 8, .images = false, .want = "Qwen3.8-27B: 1 stream of 4096 tokens, DFlash2 drafts for the only stream" },
+        .{ .streams = 2, .slots = 8, .images = true, .want = "Qwen3.8-27B: 2 streams of 4096 tokens, DFlash2 drafts for both streams, images read" },
+        .{ .streams = 4, .slots = 8, .images = false, .want = "Qwen3.8-27B: 4 streams of 4096 tokens, DFlash2 drafts for all 4 streams" },
+        .{ .streams = 16, .slots = 8, .images = false, .want = "Qwen3.8-27B: 16 streams of 4096 tokens, DFlash2 drafts for 8 of 16 streams" },
+        .{ .streams = 2, .slots = 0, .images = false, .want = "Qwen3.8-27B: 2 streams of 4096 tokens" },
+    };
+    var actual: [192]u8 = undefined;
+    for (lines) |case| {
+        const got = try std.fmt.bufPrint(&actual, "{f}", .{StartupLine{ .streams = case.streams, .context = 4096, .draft_slots = case.slots, .mtp = false, .images = case.images }});
+        try std.testing.expectEqualStrings(case.want, got);
     }
-    try std.testing.expectEqual(@as(usize, 0), mismatches);
 }
 
 /// TF_Q27_PROFILE's rounds between log reports, or null (off); a value it cannot read leaves profiling off.
@@ -557,6 +564,7 @@ pub fn close(ptr: *anyopaque) void {
     h.cfg.deinit(h.gpa);
     h.back.deinit();
     if (h.draft) |d| d.deinit();
+    if (h.mtp) |*d| d.deinit();
     if (h.trace) |*t| t.reportRest();
     h.runner.deinit();
     if (h.vision) |v| v.deinit();

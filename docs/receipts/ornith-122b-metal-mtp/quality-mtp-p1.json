@@ -1,0 +1,210 @@
+[
+ {
+  "name": "quicksort-raw",
+  "tokens": 128,
+  "token_sha256": "416228ae7da681de32a8485e7f4566f7e908f4232d12bbe09f12f27612bf8029",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 101,
+   "drafted": 38,
+   "accepted": 26,
+   "acceptance_rate": 0.6842105263157895,
+   "tokens_per_round": 1.2673267326732673
+  }
+ },
+ {
+  "name": "rust-reverse-words",
+  "tokens": 128,
+  "token_sha256": "00e02dc912e2f99e8b35a97e61a2e086deea55a1069eb94f371b5e47f5cefa9d",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 116,
+   "drafted": 12,
+   "accepted": 11,
+   "acceptance_rate": 0.9166666666666666,
+   "tokens_per_round": 1.103448275862069
+  }
+ },
+ {
+  "name": "multiply-17-23",
+  "tokens": 128,
+  "token_sha256": "7711c779df1ecb2bd651ab25ec31489830000c51c13d90e3fdc029d760bc7be3",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 118,
+   "drafted": 12,
+   "accepted": 9,
+   "acceptance_rate": 0.75,
+   "tokens_per_round": 1.0847457627118644
+  }
+ },
+ {
+  "name": "sleep-tips",
+  "tokens": 128,
+  "token_sha256": "0d1dd6b1f08046e0c2d51d86bf126bdba5ba4046765bd9ff06e218410f365e06",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 126,
+   "drafted": 1,
+   "accepted": 1,
+   "acceptance_rate": 1.0,
+   "tokens_per_round": 1.0158730158730158
+  }
+ },
+ {
+  "name": "js-debounce-raw",
+  "tokens": 128,
+  "token_sha256": "a1c4a369125954449784c400b1405856ca1308f6679750c61a078ac4dde0131e",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 0,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ },
+ {
+  "name": "linear-equation",
+  "tokens": 128,
+  "token_sha256": "bded433ac70b0d141b041455752699768fd9f9ced1e64fe32fe29a4713ecac27",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 1,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ },
+ {
+  "name": "fishing-village",
+  "tokens": 128,
+  "token_sha256": "82ceb5093391f965ec2c8e25e956fc84ab94179fac62375e3af2568b488f8627",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 0,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ },
+ {
+  "name": "sql-left-join",
+  "tokens": 128,
+  "token_sha256": "c030fb80a7c9864f71416bf71947894a18a9d0cc4383c80fa1093743659fa615",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 0,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ },
+ {
+  "name": "rectangle",
+  "tokens": 128,
+  "token_sha256": "9438b9fbcf5e3d0f0b74d2f68a7b09f938f7e81e74213b17eb7fe472f58868c9",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 126,
+   "drafted": 2,
+   "accepted": 1,
+   "acceptance_rate": 0.5,
+   "tokens_per_round": 1.0158730158730158
+  }
+ },
+ {
+  "name": "dinner-idea",
+  "tokens": 128,
+  "token_sha256": "acbb2eaf90c2d2756d8e52024ef2fd76fdb0d8956a4fb7bf0082d397d93a406a",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 0,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ },
+ {
+  "name": "c-primes-raw",
+  "tokens": 128,
+  "token_sha256": "f0395f09f36bc8a154e7c47f63c6e42c5ab100040ecb850bb77c2f52055acce3",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 0,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ },
+ {
+  "name": "prime-221",
+  "tokens": 128,
+  "token_sha256": "c53eb036c495375763a6b3bdb891c920c52518e9df13c8c354d4e589ef8927da",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 126,
+   "drafted": 1,
+   "accepted": 1,
+   "acceptance_rate": 1.0,
+   "tokens_per_round": 1.0158730158730158
+  }
+ },
+ {
+  "name": "heist-story",
+  "tokens": 128,
+  "token_sha256": "79376c72e08cf446bc9569424ab5707a512666ec5026fca114cb353f934b10e5",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 1,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ },
+ {
+  "name": "bash-line-count",
+  "tokens": 128,
+  "token_sha256": "a0140608e12f0284735aba5300a23c052b2bcb56f068e4327934d1cd8406a9db",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 0,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ },
+ {
+  "name": "sum-1-250",
+  "tokens": 128,
+  "token_sha256": "043bfd03e74936af8f02add775ba6260ee3d5a9c6acd156ba96cfa7decac3eb9",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 1,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ },
+ {
+  "name": "blue-sky",
+  "tokens": 128,
+  "token_sha256": "f5b0f7c6734b31392b5c595068233aafe6fc3f6345c9f25b351238fb9beec76e",
+  "equal_plain": true,
+  "speculative": {
+   "rounds": 127,
+   "drafted": 0,
+   "accepted": 0,
+   "acceptance_rate": 0.0,
+   "tokens_per_round": 1.0078740157480315
+  }
+ }
+]

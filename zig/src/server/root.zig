@@ -39,6 +39,7 @@ test {
     _ = @import("done_times_test.zig");
     _ = @import("drain_test.zig");
     _ = @import("keepalive_test.zig");
+    _ = @import("gpu_turn.zig");
     _ = @import("idle_unload.zig");
     _ = @import("idle_unload_test.zig");
     _ = @import("wait_reason_test.zig");
@@ -74,6 +75,7 @@ test {
     _ = @import("auth.zig");
     _ = @import("cli.zig");
     _ = @import("cli_test.zig");
+    _ = @import("cli_profile_test.zig");
     _ = @import("unix_socket_cli_test.zig");
     _ = @import("effort_cli_audit_test.zig");
     _ = @import("live.zig");

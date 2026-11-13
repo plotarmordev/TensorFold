@@ -121,17 +121,19 @@ pub const Drafter = struct {
         d.scratch.deinit();
     }
 
-    /// After a target pass over `slot`'s last `next.len` rows, `next` holds each row's following token (the pass's ids
-    /// from the second on, then the target's pick); returns the layer's greedy draft of the token after `next`'s last.
-    pub fn step(d: *Drafter, slot: u32, next: []const u32) !u32 {
+    /// After a target pass, `slot`'s last `next.len` cache rows are the pass's tapped rows from `at` on (a window's kept
+    /// chain), and `next` holds each row's following token; returns the layer's greedy draft of the token after
+    /// `next`'s last. Rows the verify dropped never reach its cache.
+    pub fn step(d: *Drafter, slot: u32, at: u32, next: []const u32) !u32 {
         const r = d.runner;
         if (slot >= r.ready) return error.RoundNotReady;
         const rows: u32 = @intCast(next.len);
-        if (rows == 0 or r.taps.rows != rows or rows > r.offsets[slot]) return error.TapsDiffer;
-        defer r.taps.begin(); // the taps are this step's: a second step without a target pass is refused
+        if (rows == 0 or r.taps.rows < at + rows or rows > r.offsets[slot]) return error.TapsDiffer;
         var round = try Round.init(r.allocator, &.{.{ .slot = slot, .start = r.offsets[slot] - rows, .capacity = r.capacity, .ids = next }}, @intCast(r.model.config.conv_kernel), r.slots, @intCast(r.model.shard.global.vocab));
         defer round.deinit();
-        _ = try pass(r, &round, &d.scratch, try r.taps.plane(0));
+        var hidden = try r.taps.plane(0);
+        hidden.offset += @as(usize, at) * r.model.config.hidden * 2;
+        _ = try pass(r, &round, &d.scratch, hidden);
         return @import("session.zig").argmax(d.scratch.logits.slice(u16, r.model.config.vocab));
     }
 };
