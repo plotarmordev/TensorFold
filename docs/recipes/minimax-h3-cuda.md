@@ -53,21 +53,33 @@ unchanged). The release fuses each head's q, k and v rows (`block.zig`); the loa
 them, all heads' q, then k, then v. A forward with `keep` set is refused with `BadH3Ungated` and
 `tf_h3_set_weight` of the gate with `NoGate`, so neither reads past the smaller buffer.
 
-The block arithmetic is the clip model's; what the picture needs beyond it, read from the Metal tool
-(docs/recipes/minimax-h3-image-metal.md), is host work, and none of it is built for CUDA yet:
+The block arithmetic is the clip model's. Three tools build a picture on a Spark with no Metal and no PyTorch, each
+writing the file the matching Metal tool writes (docs/recipes/minimax-h3-image-metal.md), so any stage swaps:
 
-| Picture stage | Metal | These blocks |
+```sh
+zig build tf-h3-image-prompt-host tf-h3-image-cuda tf-h3-image-decoder-host -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 -Doptimize=ReleaseFast
+zig-out/bin/tf-h3-image-prompt-host TEXT_ENCODER_DIR MODEL_DIR prompt.txt out/case.safetensors 2048x2048 42
+zig-out/bin/tf-h3-image-cuda MODEL_DIR out/case.safetensors out/case
+zig-out/bin/tf-h3-image-decoder-host MODEL_DIR out/case.latent.f32 128 128 out/case.png 2048x2048
+```
+
+| Picture stage | Metal | Spark |
 |---|---|---|
-| Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | none; a host writes `x`'s text rows |
-| Weights | `model.safetensors.index.json` and its shards | one file: the host merges the shards' `blocks.*` |
-| Rows in: `video_patch_proj`, F32 [5,376, 96] | `rowsIn` | none |
-| AdaLN tables: the time embedder on the host, each block's projection per timestep | `modulation.zig` in bf16 | `tables` F32 (blocks, lines, 6, hidden) from the host |
-| Rotary: 48 angles over 96 dims | `picture.rotary`, 96 wide, duplicated | `cos`/`sin` 48 wide, `rot` 48: the first half of each row of `picture.rotary` |
-| Attention | dense, tiles of 64, prefix first | `keep` 0 with `picture.tiles`' slot and sizes |
-| Final norm and the step's head, `pdd_fused_heads` F32 [6, 96, 5,376] | `h3_final_norm`, `rowsOut` | none; the forward ends at the last gated add |
-| Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | host, reused as is |
-| Image decoder, 2,048 x 2,048 and up | `image_decoder_metal.zig` | none |
+| Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CPU: `prompt_reference.zig`, a layer's weights in f32 at a time, the case from `prompt_case.zig` |
+| Weights | `model.safetensors.index.json` and its shards | `Model.loadSharded` reads the shards in place |
+| Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | host, `rows_reference.rowsIn` |
+| AdaLN tables: the time embedder, each block's projection per timestep | `h3_modulation` | host, `rows_reference.modulation`, laid out (line, part, c) as `h3.cu` reads |
+| Rotary: 48 angles over 96 dims | `picture.rotary`, 96 wide, duplicated | `cos`/`sin` 48 wide, `rot` 48: the first half of each row |
+| Transformer blocks, dense, tiles of 64 | `block.zig` | these blocks, `keep` 0 |
+| Final norm and the step's head, `pdd_fused_heads` | `h3_final_norm`, `h3_rows_out` | host, `rows_reference.finalNorm`, `rowsOut` |
+| Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | the same |
+| Image decoder | `image_decoder_metal.zig` | CPU: `image_decoder_reference.zig` per tile on every core (`image_decoder_host.zig`) |
 
-A text-to-image run on a Spark therefore still needs a CUDA prompt encoder, the rows-in, table, final-norm and
-step-head work, and a CUDA image decoder before the picture, its PSNR against the Mac's and the mmh3 comparison can be
-measured. No CUDA picture has been made.
+Gaps between the video and image transformer: the image transformer has no routing gate (dense attention), fuses each
+head's q, k and v, has six per-step output heads instead of one, no audio rows, and its rotary covers 96 of 128 dims.
+CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check is the picture's PSNR.
+
+The prompt encoder and decoder are the bf16 oracles on the CPU, f64 sums: minutes where Metal takes seconds
+(prompt 0.47 s, decoder 4.2 s at 2048x2048). mmh3's ~24 s for 4096x4096 compares with the transformer's stage only
+until both run on the GPU. [`run-script.sh`](minimax-h3-cuda/run-script.sh) runs all three and the PSNR through the
+Desk's GPU door in a DeepSeek pause window. No CUDA picture has been made yet.
