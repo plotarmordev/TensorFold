@@ -1,22 +1,31 @@
 #!/bin/sh
-# MiniMax-H3-Image's first CUDA picture on a Spark, through the Desk's GPU door inside a DeepSeek pause window:
+# MiniMax-H3-Image's CUDA pictures on a Spark, through the Desk's GPU door inside a DeepSeek pause window:
 #   ssh top-menu "job start gpu bottom plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/run-script.sh"
-# The pilot folder at /assets/h3-image-pilot (read-only) holds the MiniMax-H3-Image folder (model/), Qwen3-VL's text
-# encoder (text-encoder/), the Mac's picture of the same prompt and seed (mac.png, from prompt.txt, 2048x2048, seed 42)
-# and bin-SHA/: this commit's three tools, built beforehand where nvcc and g++ exist:
+# /assets/drama3-pilot (read-only) holds models/MiniMax-H3-Image, its text encoder in text_encoder/, and
+# h3-image-pilot/: prompt.txt and bin-SHA/, this commit's three tools, built beforehand where nvcc and g++ exist:
 #   zig build tf-h3-image-prompt-host tf-h3-image-cuda tf-h3-image-decoder-host -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 -Doptimize=ReleaseFast
-# Everything it writes lands in /work/out/h3-image: the case, the latent, the PNG, each stage's time and the PSNR.
+# Seed 42 at 2048x2048 and 4096x4096, the Mac's settings; each stage's log, with its time, lands in /work/out/h3-image
+# beside the case, the latent and the PNG. The PSNR against the Mac's pictures is taken after `job fetch`.
 set -eu
-pilot=/assets/h3-image-pilot
+model=/assets/drama3-pilot/models/MiniMax-H3-Image
+pilot=/assets/drama3-pilot/h3-image-pilot
 bin=$pilot/bin-$(git -c safe.directory='*' rev-parse HEAD)
 out=/work/out/h3-image
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-for path in "$pilot/model/model_index.json" "$pilot/text-encoder/config.json" "$pilot/prompt.txt" "$pilot/mac.png" "$bin/tf-h3-image-cuda"; do
-    [ -e "$path" ] || { echo "missing $path; /assets holds:" >&2; find /assets -maxdepth 3 >&2; exit 1; }
+for path in "$model/model_index.json" "$model/text_encoder/config.json" "$pilot/prompt.txt" "$bin/tf-h3-image-cuda"; do
+    [ -e "$path" ] || { echo "missing $path" >&2; exit 1; }
 done
 nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
 mkdir -p "$out"
-"$bin/tf-h3-image-prompt-host" "$pilot/text-encoder" "$pilot/model" "$pilot/prompt.txt" "$out/case.safetensors" 2048x2048 42
-"$bin/tf-h3-image-cuda" "$pilot/model" "$out/case.safetensors" "$out/case"
-"$bin/tf-h3-image-decoder-host" "$pilot/model" "$out/case.latent.f32" 128 128 "$out/case.png" 2048x2048
-python3 tools/zig/moss_image_case.py compare "$out/case.png" "$pilot/mac.png" "$out/side.png" | tee "$out/psnr.json"
+stage() { # stage NAME TOOL ARGS...: the tool's log, with its times, to $case.NAME.log; shown if it fails
+    log=$case.$1.log
+    shift
+    "$@" 2>"$log" || { cat "$log" >&2; exit 1; }
+}
+for side in 2048 4096; do
+    case=$out/$side
+    stage prompt "$bin/tf-h3-image-prompt-host" "$model/text_encoder" "$model" "$pilot/prompt.txt" "$case.safetensors" "${side}x$side" 42
+    stage image "$bin/tf-h3-image-cuda" "$model" "$case.safetensors" "$case"
+    stage decoder "$bin/tf-h3-image-decoder-host" "$model" "$case.latent.f32" $((side / 16)) $((side / 16)) "$case.png" "${side}x$side"
+    echo "$side done"
+done
