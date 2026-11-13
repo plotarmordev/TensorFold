@@ -77,6 +77,7 @@ test {
     _ = @import("cli.zig");
     _ = @import("cli_test.zig");
     _ = @import("cli_profile_test.zig");
+    _ = @import("compact_at_cli_test.zig");
     _ = @import("unix_socket_cli_test.zig");
     _ = @import("effort_cli_audit_test.zig");
     _ = @import("live.zig");
@@ -113,8 +114,10 @@ test {
     _ = @import("messages.zig");
     _ = @import("pdf.zig");
     _ = @import("pdf_flags_test.zig");
+    _ = @import("jpeg_out.zig");
     _ = @import("images.zig");
     _ = @import("images_video_marker_test.zig");
+    _ = @import("chat_ocr_test.zig");
     _ = @import("image_key.zig");
     _ = @import("image_pieces.zig");
     _ = @import("image_reuse_test.zig");
@@ -155,6 +158,8 @@ test {
     _ = @import("compact_auto_test.zig");
     _ = @import("request_log.zig");
     _ = @import("completion_prompt_test.zig");
+    _ = @import("cancel_ids.zig");
+    _ = @import("cancel_route_test.zig");
     _ = @import("hf_eos_http_test.zig");
     _ = @import("reply_gpu_seconds_test.zig");
     _ = @import("spark_wire.zig");
@@ -288,4 +293,13 @@ test {
     _ = @import("open_connections_route_test.zig");
     _ = @import("request_starts_turns_test.zig");
     _ = @import("thinking_request_test.zig");
+    _ = @import("ocr/types_test.zig");
+    _ = @import("ocr/geometry_test.zig");
+    _ = @import("ocr/markdown_test.zig");
+    _ = @import("ocr/budget_test.zig");
+    _ = @import("ocr/mistral_test.zig");
+    _ = @import("ocr/mistral_sdk_test.zig");
+    _ = @import("ocr/run_test.zig");
+    _ = @import("ocr/size_test.zig");
+    _ = @import("ocr/prompt_ids_test.zig");
 }
