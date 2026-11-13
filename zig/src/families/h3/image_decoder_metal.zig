@@ -4,9 +4,11 @@ const mtl = @import("metal");
 const st = @import("safetensors");
 const rounding = @import("bf16_round");
 const kernels = @import("h3_image_decoder_kernels");
+const gpu_turn = @import("gpu_turn");
 pub const host = @import("image_decoder.zig");
 pub const vae = @import("picture_vae.zig");
 pub const reference = @import("image_decoder_reference.zig");
+const read_ahead = @import("read_ahead.zig");
 
 const W = host.width;
 const F = host.ffn;
@@ -30,7 +32,8 @@ const Shape = extern struct {
     scale: f32 = host.scale,
 };
 
-pub const Timing = struct { wall: f64 = 0, gpu: f64 = 0 };
+/// `paused`: seconds a decode waited for live speech before its passes.
+pub const Timing = struct { wall: f64 = 0, gpu: f64 = 0, paused: f64 = 0 };
 
 /// What one pass runs: the embedding, blocks [from, to), then norm_out and proj_out.
 pub const Stages = struct { embed: bool = true, from: usize = 0, to: usize, final: bool = true };
@@ -64,6 +67,8 @@ pub const Decoder = struct {
     w: usize = 0,
     tokens: usize = 0,
     views: Views = undefined,
+    /// When set, a decode waits before each pass while live speech holds the turn.
+    give_way: ?gpu_turn.Turn = null,
 
     /// `layers` blocks and the rotary `theta`, the kernels compiled from source, the weights' buffer unfilled.
     pub fn init(gpa: std.mem.Allocator, device: mtl.Device, layers: usize, theta: f32) !*Decoder {
@@ -115,6 +120,12 @@ pub const Decoder = struct {
             return err;
         };
         const data = map.bytes[8 + len ..];
+        const spans = try a.alloc(read_ahead.Span, items.len);
+        for (spans, items) |*s, it| {
+            const e = header.get(it.name).?;
+            s.* = .{ .path = path, .lo = 8 + len + e.begin, .hi = 8 + len + e.end };
+        }
+        _ = try read_ahead.read(spans);
         const out = d.params();
         for (items) |it| {
             const e = header.get(it.name).?;
@@ -284,6 +295,7 @@ pub const Decoder = struct {
                 const at = t.at(k + i);
                 o.* = .{ @intCast(at.row), @intCast(at.col) };
             }
+            if (d.give_way) |turn| took.paused += gpu_turn.yield(turn.io, turn.at);
             const one = try d.pass(origins[0..n], .{ .to = layers });
             took.wall += one.wall;
             took.gpu += one.gpu;
