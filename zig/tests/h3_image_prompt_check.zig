@@ -105,7 +105,7 @@ pub fn kernelsAlone(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random) 
             r.k.gemm(e, p[0], p[1], p[2], p[3], 70, 320, 288);
         }
     }.f, .{ x.ref, w.ref, bias.ref, y.ref });
-    ref.gemm(f64, x.vals, w.vals, bias.vals, y.vals, T, 320, 288);
+    try ref.gemm(f64, x.vals, w.vals, bias.vals, y.vals, T, 320, 288);
     pass = gate("product alone, 70 x 320 x 288 with a bias", bits(y.ref, y.vals.len), y.vals, 320) and pass;
 
     // both norms' roundings
