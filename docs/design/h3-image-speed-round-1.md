@@ -36,7 +36,7 @@ Measured on this M5 Ultra, card 34's prompt, seed 42, seconds:
 | Six steps | 11.1 | 59.4 | card 34 |
 | One-shot tools, each mapping its weights from disk | 71.4 | 189.4 | card 34 |
 | Cold, every weight file evicted, read ahead | 61 (prompt 29, transformer 28 of which load 12.7, decoder 4) | 123 (13, 78 of which 16.9, 32) | card 35 |
-| Warm, one resident process | 12.70-12.77 (prompt 0.22, steps 11.1, decoder and PNG 1.4) | about 100, single run | cards 51, 35 |
+| Warm | 12.70-12.77, one resident process (prompt 0.22, steps 11.1, decoder and PNG 1.4) | about 100, single run of the read-ahead tools, not yet measured resident | cards 51, 35 |
 
 So the steps are 87% of a warm 2048 picture and about 60% of a warm 4096 one. At 4096 the rest is mostly the decoder
 stage's host tail: its 441 tiles take 4.2 s of GPU, and single-threaded PNG deflate takes most of the remainder.
@@ -90,9 +90,10 @@ Facts the proposals rest on, checked in the port's code:
 - **Local:** against the measured times above: card 34's step times, card 51's warm 2048 picture (12.70-12.77 s) and
   card 35's cold pictures (61 s and 123 s). A speed-up claim needs the lower 95% bound of the paired speed-up at or
   above the card's figure.
-- **External:** h3-image-mlx's teapot prompt, seed 42, at 4096 x 4096: 356.84 s on an M5 Pro (343.6 s of steps,
-  8.37 s of decode). Our cold 4096 picture is already 123 s, but on a different machine, so it is not an algorithmic
-  comparison: card 4 below reruns h3-image-mlx on this M5 Ultra.
+- **External, every card:** h3-image-mlx's teapot prompt, seed 42, at 4096 x 4096: 356.84 s on an M5 Pro (343.6 s
+  of steps, 8.37 s of decode). With the change on, our picture at that prompt, seed and size on this M5 Ultra, cold,
+  takes at most 119 s (356.84 / 3; today 123 s). Card 4 reruns h3-image-mlx on this M5 Ultra; from then on the bar is
+  a third of that rerun's time at the same residency, cold against cold and warm against warm.
 
 ### Quality guards
 
@@ -100,8 +101,9 @@ Facts the proposals rest on, checked in the port's code:
   separate, labelled candidate that passes the float64 kernel contract with no worse worst-column error.
 - **Lossy:** against the default picture at the same seed, LPIPS median at most 0.08 and worst at most 0.15 (card
   40's cascade bar, so lossy cards compare and stack), PSNR median at least 30 dB, no newly wrong rendered text by
-  OCR, object count or spatial relation in the corpus, and teacher-forced velocity cosine at least 0.999 at every
-  head that runs.
+  OCR, object count or spatial relation in the corpus, and teacher-forced velocity cosine at least 0.999 at all six
+  original heads, each fed its own sigma's input from the default trajectory. A change that runs blended heads also
+  checks each of them against the six-step velocities over its interval; it never replaces the six-head check.
 
 ## Proposals, ranked
 
@@ -140,7 +142,8 @@ intervals with blended heads (outside). History did not propose it.
 - **A/B.** The shared protocol at each call count, stopping at the fewest calls that pass every check.
 - **Speed gate.** At four calls: six-step time at most card 34's / 1.45 (7.7 s at 2048, 41 s at 4096) and the warm
   2048 picture at most 9.5 s.
-- **Quality guard.** The full lossy guard against the six-step picture, at every call count claimed.
+- **Quality guard.** The full lossy guard against the six-step picture at every call count claimed: all six original
+  heads teacher-forced, and each blended head against the six-step velocities over its merged interval.
 - **Risks.** The distilled heads expect their own sigma's input; a wide step may lose fine detail and small text.
   The diagnostic tells early.
 
@@ -165,8 +168,10 @@ distribution the model learned.
 - **Cost.** A one-day diagnostic, then 8-12 days. Two small kernels (pool, scatter-add) and a second row count and
   tile map. No new weights; 44 / 176 MB more memory.
 - **A/B.** The shared protocol, sweeping *a*, *b* and the coarse steps on the calibration prompts first.
-- **Speed gate.** Six-step time at most card 34's / 1.5 at both sizes (7.4 s and 39.6 s), and the lower 95% bound of
-  the paired warm 2048 speed-up at least x1.4.
+- **Speed gate.** Six-step time at most card 34's / 1.5 at 2048 (7.4 s), and the lower 95% bound of the paired warm
+  end-to-end speed-up at least x1.5 at 4096. With about 41 s of the 4096 picture outside the steps, that needs the
+  six steps at most 26 s (card 34's / 2.3): beyond the planning configuration (x1.35), so the card passes with a
+  deeper setting near the ceiling or closes as a measured negative.
 - **Quality guard.** The full lossy guard. Off: byte-identical. Both kernels in the float64 contract with planted
   controls.
 - **Risks.** The model never saw a resolution change in depth: blur or a 2 x 2 grid at the late steps. Merged rows
@@ -297,6 +302,8 @@ measured negative if it fails.
   `steps=6`, the final latent is byte-identical.
 - On the shared corpus on this M5 Ultra, at the fewest calls that pass: six-step time at most card 34's / 1.45 at
   both sizes, and the warm 2048 picture at most 9.5 s in the resident server.
+- Teacher-forced velocity cosine at least 0.999 at all six original heads, and at each blended head against the
+  six-step velocities over its interval.
 - The complete lossy guard against the six-step picture, every check required; a table per N and size in the recipe.
 
 **2. MiniMax-H3-Image: the middle blocks on a half-side lattice inside each step** (`coarse-core`)
@@ -306,9 +313,11 @@ measured negative if it fails.
   blocks, else record the numbers and close.
 - `tf-h3-image coarse=A:B:STEPS`: pool and scatter-add kernels in the float64 kernel contract with planted controls;
   without `coarse`, the final latent is byte-identical.
-- On the shared corpus on this M5 Ultra: six-step time at most card 34's / 1.5 at both sizes, and the lower 95% bound
-  of the paired warm 2048 speed-up at least 1.4x; a table per A, B, STEPS and size in the recipe.
-- The complete lossy guard, every check required, alone and stacked with card 1's chosen `steps`.
+- On the shared corpus on this M5 Ultra: six-step time at most card 34's / 1.5 at 2048, and the lower 95% bound of
+  the paired warm end-to-end speed-up at least 1.5x at 4096 (six steps at most 26 s); a table per A, B, STEPS and
+  size in the recipe.
+- The complete lossy guard, every check required, including all six original heads teacher-forced, alone and
+  stacked with card 1's chosen `steps`.
 
 **3. MiniMax-H3-Image: exact shape-specific products, the SwiGLU store and a dense attention path** (`exact-kernels`)
 
@@ -324,8 +333,9 @@ measured negative if it fails.
   weights during the steps.
 - Final latent and PNG byte-identical to card 35's read-ahead build; cold and warm times recorded.
 - Cold 2048 at most 48 s and cold 4096 at most 110 s on this M5 Ultra, every weight file evicted before each run.
-- h3-image-mlx rerun on this M5 Ultra with its teapot prompt, seed 42, at 4096, cold and warm; our times at that
-  prompt and size beside it.
+- h3-image-mlx rerun on this M5 Ultra with its teapot prompt, seed 42, at 4096, cold and warm. Today's build at that
+  prompt and size is at least 2x faster at each residency, or the ranking reopens on why the native port lags; with
+  cards 1-3 merged, it is at least 3x faster, and that third becomes every card's external bar.
 
 ## What round 2 starts from
 
