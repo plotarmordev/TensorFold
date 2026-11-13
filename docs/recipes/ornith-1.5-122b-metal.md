@@ -95,7 +95,7 @@ On the four-capacity servers, all 45 timed replies matched their solo token SHA-
 drafted-mode solo controls matched `draft:false` (four per mode). No timed request failed or was unmeasured.
 Every timed 256-token `quicksort-raw` reply in every mode has the same token SHA-256 as the 12 November build's.
 The first plain one-stream server measured 62.0 tok/s while the drafted four-capacity servers' `draft:false` controls
-ran at 85.0–92.1; the table uses its repeat on a fresh server.
+ran at 85.0–91.9; the table uses its repeat on a fresh server.
 
 ## Quality against the publisher's reference
 

@@ -18,7 +18,7 @@ Every server ran `TF_QWEN27_SLOT_RESUME=0 tensorfold-native serve ~/models/Ornit
 The raw request records came from a local wrapper around `tools/bench_concurrent.py` that kept each reply's
 `speculative` object and waited before each request while the one-minute load was above 36; it is not committed, and
 `check.py` reads only what it wrote. The first plain one-stream server measured 62.0 tok/s while the drafted
-four-capacity servers' `draft:false` controls ran at 85.0–92.1; `bench-plain-p1-fresh` is its repeat on a fresh
+four-capacity servers' `draft:false` controls ran at 85.0–91.9; `bench-plain-p1-fresh` is its repeat on a fresh
 server. The MTP one-stream server ran in the same minutes as that disturbed run and was not repeated before the GPU
 window closed. A shared round's four replies carry that round's `speculative` counters; `check.py` counts each
 four-stream group once.
