@@ -79,7 +79,28 @@ Gaps between the video and image transformer: the image transformer has no routi
 head's q, k and v, has six per-step output heads instead of one, no audio rows, and its rotary covers 96 of 128 dims.
 CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check is the picture's PSNR.
 
-The prompt encoder and decoder are the bf16 oracles on the CPU, f64 sums: minutes where Metal takes seconds
-(prompt 0.47 s, decoder 4.2 s at 2048x2048). mmh3's ~24 s for 4096x4096 compares with the transformer's stage only
-until both run on the GPU. [`run-script.sh`](minimax-h3-cuda/run-script.sh) runs all three and the PSNR through the
-Desk's GPU door in a DeepSeek pause window. No CUDA picture has been made yet.
+The prompt encoder and decoder are the bf16 oracles on the CPU with f64 sums. [`run-script.sh`](minimax-h3-cuda/run-script.sh)
+runs the three tools through the Desk's GPU door in a DeepSeek pause window, at both of the Mac's sizes.
+
+### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
+
+Prompt `h3-image-pilot/prompt.txt` (the red fox, sha256 cc969bca…), seed 42, the checkpoint's six distilled steps,
+BF16 throughout, against the M5 Ultra's Metal pictures of card 34 (`h3-image-runs/34/timing`, run 2, same tools):
+
+| Stage | Spark 2048² | Mac 2048² | Spark 4096² | Mac 4096² |
+|---|---:|---:|---:|---:|
+| Prompt (CPU on the Spark) | 88 s | 17.5 s | 98 s | 14.8 s |
+| Transformer load, AdaLN tables on the host | 137 s | 23.3 s | 136 s | 12.5 s |
+| Transformer, 6 steps | 34 s (3.84 s a step settled) | 11.1 s (1.85 s) | 123 s (18.5 s) | 59.4 s (9.8 s) |
+| Decoder (CPU on the Spark) | 218 s | 2.8 s | 771 s | 34.2 s |
+| PSNR against the Mac picture | 29.2 dB | — | 28.5 dB | — |
+
+The Mac's two runs are bit-identical; the CUDA picture differs by the blocks' bf16 rounding (the latents' cosine
+0.996). The Metal decoder on the CUDA latent gives the same PSNR at both sizes, so the CPU decoder matches Metal's and
+the gap is the transformer's. The first transformer step pays cuBLASLt's algorithm search (4–7 s).
+
+mmh3 on a Spark, closest settings (4096², six steps, BF16 attention, no draft steps): 8.8 s a step, 63 s in all,
+with INT8 linear layers. Its ~24 s is three PDMD-LoRA steps as half-size drafts plus one full step with INT8/FP8
+attention: other weights and another composition, not comparable. TensorFold's BF16 step is 18.5 s, 2.1x mmh3's
+INT8 step. A whole TensorFold 4096² picture takes 1,128 s against mmh3's 63 s: 1,005 s of it are the CPU prompt,
+the host load and the CPU decoder (mmh3 decodes 4096² in 2.9 s on the GPU).
