@@ -103,7 +103,7 @@ pub const Decoder = struct {
         var threads: [64]std.Thread = undefined;
         var made: usize = 0;
         for (1..count) |me| {
-            threads[me] = std.Thread.spawn(.{}, Job.run, .{ &w, me, count }) catch {
+            threads[made] = std.Thread.spawn(.{}, Job.run, .{ &w, me, count }) catch {
                 w.failed.store(true, .monotonic);
                 for (threads[0..made]) |th| th.join();
                 return;
