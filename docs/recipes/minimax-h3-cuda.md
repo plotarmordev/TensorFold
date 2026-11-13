@@ -43,3 +43,31 @@ zig build compile-cuda-tests -Dtarget=x86_64-linux-gnu
 ```
 
 This step has no NVCC or Metal compiler dependency and does not execute the resulting binary.
+
+## MiniMax-H3-Image on these blocks
+
+MiniMax-H3-Image's `transformer/` uses the clip model's base block names, and the Metal tool reads no
+`attn.to_gate_compress` from it (`h3.zig` `baseBlock`): its attention is dense, so no routing gate is needed.
+`tf_h3_open` loads such a checkpoint with q, k and v alone in each block's first product (`tf_h3_shape` is
+unchanged). The release fuses each head's q, k and v rows (`block.zig`); the load stacks them as `h3_heads` reads
+them, all heads' q, then k, then v. A forward with `keep` set is refused with `BadH3Ungated` and
+`tf_h3_set_weight` of the gate with `NoGate`, so neither reads past the smaller buffer.
+
+The block arithmetic is the clip model's; what the picture needs beyond it, read from the Metal tool
+(docs/recipes/minimax-h3-image-metal.md), is host work, and none of it is built for CUDA yet:
+
+| Picture stage | Metal | These blocks |
+|---|---|---|
+| Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | none; a host writes `x`'s text rows |
+| Weights | `model.safetensors.index.json` and its shards | one file: the host merges the shards' `blocks.*` |
+| Rows in: `video_patch_proj`, F32 [5,376, 96] | `rowsIn` | none |
+| AdaLN tables: the time embedder on the host, each block's projection per timestep | `modulation.zig` in bf16 | `tables` F32 (blocks, lines, 6, hidden) from the host |
+| Rotary: 48 angles over 96 dims | `picture.rotary`, 96 wide, duplicated | `cos`/`sin` 48 wide, `rot` 48: the first half of each row of `picture.rotary` |
+| Attention | dense, tiles of 64, prefix first | `keep` 0 with `picture.tiles`' slot and sizes |
+| Final norm and the step's head, `pdd_fused_heads` F32 [6, 96, 5,376] | `h3_final_norm`, `rowsOut` | none; the forward ends at the last gated add |
+| Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | host, reused as is |
+| Image decoder, 2,048 x 2,048 and up | `image_decoder_metal.zig` | none |
+
+A text-to-image run on a Spark therefore still needs a CUDA prompt encoder, the rows-in, table, final-norm and
+step-head work, and a CUDA image decoder before the picture, its PSNR against the Mac's and the mmh3 comparison can be
+measured. No CUDA picture has been made.
