@@ -1,8 +1,8 @@
 # Ornith-1.5-122B on Metal (one 256 GB M5 Ultra)
 
 **Serve with DFlash2: 244 tok/s on one stream (2.6× plain) and 252 tok/s across four (1.3× plain), same tokens as plain.**
-MTP keeps plain's tokens but trails DFlash2: at four streams it gives 213.7 tok/s against DFlash2's 252.3 (plain
-191.0), and a lone MTP stream stops drafting after its first requests (see **Speed**), so it is not the default.
+MTP keeps plain's tokens but trails DFlash2: 117.4 tok/s on one stream (1.26× plain) and, at four streams, 213.7
+tok/s against DFlash2's 252.3 (plain 191.0), so it is not the default.
 
 The native Metal engine serves [Ornith-1.5-122B](https://huggingface.co/ornith-ai/Ornith-1.5-122B), a Qwen3.5-MoE
 (`qwen3_5_moe`: 48 layers, Gated DeltaNet with gated attention every fourth layer, 256 routed experts of 1,024 with
@@ -61,17 +61,18 @@ replies of a shared round carry that round's counters, so each four-stream group
 | **DFlash2** | 1 | 1 | **244.2** | **244.2** | 0.039 / 0.040 s | 65.1% (645/991) |
 | **DFlash2** | 1 | 4 | **245.3** | **245.3** | 0.039 / 0.039 s | 66.2% (642/970) |
 | **DFlash2** | 4 | 4 | **72.2** | **252.3** | 0.119 / 0.243 s | 72.9% (544/746) |
-| MTP, drafting not sustained (known issue)¹ | 1 | 1 | 61.4 | 61.4 | 0.056 / 0.080 s | 74.8% (80/107); drafts/rounds per run 107/175, 0/255, 0/255 |
-| MTP, drafting not sustained (known issue)¹ | 1 | 4 | 82.7 | 82.7 | 0.038 / 0.038 s | — (0/0); drafts/rounds per run 0/255, 0/255, 0/255 |
+| MTP¹ | 1 | 1 | 117.4 | 117.4 | 0.038 / 0.040 s | 75.9% (330/435); drafts/rounds per run 145/145, 145/145, 145/145 |
+| MTP¹ | 1 | 4 | 117.3 | 117.3 | 0.037 / 0.040 s | 75.9% (330/435); drafts/rounds per run 145/145, 145/145, 145/145 |
 | MTP | 4 | 4 | 58.4 | 213.7 | 0.115 / 0.234 s | 65.8% (388/590); drafts/rounds per group 193/117, 204/144, 193/117 |
 
-¹ Not a measurement of sustained MTP drafting. A lone MTP stream drafts on a server's first requests and then
-stops: the one-stream server's three timed replies proposed 107 drafts in 175 rounds, then 0 in 255 and 0 in 255
-(63.3, 50.0 and 61.4 tok/s); the four-capacity server's lone replies proposed none. Its draft is priced from
-shared-round costs until it reaches zero and is never measured again; the fix and its regression test over consecutive
-served requests are a separate engine card.
-Sustained one-stream MTP speed, TTFT and acceptance are unmeasured until it lands. The one-stream MTP server also ran
-in the same minutes as a plain one-stream run disturbed to 62.0 tok/s, and was not repeated.
+¹ A later build: a lone MTP stream drafts every round of every request. Before it, a lone stream drafted on a
+server's first request and then never again: a lone round whose draft was kept whole is kept inside the next draft
+call, after the held draft had been dropped, so its landing went uncounted; only refused drafts were counted, their
+chance fell until the window priced them out, and no draft was verified again. The rows come from fresh servers with
+the same flags and commands as the others (`bench-mtp-p{1,4}-sustained.json`; draft counts from those servers'
+per-reply lines, `serve-mtp-p{1,4}-sustained.txt`). Their 256-token replies have the same token SHA-256 as every other
+mode's, the four-capacity run's 12 `--alone` and four `--serial` controls all matched, and its four-stream cell on
+the same build measured 224.2 tok/s (repetitions 222.4, 224.3, 224.2).
 
 DFlash2 is 2.63× plain on dedicated one-stream servers and 1.32× plain in four-stream aggregate throughput, the fastest
 mode at both. MTP and DFlash2 do not combine (see **Run**), so there is no joint row.
@@ -91,7 +92,7 @@ For dedicated one-stream cells use `--parallel 1`, `--levels 1`, and omit `--alo
 For the plain four-capacity run, omit `--serial` as well (its solo controls already use plain decoding).
 The benchmark client does not retain draft counters in its JSON: the
 [receipts](../receipts/ornith-122b-metal-mtp/README.md) keep each reply's `speculative` object in `*.raw.json`, and
-their `check.py` recomputes every row above, the acceptance counts and the lone MTP replies from them.
+their `check.py` recomputes every row above but MTP¹'s, the acceptance counts and the lone MTP replies from them.
 On the four-capacity servers, all 45 timed replies matched their solo token SHA-256 (15 per mode), and all eight
 drafted-mode solo controls matched `draft:false` (four per mode). No timed request failed or was unmeasured.
 Every timed 256-token `quicksort-raw` reply in every mode has the same token SHA-256 as the 12 November build's.
@@ -172,11 +173,11 @@ steps, so its cache's next write starts at the kept end; prompt chunks step it t
 layer's cache follows every one of its rows from the prompt's start: a resumed or restored prompt drafts nothing.
 `zig build test-qwen27-mtp-lanes` (the same two variables) checks that drafted replies are plain decoding's tokens four
 streams at once, each drafting and accepting in shared rounds, then three drafting beside a plain one, and then alone
-in a reused slot, where the reply keeps 47 of 48 drafts over 96 tokens.
+in a reused slot, where the reply keeps 47 of 48 drafts over 96 tokens. Last, three `quicksort-raw` requests in turn
+on one engine, as a served slot takes them, must each draft in at least 90% of their rounds (each drafts all 74,
+keeping 54); when a whole-kept round's landing went uncounted, the first drafted in 20 of 113.
 
 ## Not covered
 
 - Resumed or restored MTP prompts, which draft nothing (see **MTP layer**).
-- Sustained one-stream MTP: a lone stream stops drafting after a server's first requests (see **Speed**); its speed,
-  TTFT and acceptance wait for that engine fix.
 - Images, sampled replies and prompts longer than the bench's (under 50 tokens) were not measured here.

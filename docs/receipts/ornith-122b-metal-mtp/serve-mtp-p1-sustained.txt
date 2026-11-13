@@ -1,0 +1,4 @@
+[tensorfold] done cmpl-8bcef7fa8b071e67e8052acab3161c88 prompt=16 cached=0 thinking=False effort=none tokens=16 sha=d063b31a8e16 finish=length rounds=9 accepted=6/9 ttft=0.080 decode=0.188 elapsed=0.268 queued=0.000 tok/s=79.9
+[tensorfold] done cmpl-e2300f8a377cec5587c198a5dcaeae4e prompt=16 cached=0 thinking=False effort=none tokens=256 sha=d3b522617a84 finish=length rounds=145 accepted=110/145 ttft=0.040 decode=2.171 elapsed=2.211 queued=0.000 tok/s=117.4
+[tensorfold] done cmpl-fa906200c23c7429262a6b737001b718 prompt=16 cached=0 thinking=False effort=none tokens=256 sha=d3b522617a84 finish=length rounds=145 accepted=110/145 ttft=0.037 decode=2.175 elapsed=2.212 queued=0.000 tok/s=117.2
+[tensorfold] done cmpl-9091e838a41316b48c45548923e67aa0 prompt=16 cached=0 thinking=False effort=none tokens=256 sha=d3b522617a84 finish=length rounds=145 accepted=110/145 ttft=0.037 decode=2.170 elapsed=2.207 queued=0.000 tok/s=117.5
