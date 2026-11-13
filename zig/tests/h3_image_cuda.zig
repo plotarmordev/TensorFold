@@ -108,20 +108,18 @@ pub fn main(init: std.process.Init) !void {
     const tables = try a.alloc(f32, model.blocks.len * block_table);
     var name: [128]u8 = undefined;
     for (0..model.blocks.len) |i| {
-        try rows.modulation(f32, embed, try ck.floats(a, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.weight", .{i})), try ck.floats(a, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.bias", .{i})), tables[i * block_table ..], times, k, schedule.modalities, 6, hidden);
+        try rows.modulation(f32, embed, try ck.floats(a, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.weight", .{i})), try ck.floats(a, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.bias", .{i})), tables[i * block_table ..][0..block_table], times, k, schedule.modalities, 6, hidden);
     }
     const final = try a.alloc(u16, times * 2 * hidden);
     try rows.modulation(u16, embed, try ck.floats(a, "final_layer.adaln_proj.linear.weight"), try ck.floats(a, "final_layer.adaln_proj.linear.bias"), final, times, k, 1, 1, 2 * hidden);
     const final_norm = values(u16, try ck.at("final_layer.norm.weight", .bf16, hidden));
 
-    // the step heads: one a step (a picture's distilled heads) or one shared, and the rows' projections
+    // the step heads: the picture's distilled heads, one a step, in model_index.json's heads file
     const width = picture.row_width;
-    const out_entry = ck.entry("video_out.weight") orelse return error.MissingTensor;
-    const head_count: usize = if (out_entry.rank == 3) out_entry.shape[0] else 1;
-    if (head_count != 1 and head_count != steps) return error.BadTensor;
-    const w_out = try ck.floats(a, "video_out.weight");
-    const b_out = try ck.floats(a, "video_out.bias");
-    if (w_out.len != head_count * width * hidden or b_out.len != head_count * width) return error.BadTensor;
+    var heads = try h3.checkpoint.Checkpoint.open(try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ args[1], heads_name }, 0));
+    defer heads.deinit();
+    const w_out = values(f32, try heads.at("video_out.weight", .f32, steps * width * hidden));
+    const b_out = values(f32, try heads.at("video_out.bias", .f32, steps * width));
     const w_in = try ck.floats(a, "video_patch_proj.weight");
     const b_in = try ck.floats(a, "video_patch_proj.bias");
 
@@ -168,9 +166,8 @@ pub fn main(init: std.process.Init) !void {
         in.line = @intFromPtr(adaln[s * count ..].ptr);
         _ = try h3.host.forwardHost(model, &in);
         // the final norm over every row, then this step's head over the target's rows
-        rows.finalNorm(x, final_norm, final, line_of[s * count ..], normed, hidden, h3.eps);
-        const at = try h3image.geometry.headOffsets(head_count, s, steps, width, hidden);
-        rows.rowsOut(normed, w_out[at[0] / 4 ..], b_out[at[1] / 4 ..], velocity, text + held, target, hidden, width);
+        rows.finalNorm(x, final_norm, final, line_of[s * count ..][0..count], normed, hidden, h3.eps);
+        rows.rowsOut(normed, w_out[s * width * hidden ..][0 .. width * hidden], b_out[s * width ..][0..width], velocity, text + held, target, hidden, width);
         picture.euler(video, velocity, pdd.deltas[s]);
         std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - step });
     }
