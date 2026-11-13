@@ -35,6 +35,7 @@ pub fn main(init: std.process.Init) !void {
     const latent = try a.alloc(f32, n);
     @memcpy(std.mem.sliceAsBytes(latent), bytes);
     const c = try dec.config(init.io, a, args[1]);
+    try vae.denormalize(&c, latent);
     var d = try dec.Decoder.init(init.gpa, vae.layers);
     defer d.deinit();
     const loading = std.Io.Clock.awake.now(init.io);
