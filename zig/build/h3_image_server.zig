@@ -6,6 +6,8 @@ pub fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
     const st = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = target, .optimize = optimize });
     // core's picture files have one owner: the PNG writer, which the prompt path's Qwen copy reads them through
     const writer = b.createModule(.{ .root_source_file = b.path("zig/src/picture_writer.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    // one fixture module for the image module's prompt case writer and the tool's edit entries
+    const fixture = b.createModule(.{ .root_source_file = b.path("zig/src/core/checkpoint_fixture.zig"), .target = target, .optimize = optimize });
     // one module over the transformer, prompt path and decoder: they share source files
     const image = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/image.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{
         .{ .name = "metal", .module = metal },
@@ -15,7 +17,9 @@ pub fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
         .{ .name = "h3_prompt_kernels", .module = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/prompt_kernels.zig") }) },
         .{ .name = "h3_image_decoder_kernels", .module = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/image_decoder.zig") }) },
         .{ .name = "qwen_vl_rope", .module = prompt.rope(b, target) },
+        .{ .name = "checkpoint_fixture", .module = fixture },
         .{ .name = "picture", .module = writer },
+        .{ .name = "picture_writer", .module = writer },
         .{ .name = "gpu_turn", .module = b.createModule(.{ .root_source_file = b.path("zig/src/server/gpu_turn.zig"), .target = target, .optimize = optimize }) },
     } });
     const exe = b.addExecutable(.{ .name = "tf-h3-image-server", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_server.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{
@@ -25,7 +29,7 @@ pub fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
         .{ .name = "h3_image_decoder", .module = image },
         .{ .name = "safetensors", .module = st },
         .{ .name = "tokenizer", .module = b.createModule(.{ .root_source_file = b.path("zig/src/core/tokenizer/tokenizer.zig"), .target = target, .optimize = optimize, .link_libc = true }) },
-        .{ .name = "checkpoint_fixture", .module = b.createModule(.{ .root_source_file = b.path("zig/src/core/checkpoint_fixture.zig"), .target = target, .optimize = optimize }) },
+        .{ .name = "checkpoint_fixture", .module = fixture },
         .{ .name = "moss_noise", .module = b.createModule(.{ .root_source_file = b.path("zig/src/families/moss_image/noise.zig"), .target = target, .optimize = optimize }) },
         .{ .name = "picture_writer", .module = writer },
     } }) });

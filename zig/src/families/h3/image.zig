@@ -16,9 +16,11 @@ pub const rules = prompt.rules;
 pub const tensors = prompt.tensors;
 pub const weights = prompt.weights;
 pub const reference = prompt.reference;
+pub const case = prompt.case;
 pub const Runner = prompt.Runner;
 pub const Vision = prompt.Vision;
 
 pub const Decoder = decoder.Decoder;
 pub const host = decoder.host;
 pub const vae = decoder.vae;
+pub const host_decoder = decoder.host_decoder;
