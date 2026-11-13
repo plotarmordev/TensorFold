@@ -104,8 +104,10 @@ Facts the proposals rest on, checked in the code here:
 - **Exact:** `cmp`-equal final latent and PNG at both sizes, five repeats, with the change off and on.
 - **Lossy:** against the default picture at the same seed, LPIPS median at most 0.05 and worst at most 0.15, PSNR
   median at least 33 dB, at most one more OCR exact-match miss among the 16 typography pictures, no new error in
-  object count or spatial relation, and the final latent's cosine at least 0.99. Every check runs on free-running
-  six-step pictures; per-block or teacher-forced checks may stop a setting early but never pass one.
+  object count or spatial relation, and the final latent's cosine at least 0.99, all on free-running six-step
+  pictures. In addition, teacher-forced velocity cosine at least 0.999 at all six original heads, each head fed its
+  own sigma's input from the default trajectory. Both halves are required; neither replaces the other, and a
+  per-block check may stop a setting early but never passes one.
 
 ## Proposals, ranked
 
@@ -136,8 +138,11 @@ the decoder's tiles finish (outside).
   scanlines into one chunk per core; each worker hashes the 32 KiB before its chunk without emitting tokens, then
   parses speculatively. A join keeps worker k's tokens from the first position where worker k-1's true parse and
   worker k's both start a token; a chunk that never joins falls back to the serial parse. Blocks are cut every
-  32,768 tokens as the serial writer does, encoded in parallel and concatenated by a prefix sum of bit offsets;
-  Adler-32 is combined across chunks. Bands start as the decoder places each tile row.
+  32,768 tokens as the serial writer does and encoded in parallel, each from its true starting bit offset: Zig
+  0.17's compressor uses that offset to choose stored against Huffman blocks and to pad stored blocks, so offsets
+  come from a prefix sum of the earlier blocks' exact bit lengths before any block is finalised, and the fuzz test's
+  byte equality catches a wrong one. Adler-32 is combined across chunks. Bands start as the decoder places each tile
+  row.
 - **Beyond what exists.** The Metal recipe turns down parallel PNG bands because they change compressed bytes; this
   reproduces the existing bytes. Card 40 and h3-image-mlx work on the decoder's GPU tiles, not the host tail.
 - **New evidence against the rejection.** The matcher's state is a function of the input window, so the speculative
@@ -183,7 +188,7 @@ keeps.
   byte-identical.
 - **Speed gate.** Six steps at most 6.9 s at 2048 and 42 s at 4096 (card 34's / 1.6 and / 1.4), and the warm 2048
   picture at most 8.4 s (card 51's 12.70 s / 1.5), mask bookkeeping and forecasts counted.
-- **Quality guard.** Lossy, on free-running pictures only.
+- **Quality guard.** The complete lossy guard: free-running pictures and all six heads teacher-forced, per mask.
 - **Risks.** A distilled model may need every block at every step; the diagnostic stops the card in a day. Small text
   and fine texture go first.
 
@@ -230,7 +235,8 @@ architecture adds centring the keys first.
 - **A/B.** The precondition first: int8 `matmul2d` at the kernel's tiles at least 1.7x bf16's rate on this M5 Ultra.
   Then per-block attention output relative error on dumped activations, and the shared protocol at 4096.
 - **Speed gate.** A 4096 step at most 8.6 s (QK only) or 7.9 s (QK and PV), against 9.80-9.86.
-- **Quality guard.** Lossy, plus per-block attention output relative error at most 1e-2 as an early stop.
+- **Quality guard.** The complete lossy guard: free-running pictures and all six heads teacher-forced; per-block
+  attention output relative error at most 1e-2 only as an early stop.
 
 ### 5. `gemm-schedule`: H3-shaped product schedules, same sums
 
@@ -332,7 +338,8 @@ negative if it fails.
   an all-keep mask, the final latent is byte-identical.
 - On the shared corpus on this M5 Ultra: six steps at most 6.9 s at 2048 and 42 s at 4096, warm 2048 picture at
   most 8.4 s in the resident server; a table per mask and size in the recipe.
-- The complete lossy guard on free-running pictures, alone and stacked with card 1.
+- The complete lossy guard, alone and stacked with card 1: free-running pictures, and teacher-forced velocity cosine
+  at least 0.999 at all six original heads, each fed its own sigma's input from the default trajectory.
 
 **3. MiniMax-H3-Image: one reader for every stage's weights, in compute order** (`one-read`)
 
@@ -351,8 +358,10 @@ negative if it fails.
   M5 Ultra, with the bf16 peak recorded for round 2; else close.
 - `tf-h3-image attention=int8` with centred keys, from 8,192 rows up; without it, the final latent is
   byte-identical.
-- A 4096 step at most 8.6 s (QK) or 7.9 s (QK and PV); per-block attention output relative error at most 1e-2; the
-  complete lossy guard at 4096, alone and stacked with card 2.
+- A 4096 step at most 8.6 s (QK) or 7.9 s (QK and PV); per-block attention output relative error at most 1e-2 as an
+  early stop; the complete lossy guard at 4096, alone and stacked with card 2: free-running pictures, and
+  teacher-forced velocity cosine at least 0.999 at all six original heads, each fed its own sigma's input from the
+  default trajectory.
 
 ## What round 2 starts from
 
