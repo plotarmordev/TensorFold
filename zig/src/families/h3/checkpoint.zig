@@ -57,8 +57,12 @@ pub const Checkpoint = struct {
     }
 
     pub fn deinit(self: *Checkpoint) void {
+        self.deinitWith(c);
+    }
+
+    fn deinitWith(self: *Checkpoint, comptime Ops: type) void {
         self.arena.deinit();
-        _ = c.munmap(@ptrCast(@constCast(self.bytes.ptr)), self.bytes.len);
+        _ = Ops.munmap(@ptrCast(@constCast(self.bytes.ptr)), self.bytes.len);
     }
 
     /// The tensor `name` of `dtype` and `count` values: its bytes as stored.
@@ -67,7 +71,8 @@ pub const Checkpoint = struct {
             report.say("no tensor {s}", .{name});
             return error.MissingTensor;
         };
-        if (e.dtype != dtype or e.end - e.begin != count * dtype.size()) {
+        const size = std.math.mul(usize, count, dtype.size()) catch return error.BadTensor;
+        if (e.dtype != dtype or e.end - e.begin != size) {
             report.say("tensor {s}: unexpected type or size", .{name});
             return error.BadTensor;
         }
@@ -113,16 +118,23 @@ pub fn blockCount(a: std.mem.Allocator, header: []const u8) !?usize {
     defer parsed.deinit();
     if (parsed.value != .object) return error.BadBlocks;
     const obj = parsed.value.object;
-    var last: ?usize = null;
+    var count: ?usize = null;
     for (obj.keys()) |key| {
         if (!std.mem.startsWith(u8, key, "blocks.")) continue;
         const rest = key[7..];
         const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return error.BadBlocks;
         const id = std.fmt.parseInt(usize, rest[0..dot], 10) catch return error.BadBlocks;
         if (dot == 0 or (dot > 1 and rest[0] == '0')) return error.BadBlocks;
-        last = @max(last orelse 0, id);
+        count = @max(count orelse 0, std.math.add(usize, id, 1) catch return error.BadBlocks);
     }
-    return if (last) |n| n + 1 else null;
+    return count;
+}
+
+/// `fmt` of `args` as a C path in `buf`, its terminator inside the buffer.
+fn cPath(buf: *[1024]u8, comptime fmt: []const u8, args: anytype) ![*:0]const u8 {
+    const text = std.fmt.bufPrint(buf[0 .. buf.len - 1], fmt, args) catch return error.NameTooLong;
+    buf[text.len] = 0;
+    return @ptrCast(text.ptr);
 }
 
 /// A checkpoint in shards, each mapped once; a tensor is found in whichever holds it.
@@ -140,17 +152,14 @@ pub const Shards = struct {
             for (files[0..made]) |*file| file.deinit();
             gpa.free(files);
         }
+        const shard = "{s}/{s}-{d:0>5}-of-{d:0>5}.safetensors";
         var path: [1024]u8 = undefined;
         var stem: []const u8 = "model";
         for (files, 1..) |*file, i| {
-            const text = try std.fmt.bufPrint(&path, "{s}/{s}-{d:0>5}-of-{d:0>5}.safetensors", .{ dir, stem, i, count });
-            path[text.len] = 0;
-            file.* = Checkpoint.open(@ptrCast(text.ptr)) catch |err| first: {
+            file.* = Checkpoint.open(try cPath(&path, shard, .{ dir, stem, i, count })) catch |err| first: {
                 if (i > 1 or std.mem.eql(u8, stem, "diffusion_pytorch_model")) return err;
                 stem = "diffusion_pytorch_model";
-                const again = try std.fmt.bufPrint(&path, "{s}/{s}-{d:0>5}-of-{d:0>5}.safetensors", .{ dir, stem, i, count });
-                path[again.len] = 0;
-                break :first try Checkpoint.open(@ptrCast(again.ptr));
+                break :first try Checkpoint.open(try cPath(&path, shard, .{ dir, stem, i, count }));
             };
             made += 1;
         }
@@ -199,6 +208,34 @@ pub const Shards = struct {
         return last orelse error.BadBlocks;
     }
 };
+
+/// A checkpoint folder whose shards are mapped on first use, each once, until `deinit`.
+pub const Folder = FolderWith(c);
+
+fn FolderWith(comptime Ops: type) type {
+    return struct {
+        const Self = @This();
+
+        dir: []const u8,
+        /// Shard file name to its mapping; the names outlive the folder.
+        files: std.StringArrayHashMapUnmanaged(Checkpoint) = .empty,
+
+        /// The shard `file`, mapped on its first call; a failed open leaves nothing behind.
+        pub fn shard(self: *Self, gpa: std.mem.Allocator, file: []const u8) !*Checkpoint {
+            const gop = try self.files.getOrPut(gpa, file);
+            if (gop.found_existing) return gop.value_ptr;
+            errdefer self.files.swapRemoveAt(gop.index);
+            var path: [1024]u8 = undefined;
+            gop.value_ptr.* = try Checkpoint.openWith(try cPath(&path, "{s}/{s}", .{ self.dir, file }), Ops);
+            return gop.value_ptr;
+        }
+
+        pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
+            for (self.files.values()) |*file| file.deinitWith(Ops);
+            self.files.deinit(gpa);
+        }
+    };
+}
 
 /// core's index of `header`, for the tests.
 fn indexOf(a: std.mem.Allocator, header: []const u8, data_len: usize) !st.Header {
@@ -330,4 +367,50 @@ test "shard headers with no blocks, a gapped id and a bad id" {
     try std.testing.expectEqual(@as(?usize, 10), try blockCount(a, "{\"blocks.9.a\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}"));
     try std.testing.expectError(error.BadBlocks, blockCount(a, "{\"blocks.01.a\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]},\"blocks.1.a\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}"));
     try std.testing.expectError(error.BadShardIndex, Shards.open(a, "x", 0));
+}
+
+test "a count-checked fetch refuses a tensor shorter than asked, another dtype and a size that overflows" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var bytes: [8]u8 = @splat(0);
+    const header = "{\"w\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[0,8]}}";
+    const ck: Checkpoint = .{ .bytes = &bytes, .data = 0, .header = header, .names = try indexOf(arena.allocator(), header, 8), .arena = .init(std.testing.allocator) };
+    try std.testing.expectEqual(@as(usize, 8), (try ck.at("w", .f32, 2)).len);
+    try std.testing.expectError(error.BadTensor, ck.at("w", .f32, 3));
+    try std.testing.expectError(error.BadTensor, ck.at("w", .bf16, 4));
+    try std.testing.expectError(error.BadTensor, ck.at("w", .f32, std.math.maxInt(usize) / 2 + 3));
+    try std.testing.expectError(error.BadBlocks, blockCount(arena.allocator(), "{\"blocks.18446744073709551615.a\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}"));
+}
+
+test "h3 ownership: a folder maps a shard once, retries a failed open and unmaps what it mapped" {
+    const Count = struct {
+        var maps: usize = 0;
+        var unmaps: usize = 0;
+        const open = c.open;
+        const close = c.close;
+        const lseek = c.lseek;
+        fn mmap(addr: ?*anyopaque, len: usize, prot: c_int, flags: c_int, fd: c_int, offset: i64) ?*anyopaque {
+            maps += 1;
+            return c.mmap(addr, len, prot, flags, fd, offset);
+        }
+        fn munmap(addr: ?*anyopaque, len: usize) c_int {
+            unmaps += 1;
+            return c.munmap(addr, len);
+        }
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir);
+    var folder: FolderWith(Count) = .{ .dir = dir };
+    try std.testing.expectError(error.CannotOpen, folder.shard(std.testing.allocator, "a.safetensors"));
+    try std.testing.expectEqual(@as(usize, 0), folder.files.count());
+    const file = try safetensors(std.testing.allocator, "{\"w\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}", &.{ 0, 63 });
+    defer std.testing.allocator.free(file);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a.safetensors", .data = file });
+    const first = try folder.shard(std.testing.allocator, "a.safetensors");
+    try std.testing.expectEqual(first, try folder.shard(std.testing.allocator, "a.safetensors"));
+    try std.testing.expectEqual(@as(usize, 1), Count.maps);
+    folder.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), Count.unmaps);
 }

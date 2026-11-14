@@ -116,10 +116,9 @@ fn value(pair: []const u8) f32 {
 /// first use. The shards stay mapped; a caller converts the tensors it needs and frees those.
 const Shards = struct {
     gpa: std.mem.Allocator,
-    dir: []const u8,
     /// Tensor name to shard file, both in the caller's arena.
     where: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
-    files: std.StringArrayHashMapUnmanaged(ck.Checkpoint) = .empty,
+    folder: ck.Folder,
 
     fn open(io: std.Io, a: std.mem.Allocator, gpa: std.mem.Allocator, dir: []const u8) !Shards {
         const text = try read(io, a, &.{ dir, "model.safetensors.index.json" });
@@ -127,8 +126,7 @@ const Shards = struct {
         if (doc != .object) return error.H3BadShardIndex;
         const map = doc.object.get("weight_map") orelse return error.H3BadShardIndex;
         if (map != .object or map.object.count() == 0) return error.H3BadShardIndex;
-        var s: Shards = .{ .gpa = gpa, .dir = try a.dupe(u8, dir) };
-        errdefer s.files.deinit(gpa);
+        var s: Shards = .{ .gpa = gpa, .folder = .{ .dir = try a.dupe(u8, dir) } };
         var it = map.object.iterator();
         while (it.next()) |e| {
             if (e.value_ptr.* != .string or std.mem.indexOf(u8, e.value_ptr.string, "/") != null) return error.H3BadShardIndex;
@@ -138,24 +136,16 @@ const Shards = struct {
     }
 
     fn deinit(s: *Shards, gpa: std.mem.Allocator) void {
-        for (s.files.values()) |*f| f.deinit();
-        s.files.deinit(gpa);
+        s.folder.deinit(gpa);
     }
 
-    /// The shard holding `name`, mapped once.
+    /// The shard holding `name`.
     fn shard(s: *Shards, name: []const u8) !*ck.Checkpoint {
         const file = s.where.get(name) orelse {
             std.debug.print("no tensor {s}\n", .{name});
             return error.MissingTensor;
         };
-        const gop = try s.files.getOrPut(s.gpa, file);
-        if (gop.found_existing) return gop.value_ptr;
-        errdefer s.files.swapRemoveAt(gop.index);
-        var path: [1024]u8 = undefined;
-        const text = std.fmt.bufPrint(path[0 .. path.len - 1], "{s}/{s}", .{ s.dir, file }) catch return error.NameTooLong;
-        path[text.len] = 0;
-        gop.value_ptr.* = try ck.Checkpoint.open(@ptrCast(&path));
-        return gop.value_ptr;
+        return s.folder.shard(s.gpa, file);
     }
 
     /// The bf16 tensor `name` at `shape` (columns 0: a vector of `rows` values).
