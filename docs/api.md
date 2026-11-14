@@ -391,19 +391,36 @@ delete runs gets 503, an id that is not a number 400, and an id the graph does n
 `modalities` must be absent or `["text"]`, and a truthy top-level `image`, `images`, `image_url`, `input_image`,
 `audio`, `input_audio`, `video` or `video_url` key is refused: this server accepts and produces text only.
 
-The native CUDA engine (Nemotron 3.5 Lightning) supports `logprobs: true` and `top_logprobs` from 0 through 20 on
-`/v1/chat/completions`, streamed or not, without tools, stop strings, structured output or a thinking budget. Each
-reply token has its `token`, `logprob`, `bytes` and requested `top_logprobs` in `choices[0].logprobs.content`; a
-stream sends each row with the chunk whose `delta.content` completes that token's text, so the rows joined over the
-chunks are the whole reply's. Probabilities describe the raw target-model distribution at temperature 1, before
-temperature, top-k or top-p sampling filters, including when generation is greedy, and are the same with drafts on or
-`"draft": false`. With thinking on, the rows cover the answer only, as `content` does: none for the reasoning,
-`</think>` or the newlines after it, so the first row is the answer's first token, and a reply cut inside its
-reasoning has none. Alternatives are tokenizer tokens and may include leading spaces; `bytes` preserves partial UTF-8
-sequences. `/v1/completions` takes the legacy `logprobs`, an integer from 0 through 20 alternatives, and answers in
-the legacy form, streamed or not: `tokens`, `token_logprobs`, `top_logprobs` (each alternative's text to its logprob)
-and `text_offset` (each token's first character in the completion, counting each token's own text). Other engines,
-the Responses route and the request modes above return HTTP 400 when probabilities are requested.
+Engines that advertise `capabilities.logprobs` and give each token's exact bytes accept `logprobs: true` and
+`top_logprobs` from 0 through 20 on `/v1/chat/completions`, streamed or not, with tools, stop strings, structured
+output, reasoning and a thinking budget. Asking for them changes nothing else: the prompt, the sampled tokens and the
+text are the same with them on or off. Probabilities describe the raw target-model distribution at temperature 1,
+before temperature, top-k or top-p sampling filters, including when generation is greedy, and are the same with drafts
+on or `"draft": false`. Alternatives are tokenizer tokens and may include leading spaces; `bytes` preserves partial
+UTF-8 sequences.
+
+`choices[0].logprobs.content` has an entry for each token of the reply's `content` (`token`, `logprob`, `bytes` and
+the requested `top_logprobs`), and the entries' `bytes` joined spell `content`. With thinking on, the reasoning's
+tokens are in `logprobs.reasoning_content`; with tools, each call has an `{index, content}` group in
+`logprobs.tool_calls` with the entries of the markup the model wrote for it (not the arguments JSON the reply returns;
+a closer the server adds to a cut call has none). Thinking markers, the whitespace the text drops, a stop string and
+the text after it have no entries. A token the text shows only part of, such as one a stop string ends inside, shows
+the kept bytes in `token` and `bytes` and its id in `token_id`, with its own `logprob` and alternatives.
+
+A stream sends each entry with the chunk whose text completes that token, reasoning entries before the answer's first
+text; with tools offered, the entries come in one chunk before the finishing one, once the calls are parsed. The
+entries joined over the chunks are the whole reply's. `/v1/completions` takes the legacy `logprobs`, an integer from 0
+through 20 alternatives, and answers in the legacy form, streamed or not: `tokens`, `token_logprobs`, `top_logprobs`
+(each alternative's text to its logprob) and `text_offset` (each token's first character in the completion, counting
+each token's own text). Other engines return HTTP 400 when probabilities are requested.
+
+The Responses API gives the same entries for `top_logprobs` (0 through 20) or the `include` name
+`message.output_text.logprobs`: in each `output_text` part's `logprobs`, and as extensions in `reasoning_text` parts
+and `function_call` items. A stream sends them in the `response.output_text.delta` and
+`response.reasoning_text.delta` events; with tools offered they come once the calls are parsed, as deltas with empty
+text, and each item's done events wait for them. `include` alone on an engine without logprobs answers without them;
+`top_logprobs` there returns HTTP 400.
+
 Nonstreamed `/v1/completions` also takes vLLM's `prompt_logprobs`, an integer from 0 through 20, on the same engine
 and on GLM-5.3-Flash's CUDA engine.
 `choices[0].prompt_logprobs` has one entry per prompt token: `null` for the first, then an object keyed by token id
@@ -557,8 +574,8 @@ remain strings for the client to validate. Union types and schema references are
 A reply that is not a call returns as content, never an error: prose, JSON that names no offered tool
 (a structured answer), and malformed tool blocks, which keep their text. A GLM argument key written without its
 `<arg_key>` gets that tag back, and the call parses. A well-formed call to a tool the
-request did not offer is returned as a tool call under its valid name, so the client can report the unknown
-tool and the model can correct itself.
+request did not offer is kept as text too, under the name the model wrote, so the client sees the markup it can
+report and the model can correct itself.
 
 When a model end token arrives inside a whole tool call before its closing markup, the server closes the
 markup and returns the call. A GLM value the end token cut off is closed with `</arg_value>` first, and the call
@@ -674,7 +691,7 @@ thinking on they start after the think end.
 
 HTTP 400 comes before any token for a malformed field, a grammar xgrammar cannot compile (with xgrammar's reason), a
 server without xgrammar (with the install command; on the native server, a server that cannot load `libtfgrammar`),
-a grammar sent with `tool_choice: "required"` or a named function, and `logprobs` with a grammar or tools. A reply whose
+a grammar sent with `tool_choice: "required"` or a named function. A reply whose
 grammar fails while decoding ends with HTTP 500 (an error event when streaming); the other requests go on.
 
 ## Reasoning
@@ -893,6 +910,10 @@ Native JSON replies also carry a `tensorfold` runtime block with `engine`, `enab
 `prefill_widths`, `prefill_raised`, `sampling`, `drafts`, `token_sha`, and a `speculative` object beside
 the block with the draft counters `rounds`, `drafted`, `accepted`, `acceptance_rate`, and
 `tokens_per_round` (the drafter's own counters arrive as `proposer`).
+When a reply keeps tool-call envelopes as text instead of returning them as calls, the block also carries
+`kept_tool_calls`: `unoffered` and `malformed` counts, and `unoffered_names`, the names the model wrote for the
+kept unoffered calls, in order, without duplicates, at most 8 names of 64 bytes each. The whole reply and the
+streamed finish event carry the same object; a reply that kept none has no `kept_tool_calls` field.
 A request that sends `return_token_ids` adds `token_ids`, the reply's tokens, to the block — the tokens `token_sha` and
 `token_sha256` hash — on the whole reply and on the streamed finish event alike. A loop-guarded reply adds
 `runtime.loop.period`, and `runtime.loop.stopped` when `--loop-guard-stop` ended it; these fields describe the native
@@ -950,7 +971,8 @@ out of the text rather than reported at a permanent zero.
 The scrape carries `requests_running`, `requests_waiting`, `prompt_tokens_total`, `generation_tokens_total`,
 `generation_tokens_running`, `kv_cache_usage_ratio` (one `pool` label per live stream cache), `mtp_drafted_total` and `mtp_accepted_total`
 (draft tokens verified and kept on finished requests; the engines keep one draft counter, so copies and chain
-drafts share it), `request_latency_seconds`, `time_to_first_token_seconds` and `request_decode_seconds` (each
+drafts share it), `kept_tool_calls_unoffered_total` and `kept_tool_calls_malformed_total` (tool-call envelopes kept as
+text on finished replies, by an unoffered name and by malformed markup), `request_latency_seconds`, `time_to_first_token_seconds` and `request_decode_seconds` (each
 finished request's decode time: the CUDA engine's own figure, or first token to end on the Mac server; its `_sum`
 over `generation_tokens_total` is the decode rate), `request_time_per_output_token_seconds`, `decode_rounds_total`,
 and the `request_prefill_seconds` histogram, all under the `tensorfold:` prefix. TPOT already carries vLLM's name.
@@ -1264,10 +1286,11 @@ prompt cache resumes the shared prefix as it does for chat. `store: false` keeps
 response.
 
 HTTP 400 refuses what this server does not run: built-in tools (web search, file search, computer use and the
-others), `background`, `conversation`, `prompt` templates, `context_management`, `truncation: "auto"`, `top_logprobs`, file IDs and
+others), `background`, `conversation`, `prompt` templates, `context_management`, `truncation: "auto"`, file IDs and
 remote file URLs (`input_file` parts with inline `file_data` run on a model started with `--vision --vision-pdf`),
 `item_reference` items, encrypted reasoning items, and a `previous_response_id` that is not stored.
-`include` takes a list of OpenAI's names, which the server accepts and ignores (it has nothing to add for them):
+`include` takes a list of OpenAI's names. `message.output_text.logprobs` asks for logprobs where the engine has them
+(see the chat section's logprobs); the server has nothing to add for the others:
 `code_interpreter_call.outputs`, `computer_call_output.output.image_url`, `file_search_call.results`,
 `message.input_image.image_url`, `message.output_text.logprobs`, `reasoning.encrypted_content`,
 `web_search_call.action.sources` and `web_search_call.results`. Any other name, or a value that is not a list of
