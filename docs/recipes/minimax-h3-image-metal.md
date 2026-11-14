@@ -291,6 +291,120 @@ card 34's `t2i-4096.latent.f32` and its rows the 12 November baseline (`b3726693
 encoder and decoder are too short at this spacing to catch a note; `test-h3-image-server` has speech arrive during
 each stage. The isolated server was stopped afterward; the live release server was not changed.
 
+### Large resident renders: live signal check, card 64
+
+The 14 November incident reported 17 consecutive 5472x3072 renders at about 85 seconds each and a voice-note
+deadline failure. An 85-second render is not one uninterruptible denoising pass: the resident server already submits
+individual transformer blocks, and the measured six steps below each took 11–12 seconds.
+
+A live speech deployment must publish the same lock as the renderer. Updating only `tf-h3-image-server` cannot make
+an uncoordinated speech process announce a request. Card 49's isolated-server receipts did not update the live
+release server. Before diagnosing GPU submission granularity, observe both the lock and its generation during an
+actual request to the endpoint used by the voice menu:
+
+- Attempt a nonblocking exclusive `flock` on `/tmp/tensorfold-speech.lock` from a separate process every 20 ms;
+  contention means speech holds it. Merely listing another user's open descriptors is not this check.
+- Compare `/tmp/tensorfold-speech.lock.stamp` before and after the request. The coordinated server writes it even
+  when acquiring the speech hold fails. Check cross-user access too: lock mode 0644, stamp mode 0666, length 16.
+- Measure first PCM bytes **and the complete audio response**, not just HTTP headers. A streamed HTTP 200 can
+  still miss a caller's deadline while delivering its body.
+
+On the M5 Ultra, 256 GiB, with Zig 0.17.0 and `ea6a16d2e35783aacf6a69af40758785b67171ef`, a two-request
+resident replay at 5472x3072, seed 2201, 183 prompt tokens completed in **76.08 and 85.58 seconds**. Both PNGs
+were written and the process exited zero. The live Drama endpoint returned HTTP 200 and first PCM at **18.856 s**,
+but completed its 618,496-byte response at **72.854 s**. The render was running throughout the voice request.
+Across 776 exclusive-lock probes, none found a speech hold; the stamp remained unchanged. The first render's
+six steps all reported zero wait and `timing_valid=true` despite overlapping speech. An idle voice probe likewise
+observed no hold or stamp change, with first PCM at 16.438 s and complete audio at 20.805 s.
+
+This establishes an absent live coordination signal, not the exact installed binary's revision. The endpoint
+advertised version 1.2.6; its executable could not be inspected with the test account's permissions. The shared
+files had the modes and length above. An old executable or a process-specific access/namespace restriction must
+be resolved by the deployment owner. `timing_valid=true` cannot detect a nonparticipating speech process.
+The required host/Metal test suite ran concurrently, so these are contention diagnostics, not clean throughput
+benchmarks or a replay of all 17 original requests. The live service was not restarted or changed.
+
+For a causal control only, the diagnostic client held a shared `flock` on the same file from immediately before
+sending the voice request until the complete body was read. The unchanged image executable then paused step 1
+for **6.84 seconds** and marked it invalid for timing. First PCM arrived in **1.804 s**, and the complete
+618,496-byte response in **7.473 s**, with the renderer still running. Both queued images completed (85.85 and
+89.54 s); `cmp` found both final latents and both PNGs byte-identical to the uncoordinated run. The executable
+was rebuilt from the commit above with `zig build tf-h3-image-server -Dcpu=apple_m1 -Doptimize=ReleaseFast`;
+its SHA-256 matched the measured executable. No arithmetic or scheduling change was needed for this control.
+
+Both requests used `model="fishaudio/drama-3"`, `stream=true`, `response_format="pcm"`, and this public input:
+“The little boat crossed the harbor before the sun came up, and the gulls were quiet over the water while the
+fishermen coiled their nets along the pier.” The client waited for the renderer's `drawn on` line before sending.
+The control's client-owned hold is **not** a production fix and does not demonstrate TOP-menu acceptance.
+That deployment prerequisite was subsequently repaired; the follow-up below measures the live publisher without
+a client-owned speech hold.
+
+### Repaired live publisher and TOP voice menu, 15 November 2026
+
+The render executable rebuilt from card 64's `206b911b5` has SHA-256
+`4f18020216e7be43b2aeb90e651d86875dfd1d4147fddc79bb2857c5df6eb3ad`, identical to the diagnostic executable above.
+No renderer arithmetic or scheduling change is needed: the missing component was the live speech publisher.
+An idle request with the public boat text above now returned HTTP 200, first PCM in **1.105 s**, and the complete
+618,496-byte body in **5.527 s**. Its generation changed and 46 of 47 nonblocking exclusive probes found a hold.
+
+The actual TOP-menu client sends one JSON object `{"text":"..."}` on stdin to `ssh top-menu voice`, and receives
+one base64-encoded M4A on stdout. This is a separate acceptance path from directly posting streamed PCM to the
+Mac's speech endpoint. Measure from before SSH starts until its complete output is received and decoded;
+require exit zero, valid audio and elapsed time below 20 seconds. Do not count early HTTP headers as success.
+The observer uses only immediately released, nonblocking exclusive probes; it never holds a shared speech lock.
+
+Five TOP-menu notes were sent after denoising step 2 of consecutive requests in the original 17-request replay.
+Each uses the public boat text above, with a 20-second outer subprocess timeout. Each started and ended while
+the same render was unfinished; every response decoded successfully with FFmpeg to mono 44.1 kHz AAC audio
+in an M4A container (55,620 bytes, 6.635 seconds of audio). No test suite ran during this replay.
+
+| Render in replay | Complete TOP reply | Contended / total lock probes | Generation changed |
+| --- | ---: | ---: | --- |
+| 7 | 9.397 s | 76 / 93 | yes |
+| 8 | 9.538 s | 86 / 99 | yes |
+| 9 | 9.774 s | 83 / 97 | yes |
+| 10 | 9.769 s | 85 / 97 | yes |
+| 11 | 9.676 s | 93 / 111 | yes |
+
+The same TOP request can be reproduced without any client-owned lock:
+
+```sh
+printf '%s\n' '{"text":"The little boat crossed the harbor before the sun came up, and the gulls were quiet over the water while the fishermen coiled their nets along the pier."}' |
+  ssh -o BatchMode=yes -o ConnectTimeout=10 top-menu voice
+```
+
+Decode the complete stdout from base64 and validate the audio. The SSH connect timeout is not a synthesis
+deadline: the measurement harness separately enforces 20 seconds for the entire subprocess. Lock observations
+and generation changes prove live synthesis occurred; the five deterministic audio files also have equal
+SHA-256 `3eccc55d2ed7fcae1e8772aa6d7f4c91a404779de8dc2c6accde3d63c3ce303d`.
+
+The original marketing 122 `r1/requests.txt` manifest contains **17 requests**, not 17 identical landscapes:
+eight 5472x3072, six 3072x5472 and three 4096x4096 images. The unchanged prompts, seeds and order were replayed
+through one resident process, with only output prefixes redirected into this worktree's `.zig-cache/card64/replay`.
+The six prompt groups were camel (2201, 3201), tractor (1302, 2302, 3302), dog (1204, 2204, 3204), pool
+(1308, 2308, 3308), ice-cream seller (1406, 2406, 3406) and orange (1205, 2205, 3205).
+
+All **17 renders completed**, process exit zero, in **1,592.514 s** including startup. Individual renders took
+74.45–111.49 s (median 92.33 s), including speech pauses. Every final latent and PNG matched its corresponding
+original output by SHA-256: **17/17 latent and 17/17 PNG matches**, including both canvas orientations and squares.
+The original camel/2201 latent hash was `70f97571c48288a58b61d99e2faa3cb6cd6946161e3437fc9bbdf3d84f5adf64`,
+and its PNG hash `99582ded969f0c78866ceeb64ad10d9d72b5b1ec74e3f97d53025c32e40a23c9`.
+The M5 Ultra's `ioreg` device and renderer utilization both sampled at 100% during the replay; this is a sample,
+not continuous utilization telemetry. The platform was macOS 27.0, 256 GiB, Zig 0.17.0, ReleaseFast/apple_m1.
+
+An additional direct streamed-PCM request was sent at the start of each render: **17/17 HTTP 200**, first PCM
+1.061–2.224 s, complete body 5.484–9.421 s, each with an observed speech hold and changed generation.
+The image logs recorded 183.28 s of denoising waits and excluded 25 of 102 steps with `timing_valid=false`.
+Those waits include the five timed TOP notes above and two exploratory TOP notes during request 6; they are not
+a speech-free throughput comparison. The renderer resumed without restarting or discarding an image.
+
+The local receipts are `.zig-cache/card64/replay/{render.log,voice.jsonl,result.json}` and
+`.zig-cache/card64/top-results.json`; the original manifest remains with marketing 122's run inputs.
+Before the workload, `nice -n 10 zig build test test-golden` exited zero in 89.66 s (322/335 golden cases equal,
+13 known differences, zero unexpected); `nice -n 10 zig build test-h3-image-server -Doptimize=ReleaseSafe`
+exited zero in 3.27 s. That regression retains card 49's mid-encoder, refiner, decoder and denoising waits and
+byte-identical output checks. The measured ReleaseFast executable rebuild also exited zero.
+
 ## Gates, fixed before any run
 
 These are the bounds `tf-h3-image` checks (`picture.gates`). It exits 1 when one fails, and 2 when the case holds no

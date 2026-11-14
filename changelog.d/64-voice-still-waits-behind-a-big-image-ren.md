@@ -1,0 +1,7 @@
+# Large resident renders: live voice coordination restored
+
+- Preserve the missing-publisher reproduction in `docs/recipes/minimax-h3-image-metal.md`: complete voice took 72.854 seconds with no speech hold or generation change; a diagnostic client-owned hold reduced it to 7.473 seconds without changing image bytes.
+- After the owner repaired the live speech deployment, replay marketing 122's original 17-request workload through the unchanged resident renderer. All 17 images completed; every latent and PNG matched the original output by SHA-256. No scheduler or arithmetic change was needed.
+- Five real TOP-menu notes during denoising completed in 9.397–9.774 seconds, below the 20-second bound, with valid M4A audio, observed speech holds and changed generations. No client-owned speech lock. Another 17 direct PCM requests all completed in 5.484–9.421 seconds.
+- Record exact workload, timings, hashes, invocation and local receipt locations in the recipe. Preserve card 49's stage-yield and output-parity regression coverage; scout research and independent acceptance review were used.
+- Verification passed: `nice -n 10 zig build test test-golden` (89.66 seconds; zero unexpected golden differences), `nice -n 10 zig build test-h3-image-server -Doptimize=ReleaseSafe` (3.27 seconds), ReleaseFast resident build, 17-render replay (exit zero, 1,592.514 seconds), and FFmpeg decoding of all five TOP responses.
