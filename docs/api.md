@@ -374,6 +374,7 @@ delete runs gets 503, an id that is not a number 400, and an id the graph does n
 | `seed` | Explicit sampling key; native fallback uses configured defaults, then a fresh key (see below) | Both |
 | `stream` | Server-sent events; the last event carries usage | Both |
 | `stream_options.include_usage` | Usage in its own final event with `"choices": []`, not on the finish event | Both |
+| `stream_options.tensorfold_token_stream_version` | Opt in to version 1's exact incremental token IDs and semantic anchors on chat or completions streams | Native |
 | `chat_template_kwargs.enable_thinking` | Template thinking toggle; explicit off returns HTTP 400 when a thinking tokenizer has neither a template switch nor a closable generation prefix; omitted switches keep working. `chat_template_kwargs.thinking` (`true`/`false` or `{"type": "enabled"}`/`{"type": "disabled"}`, as DeepSeek-V4 clients send it) is read the same way when `enable_thinking` is absent; other values are ignored | Both |
 | `thinking` | Top-level toggle, the same forms as `chat_template_kwargs.thinking`; read only when the kwargs set neither toggle, so the kwargs win. Enabling it clears a `reasoning_effort` of `none`, so the template's default effort applies | Both |
 | `draft` | False selects the serial reference; CUDA rejects it if the engine has no serial switch | Both |
@@ -448,6 +449,49 @@ completes the match. The GLM engine, and Flash Next and Nemotron on two ranks, d
 token or the reply limit; the server returns the reply only up to the match. Where a CUDA engine honors
 `ignore_eos`, end tokens inside the reply are decoded into its text, as on MLX, and `finish_reason` is `length`
 unless a stop string or a tool call ended the reply.
+
+### Exact incremental token IDs
+
+Native `/v1/chat/completions` and `/v1/completions` accept
+`"stream_options": {"tensorfold_token_stream_version": 1}` with `"stream": true`.
+`tensorfold-native capabilities --json` reports `"token_stream_versions": [1]` when this extension is available.
+The version must be the integer `1`; unknown versions and nonstreaming requests return HTTP 400 before generation.
+Cortheon's multi-round chat replies do not support version 1 and receive the same refusal.
+
+The opted-in stream interleaves ordinary OpenAI chunks with raw SSE data frames:
+
+```json
+{"object":"tensorfold.token.chunk","version":1,"id":"chatcmpl-...","model":"model","offset":0,"token_ids":[42,43]}
+```
+
+`offset` is the zero-based index of the first committed token in that batch. Batches are contiguous, nonempty and
+ordered. IDs come directly from the native engine and include committed reasoning, tool markup, stop-string and EOS
+tokens, even when those tokens produce no visible text. Rejected draft tokens and tokens after the server's stopping
+point are excluded. Raw frames precede the semantic deltas produced from their batch; UTF-8 characters can span
+several batches.
+
+Every ordinary chunk carries a `tensorfold_stream` object:
+
+```json
+{"version":1,"token_count":2,"token_id":43}
+```
+
+`token_count` is the total number of raw IDs committed so far, and `token_id` is the last of them, or `null` before
+any token is committed. These values anchor semantic output to a source position. Several content, reasoning or
+tool deltas may share one anchor; there is no one-to-one relationship between tokens and semantic chunks.
+
+When a chunk carries logprob entries, the metadata also carries `logprob_positions`, shaped like
+`choices[0].logprobs`: `content` and `reasoning_content` hold one zero-based raw position for each entry, in order,
+and `tool_calls` holds `{index, content}` groups. For legacy completions, `content` matches the parallel arrays in
+`choices[0].logprobs`. An entry the reply shows only part of shares its token's position with that token's other
+entries. Marker, dropped and EOS tokens have no entry, and repeated IDs still have distinct positions.
+
+Send `"return_token_ids": true` to receive the existing final `tensorfold.token_ids` array as an independent check
+against concatenated raw batches. The native final usage remains authoritative, including for an empty reply.
+The final usage and `[DONE]` events keep their usual forms, with `include_usage` honored when requested. Native SSE
+heartbeat comments keep an admitted but silent stream alive; they do not advance the token count. Closing the
+connection cancels the admitted generation and drains its engine request before releasing it. Requests without the
+version option retain their existing wire output.
 
 ### Replies that quote a template marker
 
@@ -718,9 +762,15 @@ and `minimal` as `low`. Qwen3.8 lists `low`, `medium` and `xhigh`, so `high` and
 the template's own default. An explicit `chat_template_kwargs.enable_thinking` takes
 precedence. A request without an effort gets `--reasoning-effort` when the server was started with one; otherwise
 the template renders its own default, as vLLM and mlx-lm render it (Qwen3.8's is `xhigh`, which adds an instruction
-to the system prompt; `medium` adds none). The template hears an effort only while thinking, and both backends render
-the same prompt for the same request. Effort support depends on the checkpoint's template, and effort does not set a
-token budget. With thinking off, native passes no reasoning effort to the template. If its generation prefix ends
+to the system prompt; `medium` adds none). Both backends render the same prompt for the same request.
+Effort support depends on the checkpoint's template, and effort does not set a
+token budget. With thinking off, native passes the template only an effort the request itself names (its
+`reasoning_effort`, other than `none`); `--reasoning-effort` never reaches a thinking-off prompt, and with no named
+effort it passes none, as before. So a GLM-5.3 request can send `reasoning_effort: "high"` beside
+`chat_template_kwargs.enable_thinking: false` (or `thinking: false`) to render `Reasoning Effort: High` instead of the
+template's Max head; Qwen3.8's template reads the effort only while thinking, so its thinking-off prompt is unchanged.
+The reply's `tensorfold.reasoning_effort` names the effort the template heard (`none` when it heard none).
+If the template's generation prefix ends
 in a single `<think>` token, native appends the single `</think>` token, leaving an empty think block. This handles
 GLM-5.3 and LFM2 templates without their own off switch. Other template text stays unchanged: GLM-5.3's
 `Reasoning Effort` head stays as the template writes it, and an older GLM-5.3 template still writes its default
@@ -1216,6 +1266,12 @@ are ignored. The separate `/memory` route also reports memory without resetting 
 context window, `context_length` and `max_model_len`, both that window. A model the engine reports as reasoning
 adds `reasoning`: `default_enabled`, `default_effort` when the template consumes `reasoning_effort`, and
 `supported_efforts`, the template's levels plus `none` when the template has a thinking switch.
+
+Every native entry ends with `input_types`, the content part types the model takes: `["text"]`, plus `"image"` when
+it was started with `--vision` (`image_url` parts), plus `"video"` when its checkpoint reads video and this server
+loads the `libtfvideo` runtime (`video_url` parts), for example `["text", "image", "video"]`. The server decides it
+once at startup, and requests are refused by the same fact: a `video_url` part to an entry without `"video"` gets
+HTTP 400 (`invalid_request_error`), never a 500. Without `libtfvideo` the startup log says so once.
 
 The Python 0.6.6 server's body differs: its MLX `memory` can add `budget`, `mlx_budget` and `footprint`, and its CUDA
 server sends the counters described under [Responses](#responses). For memory figures on a Mac, use

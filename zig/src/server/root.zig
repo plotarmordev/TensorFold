@@ -57,6 +57,7 @@ test {
     _ = @import("std_options.zig");
     _ = @import("fields.zig");
     _ = @import("reply_text.zig");
+    _ = @import("reply_incremental_test.zig");
     _ = @import("tool_parse.zig");
     _ = @import("tool_lfm2.zig");
     _ = @import("tool_lfm2_stream_test.zig");
@@ -78,6 +79,8 @@ test {
     _ = @import("cli_test.zig");
     _ = @import("cli_profile_test.zig");
     _ = @import("compact_at_cli_test.zig");
+    _ = @import("toml_flat_test.zig");
+    _ = @import("cli_config_test.zig");
     _ = @import("unix_socket_cli_test.zig");
     _ = @import("effort_cli_audit_test.zig");
     _ = @import("live.zig");
@@ -85,6 +88,7 @@ test {
     _ = @import("hub.zig");
     _ = @import("chunk_plan.zig");
     _ = @import("status_routes.zig");
+    _ = @import("models_input_types_test.zig");
     _ = @import("speech.zig");
     _ = @import("images_generations.zig");
     _ = @import("drama_cfg.zig");
@@ -162,6 +166,7 @@ test {
     _ = @import("cancel_ids.zig");
     _ = @import("cancel_route_test.zig");
     _ = @import("hf_eos_http_test.zig");
+    _ = @import("token_stream_test.zig");
     _ = @import("reply_gpu_seconds_test.zig");
     _ = @import("spark_wire.zig");
     _ = @import("spark_wire_test.zig");
@@ -303,4 +308,5 @@ test {
     _ = @import("ocr/run_test.zig");
     _ = @import("ocr/size_test.zig");
     _ = @import("ocr/prompt_ids_test.zig");
+    _ = @import("ollama_e2e_test.zig");
 }
