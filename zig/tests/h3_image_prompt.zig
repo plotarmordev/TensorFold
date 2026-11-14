@@ -68,13 +68,9 @@ pub fn main(init: std.process.Init) !u8 {
     return 0;
 }
 
-/// A text-to-image request: the size asked for, the seed and the smallest area drawn.
-pub const Request = struct { size: hp.picture.Size, seed: u64, min_area: u64 };
-
-pub fn size(text: []const u8) !hp.picture.Size {
-    const x = std.mem.indexOfScalar(u8, text, 'x') orelse return error.BadSize;
-    return .{ .width = try std.fmt.parseInt(usize, text[0..x], 10), .height = try std.fmt.parseInt(usize, text[x + 1 ..], 10) };
-}
+/// The request and its WIDTHxHEIGHT parser, moved to the host: the resident server reads them here.
+pub const Request = hp.case.Request;
+pub const size = hp.case.size;
 
 fn read(io: std.Io, a: std.mem.Allocator, parts: []const []const u8) ![]u8 {
     const path = try std.fs.path.join(a, parts);
@@ -144,29 +140,14 @@ pub const Encoder = struct {
         started = mtl.clock.seconds();
         try e.runner.refine(&e.front_w, rows, text);
         std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech\n", .{ mtl.clock.seconds() - started, e.runner.gpu, e.runner.paused });
-        const ids = try a.alloc(i32, T);
-        for (ids, p.ids) |*o, id| o.* = @intCast(id);
-        var entries: std.ArrayList(fixture.Entry) = .empty;
+        var extra: std.ArrayList(fixture.Entry) = .empty;
         if (request) |r| {
-            // the canvas and the seed's starting rows, ahead of the two-byte text so every tensor stays aligned
             const canvas = try hp.picture.canvas(r.size.width, r.size.height, r.min_area);
             const grid = try hp.picture.gridOf(canvas);
-            const start = try hp.picture.startRows(a, grid, r.seed, &torch_noise.randn);
-            const dims = try a.dupe(i32, &.{ @intCast(canvas.width), @intCast(canvas.height), @intCast(r.size.width), @intCast(r.size.height) });
-            try entries.appendSlice(a, &.{
-                .{ .name = "canvas", .dtype = "I32", .shape = &.{2}, .bytes = std.mem.sliceAsBytes(dims[0..2]) },
-                .{ .name = "requested", .dtype = "I32", .shape = &.{2}, .bytes = std.mem.sliceAsBytes(dims[2..4]) },
-                .{ .name = "noise", .dtype = "F32", .shape = try a.dupe(usize, &.{ start.len / hp.picture.row_width, hp.picture.row_width }), .bytes = std.mem.sliceAsBytes(start) },
-            });
             std.debug.print("{d}x{d} drawn on a {d}x{d} canvas ({d} x {d} cells), seed {d}\n", .{ r.size.width, r.size.height, canvas.width, canvas.height, grid.rows, grid.columns, r.seed });
-            try edit.anchors(io, a, options.anchors, &entries);
+            try edit.anchors(io, a, options.anchors, &extra);
         }
-        try entries.appendSlice(a, &.{
-            .{ .name = "text_tags", .dtype = "I32", .shape = &.{T}, .bytes = std.mem.sliceAsBytes(p.tags) },
-            .{ .name = "ids", .dtype = "I32", .shape = &.{T}, .bytes = std.mem.sliceAsBytes(ids) },
-            .{ .name = "text", .dtype = "BF16", .shape = &.{ T, e.front.hidden }, .bytes = std.mem.sliceAsBytes(text) },
-        });
-        return files.image(a, entries.items);
+        return hp.case.write(a, e.front.hidden, p, text, request, &torch_noise.randn, extra.items);
     }
 };
 

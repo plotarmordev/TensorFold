@@ -115,7 +115,9 @@ pub fn build(b: *std.Build) void {
     }
     @import("zig/build/h3_host.zig").tests(b, target, test_step);
     @import("zig/build/h3_image_prompt.zig").tests(b, target, test_step);
+    @import("zig/build/h3_image_prompt_host.zig").steps(b, target, optimize, test_step);
     @import("zig/build/h3_image_decoder.zig").compileHost(b, target);
+    @import("zig/build/h3_image_decoder.zig").hostSteps(b, target, optimize, test_step);
     @import("zig/build/h3_image_contract.zig").steps(b, target, optimize);
     @import("zig/build/h3_image_vision.zig").steps(b, target, optimize, test_step);
     @import("zig/build/ling_host.zig").tests(b, target, test_step);
@@ -176,6 +178,7 @@ pub fn build(b: *std.Build) void {
     // the backend options are declared for every target, so one build script may pass the same flags on every OS
     const cuda_options = @import("zig/build/options.zig").cuda(b);
     const tp_options = @import("zig/build/options.zig").tp(b);
+    @import("zig/build/h3_image_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
     switch (target.result.os.tag) {
         .macos => metalTargets(b, target, optimize, draft_ids, build_options, test_step),
         .linux, .windows => cuda_build.targets(b, target, optimize, draft_ids, build_options, cuda_options),

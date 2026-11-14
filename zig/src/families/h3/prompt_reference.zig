@@ -17,13 +17,26 @@ fn bf(v: anytype) f32 {
     return @floatCast(bf16_round.bf16(v));
 }
 
-/// y [M, N] = bf16(x [M, K] w [N, K]^T (+ b)).
-pub fn gemm(comptime S: type, x: []const f32, w: []const f32, b: ?[]const f32, y: []f32, M: usize, N: usize, K: usize) void {
-    for (0..M) |m| for (0..N) |n| {
-        var s: S = 0;
-        for (x[m * K ..][0..K], w[n * K ..][0..K]) |p, q| s += @as(S, p) * q;
-        y[m * N + n] = bf(if (b) |v| s + v[n] else s);
+/// y [M, N] = bf16(x [M, K] w [N, K]^T (+ b)), its columns shared over the CPU's cores: each element's sum still
+/// runs in order, so the bits do not depend on the thread count.
+pub fn gemm(comptime S: type, x: []const f32, w: []const f32, b: ?[]const f32, y: []f32, M: usize, N: usize, K: usize) !void {
+    const Job = struct {
+        fn run(xs: []const f32, ws: []const f32, bs: ?[]const f32, m: usize, n: usize, k: usize, ys: []f32, from: usize, to: usize) void {
+            for (0..m) |r| for (from..to) |c| {
+                var s: S = 0;
+                for (xs[r * k ..][0..k], ws[c * k ..][0..k]) |p, q| s += @as(S, p) * q;
+                ys[r * n + c] = bf(if (bs) |v| s + v[c] else s);
+            };
+        }
     };
+    var threads: [16]std.Thread = undefined;
+    const workers = @min(threads.len, std.Thread.getCpuCount() catch 1, N);
+    var made: usize = 0;
+    defer for (threads[0..made]) |t| t.join();
+    for (0..workers) |t| {
+        threads[t] = try std.Thread.spawn(.{}, Job.run, .{ x, w, b, M, N, K, y, N * t / workers, N * (t + 1) / workers });
+        made += 1;
+    }
 }
 
 fn normed(comptime S: type, x: f32, r: S, w: f32, mode: Mode) f32 {
@@ -114,46 +127,66 @@ pub fn add(x: []f32, y: []const f32) void {
     for (x, y) |*p, q| p.* = bf(@as(f64, p.*) + q);
 }
 
+/// The encode pass's scratch, one buffer per activation, shared by every layer.
+pub const Scratch = struct {
+    xn: []f32,
+    y: []f32,
+    q: []f32,
+    k: []f32,
+    v: []f32,
+    att: []f32,
+    gate: []f32,
+    up: []f32,
+    act: []f32,
+
+    pub fn init(a: std.mem.Allocator, g: rules.Text, T: usize) !Scratch {
+        var s: Scratch = undefined;
+        inline for (.{ "xn", "y" }) |f| @field(s, f) = try a.alloc(f32, T * g.hidden);
+        inline for (.{ "gate", "up", "act" }) |f| @field(s, f) = try a.alloc(f32, T * g.ffn);
+        inline for (.{ "q", "att" }) |f| @field(s, f) = try a.alloc(f32, T * g.heads * D);
+        inline for (.{ "k", "v" }) |f| @field(s, f) = try a.alloc(f32, T * g.kv_heads * D);
+        return s;
+    }
+};
+
+/// One layer of the text model over x [T, hidden] in place: its attention and MLP, then DeepStack's vision rows
+/// added after layers 0 to 2. A caller that streams a layer's weights in converts them, runs this and frees them.
+pub fn encodeLayer(comptime S: type, a: std.mem.Allocator, g: rules.Text, l: Layer, li: usize, x: []f32, cos: []const f32, sin: []const f32, vision: ?Vision, s: Scratch) !void {
+    const T = x.len / g.hidden;
+    const H = g.hidden;
+    const qn = g.heads * D;
+    const kvn = g.kv_heads * D;
+    norm(S, x, l.norm1, s.xn, H, g.eps, .qwen);
+    try gemm(S, s.xn, l.q, null, s.q, T, qn, H);
+    try gemm(S, s.xn, l.k, null, s.k, T, kvn, H);
+    try gemm(S, s.xn, l.v, null, s.v, T, kvn, H);
+    heads(S, s.q, g.heads, qn, D, l.q_norm, .{ cos, sin }, T, g.eps, .qwen);
+    heads(S, s.k, g.kv_heads, kvn, D, l.k_norm, .{ cos, sin }, T, g.eps, .qwen);
+    try attention(S, a, s.q, .{ .count = g.heads, .row = qn, .head = D }, s.k, s.v, .{ .count = g.kv_heads, .row = kvn, .head = D }, s.att, T, true);
+    try gemm(S, s.att, l.o, null, s.y, T, H, qn);
+    add(x, s.y);
+    norm(S, x, l.norm2, s.xn, H, g.eps, .qwen);
+    try gemm(S, s.xn, l.gate, null, s.gate, T, g.ffn, H);
+    try gemm(S, s.xn, l.up, null, s.up, T, g.ffn, H);
+    glu(S, s.gate, s.up, s.act, T, g.ffn, g.ffn, g.ffn, .qwen);
+    try gemm(S, s.act, l.down, null, s.y, T, H, g.ffn);
+    add(x, s.y);
+    const seen = vision orelse return;
+    if (li < 3) for (seen.pads, 0..) |at, i| add(x[at * H ..][0..H], seen.deepstack[li][i * H ..][0..H]);
+}
+
 /// The text model's rows leaving its last layer [T, hidden] for `ids`, cos and sin [T, 64].
 pub fn encode(comptime S: type, a: std.mem.Allocator, g: rules.Text, w: Text, ids: []const u32, cos: []const f32, sin: []const f32, vision: ?Vision, out: []f32) !void {
     const T = ids.len;
     const H = g.hidden;
-    const qn = g.heads * D;
-    const kvn = g.kv_heads * D;
     var arena_state = std.heap.ArenaAllocator.init(a);
     defer arena_state.deinit();
     const ar = arena_state.allocator();
     const x = out;
     for (ids, 0..) |id, r| @memcpy(x[r * H ..][0..H], w.embed[id * H ..][0..H]);
     if (vision) |v| for (v.pads, 0..) |at, i| @memcpy(x[at * H ..][0..H], v.rows[i * H ..][0..H]);
-    const xn = try ar.alloc(f32, T * H);
-    const y = try ar.alloc(f32, T * H);
-    const q = try ar.alloc(f32, T * qn);
-    const k = try ar.alloc(f32, T * kvn);
-    const v = try ar.alloc(f32, T * kvn);
-    const att = try ar.alloc(f32, T * qn);
-    const gate = try ar.alloc(f32, T * g.ffn);
-    const up = try ar.alloc(f32, T * g.ffn);
-    const act = try ar.alloc(f32, T * g.ffn);
-    for (w.layers[0..g.layers], 0..) |l, li| {
-        norm(S, x, l.norm1, xn, H, g.eps, .qwen);
-        gemm(S, xn, l.q, null, q, T, qn, H);
-        gemm(S, xn, l.k, null, k, T, kvn, H);
-        gemm(S, xn, l.v, null, v, T, kvn, H);
-        heads(S, q, g.heads, qn, D, l.q_norm, .{ cos, sin }, T, g.eps, .qwen);
-        heads(S, k, g.kv_heads, kvn, D, l.k_norm, .{ cos, sin }, T, g.eps, .qwen);
-        try attention(S, ar, q, .{ .count = g.heads, .row = qn, .head = D }, k, v, .{ .count = g.kv_heads, .row = kvn, .head = D }, att, T, true);
-        gemm(S, att, l.o, null, y, T, H, qn);
-        add(x, y);
-        norm(S, x, l.norm2, xn, H, g.eps, .qwen);
-        gemm(S, xn, l.gate, null, gate, T, g.ffn, H);
-        gemm(S, xn, l.up, null, up, T, g.ffn, H);
-        glu(S, gate, up, act, T, g.ffn, g.ffn, g.ffn, .qwen);
-        gemm(S, act, l.down, null, y, T, H, g.ffn);
-        add(x, y);
-        const seen = vision orelse continue;
-        if (li < 3) for (seen.pads, 0..) |at, i| add(x[at * H ..][0..H], seen.deepstack[li][i * H ..][0..H]);
-    }
+    const s = try Scratch.init(ar, g, T);
+    for (w.layers[0..g.layers], 0..) |l, li| try encodeLayer(S, ar, g, l, li, x, cos, sin, vision, s);
 }
 
 /// condition_proj, the refiner's blocks over every row and its final norm: rows [T, text] to out [T, hidden].
@@ -171,20 +204,20 @@ pub fn refine(comptime S: type, a: std.mem.Allocator, g: rules.Refiner, w: Refin
     const att = try ar.alloc(f32, T * inner);
     const wide = try ar.alloc(f32, T * 2 * g.mlp);
     const act = try ar.alloc(f32, T * g.mlp);
-    gemm(S, rows, w.cond_w, w.cond_b, x, T, H, g.text);
+    try gemm(S, rows, w.cond_w, w.cond_b, x, T, H, g.text);
     const fused: Heads = .{ .count = g.heads, .row = 3 * inner, .head = 3 * D };
     for (w.blocks[0..g.blocks]) |b| {
         norm(S, x, b.norm1, xn, H, g.eps, .h3);
-        gemm(S, xn, b.qkv, null, qkv, T, 3 * inner, H);
+        try gemm(S, xn, b.qkv, null, qkv, T, 3 * inner, H);
         heads(S, qkv, g.heads, 3 * inner, 3 * D, b.q_norm, null, T, g.qk_eps, .h3);
         heads(S, qkv[D..], g.heads, 3 * inner, 3 * D, b.k_norm, null, T, g.qk_eps, .h3);
         try attention(S, ar, qkv, fused, qkv[D..], qkv[2 * D ..], fused, att, T, false);
-        gemm(S, att, b.out, null, y, T, H, inner);
+        try gemm(S, att, b.out, null, y, T, H, inner);
         add(x, y);
         norm(S, x, b.norm2, xn, H, g.eps, .h3);
-        gemm(S, xn, b.fc1, null, wide, T, 2 * g.mlp, H);
+        try gemm(S, xn, b.fc1, null, wide, T, 2 * g.mlp, H);
         glu(S, wide, wide[g.mlp..], act, T, g.mlp, 2 * g.mlp, 2 * g.mlp, .h3);
-        gemm(S, act, b.fc2, null, y, T, H, g.mlp);
+        try gemm(S, act, b.fc2, null, y, T, H, g.mlp);
         add(x, y);
     }
     norm(S, x, w.final_norm, out, H, g.final_eps, .h3);

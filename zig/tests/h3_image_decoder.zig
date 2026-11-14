@@ -2,8 +2,7 @@
 const std = @import("std");
 const mtl = @import("metal");
 const dec = @import("h3_image_decoder");
-const resample = @import("picture_writer").resample;
-const png_file = @import("picture_writer").png;
+const hostdec = dec.host_decoder;
 const selftest = @import("h3_image_decoder_selftest.zig");
 
 const vae = dec.vae;
@@ -21,13 +20,6 @@ const usage =
 /// Tiles a pass decodes at most.
 const batch = 16;
 
-fn read(init: std.process.Init, a: std.mem.Allocator, path: []const u8, most: usize) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(init.io, path, a, .limited(most)) catch |err| {
-        std.debug.print("cannot read {s}: {s}\n", .{ path, @errorName(err) });
-        return err;
-    };
-}
-
 /// The image decoder loaded once: its config and weights, its kernels built.
 pub const Vae = struct {
     config: vae.Config,
@@ -35,12 +27,13 @@ pub const Vae = struct {
 
     pub fn load(init: std.process.Init, a: std.mem.Allocator, model_dir: []const u8) !Vae {
         const vae_dir = try std.fs.path.join(a, &.{ model_dir, "vae" });
-        const config = try vae.config(a, try read(init, a, try std.fs.path.join(a, &.{ vae_dir, "config.json" }), 1 << 20));
+        const config = try vae.config(a, try hostdec.read(init.io, a, try std.fs.path.join(a, &.{ vae_dir, "config.json" }), 1 << 20));
         const device = try mtl.Device.init();
         const loading = mtl.clock.seconds();
         const d = try dec.Decoder.init(init.gpa, device, vae.layers, config.rope_theta);
         errdefer d.deinit();
-        try d.load(try std.fmt.allocPrintSentinel(a, "{s}/diffusion_pytorch_model.safetensors", .{vae_dir}, 0));
+        const weights = try std.fmt.allocPrintSentinel(a, "{s}/diffusion_pytorch_model.safetensors", .{vae_dir}, 0);
+        try d.load(weights);
         d.give_way = .{ .io = init.io };
         std.debug.print("{s}: decoder weights in bf16 in {d:.1} s\n", .{ device.name(), mtl.clock.seconds() - loading });
         return .{ .config = config, .d = d };
@@ -57,11 +50,7 @@ pub const Vae = struct {
         const started = mtl.clock.seconds();
         const decoded = try a.alloc(f32, 3 * width * height);
         const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded);
-        const rgb = try a.alloc(u8, 3 * width * height);
-        try vae.pixels(decoded, height, width, rgb);
-        const picture = if (size.width == width and size.height == height) rgb else try resample.resizeWith(a, .pillow, .lanczos, resample.View.of(rgb, width, height), size.width, size.height);
-        const file = try png_file.encode(a, picture, size.width, size.height);
-        try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = path, .data = file });
+        try hostdec.write(init.io, a, decoded, height, width, size.width, size.height, path);
         std.debug.print("{d}x{d} canvas: decoded {d} tiles in {d:.2} s ({d:.2} s on the GPU, {d:.2} s waited for speech), {d:.2} s in all; wrote {s} at {d}x{d}\n", .{ width, height, tiles.total(), took.wall, took.gpu, took.paused, mtl.clock.seconds() - started, path, size.width, size.height });
     }
 };
@@ -80,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
     const rows = std.fmt.parseInt(usize, args[3], 10) catch return error.H3BadPictureGrid;
     const cols = std.fmt.parseInt(usize, args[4], 10) catch return error.H3BadPictureGrid;
     const n = try dec.host.latentLength(rows, cols);
-    const bytes = try read(init, a, args[2], n * 4 + 1);
+    const bytes = try hostdec.read(init.io, a, args[2], n * 4 + 1);
     if (bytes.len != n * 4) {
         std.debug.print("{s} holds {d} bytes; a [24, {d}, {d}] float32 latent is {d}\n", .{ args[2], bytes.len, rows, cols, n * 4 });
         return error.H3BadLatentLength;
