@@ -1,7 +1,7 @@
-# Large resident renders: live voice coordination diagnosis
+# Large resident renders: live voice coordination restored
 
-- Document the live signal check and a two-request 5472x3072 reproduction in `docs/recipes/minimax-h3-image-metal.md`.
-- The live voice request completed in 72.854 seconds while neither the shared speech lock nor its generation announced it. The existing render-side give-way cannot react to an absent signal; an HTTP 200 and early headers do not establish the voice-note deadline.
-- A diagnostic client-owned shared hold reduced the same complete voice response to 7.473 seconds (first PCM 1.804 seconds). Both queued renders completed, with both latents and PNGs byte-identical to the uncoordinated run. This establishes the renderer's existing behavior, not a production fix.
-- No scheduler or arithmetic changes: the live speech deployment must publish card 49's existing protocol on the same lock path. Full voice-menu acceptance remains blocked on owner deployment and a repeat of the original workload.
-- Verification passed: `nice -n 10 zig build test test-golden` (591 seconds; zero unexpected golden differences), `nice -n 10 zig build test-h3-image-server -Doptimize=ReleaseSafe`, and the ReleaseFast resident executable build. Scout mapping and independent design/acceptance critiques supported the deployment prerequisite.
+- Preserve the missing-publisher reproduction in `docs/recipes/minimax-h3-image-metal.md`: complete voice took 72.854 seconds with no speech hold or generation change; a diagnostic client-owned hold reduced it to 7.473 seconds without changing image bytes.
+- After the owner repaired the live speech deployment, replay marketing 122's original 17-request workload through the unchanged resident renderer. All 17 images completed; every latent and PNG matched the original output by SHA-256. No scheduler or arithmetic change was needed.
+- Five real TOP-menu notes during denoising completed in 9.397–9.774 seconds, below the 20-second bound, with valid M4A audio, observed speech holds and changed generations. No client-owned speech lock. Another 17 direct PCM requests all completed in 5.484–9.421 seconds.
+- Record exact workload, timings, hashes, invocation and local receipt locations in the recipe. Preserve card 49's stage-yield and output-parity regression coverage; scout research and independent acceptance review were used.
+- Verification passed: `nice -n 10 zig build test test-golden` (89.66 seconds; zero unexpected golden differences), `nice -n 10 zig build test-h3-image-server -Doptimize=ReleaseSafe` (3.27 seconds), ReleaseFast resident build, 17-render replay (exit zero, 1,592.514 seconds), and FFmpeg decoding of all five TOP responses.
