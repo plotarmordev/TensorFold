@@ -32,6 +32,7 @@ For agent-assisted contributions, read the [TensorFold contributor skill](SKILL.
 | Spark-X2.6-4B | [Native CUDA](spark-x2.6-4b-cuda.md), [native Metal, the bf16 release, contexts to 1M](spark-x2.6-4b-metal.md) |
 | Nanbeige4.3-33B | [Native Metal, the bf16 and INT4 releases, the Llama family](nanbeige-4.3-33b-metal.md) |
 | Underdog Woof | [Native CPU speech on a Mac, int8, non-commercial licence](woof.md) |
+| Recursive Flint | [Native Metal, the publisher's affine 4-bit export, reasoning and tool calls](flint.md) |
 
 [Persisted serving-state identities](persisted-serving-keys.md) lists the disk owners, their compatibility keys and stale-state host checks.
 
