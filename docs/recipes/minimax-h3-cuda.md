@@ -107,7 +107,16 @@ its one difference. Its seed draws other noise, so the comparison is of times, n
 [`mmh3-stage.sh`](minimax-h3-cuda/mmh3-stage.sh) first stages mmh3's source, its vendored crates and Rust in the pilot
 folder on BOTTOM's CPUs, and the job builds mmh3 from them for `sm_120f`.
 
-Until that run, mmh3's own Spark figures (its prompt, seed 1) are the nearest: 8.8 s a step and 63 s in all at 4096²
-with those settings, against TensorFold's BF16 18.5 s a step and 1,128 s, of which 1,005 s are the CPU prompt, the
-host load and the CPU decoder (mmh3 decodes 4096² in 2.9 s on the GPU). Its ~24 s is three PDMD-LoRA steps as
-half-size drafts plus one full step with INT8/FP8 attention: other weights and another composition.
+The Desk ran it on BOTTOM (GB10) in the 14 Nov 08:05 window, job `bottom-5733d361f24d`; both pictures are clean foxes:
+
+| Stage | TensorFold 2048² | mmh3 2048² | TensorFold 4096² | mmh3 4096² |
+|---|---:|---:|---:|---:|
+| Prompt | 88 s (CPU) | 3.6 s | 98 s (CPU) | 3.5 s |
+| Transformer load | 137 s | 2.9 s | 136 s | 2.8 s |
+| Transformer, 6 steps | 34 s (3.84 s a step settled) | 9.5 s (1.4 s) | 123 s (18.5 s) | 53.1 s (8.5 s) |
+| Decoder | 218 s (CPU) | 1.0 s | 771 s (CPU) | 2.7 s |
+| Wall | 477 s | 17.6 s | 1,128 s | 63.1 s |
+
+On the GPU stage both share, INT8 linear makes mmh3's step 2.7× faster at 2048² and 2.2× at 4096². The rest of the
+gap is TensorFold's CPU prompt, host load and CPU decoder, which mmh3 runs on the GPU. mmh3's quoted ~24 s at 4096²
+is three PDMD-LoRA steps as half-size drafts plus one full step with INT8/FP8 attention, a different composition.
