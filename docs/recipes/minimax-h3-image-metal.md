@@ -291,6 +291,55 @@ card 34's `t2i-4096.latent.f32` and its rows the 12 November baseline (`b3726693
 encoder and decoder are too short at this spacing to catch a note; `test-h3-image-server` has speech arrive during
 each stage. The isolated server was stopped afterward; the live release server was not changed.
 
+### Large resident renders: live signal check, card 64
+
+The 14 November incident reported 17 consecutive 5472x3072 renders at about 85 seconds each and a voice-note
+deadline failure. An 85-second render is not one uninterruptible denoising pass: the resident server already submits
+individual transformer blocks, and the measured six steps below each took 11–12 seconds.
+
+A live speech deployment must publish the same lock as the renderer. Updating only `tf-h3-image-server` cannot make
+an uncoordinated speech process announce a request. Card 49's isolated-server receipts did not update the live
+release server. Before diagnosing GPU submission granularity, observe both the lock and its generation during an
+actual request to the endpoint used by the voice menu:
+
+- Attempt a nonblocking exclusive `flock` on `/tmp/tensorfold-speech.lock` from a separate process every 20 ms;
+  contention means speech holds it. Merely listing another user's open descriptors is not this check.
+- Compare `/tmp/tensorfold-speech.lock.stamp` before and after the request. The coordinated server writes it even
+  when acquiring the speech hold fails. Check cross-user access too: lock mode 0644, stamp mode 0666, length 16.
+- Measure first PCM bytes **and the complete audio response**, not just HTTP headers. A streamed HTTP 200 can
+  still miss a caller's deadline while delivering its body.
+
+On the M5 Ultra, 256 GiB, with Zig 0.17.0 and `ea6a16d2e35783aacf6a69af40758785b67171ef`, a two-request
+resident replay at 5472x3072, seed 2201, 183 prompt tokens completed in **76.08 and 85.58 seconds**. Both PNGs
+were written and the process exited zero. The live Drama endpoint returned HTTP 200 and first PCM at **18.856 s**,
+but completed its 618,496-byte response at **72.854 s**. The render was running throughout the voice request.
+Across 776 exclusive-lock probes, none found a speech hold; the stamp remained unchanged. The first render's
+six steps all reported zero wait and `timing_valid=true` despite overlapping speech. An idle voice probe likewise
+observed no hold or stamp change, with first PCM at 16.438 s and complete audio at 20.805 s.
+
+This establishes an absent live coordination signal, not the exact installed binary's revision. The endpoint
+advertised version 1.2.6; its executable could not be inspected with the test account's permissions. The shared
+files had the modes and length above. An old executable or a process-specific access/namespace restriction must
+be resolved by the deployment owner. `timing_valid=true` cannot detect a nonparticipating speech process.
+The required host/Metal test suite ran concurrently, so these are contention diagnostics, not clean throughput
+benchmarks or a replay of all 17 original requests. The live service was not restarted or changed.
+
+For a causal control only, the diagnostic client held a shared `flock` on the same file from immediately before
+sending the voice request until the complete body was read. The unchanged image executable then paused step 1
+for **6.84 seconds** and marked it invalid for timing. First PCM arrived in **1.804 s**, and the complete
+618,496-byte response in **7.473 s**, with the renderer still running. Both queued images completed (85.85 and
+89.54 s); `cmp` found both final latents and both PNGs byte-identical to the uncoordinated run. The executable
+was rebuilt from the commit above with `zig build tf-h3-image-server -Dcpu=apple_m1 -Doptimize=ReleaseFast`;
+its SHA-256 matched the measured executable. No arithmetic or scheduling change was needed for this control.
+
+Both requests used `model="fishaudio/drama-3"`, `stream=true`, `response_format="pcm"`, and this public input:
+“The little boat crossed the harbor before the sun came up, and the gulls were quiet over the water while the
+fishermen coiled their nets along the pier.” The client waited for the renderer's `drawn on` line before sending.
+The control's client-owned hold is **not** a production fix and does not demonstrate TOP-menu acceptance.
+After the owner deploys or repairs the live publisher, repeat the original back-to-back workload through the
+actual voice menu without a client-owned lock; require the complete reply within its deadline, observed speech
+holds, completed image outputs and unchanged latents. Until then card 64 remains blocked on that deployment.
+
 ## Gates, fixed before any run
 
 These are the bounds `tf-h3-image` checks (`picture.gates`). It exits 1 when one fails, and 2 when the case holds no
