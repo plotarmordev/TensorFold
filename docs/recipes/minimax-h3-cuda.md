@@ -102,8 +102,9 @@ the gap is the transformer's. The first transformer step pays cuBLASLt's algorit
 mmh3 ([`9c0652f`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/docs/image.md#speed))
 has no BF16 linear layers on CUDA (`--linear-precision int8|nvfp4`, on its own INT8 ConvRot DiT and text encoder).
 The matched run therefore keeps everything else: [`mmh3-job.sh`](minimax-h3-cuda/mmh3-job.sh) runs `mmh3 image` on this
-prompt, seed 42, 2048² and 4096² and the six distilled steps, with BF16 attention and no draft steps, so INT8 linear is
-its one difference. Its seed draws other noise, so the comparison is of times, not pixels. The job has no network:
+prompt, seed 42, 2048² and 4096² and mmh3's defaults, which are the six distilled steps, BF16 attention and no draft steps
+(its logs show six). INT8 linear layers, in the text encoder as in the DiT, and its fp16 VAE are the differences.
+Its seed draws other noise, so the comparison is of times, not pixels. The job has no network:
 [`mmh3-stage.sh`](minimax-h3-cuda/mmh3-stage.sh) first stages mmh3's source, its vendored crates and Rust in the pilot
 folder on BOTTOM's CPUs, and the job builds mmh3 from them for `sm_120f`.
 
