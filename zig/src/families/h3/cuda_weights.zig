@@ -185,6 +185,7 @@ pub const Fused = struct {
 /// several times slower. A window holds whole head parts: one is 128 rows, far under 64 MiB.
 fn upload(staging: *cuda.copy_source.Stage, to: cuda.DeviceBuffer, offset: usize, bytes: []const u8, fused: ?Fused) !void {
     const unit = if (fused) |f| f.part() else staging_bytes;
+    if (unit > staging_bytes) return error.BadGeometry;
     var done: usize = 0;
     while (done < bytes.len) {
         const n = @min(staging_bytes / unit * unit, bytes.len - done);
