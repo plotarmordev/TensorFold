@@ -172,13 +172,13 @@ fn keep(a: std.mem.Allocator, line: *std.ArrayList(u8), r: registry.CudaRecord, 
     try line.print(a, ".{{ .regs = {d}, .static = {d}, .bound = {d} }}, ", .{ u.regs, u.static, u.bound });
 }
 
-pub fn fatbins(gpu: check.Gpu, dir: []const u8) !void {
-    const a = gpu.gpa;
+/// The served SM images in DIR's fatbins against every record; ELF parsing only, so main runs it before any driver.
+pub fn fatbins(a: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
     var n: usize = 0;
     var said: ?limits.Nvcc = null;
     const mode_path = try std.fmt.allocPrint(a, "{s}/norms.fatbin", .{dir});
     defer a.free(mode_path);
-    const mode_bytes = try std.Io.Dir.cwd().readFileAlloc(gpu.io, mode_path, a, .limited(1 << 28));
+    const mode_bytes = try std.Io.Dir.cwd().readFileAlloc(io, mode_path, a, .limited(1 << 28));
     defer a.free(mode_bytes);
     const mode_images = try contract.cubin.images(a, mode_bytes);
     defer contract.cubin.freeImages(a, mode_images);
@@ -201,7 +201,7 @@ pub fn fatbins(gpu: check.Gpu, dir: []const u8) !void {
         }
         const path = try std.fmt.allocPrint(a, "{s}/{s}.fatbin", .{ dir, r.launch.image });
         defer a.free(path);
-        const bytes = try std.Io.Dir.cwd().readFileAlloc(gpu.io, path, a, .limited(1 << 28));
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(1 << 28));
         defer a.free(bytes);
         const imgs = try contract.cubin.images(a, bytes);
         defer contract.cubin.freeImages(a, imgs);
