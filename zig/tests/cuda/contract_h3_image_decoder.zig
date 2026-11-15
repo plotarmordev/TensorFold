@@ -171,8 +171,8 @@ pub const Dec = struct {
     fn origins(self: *Dec, tiles: usize) ![]u32 {
         const v = try self.arena.allocator().alloc(u32, 2 * tiles);
         for (0..tiles) |i| {
-            v[2 * i] = @intCast(@min(i % 3, 2) * 4);
-            v[2 * i + 1] = @intCast(@min(i % 5, 4) * 4);
+            v[2 * i] = @intCast(i % 3 * 4);
+            v[2 * i + 1] = @intCast(i % 5 * 4);
         }
         return v;
     }
