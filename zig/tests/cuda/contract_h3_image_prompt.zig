@@ -216,7 +216,7 @@ pub const Prm = struct {
                 // The served tables: row r's angle for channel pair i is r / 10000^(i/64), so sine spans [-1, 1].
                 const cs = try al.alloc(f64, s.rows * 64);
                 const sn = try al.alloc(f64, s.rows * 64);
-                for (cs, sn, 0..) |*co, si, at| {
+                for (cs, sn, 0..) |*co, *si, at| {
                     const angle: f32 = @floatCast(@as(f64, @floatFromInt(at / 64)) / std.math.pow(f64, 10000, @as(f64, @floatFromInt(at % 64)) / 64));
                     co.* = @cos(angle);
                     si.* = @sin(angle);
