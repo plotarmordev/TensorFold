@@ -410,6 +410,19 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     const vision: hp.Vision = .{ .pads = pads, .rows = bits[0 .. n * H], .deepstack = .{ bits[n * H ..][0 .. n * H], bits[2 * n * H ..][0 .. n * H], bits[3 * n * H ..][0 .. n * H] } };
     const oracle: ref.Vision = .{ .pads = pads, .rows = blocks[0], .deepstack = blocks[1..4].* };
 
+    // One layer under the capture: the same buffers byte for byte as an uncaptured run, then each
+    // op's download against its host reference replayed on the captured GPU inputs (diagnostics only).
+    var first_layer = g;
+    first_layer.layers = 1;
+    const traced = try a.alloc(u16, T * H);
+    var cap = try hp.trace.Capture.init(a, first_layer, T);
+    try runner.encodeObserved(a, first_layer, embed, ids, pos, vision, bitsLayer, &layer_ctx, traced, &cap);
+    const untraced = try a.alloc(u16, T * H);
+    try runner.encode(a, first_layer, embed, ids, pos, vision, bitsLayer, &layer_ctx, untraced);
+    const trace_same = std.mem.eql(u16, traced, untraced);
+    std.debug.print("the captured one-layer run byte for byte the uncaptured run: {}\n", .{trace_same});
+    try hp.trace.check(a, &cap, first_layer, tiny.host.layers[0], oracle, ids, tiny.host.embed, cs, sn);
+
     // Equal inputs must retain the same arithmetic with the vision copy/add path enabled.
     const plain = try a.alloc(u16, T * H);
     try runner.encode(a, g, embed, ids, pos, null, bitsLayer, &layer_ctx, plain);
@@ -419,8 +432,6 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     const noop_same = std.mem.eql(u16, plain, noop);
     std.debug.print("a no-op vision (embedding rows spliced back, DeepStack zero) byte for byte the text-only run: {}\n", .{noop_same});
 
-    var first_layer = g;
-    first_layer.layers = 1;
     const Probe = struct { label: []const u8, geometry: rules.Text, gpu: hp.Vision, host: ref.Vision };
     const probes = [_]Probe{
         .{ .label = "text encoder rows, a reference's vision and DeepStack rows at equal-axis positions", .geometry = g, .gpu = vision, .host = oracle },
@@ -441,7 +452,7 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     const enc = try a.alloc(u16, T * H);
     const exact = try a.alloc(f32, T * H);
     const sum32 = try a.alloc(f32, T * H);
-    var ok = noop_same;
+    var ok = noop_same and trace_same;
     for (probes) |probe| {
         try runner.encode(a, probe.geometry, embed, ids, pos, probe.gpu, bitsLayer, &layer_ctx, enc);
         try ref.encode(f64, a, probe.geometry, tiny.host, ids, cs, sn, probe.host, exact);

@@ -11,6 +11,7 @@ pub const reference = @import("prompt_reference.zig");
 pub const case = @import("prompt_case.zig");
 pub const picture = @import("picture.zig");
 pub const checkpoint = @import("checkpoint.zig");
+pub const trace = @import("prompt_cuda_trace.zig");
 const report = @import("report.zig");
 const bf16_round = @import("bf16_round");
 
@@ -287,6 +288,42 @@ pub const Runner = struct {
         ctx: *anyopaque,
         out: []u16,
     ) !void {
+        try r.encodeImpl(a, g, embed, ids, pos, vision, layer, ctx, out, false, {});
+    }
+
+    /// `encode` with layer 0's per-operation buffers downloaded into `cap` after each launch, for
+    /// the selftest's per-op diagnostics; every download syncs the stream between launches.
+    pub fn encodeObserved(
+        r: *Runner,
+        a: std.mem.Allocator,
+        g: rules.Text,
+        embed: Tensor,
+        ids: []const u32,
+        pos: []const [3]i32,
+        vision: ?Vision,
+        layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet,
+        ctx: *anyopaque,
+        out: []u16,
+        cap: *trace.Capture,
+    ) !void {
+        try r.encodeImpl(a, g, embed, ids, pos, vision, layer, ctx, out, true, cap);
+    }
+
+    /// `traced` is comptime: production calls omit all capture downloads.
+    fn encodeImpl(
+        r: *Runner,
+        a: std.mem.Allocator,
+        g: rules.Text,
+        embed: Tensor,
+        ids: []const u32,
+        pos: []const [3]i32,
+        vision: ?Vision,
+        layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet,
+        ctx: *anyopaque,
+        out: []u16,
+        comptime traced: bool,
+        cap: if (traced) *trace.Capture else void,
+    ) !void {
         const T = ids.len;
         const H = g.hidden;
         const qh = g.heads * D;
@@ -340,6 +377,7 @@ pub const Runner = struct {
             // the table leaves the device once the gather and splice have run
             try r.stream.synchronize();
         }
+        if (traced) try cap.take(r, .x0, s.at(.x));
 
         var begun = try cuda.Event.init(&r.driver, true);
         defer begun.deinit();
@@ -354,25 +392,43 @@ pub const Runner = struct {
             errdefer w.free();
             errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt layer did not drain");
             try r.norm(s.at(.x), w.ptrs.norm1, s.at(.xn), T, H, g.eps, mode_qwen);
+            if (traced and li == 0) try cap.take(r, .xn1, s.at(.xn));
             try r.products.run(r.stream, s.at(.xn), w.ptrs.q, 0, s.at(.p), T, qh, H);
             try r.round(s.at(.p), s.at(.qb), T * qh);
+            if (traced and li == 0) try cap.take(r, .q, s.at(.qb));
             try r.products.run(r.stream, s.at(.xn), w.ptrs.k, 0, s.at(.p), T, kvh, H);
             try r.round(s.at(.p), s.at(.kb), T * kvh);
+            if (traced and li == 0) try cap.take(r, .k, s.at(.kb));
             try r.products.run(r.stream, s.at(.xn), w.ptrs.v, 0, s.at(.p), T, kvh, H);
             try r.round(s.at(.p), s.at(.vb), T * kvh);
+            if (traced and li == 0) try cap.take(r, .v, s.at(.vb));
             try r.heads(s.at(.qb), s.at(.kb), w.ptrs.q_norm, w.ptrs.k_norm, .{ s.at(.cos), s.at(.sin) }, g.heads, g.kv_heads, qh, kvh, D, T, g.eps, mode_qwen);
+            if (traced and li == 0) {
+                try cap.take(r, .qh, s.at(.qb));
+                try cap.take(r, .kh, s.at(.kb));
+            }
             try r.attention(s.at(.qb), s.at(.kb), s.at(.vb), s.at(.att), T, g.heads, g.kv_heads, qh, kvh, kvh, D, true);
+            if (traced and li == 0) try cap.take(r, .att, s.at(.att));
             try r.products.run(r.stream, s.at(.att), w.ptrs.o, 0, s.at(.p), T, H, qh);
+            if (traced and li == 0) try cap.take(r, .po, s.at(.p));
             try r.add(s.at(.x), s.at(.p), T * H);
+            if (traced and li == 0) try cap.take(r, .x1, s.at(.x));
             try r.norm(s.at(.x), w.ptrs.norm2, s.at(.xn), T, H, g.eps, mode_qwen);
+            if (traced and li == 0) try cap.take(r, .xn2, s.at(.xn));
             try r.products.run(r.stream, s.at(.xn), w.ptrs.gate, 0, s.at(.p), T, g.ffn, H);
             try r.round(s.at(.p), s.at(.gb), T * g.ffn);
+            if (traced and li == 0) try cap.take(r, .g, s.at(.gb));
             try r.products.run(r.stream, s.at(.xn), w.ptrs.up, 0, s.at(.p), T, g.ffn, H);
             try r.round(s.at(.p), s.at(.ub), T * g.ffn);
+            if (traced and li == 0) try cap.take(r, .u, s.at(.ub));
             try r.glu(s.at(.gb), s.at(.ub), s.at(.act), T, g.ffn, g.ffn, g.ffn, mode_qwen);
+            if (traced and li == 0) try cap.take(r, .act, s.at(.act));
             try r.products.run(r.stream, s.at(.act), w.ptrs.down, 0, s.at(.p), T, H, g.ffn);
+            if (traced and li == 0) try cap.take(r, .pd, s.at(.p));
             try r.add(s.at(.x), s.at(.p), T * H);
+            if (traced and li == 0) try cap.take(r, .x2, s.at(.x));
             if (n > 0 and li < 3) try r.indexed("h3p_scatter_add", s.at(.x), s.at(.deep) + li * n * H * 2, s.at(.idx) + T * 4, n, H);
+            if (traced and n > 0 and li == 0) try cap.take(r, .xd, s.at(.x));
             try r.stream.synchronize();
             w.free();
         }
