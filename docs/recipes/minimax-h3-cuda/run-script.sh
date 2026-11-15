@@ -1,11 +1,12 @@
 #!/bin/sh
-# MiniMax-H3-Image's CUDA pictures on a Spark, through the Desk's GPU door inside a DeepSeek pause window:
-#   ssh top-menu "job start gpu bottom plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/run-script.sh"
+# MiniMax-H3-Image's CUDA pictures on TOP's Spark, through the Desk's GPU door (TOP is free while DeepSeek runs tp2):
+#   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/run-script.sh"
 # /assets/drama3-pilot (read-only) holds models/MiniMax-H3-Image, its text encoder in text_encoder/, and
 # h3-image-pilot/: prompt.txt and bin-SHA/, this commit's three tools, built beforehand where nvcc and g++ exist:
 #   zig build tf-h3-image-prompt-cuda tf-h3-image-cuda tf-h3-image-decoder-cuda -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 -Doptimize=ReleaseFast
 # Seed 42 at 2048x2048 and 4096x4096, the Mac's settings; each stage's log, with its time, lands in /work/out/h3-image
-# beside the case, the latent and the PNG. The PSNR against the Mac's pictures is taken after `job fetch`.
+# beside the case, the latent and the PNG. The PSNR against the Mac's pictures is taken after `job fetch`. A failed
+# synthetic selftest still renders both pictures, so the real prompt is exercised, and the job exits 1 at the end.
 set -eu
 model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
@@ -21,7 +22,6 @@ failed=0
 "$bin/tf-h3-image-cuda" --self-test || failed=1
 "$bin/tf-h3-image-decoder-cuda" selftest || failed=1
 "$bin/tf-h3-image-prompt-cuda" selftest /work/out/h3-prompt-selftest || failed=1
-[ "$failed" -eq 0 ] || exit 1
 stage() { # stage NAME TOOL ARGS...: the tool's log, with its times, to $case.NAME.log; shown if it fails
     log=$case.$1.log
     shift
@@ -34,3 +34,4 @@ for side in 2048 4096; do
     stage decoder "$bin/tf-h3-image-decoder-cuda" "$model" "$case.latent.f32" $((side / 16)) $((side / 16)) "$case.png" "${side}x$side"
     echo "$side done"
 done
+exit "$failed"

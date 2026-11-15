@@ -19,10 +19,12 @@ pub const bounds = struct {
     /// fp32 sums against float64 move a bf16 output only where they straddle a rounding point: at most 1 ULP.
     pub const product_ulps: f64 = 1;
     pub const product_same: f64 = 0.99;
-    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, relative 7e-4); the
-    /// warp-order sums and expf of the CUDA kernels sit inside the Metal self-test's bound until measured.
+    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, relative 7e-4). On GB10 the
+    /// CUDA blocks measured 87.3-90.3% identical, worst 6 ULPs, relative 1.15e-3, with every operator inside the
+    /// product bound on its GPU input and 24 chained blocks as far from float64 as the host's (1.47e-2 vs 1.5e-2):
+    /// warp-order ULP flips carried through attention, so identity is held near that, the error by ULPs and relative.
     pub const block_ulps: f64 = 8;
-    pub const block_same: f64 = 0.9;
+    pub const block_same: f64 = 0.85;
     pub const block_relative: f64 = 2e-3;
     /// The output after two blocks chained (host fp32 sums: relative 2.9e-3, worst 3 ULPs) and after 24 (1.5e-2).
     pub const chain_ulps: f64 = 8;

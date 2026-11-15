@@ -1,7 +1,7 @@
 #!/bin/sh
 # mmh3 at 9c0652f on run-script.sh's prompt, seed, sizes and six distilled steps, for its stage times beside
-# TensorFold's, through the Desk's GPU door inside a DeepSeek pause window:
-#   ssh top-menu "job start gpu bottom plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/mmh3-job.sh"
+# TensorFold's, through the Desk's GPU door on TOP's Spark:
+#   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/mmh3-job.sh"
 # The job has no network: mmh3-stage.sh puts mmh3's source, its vendored crates and Rust in the pilot folder, and the
 # job builds mmh3 from them. models/MiniMax-H3-Image-mmh3 holds the files of Comfy-Org/MiniMax-H3-Image (rev 0bb149f5)
 # that mmh3 reads: diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors,
