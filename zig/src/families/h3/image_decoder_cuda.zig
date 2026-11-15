@@ -273,6 +273,15 @@ pub const Decoder = struct {
         return @as([*]const u16, @ptrCast(@alignCast(bytes.ptr)))[0 .. bytes.len / 2];
     }
 
+    /// The last block's retained FFN inputs and outputs, for independent operator checks in the selftest.
+    pub fn feedForward(d: *Decoder, norm: []u16, wide: []u16, act: []u16) !void {
+        const rows = d.passed * d.tokens;
+        if (norm.len != rows * W or wide.len != rows * 2 * F or act.len != rows * F) return error.H3BadLatentLength;
+        try d.scratch.?.download(d.view.xn, std.mem.sliceAsBytes(norm));
+        try d.scratch.?.download(d.view.wide, std.mem.sliceAsBytes(wide));
+        try d.scratch.?.download(d.view.act, std.mem.sliceAsBytes(act));
+    }
+
     fn dev(d: *const Decoder, off: usize) u64 {
         return d.scratch.?.ptr + off;
     }

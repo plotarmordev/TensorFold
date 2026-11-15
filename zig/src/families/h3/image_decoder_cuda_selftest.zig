@@ -168,6 +168,7 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
         block.add(embedded, input, W);
         var name: [32]u8 = undefined;
         ok = block.report(try std.fmt.bufPrint(&name, "block {d}", .{i}), bounds.block_ulps, bounds.block_same, bounds.block_relative) and ok;
+        ok = try feedForward(d, model, i) and ok;
     }
 
     // norm_out and proj_out on the GPU's stream, then the reference's chain against the GPU's
@@ -223,6 +224,35 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
     ok = ok and bytes_ok;
     if (c.deep) ok = try deep(a, d, model, latent, c, t, origins, cos, sin, scratch) and ok;
     return ok;
+}
+
+fn feedForward(d: *dec.Decoder, model: ref.Model, index: usize) !bool {
+    var arena = std.heap.ArenaAllocator.init(d.gpa);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const rows = d.passed * d.tokens;
+    const F = host.ffn;
+    const norm = try scratch.alloc(u16, rows * W);
+    const wide = try scratch.alloc(u16, rows * 2 * F);
+    const act = try scratch.alloc(u16, rows * F);
+    try d.feedForward(norm, wide, act);
+    const input = try scratch.alloc(f32, norm.len);
+    for (input, norm) |*o, b| o.* = rounding.value(b);
+    const want = try scratch.alloc(f32, wide.len);
+    const weights = model.w[model.plan.block(index, .w1_w)..][0 .. 2 * F * W];
+    const bias = model.w[model.plan.block(index, .w1_b)..][0 .. 2 * F];
+    try ref.linear(input, weights, bias, rows, 2 * F, W, want);
+    var product: Stat = .{};
+    product.add(wide, want, 2 * F);
+    const product_ok = product.report("FFN projection on GPU norm", bounds.product_ulps, bounds.product_same, 1);
+    for (0..rows) |row| for (0..F) |j| {
+        const gate = rounding.value(wide[row * 2 * F + j]);
+        const silu = rounding.round32(gate / (1.0 + @exp(-gate)));
+        want[row * F + j] = rounding.round32(silu * rounding.value(wide[row * 2 * F + F + j]));
+    };
+    var activation: Stat = .{};
+    activation.add(act, want[0..act.len], F);
+    return activation.report("SwiGLU on GPU projection", bounds.product_ulps, bounds.product_same, 1) and product_ok;
 }
 
 fn assemble(a: std.mem.Allocator, t: host.Tiles, tiles: []const f32, len: usize) ![]f32 {

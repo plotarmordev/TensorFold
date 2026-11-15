@@ -126,19 +126,75 @@ is three PDMD-LoRA steps as half-size drafts plus one full step with INT8/FP8 at
 
 ### GPU cutover qualification (card 67)
 
-The CUDA prompt, decoder and timestep/AdaLN implementations require a new Desk run. On 15 Nov, `deepseek status`
-reported the window closed (14 Nov 08:15), all three ranks serving, and BOTTOM at 96% GPU utilization. No new
-picture, PSNR, CUDA selftest, kernel-contract receipt or speedup is claimed. Do not treat a compile-only build
-without `-Dnvcc` as CUDA qualification: it embeds empty images deliberately.
+Desk ran commit `96b17d83aef126e088c2b1539668215e3da7e336` on BOTTOM's GB10 (driver 580.173.02)
+on 15 November 2026, 10:36–10:45 HKT, with DeepSeek paused. DeepSeek resumed after both jobs ended.
+The three CUDA tools were prebuilt successfully, but the candidate **failed qualification**:
+`run-script.sh` (job `bottom-f69795061a4e`) exited 1 at the decoder selftest. Its fail-fast gate stopped
+before the prompt selftest and both checkpoint renders; the candidate output directory is empty.
+This is a completed, failed device run, not a pending window or a passing picture comparison.
 
-Build the three tools with the command in `run-script.sh`, stage them in `h3-image-pilot/bin-SHA`, and ask Desk
-for a short pause window. Run the script and `mmh3-job.sh` in that window with the existing prompt, seed 42,
-six steps and both sizes. Retain each stage log, compare the new decoder against the CPU decoder on the
-same latent, and compare complete pictures against the existing Metal references (29.2/28.5 dB historical
-2048²/4096² PSNR). These historical numbers are baselines, not new tolerance receipts.
+| Candidate synthetic check | Result |
+|---|---|
+| GPU timestep/AdaLN projections | Passed: BF16/F32 weights, ragged K/N, two times, three modalities, five repeats against ordered host sums |
+| Decoder, 6×10 cells, block 0 | Passed: 92.997% identical, worst 2 ULP, relative error 8.83e-4 |
+| Decoder, 6×10 cells, block 1 | **Failed:** 87.347% identical, worst 3 ULP, relative error 1.15e-3 |
+| Decoder, 20×28 cells, block 0 | **Failed:** 89.974% identical, worst 6 ULP, relative error 1.03e-3 |
+| Decoder, 20×28 cells, block 1 | Passed: 90.303% identical, worst 3 ULP, relative error 1.01e-3 |
+| Decoder batch partitioning | Bit-identical to staged assembly for passes of 1, 3 and 4 tiles |
+| Synthetic picture bytes after two blocks | 88.830% / 90.626% identical; maximum difference 1 at both geometries |
+| Single-tile 24-block chain | Relative error 1.47e-2; passed its 3e-2 bound |
 
-Beyond INT8: this implementation keeps BF16 products, batches up to 64 decoder tiles per pass, and computes
-all timestep/AdaLN tables once on the GPU for reuse across denoising steps. These alternatives are implemented
-but not yet measured experiments. Tile-batch sweeps and a matched timing comparison remain outstanding;
-there is no evidence yet that this path beats mmh3's 17.6 s. The new kernels also await contract-harness
-registration and real compiler/device receipts; synthetic selftests alone do not qualify them.
+Both failures are below the existing 90% identical-values block gate; their ULP and relative-error gates
+pass. The thresholds remain unchanged. The picture-byte checks use synthetic weights and two blocks,
+not the released checkpoint, and do not establish the requested 2048²/4096² PNG tolerance.
+No failing operator is isolated by this receipt: each block includes norms, projections, rotary,
+attention, SwiGLU and residuals. Changing a reduction or relaxing the bound without isolating it would
+not establish a correction.
+
+The beyond-INT8 experiment did execute: BF16 batched decoding of 25 synthetic 16×16-cell tiles through
+24 blocks took 0.54 s wall and 0.54 s by GPU events (21.6 ms/tile). This is one synthetic timing,
+not a checkpoint decoder measurement, a batch-size sweep, or an end-to-end speedup. GPU AdaLN's
+synthetic equality check passed, but checkpoint load time was not reached.
+
+The paired `mmh3-job.sh` (job `bottom-b16fcdc3628f`) exited 0 and produced both PNGs, using the same
+prompt file, seed 42, sizes and six-step settings described above. Its 4096² run reused the cuBLASLt
+and INT8 tiling caches saved by the 2048² run. One run per size; step totals below sum rounded log values.
+
+| Stage | TensorFold GPU 2048² | mmh3 2048² | TensorFold GPU 4096² | mmh3 4096² |
+|---|---:|---:|---:|---:|
+| Prompt | Not reached | 3.7 s | Not reached | 3.9 s |
+| Transformer load | Not reached | 3.0 s | Not reached | 3.0 s |
+| Transformer, 6 steps | Not reached | 9.5 s | Not reached | 53.5 s |
+| Decoder | Not reached | 1.0 s | Not reached | 2.8 s |
+| Wall | No picture | 18.0 s | No picture | 64.1 s |
+
+Receipt SHA-256 identifiers (the fetched card-67 logs, not newly generated runs):
+
+- `tensorfold.log`: `9fb50ff285ae3889c5896a483eed76147ae3c185dcf0ae46204f12a0fc23f6b3`
+- `mmh3/out/mmh3/2048.log`: `8d392be2042b8dce54646272d508e750719f87da0f91e0fa01f23fb77b45eabc`
+- `mmh3/out/mmh3/4096.log`: `d76f2232f53af2fcf80203432961f19da1a102ca21186b2e3ed3c004b9959442`
+
+The continuation preserves all existing numerical bounds and adds independent FFN-projection and
+SwiGLU comparisons on each checked block's own GPU inputs. These read retained scratch only; production
+decoding launches are unchanged. Their device results are still pending, so GEMM accumulation order
+and transcendental rounding remain hypotheses, not established causes of the failed blocks.
+The window script now attempts all three synthetic selftests and refuses checkpoint renders if any
+fails, so a decoder failure no longer hides the prompt selftest's result.
+
+The prompt loader also explicitly requests the condition projection's bias epilogue before checking
+the canonical cuBLASLt algorithm. Previously the actual-row heuristic could decline bias fusion,
+leaving a no-bias descriptor while the wrapper claimed bias was enabled. A host regression exercises
+that fallback and the unsupported-canonical-algorithm refusal; it is not GPU qualification.
+
+`nice -n 10 zig build test test-golden --summary all` passed locally: 892/892 build steps,
+452/467 executed tests passed and 15 skipped; cached test steps are additional. Server goldens had
+322/335 equal with 13 known differences, plus 55/55 authorization goldens equal, zero unexpected
+differences. The decoder diagnostic tool compiled without NVCC (empty image, not a device test).
+The shell gate was exercised with each selftest failing in turn: all three were attempted, exit 1
+prevented renders; the all-pass case proceeded. `sh -n` and changed Zig files' format checks passed.
+
+The remaining gates are decoder failure isolation and correction, the prompt selftest, kernel-contract
+registration and device/compiler receipts, then both checkpoint renders with same-latent CPU decoder
+comparisons and matched stage timings. The next device run must use the continuation's instrumented
+build, not repeat `96b17d83` unchanged. No evidence establishes an end-to-end win over mmh3's historical
+17.6 s.

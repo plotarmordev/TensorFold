@@ -17,9 +17,11 @@ for path in "$model/model_index.json" "$model/text_encoder/config.json" "$pilot/
 done
 nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
 mkdir -p "$out"
-"$bin/tf-h3-image-cuda" --self-test
-"$bin/tf-h3-image-decoder-cuda" selftest
-"$bin/tf-h3-image-prompt-cuda" selftest /work/out/h3-prompt-selftest
+failed=0
+"$bin/tf-h3-image-cuda" --self-test || failed=1
+"$bin/tf-h3-image-decoder-cuda" selftest || failed=1
+"$bin/tf-h3-image-prompt-cuda" selftest /work/out/h3-prompt-selftest || failed=1
+[ "$failed" -eq 0 ] || exit 1
 stage() { # stage NAME TOOL ARGS...: the tool's log, with its times, to $case.NAME.log; shown if it fails
     log=$case.$1.log
     shift
