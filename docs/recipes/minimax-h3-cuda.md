@@ -238,3 +238,71 @@ The BF16 batched decoder experiment again took 0.54 s for 25 synthetic tiles thr
 - `3005ab6b/tensorfold.log`: `c37d73c973c84bafed1ee8341028a1c64b235bd8995a2e1a2f4bbbd5646395f4`
 - `3005ab6b/mmh3/out/mmh3/2048.log`: `9b70b113ba831ed5cbc459d2b8d1e2ebb3e4009ec462c18ba76640ef93c14025`
 - `3005ab6b/mmh3/out/mmh3/4096.log`: `be22c25ffde5cf49322bc21d1aba9d582a0622da533b2b2f4bab8fa0c1576e72`
+
+### Third GPU window: isolated attention and repaired prompt fixture
+
+Desk completed the queued run of `879b27375f2663d09b43128e328b6be70f028d82` on GB10,
+driver 580.173.02. The fetched `879b2737/tensorfold.log` records **failed qualification**,
+not a resolved numerical gate. The checkpoint render directory is empty. All three synthetic
+selftests ran; the modulation check passed, while decoder and prompt checks failed.
+
+- Decoder block identity failures remain 87.347% (6×10, block 1) and 89.974% (20×28, block 0).
+  Q/K norm and rotary from each GPU block input pass at 99.724–99.953% identical; V passes at
+  99.733–99.958%. These are cumulative projection/head checks, not isolated norm tests.
+- Independent FP64 attention on the GPU's own heads passes at 99.986–99.991% identical,
+  at most 1 ULP. FFN projection and SwiGLU checks still pass. These results do not isolate
+  the output projections, LayerScale residuals or the second RMS norm.
+- The repaired prompt fixture reaches numerical execution. Text-only encoding passes
+  (cosine 0.9999959, relative error 2.85e-3), and refinement on its GPU rows passes
+  (0.9999902, 4.44e-3). Repeated text encoding and refinement are byte-identical.
+- Vision/DeepStack encoding fails: cosine 0.9999916, relative error 4.09e-3 versus the
+  float32-sum host run's 0.9999980 and 2.02e-3. The existing two-times-host bound remains
+  unchanged. This fixture uses equal positions on all three axes; it does not discriminate
+  M-RoPE axis selection, despite its log label.
+
+The beyond-INT8 BF16 batched decoder experiment again measured 0.54 s for 25 synthetic tiles
+through 24 blocks (21.7 ms/tile). It remains a synthetic result, not checkpoint decoding time.
+The paired mmh3 logs contain both completed pictures. Same prompt, seed 42, sizes and six-step
+settings as above; 4096² reuses the 2048² algorithm/tiling caches. One run per size:
+
+| Stage | TensorFold GPU 2048² | mmh3 2048² | TensorFold GPU 4096² | mmh3 4096² |
+|---|---:|---:|---:|---:|
+| Prompt | Not reached | 4.0 s | Not reached | 3.9 s |
+| Transformer load | Not reached | 3.2 s | Not reached | 3.1 s |
+| Transformer, 6 steps | Not reached | 9.5 s | Not reached | 53.4 s |
+| Decoder | Not reached | 1.1 s | Not reached | 2.8 s |
+| Wall | No picture | 18.5 s | No picture | 64.1 s |
+
+Transformer totals sum rounded step logs. The 2048² decoder log reports 1.1 s for its stage,
+including 1.0 s decoding; its weight read overlaps sampling. No TensorFold matched timing or
+same-latent PNG comparison was reached, so the 17.6 s historical target is not beaten.
+
+Receipt SHA-256 identifiers:
+
+- `879b2737/tensorfold.log`: `6bf2edf375e5a53a2ed97ed257ecdc4083c10e6d727c3f1674f5526418443983`
+- `879b2737/mmh3/out/mmh3/2048.log`: `962350f7fc5f2bbc188376e09b1a7cb4277cb6baa1a235d8263460a55b9b5111`
+- `879b2737/mmh3/out/mmh3/4096.log`: `89a502c5100beadf6b5ce007a6c0db2df1de7a555cc49732292eeda23d53acea`
+
+The next decoder selftest captures the actual attention residual before the FFN, then checks
+the attention output projection/LayerScale, norm2, and FFN down projection/LayerScale against
+the host reference on each operation's GPU inputs. Capture is compiled out of production passes;
+the existing staged-versus-production byte checks remain. These diagnostics keep the existing
+whole-block gates and do not constitute an arithmetic fix or a successful device result.
+
+The prompt selftest retains the full failing fixture and also compares an identity vision path
+(embedding rows spliced back, zero DeepStack) byte-for-byte against a no-vision run. Separate
+one-layer, splice-only and DeepStack-only runs use the same FP64/F32 whole-run gates and the
+same original random draws. These are selftest-only probes; the production encoder is unchanged.
+They distinguish failing cases, not individual kernel correctness or unequal-axis M-RoPE support.
+
+Local continuation verification passed: `nice -n 10 zig build test test-golden
+tf-h3-image-prompt-cuda tf-h3-image-decoder-cuda --summary all` completed 898/898 build steps,
+460/475 executed tests passed and 15 skipped (additional tests cached). Server goldens were
+322/335 equal with 13 known differences; authorization goldens 55/55 equal, zero unexpected
+differences. The default `zig build --summary all` passed 283/283 steps. Changed Zig files
+passed `zig fmt --check`. A temporary host smoke exercised the shared reference's LayerScale
+rounding, RMS norm and zero-row norm successfully and was removed. Both compiled CUDA CLIs
+were launched with `selftest` locally and stopped with `DriverUnavailable`; these builds embed
+empty images without NVCC and do not exercise the new GPU diagnostics. The prompt fixture
+cleaned up its generated checkpoint. A new Desk run is required for the new diagnostic evidence;
+no new window has been scheduled by this continuation.
