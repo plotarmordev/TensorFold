@@ -86,7 +86,7 @@ pub fn linear(x: []const f32, w: []const u16, b: []const u16, rows: usize, n: us
 }
 
 /// RMSNorm a row of 1,024: bf16((x * rsqrt(mean(x^2) + eps)) * g), the products in fp32.
-fn rms(x: []const f32, g: []const u16, y: []f32) void {
+pub fn rms(x: []const f32, g: []const u16, y: []f32) void {
     var s: f64 = 0;
     for (x) |v| s += @as(f64, v) * v;
     const ms: f32 = @floatCast(s / @as(f64, @floatFromInt(x.len)));
@@ -130,7 +130,7 @@ pub fn embed(m: Model, latent: []const f32, h: usize, w: usize, x: []f32) !void 
 }
 
 /// q and k of one head RMS-normed to bf16 and rotated over their first 32 dims, as the heads kernel does.
-fn turn(src: []const f32, cos: []const u16, sin: []const u16, out: []f32) void {
+pub fn turn(src: []const f32, cos: []const u16, sin: []const u16, out: []f32) void {
     var s: f64 = 0;
     for (src) |v| s += @as(f64, v) * v;
     const ms: f32 = @floatCast(s / D);
@@ -160,6 +160,7 @@ pub const Scratch = struct {
 
     pub fn init(a: std.mem.Allocator, n: usize) !Scratch {
         var s: Scratch = undefined;
+        s.workers = 0;
         inline for (.{ .{ "xn", W }, .{ "qkv", 3 * W }, .{ "q", W }, .{ "k", W }, .{ "v", W }, .{ "o", W }, .{ "y", W }, .{ "wide", 2 * F }, .{ "act", F } }) |kv| {
             @field(s, kv[0]) = try a.alloc(f32, n * kv[1]);
         }
@@ -217,7 +218,7 @@ pub fn layer(m: Model, s: Scratch, index: usize, x: []f32, n: usize, cos: []cons
 const scale: f64 = host.scale;
 
 /// x = bf16(x + bf16(y * s)) per channel, the LayerScale residual in bf16 elementwise.
-fn residual(x: []f32, y: []const f32, s: []const u16) void {
+pub fn residual(x: []f32, y: []const f32, s: []const u16) void {
     for (x, y, 0..) |*o, v, i| o.* = r32(o.* + r32(v * val(s[i % W])));
 }
 

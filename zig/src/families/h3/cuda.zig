@@ -6,6 +6,9 @@ const weights = @import("cuda_weights.zig");
 pub const geometry = @import("cuda_geometry.zig");
 pub const checkpoint = @import("checkpoint.zig");
 pub const host = @import("cuda_host.zig");
+pub const modulation = @import("cuda_modulation.zig");
+pub const modulation_test = @import("cuda_modulation_test.zig");
+pub const image_host = @import("image_host.zig");
 const Gemms = @import("cuda_gemm.zig").Gemms;
 
 pub const head_dim = 128;
@@ -27,11 +30,7 @@ pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "at
 /// h3_attention's dynamic shared bytes: a query, a key and a value tile in bf16.
 const attention_shared = 3 * slot_tile * head_dim * 2;
 
-pub fn seconds() f64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
-    return @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) * 1e-9;
-}
+pub const seconds = @import("clock.zig").seconds;
 
 /// A block's bf16 projections (N, K) as stored, `qkvc` qkv_proj then the gate when the checkpoint has one;
 /// `norms`: norm1, norm2, q and k norms.
@@ -60,7 +59,7 @@ pub const Model = struct {
     inputs: [8]?cuda.DeviceBuffer = @splat(null),
 
     hosts: std.AutoHashMapUnmanaged(usize, cuda.HostBuffer) = .empty,
-    load_stage: cuda.copy_source.Stage = .{},
+    load_stages: [2]cuda.copy_source.Stage = .{ .{}, .{} },
     load_failed: bool = false,
     /// The monotonic second when driver setup finished; `loaded_seconds` measures the weight read after it.
     opened: f64 = 0,
@@ -107,7 +106,7 @@ pub const Model = struct {
         self.inputs = @splat(null);
         self.hosts = .empty;
         self.blocks = &.{};
-        self.load_stage = .{};
+        self.load_stages = .{ .{}, .{} };
         self.load_failed = false;
         self.retained_next = null;
         self.driver = try cuda.Driver.open();
@@ -149,7 +148,7 @@ pub const Model = struct {
     }
     pub fn tryDeinit(self: *Model) !void {
         try self.drain();
-        try self.load_stage.close();
+        for (&self.load_stages) |*stage| try stage.close();
         geometry.releaseCompleted(self);
         host.free(self);
         weights.free(self);

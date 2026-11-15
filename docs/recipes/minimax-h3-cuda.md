@@ -57,30 +57,33 @@ The block arithmetic is the clip model's. Three tools build a picture on a Spark
 writing the file the matching Metal tool writes (docs/recipes/minimax-h3-image-metal.md), so any stage swaps:
 
 ```sh
-zig build tf-h3-image-prompt-host tf-h3-image-cuda tf-h3-image-decoder-host -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 -Doptimize=ReleaseFast
-zig-out/bin/tf-h3-image-prompt-host TEXT_ENCODER_DIR MODEL_DIR prompt.txt out/case.safetensors 2048x2048 42
+zig build tf-h3-image-prompt-cuda tf-h3-image-cuda tf-h3-image-decoder-cuda -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 -Doptimize=ReleaseFast
+zig-out/bin/tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out/case.safetensors 2048x2048 42
 zig-out/bin/tf-h3-image-cuda MODEL_DIR out/case.safetensors out/case
-zig-out/bin/tf-h3-image-decoder-host MODEL_DIR out/case.latent.f32 128 128 out/case.png 2048x2048
+zig-out/bin/tf-h3-image-decoder-cuda MODEL_DIR out/case.latent.f32 128 128 out/case.png 2048x2048
 ```
 
 | Picture stage | Metal | Spark |
 |---|---|---|
-| Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CPU: `prompt_reference.zig`, a layer's weights in f32 at a time, the case from `prompt_case.zig` |
+| Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CUDA `prompt_cuda.zig`, a layer's weights uploaded at a time; CPU reference `prompt_reference.zig`, the case from `prompt_case.zig` |
 | Weights | `model.safetensors.index.json` and its shards | `Model.loadSharded` reads the shards in place |
 | Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | host, `rows_reference.rowsIn` |
-| AdaLN tables: the time embedder, each block's projection per timestep | `h3_modulation` | host, `rows_reference.modulation`, laid out (line, part, c) as `h3.cu` reads |
+| AdaLN tables: the time embedder, each block's projection per timestep | `h3_modulation` | CUDA `cuda_modulation.zig`, resident (line, part, c) tables; final-norm table downloaded |
 | Rotary: 48 angles over 96 dims | `picture.rotary`, 96 wide, duplicated | `cos`/`sin` 48 wide, `rot` 48: the first half of each row |
 | Transformer blocks, dense, tiles of 64 | `block.zig` | these blocks, `keep` 0 |
 | Final norm and the step's head, `pdd_fused_heads` | `h3_final_norm`, `h3_rows_out` | host, `rows_reference.finalNorm`, `rowsOut` |
 | Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | the same |
-| Image decoder | `image_decoder_metal.zig` | CPU: `image_decoder_reference.zig` per tile on every core (`image_decoder_host.zig`) |
+| Image decoder | `image_decoder_metal.zig` | CUDA `image_decoder_cuda.zig`, batched tiles; host blending and PNG output |
 
 Gaps between the video and image transformer: the image transformer has no routing gate (dense attention), fuses each
 head's q, k and v, has six per-step output heads instead of one, no audio rows, and its rotary covers 96 of 128 dims.
 CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check is the picture's PSNR.
 
-The prompt encoder and decoder are the bf16 oracles on the CPU with f64 sums. [`run-script.sh`](minimax-h3-cuda/run-script.sh)
-runs the three tools through the Desk's GPU door in a DeepSeek pause window, at both of the Mac's sizes.
+`tf-h3-image-prompt-cuda` runs the text encoder and refiner on CUDA, streaming one layer's weights at a time.
+`tf-h3-image-decoder-cuda` runs the VAE on CUDA. The CPU tools remain independent reference implementations.
+[`run-script.sh`](minimax-h3-cuda/run-script.sh) selects these GPU tools, runs their synthetic selftests and
+renders both picture sizes only when they pass. The 14 November tables below predate this cutover; the
+[`64188519` window](#gpu-qualification-and-the-64188519-window) measures it.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
@@ -121,3 +124,70 @@ The Desk ran it on BOTTOM (GB10) in the 14 Nov 08:05 window, job `bottom-5733d36
 On the GPU stage both share, INT8 linear makes mmh3's step 2.7× faster at 2048² and 2.2× at 4096². The rest of the
 gap is TensorFold's CPU prompt, host load and CPU decoder, which mmh3 runs on the GPU. mmh3's quoted ~24 s at 4096²
 is three PDMD-LoRA steps as half-size drafts plus one full step with INT8/FP8 attention, a different composition.
+
+### GPU qualification and the `64188519` window
+
+Six earlier Desk windows on 15 November failed the synthetic selftests without rendering a checkpoint
+picture. The decoder's whole-block identity measured 87.347–92.997% against its 90% bound — worst 6 ULP,
+relative error 1.15e-3 — while every operator in the block (norm1, QKV, head norm and rotary, attention,
+output projection and LayerScale, norm2, FFN projection, SwiGLU, down projection and LayerScale) passed
+its 1-ULP/99%-identical product bound on its own GPU input, and 24 chained blocks sat 1.47e-2 from
+float64 against the host fp32 run's 1.5e-2. The prompt's text-only and refiner rows passed; its
+vision/DeepStack probes failed the two-times-host gate (4.09e-3 relative error against the host fp32
+run's 2.02e-3; a one-layer probe 1.16e-3 against a bit-identical fp32 baseline, which admits none).
+Text-to-image never splices vision rows; the real prompt checks against Metal below.
+
+The remaining mismatch was accumulation order. The decoder norms now sum their eight warp partials in the Metal
+kernel's serial order and use correctly rounded reciprocal square roots; the image builds with `--fmad=false`.
+The text encoder's short-row products now sum K sequentially as the host reference does rather than using a tiled
+cuBLASLt reduction, and prompt transcendentals round once from exact. The selftest-only capture entry points are
+removed and every numerical bound is unchanged. Whether the repaired kernels pass on device needs a new Desk window;
+no fixed-gate result is claimed yet.
+
+The 21 H3 launches' registered usage is nvcc 13.0's, read by `kernel-contract-limits` from fatbins built on BOTTOM
+for sm_80/86/89/120/121 at `396df649` (16 November); every launch passes all five SMs' thread, register and shared-memory
+limits. The contract's rotary reference now rotates from the unrotated vector under the served cos/sin tables (whose
+sines reach ±1), and `h3m_project`'s output is declared and checked as bf16 values in fp32 words.
+
+Desk ran `64188519f690eb8bde9897506e241cdd6e0e4fb8` on TOP's GB10, driver 580.173.02, on 15 November,
+18:18–18:29 HKT, with no other job on TOP. `run-script.sh` (`top-43d6798bde4f`) rendered both checkpoint
+sizes and exited 1 on the prompt selftest; `mmh3-job.sh` (`top-f6e5bd1bfa56`) exited 0. Every stage ran
+on the GPU. The modulation selftest passed; the decoder's block identity measured the same
+87.347–92.997%. The script then still rendered after a failure; it now fails fast, so the next window's
+pictures require green selftests.
+
+Same-input checks on the M5 Ultra, against this window's files (`h3-image-runs/67/64188519`):
+
+- **Decoder:** the Metal decoder on the GPU run's own latent is 56.58 dB PSNR from the CUDA decoder's 2048² PNG
+  (86.0% of bytes identical, 99.9% within 1, at most 7 apart) and 56.19 dB at 4096² (84.8%, 99.9%, at most 6).
+- **Prompt:** the Metal prompt tool on the same text gives the same 24 ids and noise; its text rows are cosine
+  0.9999558 from the CUDA rows, relative error 9.40e-3, every row at least 0.999886.
+
+Same prompt, seed 42, six steps; one run per size, mmh3's 4096² reusing its 2048² caches. Pictures are both clean
+foxes; the seeds draw different noise, so the comparison is of times:
+
+| Stage | TensorFold GPU 2048² | mmh3 2048² | TensorFold GPU 4096² | mmh3 4096² |
+|---|---:|---:|---:|---:|
+| Prompt | 57.3 s (encoder 55.3 s, refiner 1.6 s) | 3.9 s | 60.1 s | 3.9 s |
+| Transformer load, AdaLN tables on the GPU | 88.7 s | 3.2 s | 85.5 s | 3.0 s |
+| Transformer, 6 steps | 26.5 s (4.0 s a step settled) | 9.5 s (1.4 s) | 119.6 s (19.5 s) | 55.8 s (8.9 s) |
+| Decoder (weights, then tiles) | 7.7 s (4.6 + 3.1) | 1.1 s | 14.9 s (3.8 + 11.1) | 2.8 s |
+| Wall | ~180 s | 18.6 s | ~280 s | 66.3 s |
+
+TensorFold's walls sum its four processes' stages. From the 14 November CPU stages this is 477 s to ~180 s at 2048²
+and 1,128 s to ~280 s at 4096²; the decoder alone went from 218 s to 7.7 s and 771 s to 14.9 s. mmh3's 17.6 s is
+not beaten. Beyond copying mmh3's INT8 path, this card tried a BF16 batched decoder (all tiles in passes on the
+GPU, 25 synthetic tiles in 0.55 s, 121 checkpoint tiles in 2.8 s of GPU time) and AdaLN tables built and kept on
+the GPU for every step, which the host load no longer computes.
+
+Prompt and load are now weight transport, not arithmetic. The text encoder streams ~45 GiB at ~0.85 GB/s: its
+"GPU" time (53.2 s) brackets the layer loop, where each 64 MiB window of the single pinned stage is copied out of the
+mapping and waited before the next (`Runner.copy`), and each layer allocates and frees its 11 device buffers. The
+load moves 36.7 GiB of blocks the same way (`cuda_weights.upload`, ~0.42 GB/s) and each block's AdaLN projection
+weight through pageable copies synced per chunk (`cuda_modulation.Tensor.load`). The transport path now uses two alternating stage windows with mapping read-ahead, reuses each set of layer buffers,
+and uploads AdaLN weights through pinned stages. The table remains the previous implementation's baseline; a matched
+post-fix benchmark needs a new Desk window. Receipt SHA-256 identifiers:
+
+- `64188519/tensorfold.log`: `5bfda8793e16af8159c8435c098768d26466455c10931db7bd619174262cdb12`
+- `64188519/mmh3/out/mmh3/2048.log`: `54e17e0ada53c14502c6dadf543d4f64b0522537e704a383018f78da11772cfb`
+- `64188519/mmh3/out/mmh3/4096.log`: `a509701c36d026a9ca502fe904bc723ce73e888a8dd8abc868f800bd72cae3e1`
