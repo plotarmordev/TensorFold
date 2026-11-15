@@ -28,7 +28,7 @@ pub fn spec(w: Which) c.Spec {
     return switch (w) {
         .sinusoid => .{ .name = "cuda h3 image modulation h3m_sinusoid", .accum = .none, .depth = none, .ops = 4, .out = .f32, .served = &.{ .{ .rows = 8, .n = 256, .k = 1 }, .{ .rows = 77, .n = 512, .k = 1 } } },
         .embed => .{ .name = "cuda h3 image modulation h3m_embed", .accum = .f32, .depth = dotK, .ops = 4, .out = .f32, .served = &.{ .{ .rows = 8, .n = 64, .k = 256 }, .{ .rows = 8, .n = 128, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the kernel sums in binary64: a bf16 or f16 sum's error is a few f32 output ulps" } },
-        .project => .{ .name = "cuda h3 image modulation h3m_project", .accum = .f32, .depth = laneChain, .ops = 2, .out = .bf16, .store = .f32, .served = &.{ .{ .rows = 8, .n = 64, .k = 256 }, .{ .rows = 8, .n = 128, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the bf16-in-f32 output hides a bf16 sum's error" } },
+        .project => .{ .name = "cuda h3 image modulation h3m_project", .accum = .f32, .depth = laneChain, .ops = 2, .out = .f32, .store = .bf16, .served = &.{ .{ .rows = 8, .n = 64, .k = 256 }, .{ .rows = 8, .n = 128, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the bf16-in-f32 output hides a bf16 sum's error" } },
     };
 }
 
@@ -171,6 +171,13 @@ pub const Mod = struct {
             },
         }
         try self.rig.s.synchronize();
+        if (self.which == .project) try self.bf16Words();
+    }
+
+    /// project stores bf16 values in fp32 words: every word's low half must be zero.
+    fn bf16Words(self: *Mod) !void {
+        const words = std.mem.bytesAsSlice(u32, try self.rig.outputBytes());
+        for (words) |w| if (w & 0xffff != 0) return error.NotBf16Valued;
     }
 
     fn go(self: *Mod, grid: cuda.Dim3, args: *cuda.Args) !void {
