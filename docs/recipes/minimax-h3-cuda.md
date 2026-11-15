@@ -65,7 +65,7 @@ zig-out/bin/tf-h3-image-decoder-host MODEL_DIR out/case.latent.f32 128 128 out/c
 
 | Picture stage | Metal | Spark |
 |---|---|---|
-| Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CPU: `prompt_reference.zig`, a layer's weights in f32 at a time, the case from `prompt_case.zig` |
+| Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CUDA `prompt_cuda.zig`, a layer's weights uploaded at a time; CPU reference `prompt_reference.zig`, the case from `prompt_case.zig` |
 | Weights | `model.safetensors.index.json` and its shards | `Model.loadSharded` reads the shards in place |
 | Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | host, `rows_reference.rowsIn` |
 | AdaLN tables: the time embedder, each block's projection per timestep | `h3_modulation` | CUDA `cuda_modulation.zig`, resident (line, part, c) tables; final-norm table downloaded |
@@ -82,7 +82,8 @@ CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check
 `tf-h3-image-prompt-cuda` runs the text encoder and refiner on CUDA, streaming one layer's weights at a time.
 `tf-h3-image-decoder-cuda` runs the VAE on CUDA. The CPU tools remain independent reference implementations.
 [`run-script.sh`](minimax-h3-cuda/run-script.sh) selects these GPU tools and runs their synthetic selftests before
-both picture sizes. The measurements below predate this cutover; they are not measurements of these new paths.
+both picture sizes. The first two tables below predate this cutover; the [seventh window](#seventh-gpu-window-checkpoint-pictures-on-the-gpu)
+measures it.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
@@ -461,3 +462,51 @@ The batched BF16 decoder experiment measured 0.54 s for 25 synthetic tiles throu
 - `bb46c418/tensorfold.log`: `a6336f2ff0df7633aa6d39be8e1b50b1bb339a5264305967ee61086e11d97b1d`
 - `bb46c418/mmh3/out/mmh3/2048.log`: `4d5e6f704a83643f37b6357781a87b7195f25e08d15fb3aa5692f2dac1c5fb9b`
 - `bb46c418/mmh3/out/mmh3/4096.log`: `456bbde746efba7268120fe28fdf3b37fde25002aebae7b375a5ded76e2f06ac`
+
+### Seventh GPU window: checkpoint pictures on the GPU
+
+Desk ran `64188519f690eb8bde9897506e241cdd6e0e4fb8` on TOP's GB10, driver 580.173.02, on 15 November, 18:18–18:29
+HKT, with no other job on TOP. `run-script.sh` (`top-43d6798bde4f`) exited 1 on the prompt selftest alone and rendered
+both sizes; `mmh3-job.sh` (`top-f6e5bd1bfa56`) exited 0. Every stage ran on the GPU. The modulation and decoder
+selftests pass (decoder blocks 87.347–92.997% identical, worst 6 ULP; 24 blocks 1.47e-2 from float64).
+
+The prompt selftest's text-only and refiner rows pass; its four vision/DeepStack probes still fail the two-times-host
+gate (4.09e-3 relative error against the host fp32 run's 2.02e-3; the one-layer probe 1.16e-3 against 0). Text-to-image
+never splices vision rows, and the real prompt checks against Metal below, so the gate is left as is for the edit path.
+
+Same-input checks on the M5 Ultra, against this window's files (`h3-image-runs/67/64188519`):
+
+- **Decoder:** the Metal decoder on the GPU run's own latent is 56.58 dB PSNR from the CUDA decoder's 2048² PNG
+  (86.0% of bytes identical, 99.9% within 1, at most 7 apart) and 56.19 dB at 4096² (84.8%, 99.9%, at most 6).
+- **Prompt:** the Metal prompt tool on the same text gives the same 24 ids and noise; its text rows are cosine
+  0.9999558 from the CUDA rows, relative error 9.40e-3, every row at least 0.999886.
+
+Same prompt, seed 42, six steps; one run per size, mmh3's 4096² reusing its 2048² caches. Pictures are both clean
+foxes; the seeds draw different noise, so the comparison is of times:
+
+| Stage | TensorFold GPU 2048² | mmh3 2048² | TensorFold GPU 4096² | mmh3 4096² |
+|---|---:|---:|---:|---:|
+| Prompt | 57.3 s (encoder 55.3 s, refiner 1.6 s) | 3.9 s | 60.1 s | 3.9 s |
+| Transformer load, AdaLN tables on the GPU | 88.7 s | 3.2 s | 85.5 s | 3.0 s |
+| Transformer, 6 steps | 26.5 s (4.0 s a step settled) | 9.5 s (1.4 s) | 119.6 s (19.5 s) | 55.8 s (8.9 s) |
+| Decoder (weights, then tiles) | 7.7 s (4.6 + 3.1) | 1.1 s | 14.9 s (3.8 + 11.1) | 2.8 s |
+| Wall | ~180 s | 18.6 s | ~280 s | 66.3 s |
+
+TensorFold's walls sum its four processes' stages. From the 14 November CPU stages this is 477 s to ~180 s at 2048²
+and 1,128 s to ~280 s at 4096²; the decoder alone went from 218 s to 7.7 s and 771 s to 14.9 s. mmh3's 17.6 s is
+not beaten. Beyond copying mmh3's INT8 path, this card tried a BF16 batched decoder (all tiles in passes on the
+GPU, 25 synthetic tiles in 0.55 s, 121 checkpoint tiles in 2.8 s of GPU time) and AdaLN tables built and kept on
+the GPU for every step, which the host load no longer computes.
+
+Prompt and load are now weight transport, not arithmetic. The text encoder streams ~45 GiB at ~0.85 GB/s: its
+"GPU" time (53.2 s) brackets the layer loop, where each 64 MiB window of the single pinned stage is copied out of the
+mapping and waited before the next (`Runner.copy`), and each layer allocates and frees its 11 device buffers. The
+load moves 36.7 GiB of blocks the same way (`cuda_weights.upload`, ~0.42 GB/s) and each block's AdaLN projection
+weight through pageable copies synced per chunk (`cuda_modulation.Tensor.load`). The next step is two alternating
+stage windows with the mapping read ahead (`read_ahead.zig`, as the Metal paths do), one set of layer buffers reused
+across layers, and the AdaLN weights through the pinned stage; with GB10's pinned copy rate that is a few seconds
+of transport per stage, not tens. Receipt SHA-256 identifiers:
+
+- `64188519/tensorfold.log`: `5bfda8793e16af8159c8435c098768d26466455c10931db7bd619174262cdb12`
+- `64188519/mmh3/out/mmh3/2048.log`: `54e17e0ada53c14502c6dadf543d4f64b0522537e704a383018f78da11772cfb`
+- `64188519/mmh3/out/mmh3/4096.log`: `a509701c36d026a9ca502fe904bc723ce73e888a8dd8abc868f800bd72cae3e1`
