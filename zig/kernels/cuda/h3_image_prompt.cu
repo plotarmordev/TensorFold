@@ -21,27 +21,26 @@ static __device__ float h3p_normed(float x, float r, float w, int mode) {
     return mode == 0 ? f(h(__fmul_rn(w, f(h(__fmul_rn(x, r)))))) : f(h(__fmul_rn(__fmul_rn(x, r), w)));
 }
 
-// y = RMSNorm(x) by w with fp32 statistics; a 256-thread block a row, its 8 warp partials met in
-// order. x bf16, w fp32, y bf16: every output a bf16 value, as the products read it.
+// y = RMSNorm(x) by w with fp32 statistics, its squares summed in order as the host reference sums
+// them: a tree's other order moves the scale a ULP and flips bf16 outputs. x bf16, w fp32, y bf16.
 extern "C" __global__ void __launch_bounds__(256) h3p_norm(
         const bf16* x, const float* w, bf16* y, int width, int mode, float eps) {
-    __shared__ float part[8];
+    __shared__ float r;
     const int row = blockIdx.x;
     const bf16* xr = x + (size_t)row * width;
     bf16* yr = y + (size_t)row * width;
-    float s = 0.0f;
-    for (int i = threadIdx.x; i < width; i += 256) s = __fadd_rn(s, __fmul_rn(f(xr[i]), f(xr[i])));
-    for (int k = 16; k; k >>= 1) s = __fadd_rn(s, __shfl_xor_sync(0xffffffffu, s, k));
-    if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = s;
+    if (threadIdx.x == 0) {
+        float s = 0.0f;
+        for (int i = 0; i < width; ++i) s = __fadd_rn(s, __fmul_rn(f(xr[i]), f(xr[i])));
+        r = inv_sqrt(__fadd_rn(s / (float)width, eps));
+    }
     __syncthreads();
-    float all = part[0];
-    for (int i = 1; i < 8; ++i) all = __fadd_rn(all, part[i]);
-    const float r = inv_sqrt(__fadd_rn(all / (float)width, eps));
     for (int i = threadIdx.x; i < width; i += 256) yr[i] = h(h3p_normed(f(xr[i]), r, w[i], mode));
 }
 
 // The text model's heads: q then k heads of 128 normed in place (mode as h3p_norm), turned by
-// cos, sin [rows, 64]. Heads sit `head` apart in rows `q_row`/`k_row` wide; a warp a head.
+// cos, sin [rows, 64]. Heads sit `head` apart in rows `q_row`/`k_row` wide; a warp a head, each
+// lane summing the head's 128 squares in order as the host reference does.
 extern "C" __global__ void __launch_bounds__(256) h3p_heads(
         bf16* q, bf16* k, const float* wq, const float* wk, const float* cs, const float* sn,
         int heads, int kv_heads, int q_row, int k_row, int head, int mode, int rotary, float eps) {
@@ -53,13 +52,11 @@ extern "C" __global__ void __launch_bounds__(256) h3p_heads(
     bf16* x = is_q ? q + (size_t)row * q_row + (size_t)hh * head
                    : k + (size_t)row * k_row + (size_t)(hh - heads) * head;
     const float* w = is_q ? wq : wk;
-    float v[4];
     float ss = 0.0f;
-    for (int i = 0; i < 4; ++i) {
-        v[i] = f(x[lane * 4 + i]);
-        ss = __fadd_rn(ss, __fmul_rn(v[i], v[i]));
-    }
-    for (int k_ = 16; k_; k_ >>= 1) ss = __fadd_rn(ss, __shfl_xor_sync(0xffffffffu, ss, k_));
+    for (int i = 0; i < 128; ++i) ss = __fadd_rn(ss, __fmul_rn(f(x[i]), f(x[i])));
+    float v[4];
+    for (int i = 0; i < 4; ++i) v[i] = f(x[lane * 4 + i]);
+    __syncwarp();
     const float r = inv_sqrt(__fadd_rn(ss / 128.0f, eps));
     for (int i = 0; i < 4; ++i) v[i] = h3p_normed(v[i], r, w[lane * 4 + i], mode);
     if (rotary) {
@@ -75,9 +72,17 @@ extern "C" __global__ void __launch_bounds__(256) h3p_heads(
     for (int i = 0; i < 4; ++i) x[lane * 4 + i] = h(v[i]);
 }
 
+// One key's score: q . k over 128 in order, times scale, as the host reference's.
+static __device__ float h3p_score(const bf16* q, const bf16* k, float scale) {
+    float s = 0.0f;
+    for (int i = 0; i < 128; ++i) s = __fadd_rn(s, __fmul_rn(f(q[i]), f(k[i])));
+    return __fmul_rn(s, scale);
+}
+
 // o [rows, heads * 128] = softmax(q k^T / sqrt(128)) v over earlier rows (causal) or all, rounded to
-// bf16 as the reference stores it; a warp a row's head, keys stepped four at a time as the Metal
-// kernel's. q, k, v, o bf16; heads sit `head` apart in rows q_row/k_row/v_row wide.
+// bf16 as the reference stores it. The reference's two passes in its order: the top score (order-free,
+// lanes split the keys), then each key's weight once, the weight sum and each lane's 4 value sums over
+// the keys in order. A warp a row's head; q, k, v, o bf16; heads sit `head` apart in rows q_row/k_row/v_row.
 extern "C" __global__ void __launch_bounds__(256) h3p_attention(
         const bf16* q, const bf16* k, const bf16* v, bf16* o,
         int rows, int heads, int kv_heads, int q_row, int k_row, int v_row, int head,
@@ -87,35 +92,25 @@ extern "C" __global__ void __launch_bounds__(256) h3p_attention(
     if (hh >= heads) return;
     const int lane = threadIdx.x & 31;
     const int kv = hh / (heads / kv_heads);
-    const bf16* qp = q + (size_t)row * q_row + (size_t)hh * head + lane * 4;
-    const bf16* kp = k + (size_t)kv * head + lane * 4;
+    const bf16* qp = q + (size_t)row * q_row + (size_t)hh * head;
+    const bf16* kp = k + (size_t)kv * head;
     const bf16* vp = v + (size_t)kv * head + lane * 4;
     const int end = causal ? row + 1 : rows;
-    float m = -INFINITY, l = 0.0f;
+    float top = -INFINITY;
+    for (int j = lane; j < end; j += 32) top = fmaxf(top, h3p_score(qp, kp + (size_t)j * k_row, scale));
+    for (int k_ = 16; k_; k_ >>= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, k_));
+    float l = 0.0f;
     float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    for (int j0 = 0; j0 < end; j0 += 4) {
-        float s[4];
-        int at[4];
-        for (int u = 0; u < 4; ++u) {
-            at[u] = min(j0 + u, end - 1);
-            const bf16* kr = kp + (size_t)at[u] * k_row;
-            s[u] = 0.0f;
-            for (int i = 0; i < 4; ++i) s[u] = __fadd_rn(s[u], __fmul_rn(f(qp[i]), f(kr[i])));
-            for (int k_ = 16; k_; k_ >>= 1) s[u] = __fadd_rn(s[u], __shfl_xor_sync(0xffffffffu, s[u], k_));
-            s[u] = __fmul_rn(s[u], scale);
-            if (j0 + u >= end) s[u] = -INFINITY;
-        }
-        const float top = fmaxf(fmaxf(m, fmaxf(s[0], s[1])), fmaxf(s[2], s[3]));
-        const float old = exact_exp(m - top);
-        l = __fmul_rn(l, old);
-        for (int i = 0; i < 4; ++i) acc[i] = __fmul_rn(acc[i], old);
-        for (int u = 0; u < 4; ++u) {
-            const float e = exact_exp(s[u] - top);
+    for (int j0 = 0; j0 < end; j0 += 32) {
+        // the warp's next 32 keys' weights, one a lane, then read back in key order
+        const int j = j0 + lane;
+        const float mine = j < end ? exact_exp(__fadd_rn(h3p_score(qp, kp + (size_t)j * k_row, scale), -top)) : 0.0f;
+        for (int u = 0; u < 32 && j0 + u < end; ++u) {
+            const float e = __shfl_sync(0xffffffffu, mine, u);
             l = __fadd_rn(l, e);
-            const bf16* vr = vp + (size_t)at[u] * v_row;
-            for (int i = 0; i < 4; ++i) acc[i] = __fadd_rn(acc[i], __fmul_rn(e, f(vr[i]))); // a pad adds nothing
+            const bf16* vr = vp + (size_t)(j0 + u) * v_row;
+            for (int i = 0; i < 4; ++i) acc[i] = __fadd_rn(acc[i], __fmul_rn(e, f(vr[i])));
         }
-        m = top;
     }
     bf16* out = o + (size_t)row * heads * 128 + (size_t)hh * 128 + lane * 4;
     for (int i = 0; i < 4; ++i) out[i] = h(__fdiv_rn(acc[i], l));
