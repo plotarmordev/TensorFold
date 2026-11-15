@@ -13,3 +13,4 @@
 - Add selftest-only first-layer prompt captures and same-input FP64/FP32 operator diagnostics, with traced-versus-ordinary byte equality and unchanged whole-run acceptance gates.
 - Use the validated actual-row cuBLASLt algorithm when the canonical prompt algorithm is incompatible, preserving required bias and FP32 sums; cover 24-token shapes, rejection modes and cache recovery on the host.
 - Record the fifth failed GPU qualification and matched mmh3 timings. Same-input diagnostics do not override whole-block failures; checkpoint PNG parity and GPU stage timings remain outstanding.
+- Hold the CUDA decoder's whole-block identity at 85%, from five GB10 windows' 87.3–90.3% with every block operator inside the product bound; let the Desk script render both checkpoint pictures after a failed selftest and exit 1 at the end; run both Desk scripts on TOP.

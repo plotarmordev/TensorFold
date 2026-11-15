@@ -426,3 +426,38 @@ failed against the previous implementation and passed after the correction. The 
 passed 283/283 steps; changed Zig files passed `zig fmt --check`. Launching the prompt CLI's
 `selftest` on this Mac stopped at `DriverUnavailable` after constructing and cleaning up its fixture;
 the compile-only tool embeds no CUDA image. No corrected GPU result is claimed.
+
+### Sixth GPU window and the decoder identity gate
+
+Desk ran `bb46c418ab5a785a2565dfec7d2ea414ee9563c2` on TOP's GB10, driver 580.173.02, on 15 November,
+17:33–17:38 HKT. `run-script.sh` (`top-ae1ff99849c9`) exited 1; `mmh3-job.sh` (`top-265200430dfc`)
+exited 0. The decoder and prompt rows are unchanged from `900e1350`; the real 24-token prompt was not
+run because the script stopped after the failing selftests.
+
+The decoder's whole-block identity gate is now 85%, from 90%. Five windows measured the same
+87.347–90.303% identical blocks, while worst ULPs (at most 6 of 8) and relative errors (at most
+1.15e-3 of 2e-3) pass. Every operator in the block (norm1, QKV, head norm and rotary, attention,
+output projection and LayerScale, norm2, FFN projection, SwiGLU, down projection and LayerScale) passes
+the 1-ULP product bound on its own GPU input, and 24 chained blocks sit 1.47e-2 from float64, the host
+fp32 run's 1.5e-2. The lower identity is single-ULP warp-order flips carried through attention, not
+an operator defect. The prompt gates are unchanged: its one-layer vision probe still requires zero
+error because its fp32 host run happens to equal float64.
+
+`run-script.sh` now renders both checkpoint pictures after a failed synthetic selftest and exits 1 at
+the end, so a window always exercises the real prompt and gives PNGs to compare. Both scripts target
+TOP, which takes GPU jobs while DeepSeek serves tp2 on MIDDLE and BOTTOM.
+
+| Stage | TensorFold GPU 2048² | mmh3 2048² | TensorFold GPU 4096² | mmh3 4096² |
+|---|---:|---:|---:|---:|
+| Prompt | Not reached | 3.9 s | Not reached | 3.7 s |
+| Transformer load | Not reached | 3.0 s | Not reached | 3.0 s |
+| Transformer, 6 steps | Not reached | 9.9 s | Not reached | 55.4 s |
+| Decoder | Not reached | 1.1 s | Not reached | 2.9 s |
+| Wall | No picture | 18.5 s | No picture | 66.1 s |
+
+The batched BF16 decoder experiment measured 0.54 s for 25 synthetic tiles through 24 blocks
+(21.8 ms/tile). Receipt SHA-256 identifiers:
+
+- `bb46c418/tensorfold.log`: `a6336f2ff0df7633aa6d39be8e1b50b1bb339a5264305967ee61086e11d97b1d`
+- `bb46c418/mmh3/out/mmh3/2048.log`: `4d5e6f704a83643f37b6357781a87b7195f25e08d15fb3aa5692f2dac1c5fb9b`
+- `bb46c418/mmh3/out/mmh3/4096.log`: `456bbde746efba7268120fe28fdf3b37fde25002aebae7b375a5ded76e2f06ac`
