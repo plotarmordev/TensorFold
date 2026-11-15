@@ -71,6 +71,15 @@ class Summary(unittest.TestCase):
         self.assertIn("| 2048² warm 2 | 120.0 |", text)
         self.assertIn("| 2048² warm mean | 110.0 | 57.3 | 88.7 | 26.5 | 7.7 | 6.0 | 1000.0 | 50.0 | 5.5 |", text)
 
+    def test_a_failed_or_missing_selftest_marks_the_timings_as_not_the_sparks(self):
+        self.assertIn("**Not the Spark's result: the decoder selftest failed;", bench.summary(self.out))
+        (self.out / "selftests").write_text("transformer PASS\ndecoder PASS\nprompt PASS\n")
+        text = bench.summary(self.out)
+        self.assertIn("Every selftest passed.", text)
+        self.assertNotIn("Not the Spark's result", text)
+        (self.out / "selftests").unlink()
+        self.assertIn("**Not the Spark's result: no selftest ran.**", bench.summary(self.out))
+
     def test_a_missing_number_in_a_warm_run_leaves_the_mean_empty(self):
         self.case("2048-1", 0.0, 200.0, "0, 1000, 50.0, \n")
         self.case("2048-2", 0.0, 100.0, "")

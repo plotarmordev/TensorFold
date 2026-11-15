@@ -91,7 +91,8 @@ renders both picture sizes only when they pass. The 14 November tables below pre
 records each selftest's PASS or FAIL and renders anyway. Each size gets one cold picture (start to first picture) and
 three warm repeats, each stage in its own process, while `nvidia-smi` is sampled twice a second. Where unified
 memory leaves `memory.used` as `[N/A]`, the peak is the compute processes' memory instead.
-`/work/out/h3-image-bench/SUMMARY.md` lists the commit, GPU, prompt hash and seed. Per run it gives wall, prompt, load,
+`/work/out/h3-image-bench/SUMMARY.md` opens with the selftests' verdict. If any selftest failed or none ran, it says
+the timings are not the Spark's result. It then lists the commit, GPU, prompt hash and seed. Per run it gives wall, prompt, load,
 transformer and decoder seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
 It is written by [`h3_image_bench.py`](../../tools/zig/h3_image_bench.py), also when a stage fails:
 

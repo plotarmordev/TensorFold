@@ -76,10 +76,17 @@ def row(label, run):
 
 
 def summary(out):
-    lines = ["# MiniMax-H3-Image CUDA benchmark", ""]
+    selftests = (out / "selftests").read_text().splitlines() if (out / "selftests").exists() else []
+    failed = [line.split()[0] for line in selftests if not line.endswith(" PASS")]
+    if not selftests:
+        verdict = "**Not the Spark's result: no selftest ran.**"
+    elif failed:
+        verdict = f"**Not the Spark's result: the {', '.join(failed)} selftest failed; these timings are a failing build's.**"
+    else:
+        verdict = "Every selftest passed."
+    lines = ["# MiniMax-H3-Image CUDA benchmark", "", verdict, ""]
     lines += [f"- {line}" for line in (out / "settings").read_text().splitlines()]
-    lines += ["", "Selftests (recorded, not a gate):", ""]
-    selftests = (out / "selftests").read_text().splitlines() if (out / "selftests").exists() else ["none ran"]
+    lines += ["", "Selftests:", ""]
     lines += [f"- {line}" for line in selftests]
     lines += ["", "Run 1 is cold (start to first picture); 2-4 are warm repeats. Energy is average power times wall.", ""]
     lines += ["| run | " + " | ".join(COLUMNS) + " |", "|---|" + "---:|" * len(COLUMNS)]
