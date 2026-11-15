@@ -6,6 +6,9 @@ const weights = @import("cuda_weights.zig");
 pub const geometry = @import("cuda_geometry.zig");
 pub const checkpoint = @import("checkpoint.zig");
 pub const host = @import("cuda_host.zig");
+pub const modulation = @import("cuda_modulation.zig");
+pub const modulation_test = @import("cuda_modulation_test.zig");
+pub const image_host = @import("image_host.zig");
 const Gemms = @import("cuda_gemm.zig").Gemms;
 
 pub const head_dim = 128;

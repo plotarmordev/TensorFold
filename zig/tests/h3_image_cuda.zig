@@ -1,9 +1,8 @@
 //! MiniMax-H3-Image's transformer on CUDA from a picture case: the free run of the distilled schedule,
-//! the blocks on the GPU in the checkpoint's bf16, everything around them on the host at the Metal
-//! kernels' rounding: rows in, the AdaLN tables, the final norm and each step's head, then the Euler step.
+//! the blocks, timestep embedder and AdaLN tables on CUDA; row projections and Euler updates on the host.
 const std = @import("std");
 const h3 = @import("h3cuda");
-const h3image = @import("h3image");
+const h3image = h3.image_host;
 const picture = h3image.picture;
 const schedule = h3image.schedule;
 const rows = h3image.rows;
@@ -31,6 +30,7 @@ fn values(comptime T: type, bytes: []const u8) []align(1) const T {
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len == 2 and std.mem.eql(u8, args[1], "--self-test")) return h3.modulation_test.run(init.gpa);
     if (args.len != 4) {
         std.debug.print("{s}", .{usage});
         return error.BadArguments;
@@ -97,21 +97,13 @@ pub fn main(init: std.process.Init) !void {
         @memcpy(sin[r * picture.angles ..][0..picture.angles], rot.sin[r * picture.rotated ..][0..picture.angles]);
     }
 
-    // the AdaLN tables: the embedder on the host, each block's projection at the Metal kernel's rounding,
-    // laid out (line, part, hidden) in float32 as the CUDA blocks read them, line = timestep x 3 + modality
+    // AdaLN tables stay resident across every denoising step; only the final host norm's table returns.
     const plan = try schedule.plan(a, .{ .text = text, .condition = held, .audio = 0, .video = target }, pdd.timesteps, pdd.timesteps);
     const times = plan.table.len;
     const lines = times * schedule.modalities;
-    const embed = try rows.embed(a, plan.table, try embeddingDim(&ck), try ck.floats(a, "time_embedder.proj_in.weight"), try ck.floats(a, "time_embedder.proj_in.bias"), try ck.floats(a, "time_embedder.proj_out.weight"), try ck.floats(a, "time_embedder.proj_out.bias"));
-    const k = embed.len / times;
-    const block_table = lines * 6 * hidden;
-    const tables = try a.alloc(f32, model.blocks.len * block_table);
-    var name: [128]u8 = undefined;
-    for (0..model.blocks.len) |i| {
-        try rows.modulation(f32, embed, try ck.floats(a, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.weight", .{i})), try ck.floats(a, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.bias", .{i})), tables[i * block_table ..][0..block_table], times, k, schedule.modalities, 6, hidden);
-    }
-    const final = try a.alloc(u16, times * 2 * hidden);
-    try rows.modulation(u16, embed, try ck.floats(a, "final_layer.adaln_proj.linear.weight"), try ck.floats(a, "final_layer.adaln_proj.linear.bias"), final, times, k, 1, 1, 2 * hidden);
+    var modulation = try h3.modulation.prepare(gpa, &model.driver, model.stream, &ck, plan.table, model.blocks.len, hidden);
+    defer modulation.deinit();
+    const final = modulation.final;
     const final_norm = values(u16, try ck.at("final_layer.norm.weight", .bf16, hidden));
 
     // the step heads: the picture's distilled heads, one a step, in model_index.json's heads file
@@ -141,7 +133,7 @@ pub fn main(init: std.process.Init) !void {
     const normed = try a.alloc(u16, count * hidden);
     var in: h3.Model.Inputs = .{
         .x = @intFromPtr(x.ptr),
-        .tables = @intFromPtr(tables.ptr),
+        .tables = modulation.blocks.ptr,
         .line = @intFromPtr(adaln.ptr),
         .cos = @intFromPtr(cos.ptr),
         .sin = @intFromPtr(sin.ptr),
@@ -164,7 +156,15 @@ pub fn main(init: std.process.Init) !void {
         if (anchors) |v| rows.rowsIn(v, w_in, b_in, x, text, held, width, hidden);
         rows.rowsIn(video, w_in, b_in, x, text + held, target, width, hidden);
         in.line = @intFromPtr(adaln[s * count ..].ptr);
-        _ = try h3.host.forwardHost(model, &in);
+        const checked = try model.plan(&in);
+        try model.drain();
+        // stage() treats every address as host memory; stage the small inputs without the resident table.
+        var upload = checked;
+        upload.input[1] = 0;
+        var device = try h3.host.stage(model, &in, upload);
+        device.tables = modulation.blocks.ptr;
+        _ = try model.forward(&device);
+        try h3.host.readback(model, &in, checked);
         // the final norm over every row, then this step's head over the target's rows
         rows.finalNorm(x, final_norm, final, line_of[s * count ..][0..count], normed, hidden, h3.eps);
         rows.rowsOut(normed, w_out[s * width * hidden ..][0 .. width * hidden], b_out[s * width ..][0..width], velocity, text + held, target, hidden, width);
@@ -180,13 +180,4 @@ pub fn main(init: std.process.Init) !void {
     const latent_path = try std.fmt.allocPrintSentinel(a, "{s}.latent.f32", .{args[3]}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = latent_path, .data = std.mem.sliceAsBytes(latent) });
     std.debug.print("wrote {s}.latent.f32: [{d}, {d}, {d}] normalised float32\n", .{ args[3], picture.channels, target_grid.rows, target_grid.columns });
-}
-
-/// The embedder's width, checked against its four tensors before any allocation.
-fn embeddingDim(ck: *const h3.checkpoint.Shards) !usize {
-    const in_w = ck.entry("time_embedder.proj_in.weight") orelse return error.MissingTensor;
-    const in_b = ck.entry("time_embedder.proj_in.bias") orelse return error.MissingTensor;
-    const out_w = ck.entry("time_embedder.proj_out.weight") orelse return error.MissingTensor;
-    const out_b = ck.entry("time_embedder.proj_out.bias") orelse return error.MissingTensor;
-    return rows.shape.embedding(in_w, in_b, out_w, out_b, 1);
 }
