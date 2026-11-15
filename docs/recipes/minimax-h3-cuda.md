@@ -68,19 +68,21 @@ zig-out/bin/tf-h3-image-decoder-host MODEL_DIR out/case.latent.f32 128 128 out/c
 | Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CPU: `prompt_reference.zig`, a layer's weights in f32 at a time, the case from `prompt_case.zig` |
 | Weights | `model.safetensors.index.json` and its shards | `Model.loadSharded` reads the shards in place |
 | Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | host, `rows_reference.rowsIn` |
-| AdaLN tables: the time embedder, each block's projection per timestep | `h3_modulation` | host, `rows_reference.modulation`, laid out (line, part, c) as `h3.cu` reads |
+| AdaLN tables: the time embedder, each block's projection per timestep | `h3_modulation` | CUDA `cuda_modulation.zig`, resident (line, part, c) tables; final-norm table downloaded |
 | Rotary: 48 angles over 96 dims | `picture.rotary`, 96 wide, duplicated | `cos`/`sin` 48 wide, `rot` 48: the first half of each row |
 | Transformer blocks, dense, tiles of 64 | `block.zig` | these blocks, `keep` 0 |
 | Final norm and the step's head, `pdd_fused_heads` | `h3_final_norm`, `h3_rows_out` | host, `rows_reference.finalNorm`, `rowsOut` |
 | Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | the same |
-| Image decoder | `image_decoder_metal.zig` | CPU: `image_decoder_reference.zig` per tile on every core (`image_decoder_host.zig`) |
+| Image decoder | `image_decoder_metal.zig` | CUDA `image_decoder_cuda.zig`, batched tiles; host blending and PNG output |
 
 Gaps between the video and image transformer: the image transformer has no routing gate (dense attention), fuses each
 head's q, k and v, has six per-step output heads instead of one, no audio rows, and its rotary covers 96 of 128 dims.
 CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check is the picture's PSNR.
 
-The prompt encoder and decoder are the bf16 oracles on the CPU with f64 sums. [`run-script.sh`](minimax-h3-cuda/run-script.sh)
-runs the three tools through the Desk's GPU door in a DeepSeek pause window, at both of the Mac's sizes.
+`tf-h3-image-prompt-cuda` runs the text encoder and refiner on CUDA, streaming one layer's weights at a time.
+`tf-h3-image-decoder-cuda` runs the VAE on CUDA. The CPU tools remain independent reference implementations.
+[`run-script.sh`](minimax-h3-cuda/run-script.sh) selects these GPU tools and runs their synthetic selftests before
+both picture sizes. The measurements below predate this cutover; they are not measurements of these new paths.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
@@ -121,3 +123,22 @@ The Desk ran it on BOTTOM (GB10) in the 14 Nov 08:05 window, job `bottom-5733d36
 On the GPU stage both share, INT8 linear makes mmh3's step 2.7× faster at 2048² and 2.2× at 4096². The rest of the
 gap is TensorFold's CPU prompt, host load and CPU decoder, which mmh3 runs on the GPU. mmh3's quoted ~24 s at 4096²
 is three PDMD-LoRA steps as half-size drafts plus one full step with INT8/FP8 attention, a different composition.
+
+### GPU cutover qualification (card 67)
+
+The CUDA prompt, decoder and timestep/AdaLN implementations require a new Desk run. On 15 Nov, `deepseek status`
+reported the window closed (14 Nov 08:15), all three ranks serving, and BOTTOM at 96% GPU utilization. No new
+picture, PSNR, CUDA selftest, kernel-contract receipt or speedup is claimed. Do not treat a compile-only build
+without `-Dnvcc` as CUDA qualification: it embeds empty images deliberately.
+
+Build the three tools with the command in `run-script.sh`, stage them in `h3-image-pilot/bin-SHA`, and ask Desk
+for a short pause window. Run the script and `mmh3-job.sh` in that window with the existing prompt, seed 42,
+six steps and both sizes. Retain each stage log, compare the new decoder against the CPU decoder on the
+same latent, and compare complete pictures against the existing Metal references (29.2/28.5 dB historical
+2048²/4096² PSNR). These historical numbers are baselines, not new tolerance receipts.
+
+Beyond INT8: this implementation keeps BF16 products, batches up to 64 decoder tiles per pass, and computes
+all timestep/AdaLN tables once on the GPU for reuse across denoising steps. These alternatives are implemented
+but not yet measured experiments. Tile-batch sweeps and a matched timing comparison remain outstanding;
+there is no evidence yet that this path beats mmh3's 17.6 s. The new kernels also await contract-harness
+registration and real compiler/device receipts; synthetic selftests alone do not qualify them.
