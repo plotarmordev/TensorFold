@@ -10,6 +10,11 @@ typedef __nv_bfloat16 bf16;
 static __device__ float f(bf16 v) { return __bfloat162float(v); }
 static __device__ bf16 h(float v) { return __float2bfloat16_rn(v); }
 
+// 1 / sqrt(x) and exp(x) one rounding from exact, as the host reference's float32 run computes them;
+// rsqrtf and expf are up to 2 ULPs off, an error every value of a norm or softmax row carries.
+static __device__ float inv_sqrt(float x) { return __fdiv_rn(1.0f, __fsqrt_rn(x)); }
+static __device__ float exact_exp(float x) { return (float)exp((double)x); }
+
 // One RMSNorm value: mode 0 bf16(w * bf16(x * r)) as the Qwen text model rounds, mode 1 bf16(x * r * w)
 // as H3's blocks round. The weight is fp32: checkpoint bf16 values convert exactly.
 static __device__ float h3p_normed(float x, float r, float w, int mode) {
@@ -31,7 +36,7 @@ extern "C" __global__ void __launch_bounds__(256) h3p_norm(
     __syncthreads();
     float all = part[0];
     for (int i = 1; i < 8; ++i) all = __fadd_rn(all, part[i]);
-    const float r = rsqrtf(__fadd_rn(all / (float)width, eps));
+    const float r = inv_sqrt(__fadd_rn(all / (float)width, eps));
     for (int i = threadIdx.x; i < width; i += 256) yr[i] = h(h3p_normed(f(xr[i]), r, w[i], mode));
 }
 
@@ -55,7 +60,7 @@ extern "C" __global__ void __launch_bounds__(256) h3p_heads(
         ss = __fadd_rn(ss, __fmul_rn(v[i], v[i]));
     }
     for (int k_ = 16; k_; k_ >>= 1) ss = __fadd_rn(ss, __shfl_xor_sync(0xffffffffu, ss, k_));
-    const float r = rsqrtf(__fadd_rn(ss / 128.0f, eps));
+    const float r = inv_sqrt(__fadd_rn(ss / 128.0f, eps));
     for (int i = 0; i < 4; ++i) v[i] = h3p_normed(v[i], r, w[lane * 4 + i], mode);
     if (rotary) {
         // channel c pairs with c + 64, 16 lanes away: rotate-half reads -x[c + 64] below the half
@@ -101,11 +106,11 @@ extern "C" __global__ void __launch_bounds__(256) h3p_attention(
             if (j0 + u >= end) s[u] = -INFINITY;
         }
         const float top = fmaxf(fmaxf(m, fmaxf(s[0], s[1])), fmaxf(s[2], s[3]));
-        const float old = expf(m - top);
+        const float old = exact_exp(m - top);
         l = __fmul_rn(l, old);
         for (int i = 0; i < 4; ++i) acc[i] = __fmul_rn(acc[i], old);
         for (int u = 0; u < 4; ++u) {
-            const float e = expf(s[u] - top);
+            const float e = exact_exp(s[u] - top);
             l = __fadd_rn(l, e);
             const bf16* vr = vp + (size_t)at[u] * v_row;
             for (int i = 0; i < 4; ++i) acc[i] = __fadd_rn(acc[i], __fmul_rn(e, f(vr[i]))); // a pad adds nothing
@@ -125,7 +130,7 @@ extern "C" __global__ void __launch_bounds__(256) h3p_glu(
     const int row = blockIdx.y;
     if (c >= width) return;
     const float x = f(g[(size_t)row * g_row + c]);
-    const float e = 1.0f + expf(-x);
+    const float e = 1.0f + exact_exp(-x);
     const float s = mode == 0 ? f(h(__fdiv_rn(x, e))) : f(h(__fmul_rn(x, f(h(__fdiv_rn(1.0f, e))))));
     o[(size_t)row * width + c] = h(__fmul_rn(s, f(v[(size_t)row * v_row + c])));
 }
@@ -163,6 +168,22 @@ extern "C" __global__ void __launch_bounds__(256) h3p_splice(
     const int i = blockIdx.y;
     if (c >= width) return;
     x[(size_t)pads[i] * width + c] = rows_[(size_t)i * width + c];
+}
+
+// y [rows, n] fp32 = x [rows, k] bf16 . w [n, k] bf16^T, each K sum in the host reference's order.
+// The text encoder's short rows make a sequential dot product preferable to a differently ordered tiled GEMM:
+// its bf16 rounding points then coincide with the reference's instead of failing a zero-noise vision baseline.
+extern "C" __global__ void __launch_bounds__(256) h3p_linear(
+        const bf16* x, const bf16* w, float* y, int rows, int n, int k) {
+    const int at = blockIdx.x * 256 + threadIdx.x;
+    if (at >= rows * n) return;
+    const int row = at / n;
+    const int col = at % n;
+    const bf16* xr = x + (size_t)row * k;
+    const bf16* wr = w + (size_t)col * k;
+    float sum = 0.0f;
+    for (int i = 0; i < k; ++i) sum = __fadd_rn(sum, __fmul_rn(f(xr[i]), f(wr[i])));
+    y[at] = sum;
 }
 
 // y [n] = bf16(x [n]): a product's fp32 rows at their one rounding to bf16, the reference's every output.

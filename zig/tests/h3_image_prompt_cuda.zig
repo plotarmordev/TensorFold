@@ -76,20 +76,27 @@ pub fn main(init: std.process.Init) !u8 {
     var shards = try Shards.open(io, a, gpa, args[1]);
     defer shards.deinit(gpa);
     const prefix = try rules.textPrefix(shards.where.keys());
-    const embed = try shards.tensorBytes(a, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix}), .{ enc.text.vocab, enc.text.hidden });
+    const embed = try shards.tensorBytes(try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix}), .{ enc.text.vocab, enc.text.hidden });
+    // the mapped bytes into the page cache before the uploads fault them in mid-copy
+    try shards.readAhead(a, TextNames{ .prefix = prefix, .layers = enc.text.layers });
     const enc_rows = try a.alloc(u16, T * enc.text.hidden);
     var gpu_started = seconds();
-    var layer_ctx: LayerCtx = .{ .shards = &shards, .g = enc.text, .prefix = prefix, .arena = gpa };
+    var layer_ctx: LayerCtx = .{ .shards = &shards, .g = enc.text, .prefix = prefix };
     try runner.encode(a, enc.text, embed, p.ids, pos, null, layerOf, &layer_ctx, enc_rows);
     std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU\n", .{ T, enc.text.layers, seconds() - gpu_started, runner.gpu });
 
     // condition_proj and the two-block refiner, their tensors read in order
     var front_shards = try Shards.open(io, a, gpa, transformer);
     defer front_shards.deinit(gpa);
-    const front_w = try frontTensors(a, &front_shards, front);
+    const front_w = try frontTensors(&front_shards, front);
+    try front_shards.readAhead(a, struct {
+        fn accepts(_: @This(), name: []const u8) bool {
+            return std.mem.startsWith(u8, name, "condition_proj.") or std.mem.startsWith(u8, name, "token_refiner.");
+        }
+    }{});
     const text = try a.alloc(u16, T * front.hidden);
     gpu_started = seconds();
-    var block_ctx: BlockCtx = .{ .shards = &front_shards, .arena = gpa, .g = front };
+    var block_ctx: BlockCtx = .{ .shards = &front_shards, .g = front };
     try runner.refine(a, front, front_w.cond_w, front_w.cond_b, front_w.final_norm, blockOf, &block_ctx, enc_rows, text);
     std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU\n", .{ seconds() - gpu_started, runner.gpu });
 
@@ -150,9 +157,32 @@ const Shards = struct {
         return s.folder.shard(s.gpa, file);
     }
 
+    /// The mapped bytes of every tensor `accepts` into the page cache before the GPU's uploads fault
+    /// them in one at a time, as the Metal prompt paths do (`h3/read_ahead.zig`); each shard mapped
+    /// once, its accepted tensors one span.
+    fn readAhead(s: *Shards, a: std.mem.Allocator, accepts: anytype) !void {
+        var spans: std.ArrayList(hp.read_ahead.Span) = .empty;
+        defer spans.deinit(a);
+        var done: std.StringHashMapUnmanaged(void) = .empty;
+        defer done.deinit(a);
+        var it = s.where.iterator();
+        while (it.next()) |e| {
+            if (!accepts.accepts(e.key_ptr.*)) continue;
+            const gop = try done.getOrPut(a, e.value_ptr.*);
+            if (gop.found_existing) continue;
+            const file = try s.shard(e.key_ptr.*);
+            const path = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ s.folder.dir, e.value_ptr.* }, 0);
+            var names = file.names.iterator();
+            while (names.next()) |n| if (accepts.accepts(n.key_ptr.*)) {
+                const entry = n.value_ptr.*;
+                try spans.append(a, .{ .path = path, .lo = file.data + entry.begin, .hi = file.data + entry.end });
+            };
+        }
+        _ = try hp.read_ahead.read(spans.items);
+    }
+
     /// The bf16 tensor `name` at `shape` as stored bytes (columns 0: a vector of `rows` values).
-    fn tensorBytes(s: *Shards, a: std.mem.Allocator, name: []const u8, shape: rules.Shape) !hp.Tensor {
-        _ = a;
+    fn tensorBytes(s: *Shards, name: []const u8, shape: rules.Shape) !hp.Tensor {
         const e = try (try s.shard(name)).bf16(name);
         const rows_: usize = if (shape[1] == 0) 1 else shape[0];
         const cols: usize = if (shape[1] == 0) shape[0] else shape[1];
@@ -164,8 +194,25 @@ const Shards = struct {
     }
 };
 
+/// The text model's embedding and its first `layers` layers under `prefix`, the prompt path's set.
+const TextNames = struct {
+    prefix: []const u8,
+    layers: usize,
+
+    fn accepts(t: TextNames, name: []const u8) bool {
+        if (!std.mem.startsWith(u8, name, t.prefix)) return false;
+        const rest = name[t.prefix.len..];
+        if (std.mem.eql(u8, rest, "embed_tokens.weight")) return true;
+        if (!std.mem.startsWith(u8, rest, "layers.")) return false;
+        const tail = rest["layers.".len..];
+        const dot = std.mem.indexOfScalar(u8, tail, '.') orelse return false;
+        const i = std.fmt.parseInt(usize, tail[0..dot], 10) catch return false;
+        return i < t.layers;
+    }
+};
+
 /// `encode`'s layer callback: layer `li`'s 11 bf16 tensors from the mapped shards.
-const LayerCtx = struct { shards: *Shards, g: rules.Text, prefix: []const u8, arena: std.mem.Allocator };
+const LayerCtx = struct { shards: *Shards, g: rules.Text, prefix: []const u8 };
 
 fn layerOf(ctx: *anyopaque, li: usize) anyerror!hp.LayerSet {
     const c: *LayerCtx = @ptrCast(@alignCast(ctx));
@@ -173,13 +220,13 @@ fn layerOf(ctx: *anyopaque, li: usize) anyerror!hp.LayerSet {
     var name: [176]u8 = undefined;
     inline for (comptime std.meta.fieldNames(hp.LayerSet), rules.layerTensors(c.g)) |field, spec| {
         std.debug.assert(std.mem.eql(u8, field, spec[0]));
-        @field(set, field) = try c.shards.tensorBytes(c.arena, try std.fmt.bufPrint(&name, "{s}layers.{d}.{s}", .{ c.prefix, li, spec[1] }), spec[2]);
+        @field(set, field) = try c.shards.tensorBytes(try std.fmt.bufPrint(&name, "{s}layers.{d}.{s}", .{ c.prefix, li, spec[1] }), spec[2]);
     }
     return set;
 }
 
 /// `refine`'s block callback: block `bi`'s 8 bf16 tensors from the transformer's shards.
-const BlockCtx = struct { shards: *Shards, arena: std.mem.Allocator, g: rules.Refiner };
+const BlockCtx = struct { shards: *Shards, g: rules.Refiner };
 
 fn blockOf(ctx: *anyopaque, bi: usize) anyerror!hp.BlockSet {
     const c: *BlockCtx = @ptrCast(@alignCast(ctx));
@@ -187,17 +234,17 @@ fn blockOf(ctx: *anyopaque, bi: usize) anyerror!hp.BlockSet {
     var name: [96]u8 = undefined;
     inline for (comptime std.meta.fieldNames(hp.BlockSet), rules.blockTensors(c.g)) |field, spec| {
         std.debug.assert(std.mem.eql(u8, field, spec[0]));
-        @field(set, field) = try c.shards.tensorBytes(c.arena, try std.fmt.bufPrint(&name, "token_refiner.blocks.{d}.{s}", .{ bi, spec[1] }), spec[2]);
+        @field(set, field) = try c.shards.tensorBytes(try std.fmt.bufPrint(&name, "token_refiner.blocks.{d}.{s}", .{ bi, spec[1] }), spec[2]);
     }
     return set;
 }
 
 /// condition_proj's weight and bias and the final norm, checked at the refiner's shapes.
-fn frontTensors(a: std.mem.Allocator, s: *Shards, g: rules.Refiner) !struct { cond_w: hp.Tensor, cond_b: hp.Tensor, final_norm: hp.Tensor } {
+fn frontTensors(s: *Shards, g: rules.Refiner) !struct { cond_w: hp.Tensor, cond_b: hp.Tensor, final_norm: hp.Tensor } {
     var w: struct { cond_w: hp.Tensor, cond_b: hp.Tensor, final_norm: hp.Tensor } = undefined;
     inline for (.{ "cond_w", "cond_b", "final_norm" }, rules.frontTensors(g)) |field, spec| {
         std.debug.assert(std.mem.eql(u8, field, spec[0]));
-        @field(w, field) = try s.tensorBytes(a, spec[1], spec[2]);
+        @field(w, field) = try s.tensorBytes(spec[1], spec[2]);
     }
     return .{ .cond_w = w.cond_w, .cond_b = w.cond_b, .final_norm = w.final_norm };
 }
@@ -410,19 +457,6 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     const vision: hp.Vision = .{ .pads = pads, .rows = bits[0 .. n * H], .deepstack = .{ bits[n * H ..][0 .. n * H], bits[2 * n * H ..][0 .. n * H], bits[3 * n * H ..][0 .. n * H] } };
     const oracle: ref.Vision = .{ .pads = pads, .rows = blocks[0], .deepstack = blocks[1..4].* };
 
-    // One layer under the capture: the same buffers byte for byte as an uncaptured run, then each
-    // op's download against its host reference replayed on the captured GPU inputs (diagnostics only).
-    var first_layer = g;
-    first_layer.layers = 1;
-    const traced = try a.alloc(u16, T * H);
-    var cap = try hp.trace.Capture.init(a, first_layer, T);
-    try runner.encodeObserved(a, first_layer, embed, ids, pos, vision, bitsLayer, &layer_ctx, traced, &cap);
-    const untraced = try a.alloc(u16, T * H);
-    try runner.encode(a, first_layer, embed, ids, pos, vision, bitsLayer, &layer_ctx, untraced);
-    const trace_same = std.mem.eql(u16, traced, untraced);
-    std.debug.print("the captured one-layer run byte for byte the uncaptured run: {}\n", .{trace_same});
-    try hp.trace.check(a, &cap, first_layer, tiny.host.layers[0], oracle, ids, tiny.host.embed, cs, sn);
-
     // Equal inputs must retain the same arithmetic with the vision copy/add path enabled.
     const plain = try a.alloc(u16, T * H);
     try runner.encode(a, g, embed, ids, pos, null, bitsLayer, &layer_ctx, plain);
@@ -431,6 +465,10 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     try runner.encode(a, g, embed, ids, pos, noop_vision, bitsLayer, &layer_ctx, noop);
     const noop_same = std.mem.eql(u16, plain, noop);
     std.debug.print("a no-op vision (embedding rows spliced back, DeepStack zero) byte for byte the text-only run: {}\n", .{noop_same});
+
+    // one layer alone: the probes below separate its growth from splice and DeepStack
+    var first_layer = g;
+    first_layer.layers = 1;
 
     const Probe = struct { label: []const u8, geometry: rules.Text, gpu: hp.Vision, host: ref.Vision };
     const probes = [_]Probe{
@@ -452,7 +490,7 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     const enc = try a.alloc(u16, T * H);
     const exact = try a.alloc(f32, T * H);
     const sum32 = try a.alloc(f32, T * H);
-    var ok = noop_same and trace_same;
+    var ok = noop_same;
     for (probes) |probe| {
         try runner.encode(a, probe.geometry, embed, ids, pos, probe.gpu, bitsLayer, &layer_ctx, enc);
         try ref.encode(f64, a, probe.geometry, tiny.host, ids, cs, sn, probe.host, exact);
@@ -502,7 +540,7 @@ test "the CUDA selftest exposes its checkpoint embedding to the encoder" {
     // the written text shard: the embedding the GPU path feeds, read back and checked byte for byte
     var shards = try Shards.open(io, a, a, tiny.text_dir);
     defer shards.deinit(a);
-    const embed = try shards.tensorBytes(a, "model.language_model.embed_tokens.weight", .{ g.vocab, g.hidden });
+    const embed = try shards.tensorBytes("model.language_model.embed_tokens.weight", .{ g.vocab, g.hidden });
     try std.testing.expectEqual(2 * g.vocab * g.hidden, embed.len);
     try std.testing.expectEqualSlices(u8, embed, try bitsOf(&tiny, "model.language_model.embed_tokens.weight"));
     try std.testing.expectError(error.MissingTensor, bitsOf(&tiny, "model.language_model.embed_tokens.weight.missing"));

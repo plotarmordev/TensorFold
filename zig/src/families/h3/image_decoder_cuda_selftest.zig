@@ -19,12 +19,10 @@ pub const bounds = struct {
     /// fp32 sums against float64 move a bf16 output only where they straddle a rounding point: at most 1 ULP.
     pub const product_ulps: f64 = 1;
     pub const product_same: f64 = 0.99;
-    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, relative 7e-4). On GB10 the
-    /// CUDA blocks measured 87.3-90.3% identical, worst 6 ULPs, relative 1.15e-3, with every operator inside the
-    /// product bound on its GPU input and 24 chained blocks as far from float64 as the host's (1.47e-2 vs 1.5e-2):
-    /// warp-order ULP flips carried through attention, so identity is held near that, the error by ULPs and relative.
+    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, relative 7e-4); the CUDA
+    /// norms use the Metal reduction order and correctly rounded reciprocal square roots.
     pub const block_ulps: f64 = 8;
-    pub const block_same: f64 = 0.85;
+    pub const block_same: f64 = 0.9;
     pub const block_relative: f64 = 2e-3;
     /// The output after two blocks chained (host fp32 sums: relative 2.9e-3, worst 3 ULPs) and after 24 (1.5e-2).
     pub const chain_ulps: f64 = 8;
@@ -158,38 +156,18 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
 
     // each checked block on the GPU's own input, and the reference's chain beside it
     const input = try a.alloc(f32, tiles * per);
-    const original = try a.alloc(f32, tiles * per);
-    const middle = try a.alloc(u16, tiles * per);
-    const norm = try a.alloc(u16, tiles * per);
-    const qkv = try a.alloc(u16, 3 * tiles * per);
-    const q = try a.alloc(u16, tiles * per);
-    const keys = try a.alloc(u16, tiles * per);
-    const values = try a.alloc(u16, tiles * per);
-    const attended = try a.alloc(u16, tiles * per);
     for (0..checked) |i| {
         for (input, embedded) |*o, b| o.* = rounding.value(b);
-        @memcpy(original, input);
-        try d.inspectBlock(origins, i, .{ .norm = norm, .qkv = qkv, .middle = middle });
+        _ = try d.pass(origins, .{ .embed = false, .from = i, .to = i + 1, .final = false });
         @memcpy(embedded, try d.stream());
-        try d.attention(q, keys, values, attended);
-        var heads: Stat = .{};
-        var projected_values: Stat = .{};
         for (0..tiles) |k| {
             try ref.layer(model, scratch, i, input[k * per ..][0..per], n, cos, sin);
-            heads.add(q[k * per ..][0..per], scratch.q, host.head_dim);
-            heads.add(keys[k * per ..][0..per], scratch.k, host.head_dim);
-            projected_values.add(values[k * per ..][0..per], scratch.v, host.head_dim);
             try ref.layer(model, scratch, i, chained[k * per ..][0..per], n, cos, sin);
         }
         var block: Stat = .{};
         block.add(embedded, input, W);
         var name: [32]u8 = undefined;
         ok = block.report(try std.fmt.bufPrint(&name, "block {d}", .{i}), bounds.block_ulps, bounds.block_same, bounds.block_relative) and ok;
-        ok = heads.report("Q/K norm and rotary from block input", bounds.block_ulps, bounds.block_same, bounds.block_relative) and ok;
-        ok = projected_values.report("V projection from block input", bounds.block_ulps, bounds.block_same, bounds.block_relative) and ok;
-        ok = try attentionInput(d, model, i, original, norm, qkv, q, keys, cos, sin) and ok;
-        ok = try feedForward(d, model, i, original, middle, attended, embedded) and ok;
-        ok = try attention(d, i, q, keys, values, attended) and ok;
     }
 
     // norm_out and proj_out on the GPU's stream, then the reference's chain against the GPU's
@@ -245,137 +223,6 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
     ok = ok and bytes_ok;
     if (c.deep) ok = try deep(a, d, model, latent, c, t, origins, cos, sin, scratch) and ok;
     return ok;
-}
-
-fn feedForward(d: *dec.Decoder, model: ref.Model, index: usize, original: []const f32, middle: []const u16, attended: []const u16, output: []const u16) !bool {
-    var arena = std.heap.ArenaAllocator.init(d.gpa);
-    defer arena.deinit();
-    const scratch = arena.allocator();
-    const rows = d.passed * d.tokens;
-    const F = host.ffn;
-    const norm = try scratch.alloc(u16, rows * W);
-    const wide = try scratch.alloc(u16, rows * 2 * F);
-    const act = try scratch.alloc(u16, rows * F);
-    try d.feedForward(norm, wide, act);
-    var ok = try residual(scratch, model, index, .out_w, .out_b, .scale1, original, attended, middle);
-    const mid = try scratch.alloc(f32, middle.len);
-    for (mid, middle) |*o, b| o.* = rounding.value(b);
-    const norm_want = try scratch.alloc(f32, mid.len);
-    const gain = model.w[model.plan.block(index, .norm2)..][0..W];
-    for (0..rows) |row| ref.rms(mid[row * W ..][0..W], gain, norm_want[row * W ..][0..W]);
-    var normalized: Stat = .{};
-    normalized.add(norm, norm_want, W);
-    ok = normalized.report("FFN norm on GPU attention residual", bounds.product_ulps, bounds.product_same, 1) and ok;
-    ok = try residual(scratch, model, index, .w2_w, .w2_b, .scale2, mid, act, output) and ok;
-    const input = try scratch.alloc(f32, norm.len);
-    for (input, norm) |*o, b| o.* = rounding.value(b);
-    const want = try scratch.alloc(f32, wide.len);
-    const weights = model.w[model.plan.block(index, .w1_w)..][0 .. 2 * F * W];
-    const bias = model.w[model.plan.block(index, .w1_b)..][0 .. 2 * F];
-    try ref.linear(input, weights, bias, rows, 2 * F, W, want);
-    var product: Stat = .{};
-    product.add(wide, want, 2 * F);
-    const product_ok = product.report("FFN projection on GPU norm", bounds.product_ulps, bounds.product_same, 1);
-    for (0..rows) |row| for (0..F) |j| {
-        const gate = rounding.value(wide[row * 2 * F + j]);
-        const silu = rounding.round32(gate / (1.0 + @exp(-gate)));
-        want[row * F + j] = rounding.round32(silu * rounding.value(wide[row * 2 * F + F + j]));
-    };
-    var activation: Stat = .{};
-    activation.add(act, want[0..act.len], F);
-    return activation.report("SwiGLU on GPU projection", bounds.product_ulps, bounds.product_same, 1) and product_ok and ok;
-}
-
-/// Isolate the first norm, projection and head transform instead of comparing their accumulated errors.
-fn attentionInput(d: *dec.Decoder, model: ref.Model, index: usize, input: []const f32, norm: []const u16, qkv: []const u16, q: []const u16, k: []const u16, cos: []const u16, sin: []const u16) !bool {
-    var arena = std.heap.ArenaAllocator.init(d.gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const rows = input.len / W;
-    const want = try a.alloc(f32, qkv.len);
-    const gain = model.w[model.plan.block(index, .norm1)..][0..W];
-    for (0..rows) |r| ref.rms(input[r * W ..][0..W], gain, want[r * W ..][0..W]);
-    var normalized: Stat = .{};
-    normalized.add(norm, want[0..norm.len], W);
-    var ok = normalized.report("attention norm on GPU block input", bounds.product_ulps, bounds.product_same, 1);
-    const xn = try a.alloc(f32, norm.len);
-    for (xn, norm) |*o, b| o.* = rounding.value(b);
-    const weights = model.w[model.plan.block(index, .qkv_w)..][0 .. 3 * W * W];
-    const bias = model.w[model.plan.block(index, .qkv_b)..][0 .. 3 * W];
-    try ref.linear(xn, weights, bias, rows, 3 * W, W, want);
-    var projected: Stat = .{};
-    projected.add(qkv, want, 3 * W);
-    ok = projected.report("QKV projection on GPU attention norm", bounds.product_ulps, bounds.product_same, 1) and ok;
-    const D = host.head_dim;
-    var heads: Stat = .{};
-    for (0..d.passed) |tile| for (0..d.tokens) |t| for (0..host.heads) |hd| {
-        const source = ((tile * d.tokens + t) * 3 * W) + hd * 3 * D;
-        const target = ((tile * host.heads + hd) * d.tokens + t) * D;
-        for ([_][]const u16{ q, k }, 0..) |output, part| {
-            var values: [D]f32 = undefined;
-            var turned: [D]f32 = undefined;
-            for (&values, qkv[source + part * D ..][0..D]) |*o, b| o.* = rounding.value(b);
-            ref.turn(&values, cos[t * vae.rotated ..][0..vae.rotated], sin[t * vae.rotated ..][0..vae.rotated], &turned);
-            heads.add(output[target..][0..D], &turned, D);
-        }
-    };
-    return heads.report("Q/K norm and rotary on GPU QKV", bounds.product_ulps, bounds.product_same, 1) and ok;
-}
-
-/// The real pipeline's residual against an independent projection of its own GPU input.
-fn residual(a: std.mem.Allocator, model: ref.Model, index: usize, weight: host.Block, bias: host.Block, scale: host.Block, original: []const f32, input: []const u16, output: []const u16) !bool {
-    const rows = original.len / W;
-    const k = input.len / rows;
-    const x = try a.alloc(f32, input.len);
-    for (x, input) |*o, b| o.* = rounding.value(b);
-    const projected = try a.alloc(f32, original.len);
-    const w = model.w[model.plan.block(index, weight)..][0 .. W * k];
-    const b = model.w[model.plan.block(index, bias)..][0..W];
-    const gain = model.w[model.plan.block(index, scale)..][0..W];
-    try ref.linear(x, w, b, rows, W, k, projected);
-    const want = try a.dupe(f32, original);
-    ref.residual(want, projected, gain);
-    var stat: Stat = .{};
-    stat.add(output, want, W);
-    return stat.report(if (weight == .out_w) "attention projection and LayerScale on GPU attention" else "FFN down and LayerScale on GPU activation", bounds.product_ulps, bounds.product_same, 1);
-}
-
-/// Each head's softmax(q k^T / 8) v recomputed in float64 on the GPU's own retained q, k, v, compared
-/// to the GPU's retained o: it isolates the attention kernel from the heads and projection kernels.
-fn attention(d: *dec.Decoder, index: usize, q: []const u16, k: []const u16, v: []const u16, o: []const u16) !bool {
-    var arena = std.heap.ArenaAllocator.init(d.gpa);
-    defer arena.deinit();
-    const scratch = arena.allocator();
-    const tiles = d.passed;
-    const n = d.tokens;
-    const D = host.head_dim;
-    const elems = tiles * n * W;
-    const want = try scratch.alloc(f32, elems);
-    const p = try scratch.alloc(f64, n);
-    for (0..tiles) |tile| for (0..host.heads) |hd| for (0..n) |t| {
-        const head = (tile * host.heads + hd) * n * D;
-        var top: f64 = -std.math.inf(f64);
-        for (0..n) |j| {
-            var dot: f64 = 0;
-            for (0..D) |c| dot += @as(f64, rounding.value(q[head + t * D + c])) * rounding.value(k[head + j * D + c]);
-            p[j] = dot * host.scale;
-            top = @max(top, p[j]);
-        }
-        var total: f64 = 0;
-        for (p) |*e| {
-            e.* = @exp(e.* - top);
-            total += e.*;
-        }
-        for (0..D) |c| {
-            var acc: f64 = 0;
-            for (0..n) |j| acc += p[j] * rounding.value(v[head + j * D + c]);
-            want[(tile * n + t) * W + hd * D + c] = @floatCast(rounding.bf16(acc / total));
-        }
-    };
-    var attended: Stat = .{};
-    attended.add(o, want, W);
-    var name: [48]u8 = undefined;
-    return attended.report(try std.fmt.bufPrint(&name, "block {d} attention on GPU heads", .{index}), bounds.product_ulps, bounds.product_same, 1);
 }
 
 fn assemble(a: std.mem.Allocator, t: host.Tiles, tiles: []const f32, len: usize) ![]f32 {

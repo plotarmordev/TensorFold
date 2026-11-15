@@ -273,27 +273,6 @@ pub const Decoder = struct {
         return @as([*]const u16, @ptrCast(@alignCast(bytes.ptr)))[0 .. bytes.len / 2];
     }
 
-    /// The last block's retained FFN inputs and outputs, for independent operator checks in the selftest.
-    pub fn feedForward(d: *Decoder, norm: []u16, wide: []u16, act: []u16) !void {
-        const rows = d.passed * d.tokens;
-        if (norm.len != rows * W or wide.len != rows * 2 * F or act.len != rows * F) return error.H3BadLatentLength;
-        try d.scratch.?.download(d.view.xn, std.mem.sliceAsBytes(norm));
-        try d.scratch.?.download(d.view.wide, std.mem.sliceAsBytes(wide));
-        try d.scratch.?.download(d.view.act, std.mem.sliceAsBytes(act));
-    }
-
-    /// The last block's retained attention tensors, for an independent check in the selftest: q, k, v
-    /// [tiles, heads, tokens, head_dim] as h3d_heads laid them out, o [tiles * tokens, 1,024].
-    /// The out projection and FFN leave them untouched, so they hold block `to - 1`'s values.
-    pub fn attention(d: *Decoder, q: []u16, k: []u16, v: []u16, o: []u16) !void {
-        const elems = d.passed * d.tokens * W;
-        if (q.len != elems or k.len != elems or v.len != elems or o.len != elems) return error.H3BadLatentLength;
-        try d.scratch.?.download(d.view.q, std.mem.sliceAsBytes(q));
-        try d.scratch.?.download(d.view.k, std.mem.sliceAsBytes(k));
-        try d.scratch.?.download(d.view.v, std.mem.sliceAsBytes(v));
-        try d.scratch.?.download(d.view.o, std.mem.sliceAsBytes(o));
-    }
-
     fn dev(d: *const Decoder, off: usize) u64 {
         return d.scratch.?.ptr + off;
     }
@@ -311,19 +290,6 @@ pub const Decoder = struct {
 
     /// One pass: `stages` on the tiles whose first cells (row, column) are `origins`.
     pub fn pass(d: *Decoder, origins: []const [2]u32, stages: Stages) !Timing {
-        return d.passImpl(origins, stages, false, .{});
-    }
-
-    /// Selftest-only snapshots taken before the FFN reuses the norm, QKV and residual buffers.
-    pub const Inspection = struct { norm: []u16 = &.{}, qkv: []u16 = &.{}, middle: []u16 = &.{} };
-
-    pub fn inspectBlock(d: *Decoder, origins: []const [2]u32, index: usize, capture: Inspection) !void {
-        const count = origins.len * d.tokens * W;
-        if (capture.norm.len != count or capture.qkv.len != 3 * count or capture.middle.len != count) return error.H3BadLatentLength;
-        _ = try d.passImpl(origins, .{ .embed = false, .from = index, .to = index + 1, .final = false }, true, capture);
-    }
-
-    fn passImpl(d: *Decoder, origins: []const [2]u32, stages: Stages, comptime inspect: bool, capture: Inspection) !Timing {
         if (d.scratch == null or origins.len == 0 or origins.len > d.batch) return error.H3BadTiles;
         if (stages.from > stages.to or stages.to > d.plan.layers) return error.H3BadTiles;
         for (origins) |o| {
@@ -348,7 +314,7 @@ pub const Decoder = struct {
             b.add(s);
             try d.launch("h3d_embed", .{ .x = 4, .y = s.m, .z = 1 }, .{ .x = 256, .y = 1 }, 0, &b);
         }
-        for (stages.from..stages.to) |i| try d.layer(s, i, inspect, capture);
+        for (stages.from..stages.to) |i| try d.layer(s, i);
         if (stages.final) {
             var a = d.args(&.{ d.dev(d.view.x), d.param(d.plan.tail(.norm_w)), d.param(d.plan.tail(.norm_b)), d.dev(d.view.xn) });
             a.add(s);
@@ -373,16 +339,12 @@ pub const Decoder = struct {
     }
 
     /// Block `i` on the pass's stream in place.
-    fn layer(d: *Decoder, s: Shape, i: usize, comptime inspect: bool, capture: Inspection) !void {
+    fn layer(d: *Decoder, s: Shape, i: usize) !void {
         const p = d.plan;
         var a = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm1)), d.dev(d.view.xn) });
         a.add(s);
         try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
         try d.gemm(s, d.view.xn, p.block(i, .qkv_w), p.block(i, .qkv_b), null, d.view.wide, 3 * W, W);
-        if (inspect) {
-            try d.scratch.?.download(d.view.xn, std.mem.sliceAsBytes(capture.norm));
-            try d.scratch.?.download(d.view.wide, std.mem.sliceAsBytes(capture.qkv));
-        }
         var h = d.args(&.{ d.dev(d.view.wide), d.dev(d.view.cos), d.dev(d.view.sin), d.dev(d.view.q), d.dev(d.view.k), d.dev(d.view.v) });
         h.add(s);
         try d.launch("h3d_heads", .{ .x = s.m, .y = host.heads, .z = 1 }, .{ .x = 32 }, 0, &h);
@@ -390,7 +352,6 @@ pub const Decoder = struct {
         t.add(s);
         try d.launch("h3d_attention", .{ .x = @intCast((s.tokens + 7) / 8), .y = host.heads, .z = s.tiles }, .{ .x = 256 }, 0, &t);
         try d.gemm(s, d.view.o, p.block(i, .out_w), p.block(i, .out_b), p.block(i, .scale1), d.view.x, W, W);
-        if (inspect) try d.scratch.?.download(d.view.x, std.mem.sliceAsBytes(capture.middle));
         var r = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm2)), d.dev(d.view.xn) });
         r.add(s);
         try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &r);

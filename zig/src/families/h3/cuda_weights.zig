@@ -43,9 +43,9 @@ fn readFrom(self: *Model, ck: Shards) !void {
     self.mlp = fc2_0.cols;
     self.heads = self.inner / h3.head_dim;
     self.gated = gated;
-    const staging = &self.load_stage;
+    const staging = &self.load_stages;
     var submitted = false;
-    defer if (!self.load_failed) staging.deinit();
+    defer if (!self.load_failed) for (staging) |*stage| stage.deinit();
     self.blocks = try self.gpa.alloc(h3.Block, layers);
     var made: usize = 0;
     errdefer {
@@ -54,8 +54,10 @@ fn readFrom(self: *Model, ck: Shards) !void {
             self.drain() catch {
                 complete = false;
             };
-            if (complete) staging.close() catch {
-                complete = false;
+            if (complete) for (staging) |*stage| {
+                stage.close() catch {
+                    complete = false;
+                };
             };
         }
         if (complete) {
@@ -81,7 +83,6 @@ fn readFrom(self: *Model, ck: Shards) !void {
         }
     }
 }
-
 
 const names = [_][]const u8{ "attn.qkv_proj.weight", "attn.to_gate_compress.weight", "attn.out_proj.weight", "mlp.fc1.weight", "mlp.fc2.weight", "norm1.weight", "norm2.weight", "attn.q_norm.weight", "attn.k_norm.weight" };
 /// The routing gate's place in `names`: absent from dense-only checkpoints.
@@ -181,22 +182,25 @@ pub const Fused = struct {
     }
 };
 
-/// `bytes` into `to` from `offset` through pinned memory, stacked when `fused`; the driver copies pageable memory
-/// several times slower. A window holds whole head parts: one is 128 rows, far under 64 MiB.
-fn upload(staging: *cuda.copy_source.Stage, to: cuda.DeviceBuffer, offset: usize, bytes: []const u8, fused: ?Fused) !void {
+/// `bytes` into `to` from `offset` through the two pinned stages, stacked when `fused`; the driver
+/// copies pageable memory several times slower. A window holds whole head parts: one is 128 rows, far
+/// under 64 MiB. Each stage is waited only when its turn comes again, a copy running while the other
+/// window is filled; the caller's drain covers the last chunks.
+fn upload(staging: *[2]cuda.copy_source.Stage, to: cuda.DeviceBuffer, offset: usize, bytes: []const u8, fused: ?Fused) !void {
     const unit = if (fused) |f| f.part() else staging_bytes;
     if (unit > staging_bytes) return error.BadGeometry;
     var done: usize = 0;
+    var turn: usize = 0;
     while (done < bytes.len) {
         const n = @min(staging_bytes / unit * unit, bytes.len - done);
-        const window = try staging.take(to.d, n);
+        const window = try staging[turn].take(to.d, n);
         if (fused) |f| {
             var at: usize = 0;
             while (at < n) : (at += unit) @memcpy(window[at..][0..unit], bytes[f.source(done + at)..][0..unit]);
         } else @memcpy(window, bytes[done..][0..n]);
-        try staging.copyTo(to, offset + done, .{ .d = to.d, .handle = null });
-        try staging.wait();
+        try staging[turn].copyTo(to, offset + done, .{ .d = to.d, .handle = null });
         done += n;
+        turn ^= 1;
     }
 }
 

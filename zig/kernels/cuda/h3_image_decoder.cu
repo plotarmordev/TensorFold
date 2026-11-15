@@ -12,6 +12,9 @@ typedef __nv_bfloat16 bf16;
 static __device__ __forceinline__ float f(bf16 x) { return __bfloat162float(x); }
 static __device__ __forceinline__ float bf(float x) { return __bfloat162float(__float2bfloat16(x)); }
 
+// Correctly rounded reciprocal square root, as the host's float64 1/sqrt rounded to f32.
+static __device__ __forceinline__ float inv_sqrt(float x) { return __frsqrt_rn(x); }
+
 // One parameter block for every kernel: the pass's tiles and their geometry, a product's size, the norms' epsilon.
 struct H3dShape {
     unsigned tiles;
@@ -87,7 +90,7 @@ __global__ void __launch_bounds__(256) h3d_rms_norm(
         v[i] = f(xr[t + 256 * i]);
         sq += v[i] * v[i];
     }
-    const float inv = rsqrtf(tf_common::block_sum_tree(sq, part, 8) / 1024.0f + p.eps);
+    const float inv = inv_sqrt(tf_common::block_sum_serial(sq, part) / 1024.0f + p.eps);
 #pragma unroll
     for (unsigned i = 0; i < 4; ++i) y[(size_t)row * 1024 + t + 256 * i] = __float2bfloat16(v[i] * inv * f(g[t + 256 * i]));
 }
@@ -107,11 +110,11 @@ __global__ void __launch_bounds__(256) h3d_layer_norm(
         v[i] = f(xr[t + 256 * i]);
         s += v[i];
     }
-    const float mean = tf_common::block_sum_tree(s, sums, 8) / 1024.0f;
+    const float mean = tf_common::block_sum_serial(s, sums) / 1024.0f;
     float sq = 0.0f;
 #pragma unroll
     for (unsigned i = 0; i < 4; ++i) sq += (v[i] - mean) * (v[i] - mean);
-    const float rstd = rsqrtf(tf_common::block_sum_tree(sq, squares, 8) / 1024.0f + p.eps);
+    const float rstd = inv_sqrt(tf_common::block_sum_serial(sq, squares) / 1024.0f + p.eps);
 #pragma unroll
     for (unsigned i = 0; i < 4; ++i) {
         const unsigned c = t + 256 * i;
@@ -153,7 +156,7 @@ __global__ void __launch_bounds__(32) h3d_heads(
     for (unsigned part = 0; part < 2; ++part) {
         const float a = f(src[part * 64 + lane]);
         const float z = f(src[part * 64 + 32 + lane]);
-        const float inv = rsqrtf(tf_common::warp_sum(a * a + z * z) / 64.0f + p.eps);
+        const float inv = inv_sqrt(tf_common::warp_sum(a * a + z * z) / 64.0f + p.eps);
         const float na = bf(a * inv);
         const float other = __shfl_xor_sync(0xffffffffu, na, 16);
         const float turned = lane < 16 ? -other : other;

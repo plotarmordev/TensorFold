@@ -63,7 +63,7 @@ pub const Model = struct {
     inputs: [8]?cuda.DeviceBuffer = @splat(null),
 
     hosts: std.AutoHashMapUnmanaged(usize, cuda.HostBuffer) = .empty,
-    load_stage: cuda.copy_source.Stage = .{},
+    load_stages: [2]cuda.copy_source.Stage = .{ .{}, .{} },
     load_failed: bool = false,
     /// The monotonic second when driver setup finished; `loaded_seconds` measures the weight read after it.
     opened: f64 = 0,
@@ -110,7 +110,7 @@ pub const Model = struct {
         self.inputs = @splat(null);
         self.hosts = .empty;
         self.blocks = &.{};
-        self.load_stage = .{};
+        self.load_stages = .{ .{}, .{} };
         self.load_failed = false;
         self.retained_next = null;
         self.driver = try cuda.Driver.open();
@@ -152,7 +152,7 @@ pub const Model = struct {
     }
     pub fn tryDeinit(self: *Model) !void {
         try self.drain();
-        try self.load_stage.close();
+        for (&self.load_stages) |*stage| try stage.close();
         geometry.releaseCompleted(self);
         host.free(self);
         weights.free(self);

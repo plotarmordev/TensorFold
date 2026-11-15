@@ -128,7 +128,7 @@ const Mock = struct {
         m.gpa = std.testing.allocator;
         m.driver = driver();
         m.blocks = &.{};
-        m.load_stage = .{};
+        m.load_stages = .{ .{}, .{} };
         m.load_failed = false;
         m.retained_next = null;
         return m;
@@ -337,7 +337,7 @@ test "h3 ownership: failed per-copy wait retains destinations until recovery" {
         Mock.wait_fail = false;
         Mock.sync_fail = false;
         cuda.copy_source.synchronizeContext(&m.driver) catch {};
-        m.load_stage.deinit();
+        for (&m.load_stages) |*stage| stage.deinit();
         if (m.blocks.len > 0) weights.free(&m);
     }
     Mock.wait_fail = true;
