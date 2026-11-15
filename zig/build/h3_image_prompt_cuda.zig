@@ -1,5 +1,5 @@
 //! MiniMax-H3-Image's prompt path on CUDA: tf-h3-image-prompt-cuda, its kernel image built by `-Dnvcc`
-//! or compile-only without it; no tests of its own beyond the tools' shared host checks.
+//! or compile-only without it; host tests cover condition-projection algorithm selection.
 const std = @import("std");
 
 /// `zig build tf-h3-image-prompt-cuda`: a prompt to the refiner's text rows on CUDA, and its synthetic
@@ -40,4 +40,6 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     }) });
     b.step("tf-h3-image-prompt-cuda", "MiniMax-H3-Image's prompt to its text rows on CUDA: Qwen3-VL to layer 50, the token refiner").dependOn(&b.addInstallArtifact(exe, .{}).step);
     test_step.dependOn(&exe.step);
+    const tests = b.addTest(.{ .root_module = prompt });
+    test_step.dependOn(&b.addRunArtifact(tests).step);
 }

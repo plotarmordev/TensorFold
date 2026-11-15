@@ -131,6 +131,10 @@ const Products = struct {
             defer probe.deinit();
             var l = try cuda.cublaslt.Linear.initEpilogue(&p.lt, rows, n, k, .f32, workspace_bytes, if (bias != 0) .bias else .none);
             errdefer l.deinit();
+            if (bias != 0) {
+                const epilogue: u32 = @backingInt(cuda.cublaslt.Epilogue.bias);
+                try p.lt.check(p.lt.api.cublasLtMatmulDescSetAttribute(l.desc, cuda.cublaslt.desc_epilogue, &epilogue, @sizeOf(u32)), "set H3 condition bias");
+            }
             var checked: cuda.cublaslt.Heuristic = undefined;
             const s = p.lt.api.cublasLtMatmulAlgoCheck(l.handle, l.desc, l.a, l.b, l.c, l.c, &probe.algo, &checked);
             if (s != 0 or checked.state != 0 or checked.workspace_size > workspace_bytes) return error.NoAlgorithm;
@@ -520,3 +524,7 @@ pub const Runner = struct {
         return b;
     }
 };
+
+test "condition projection keeps bias when the actual-row heuristic cannot fuse it" {
+    try @import("prompt_cuda_products_test.zig").check(Products, Products.run);
+}
