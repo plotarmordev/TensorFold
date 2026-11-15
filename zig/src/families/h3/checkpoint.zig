@@ -9,6 +9,7 @@ const c = struct {
     extern "c" fn lseek(fd: c_int, offset: i64, whence: c_int) i64;
     extern "c" fn mmap(addr: ?*anyopaque, len: usize, prot: c_int, flags: c_int, fd: c_int, offset: i64) ?*anyopaque;
     extern "c" fn munmap(addr: ?*anyopaque, len: usize) c_int;
+    extern "c" fn madvise(addr: ?*anyopaque, len: usize, advice: c_int) c_int;
 };
 
 /// Where a tensor sits in the data that follows the header.
@@ -63,6 +64,11 @@ pub const Checkpoint = struct {
     fn deinitWith(self: *Checkpoint, comptime Ops: type) void {
         self.arena.deinit();
         _ = Ops.munmap(@ptrCast(@constCast(self.bytes.ptr)), self.bytes.len);
+    }
+
+    /// Unmaps the pages from this process, left to the page cache to reclaim and faulted back on a later read; Linux only.
+    pub fn evict(self: *const Checkpoint) void {
+        if (@import("builtin").os.tag == .linux) _ = c.madvise(@ptrCast(@constCast(self.bytes.ptr)), self.bytes.len, 4);
     }
 
     /// The tensor `name` of `dtype` and `count` values: its bytes as stored.
@@ -171,6 +177,11 @@ pub const Shards = struct {
         for (self.files) |*file| file.deinit();
         if (self.owned) gpa.free(self.files);
         self.files = &.{};
+    }
+
+    /// Every shard's `evict`: once the weights sit on the device, a resident process pins no host copy of them.
+    pub fn evict(self: *const Shards) void {
+        for (self.files) |*file| file.evict();
     }
 
     pub fn entry(self: *const Shards, name: []const u8) ?st.Entry {

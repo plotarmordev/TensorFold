@@ -50,6 +50,7 @@ const Folder = struct {
         const model = try h3.Model.loadSharded(init.gpa, &ck);
         errdefer model.deinit();
         if (model.gated) return error.H3NotPictureModel; // a picture's blocks are dense: every tile sees every tile
+        ck.evict(); // the prompt and decoder stages share this memory; render reads only a few small tensors back
         const heads = try h3.checkpoint.Checkpoint.open(try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, heads_name }, 0));
         return .{ .ck = ck, .model = model, .heads = heads, .pdd = pdd };
     }
