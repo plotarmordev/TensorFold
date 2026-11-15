@@ -630,4 +630,4 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
 /// The named embedded image and gate 5: in the contract's own file, so the gates' registrations stay short.
 pub const image = @import("contract_limits.zig").image;
 pub const live = @import("contract_limits.zig").live;
-pub const fatbins = @import("contract_limits.zig").fatbins;
+pub const fatbins = @import("contract_limits_fatbins.zig").fatbins;

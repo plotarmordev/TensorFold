@@ -320,7 +320,7 @@ pub fn main(init: std.process.Init) !u8 {
         std.debug.print("{s}", .{usage});
         return 2;
     }
-    if (std.mem.eql(u8, args[1], "kernel-contract-limits")) return if (contract_tests.fatbins(init.gpa, init.io, try arg(args[2..], 0))) 0 else |e| e;
+    if (std.mem.eql(u8, args[1], "kernel-contract-limits")) return if (contract_tests.fatbins(init.gpa, init.io, try arg(args[2..], 0), &.{})) 0 else |e| e;
     var driver = try cuda.Driver.open();
     defer driver.close();
     var ctx = try cuda.Context.init(&driver, 0);

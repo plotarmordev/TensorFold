@@ -123,6 +123,9 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     runner.addImport("prompt_pages", b.createModule(.{ .root_source_file = b.path("zig/src/native/cuda_prompt_pages.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "engine_api", .module = mods.api }, .{ .name = "core", .module = mods.core } } })); // TF_KV_SHARE's store, for the pages checks
     const runner_exe = b.addExecutable(.{ .name = "tf-cuda-test", .root_module = runner });
     b.installArtifact(runner_exe);
+    // tf-cuda-limits: kernel-contract-limits alone, built without the contracts' test sources
+    const limits_exe = b.addExecutable(.{ .name = "tf-cuda-limits", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/limits_main.zig"), .target = target, .optimize = optimize, .link_libc = true, .strip = strip, .imports = &.{ .{ .name = "cuda", .module = cuda }, .{ .name = "core", .module = mods.core } } }) });
+    b.step("tf-cuda-limits", "Build kernel-contract-limits alone: the fatbins' launches against their records, no GPU").dependOn(&b.addInstallArtifact(limits_exe, .{}).step);
     // tf-tp-watch-check: the ranks' lines with no GPU or NCCL; a failing or dying rank stops every rank
     b.installArtifact(b.addExecutable(.{ .name = "tf-tp-watch-check", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/tp_watch_check.zig"), .target = target, .optimize = optimize, .link_libc = true, .strip = strip, .imports = &.{.{ .name = "cuda", .module = cuda }} }) }));
     @import("living_dense.zig").target(b, target, optimize, cuda, mods.qwen35);
