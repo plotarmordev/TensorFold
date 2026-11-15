@@ -213,8 +213,14 @@ pub const Prm = struct {
                 const k = try self.values(s.rows * kv * 128, -2, 2, .random, rng, true, false);
                 const wq = try self.values(128, 0.5, 1.5, .random, rng, false, false);
                 const wk = try self.values(128, 0.5, 1.5, .random, rng, false, false);
-                const cs = try self.values(s.rows * 64, 0.9, 1.0, .random, rng, false, false);
-                const sn = try self.values(s.rows * 64, 0, 0.01, .random, rng, false, false);
+                // The served tables: row r's angle for channel pair i is r / 10000^(i/64), so sine spans [-1, 1].
+                const cs = try al.alloc(f64, s.rows * 64);
+                const sn = try al.alloc(f64, s.rows * 64);
+                for (cs, sn, 0..) |*co, si, at| {
+                    const angle: f32 = @floatCast(@as(f64, @floatFromInt(at / 64)) / std.math.pow(f64, 10000, @as(f64, @floatFromInt(at % 64)) / 64));
+                    co.* = @cos(angle);
+                    si.* = @sin(angle);
+                }
                 self.in = .{ .a = q, .b = k, .d = wq, .e = wk, .f = cs, .g = sn, .rows = s.rows, .n = s.n, .k = s.k, .heads = heads, .kv_heads = kv, .head = 128, .q_row = heads * 128, .k_row = kv * 128, .mode = 0, .eps = 1e-5, .rotary = true };
                 self.rows = s.rows;
                 self.heads = heads;

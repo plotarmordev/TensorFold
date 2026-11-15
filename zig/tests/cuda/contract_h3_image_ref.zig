@@ -272,13 +272,14 @@ pub fn pheads(in: In, s: Sum, want: []f64, mag: []f64, fused: bool) void {
         const inv = 1.0 / @sqrt(s.of(&terms) / @as(f64, @floatFromInt(D)) + in.eps);
         var v: [128]f64 = undefined;
         for (&v, src, w) |*o, xv, wv| o.* = if (in.mode == 0) bf(wv * bf(xv * inv)) else bf(xv * inv * wv);
+        var o = v;
         if (in.rotary) for (0..D) |ch| {
             const table_at = r * 64 + ch % 64;
             const other = if (ch < 64) -v[ch + 64] else v[ch - 64];
-            v[ch] = bf(bf(v[ch] * in.f[table_at]) + bf(other * in.g[table_at]));
+            o[ch] = bf(bf(v[ch] * in.f[table_at]) + bf(other * in.g[table_at]));
         };
         for (0..D) |i| {
-            want[at + i] = v[i];
+            want[at + i] = o[i];
             mag[at + i] = terms[i];
         }
     };
