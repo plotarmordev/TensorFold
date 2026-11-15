@@ -26,6 +26,7 @@ const titles = [_]struct { model_type: []const u8, title: []const u8 }{
     .{ .model_type = "flint", .title = "Flint" },
     .{ .model_type = "lfm2_moe", .title = "LFM2.5-24B-A2B" },
     .{ .model_type = "woof", .title = "Underdog Woof" },
+    .{ .model_type = "unlimited-ocr", .title = "Unlimited-OCR-2" },
 };
 
 /// The family that serves `model_type` from the engine registry, or null when Zig cannot serve it (the 0.6 line may).
