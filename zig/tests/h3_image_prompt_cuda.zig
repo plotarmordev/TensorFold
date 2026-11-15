@@ -361,13 +361,13 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
     failed = failed or !same;
 
     // an edit's rows: a 6-pad vision block spliced at the marks, DeepStack's blocks scattered after
-    // layers 0 to 2 — h3p_splice and h3p_scatter_add against the reference's vision path
+    // layers 0 to 2 — the full run, then each part alone so a failure names splice, scatter or layer growth
     failed = !try withPicture(runner, a, rand, tiny) or failed;
     std.debug.print("{s}\n", .{if (failed) "FAIL" else "PASS every gate"});
     return @intFromBool(failed);
 }
 
-/// An edit's presentation: vision rows and three DeepStack blocks at 6 pads, on the GPU and the oracle.
+/// Preserve the failing full vision case, then separate no-op writes, layer growth, splice and DeepStack.
 fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny: Tiny) !bool {
     const g = tiny_text;
     const H = g.hidden;
@@ -389,20 +389,66 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     for (pads, 0..) |*p, i| p.* = @intCast(63 + i);
     const pos = try a.alloc([3]i32, T);
     for (pos, 0..) |*p, i| p.* = @splat(@intCast(i));
-    const vision: hp.Vision = .{ .pads = pads, .rows = bits[0 .. n * H], .deepstack = .{ bits[n * H ..][0 .. n * H], bits[2 * n * H ..][0 .. n * H], bits[3 * n * H ..][0 .. n * H] } };
-    const enc = try a.alloc(u16, T * H);
-    var layer_ctx: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
-    const embed = try bitsOf(&tiny, "model.language_model.embed_tokens.weight");
-    try runner.encode(a, g, embed, ids, pos, vision, bitsLayer, &layer_ctx, enc);
     const cs = try a.alloc(f32, T * 64);
     const sn = try a.alloc(f32, T * 64);
     rules.rotary(cs, sn, pos, g.theta, g.sections);
+    var layer_ctx: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
+    const embed = try bitsOf(&tiny, "model.language_model.embed_tokens.weight");
+
+    // Preserve embedding rows for no-op splices; zero DeepStack blocks separate the two vision operations.
+    const zeros = try a.alloc(u16, n * H);
+    @memset(zeros, 0);
+    const zeros_f = try a.alloc(f32, n * H);
+    @memset(zeros_f, 0);
+    const keep = try a.alloc(u16, n * H);
+    const keep_f = try a.alloc(f32, n * H);
+    for (0..n) |i| {
+        const row = ids[pads[i]];
+        @memcpy(std.mem.sliceAsBytes(keep[i * H ..][0..H]), embed[row * H * 2 ..][0 .. H * 2]);
+        @memcpy(keep_f[i * H ..][0..H], tiny.host.embed[row * H ..][0..H]);
+    }
+    const vision: hp.Vision = .{ .pads = pads, .rows = bits[0 .. n * H], .deepstack = .{ bits[n * H ..][0 .. n * H], bits[2 * n * H ..][0 .. n * H], bits[3 * n * H ..][0 .. n * H] } };
     const oracle: ref.Vision = .{ .pads = pads, .rows = blocks[0], .deepstack = blocks[1..4].* };
+
+    // Equal inputs must retain the same arithmetic with the vision copy/add path enabled.
+    const plain = try a.alloc(u16, T * H);
+    try runner.encode(a, g, embed, ids, pos, null, bitsLayer, &layer_ctx, plain);
+    const noop = try a.alloc(u16, T * H);
+    const noop_vision: hp.Vision = .{ .pads = pads, .rows = keep, .deepstack = .{ zeros, zeros, zeros } };
+    try runner.encode(a, g, embed, ids, pos, noop_vision, bitsLayer, &layer_ctx, noop);
+    const noop_same = std.mem.eql(u16, plain, noop);
+    std.debug.print("a no-op vision (embedding rows spliced back, DeepStack zero) byte for byte the text-only run: {}\n", .{noop_same});
+
+    var first_layer = g;
+    first_layer.layers = 1;
+    const Probe = struct { label: []const u8, geometry: rules.Text, gpu: hp.Vision, host: ref.Vision };
+    const probes = [_]Probe{
+        .{ .label = "text encoder rows, a reference's vision and DeepStack rows at equal-axis positions", .geometry = g, .gpu = vision, .host = oracle },
+        .{ .label = "text encoder rows after layer 0 only, vision and DeepStack", .geometry = first_layer, .gpu = vision, .host = oracle },
+        .{
+            .label = "text encoder rows, vision spliced and DeepStack zero",
+            .geometry = g,
+            .gpu = .{ .pads = pads, .rows = vision.rows, .deepstack = .{ zeros, zeros, zeros } },
+            .host = .{ .pads = pads, .rows = oracle.rows, .deepstack = .{ zeros_f, zeros_f, zeros_f } },
+        },
+        .{
+            .label = "text encoder rows, DeepStack on embedding-row pads",
+            .geometry = g,
+            .gpu = .{ .pads = pads, .rows = keep, .deepstack = vision.deepstack },
+            .host = .{ .pads = pads, .rows = keep_f, .deepstack = oracle.deepstack },
+        },
+    };
+    const enc = try a.alloc(u16, T * H);
     const exact = try a.alloc(f32, T * H);
-    try ref.encode(f64, a, g, tiny.host, ids, cs, sn, oracle, exact);
     const sum32 = try a.alloc(f32, T * H);
-    try ref.encode(f32, a, g, tiny.host, ids, cs, sn, oracle, sum32);
-    return whole(a, "text encoder rows, a reference's vision and DeepStack rows at M-RoPE positions", enc, sum32, exact, H);
+    var ok = noop_same;
+    for (probes) |probe| {
+        try runner.encode(a, probe.geometry, embed, ids, pos, probe.gpu, bitsLayer, &layer_ctx, enc);
+        try ref.encode(f64, a, probe.geometry, tiny.host, ids, cs, sn, probe.host, exact);
+        try ref.encode(f32, a, probe.geometry, tiny.host, ids, cs, sn, probe.host, sum32);
+        ok = try whole(a, probe.label, enc, sum32, exact, H) and ok;
+    }
+    return ok;
 }
 
 /// The selftest's weight callbacks' context: the tiny checkpoint's stored bf16 bytes by name.

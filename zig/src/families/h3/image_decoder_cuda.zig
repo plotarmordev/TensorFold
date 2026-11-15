@@ -311,6 +311,16 @@ pub const Decoder = struct {
 
     /// One pass: `stages` on the tiles whose first cells (row, column) are `origins`.
     pub fn pass(d: *Decoder, origins: []const [2]u32, stages: Stages) !Timing {
+        return d.passImpl(origins, stages, false, &.{});
+    }
+
+    /// One selftest block, retaining its attention residual before the FFN overwrites the stream.
+    pub fn inspectBlock(d: *Decoder, origins: []const [2]u32, index: usize, middle: []u16) !void {
+        if (middle.len != origins.len * d.tokens * W) return error.H3BadLatentLength;
+        _ = try d.passImpl(origins, .{ .embed = false, .from = index, .to = index + 1, .final = false }, true, middle);
+    }
+
+    fn passImpl(d: *Decoder, origins: []const [2]u32, stages: Stages, comptime inspect: bool, middle: []u16) !Timing {
         if (d.scratch == null or origins.len == 0 or origins.len > d.batch) return error.H3BadTiles;
         if (stages.from > stages.to or stages.to > d.plan.layers) return error.H3BadTiles;
         for (origins) |o| {
@@ -335,7 +345,7 @@ pub const Decoder = struct {
             b.add(s);
             try d.launch("h3d_embed", .{ .x = 4, .y = s.m, .z = 1 }, .{ .x = 256, .y = 1 }, 0, &b);
         }
-        for (stages.from..stages.to) |i| try d.layer(s, i);
+        for (stages.from..stages.to) |i| try d.layer(s, i, inspect, middle);
         if (stages.final) {
             var a = d.args(&.{ d.dev(d.view.x), d.param(d.plan.tail(.norm_w)), d.param(d.plan.tail(.norm_b)), d.dev(d.view.xn) });
             a.add(s);
@@ -360,7 +370,7 @@ pub const Decoder = struct {
     }
 
     /// Block `i` on the pass's stream in place.
-    fn layer(d: *Decoder, s: Shape, i: usize) !void {
+    fn layer(d: *Decoder, s: Shape, i: usize, comptime inspect: bool, middle: []u16) !void {
         const p = d.plan;
         var a = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm1)), d.dev(d.view.xn) });
         a.add(s);
@@ -373,6 +383,7 @@ pub const Decoder = struct {
         t.add(s);
         try d.launch("h3d_attention", .{ .x = @intCast((s.tokens + 7) / 8), .y = host.heads, .z = s.tiles }, .{ .x = 256 }, 0, &t);
         try d.gemm(s, d.view.o, p.block(i, .out_w), p.block(i, .out_b), p.block(i, .scale1), d.view.x, W, W);
+        if (inspect) try d.scratch.?.download(d.view.x, std.mem.sliceAsBytes(middle));
         var r = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm2)), d.dev(d.view.xn) });
         r.add(s);
         try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &r);
