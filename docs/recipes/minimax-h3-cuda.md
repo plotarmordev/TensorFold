@@ -89,12 +89,15 @@ renders both picture sizes only when they pass. The 14 November tables below pre
 
 [`bench-script.sh`](minimax-h3-cuda/bench-script.sh) takes `run-script.sh`'s inputs and tools without its gate: it
 records each selftest's PASS or FAIL and renders anyway. Each size gets one cold picture (start to first picture) and
-three warm repeats, each stage in its own process, while `nvidia-smi` is sampled twice a second. Where unified
-memory leaves `memory.used` as `[N/A]`, the peak is the compute processes' memory instead.
-`/work/out/h3-image-bench/SUMMARY.md` opens with the selftests' verdict. If any selftest failed or none ran, it says
-the timings are not the Spark's result. It then lists the commit, GPU, prompt hash and seed. Per run it gives wall, prompt, load,
-transformer and decoder seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
-It is written by [`h3_image_bench.py`](../../tools/zig/h3_image_bench.py), also when a stage fails:
+three warm repeats, while `nvidia-smi` is sampled twice a second. The transformer stays resident: one
+`tf-h3-image-cuda MODEL --serve` a size loads the model inside the cold run and renders all four cases, so warm
+repeats pay no transformer load. The prompt encoder streams its weights a layer at a time and the decoder loads in
+seconds, so both still run a process a picture. Where unified memory leaves `memory.used` as `[N/A]`, the peak is the
+compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens with the selftests' verdict. If any
+selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
+hash and seed. Per run it gives wall, prompt, load (cold run only), transformer and decoder seconds, steps, peak MiB,
+average watts and kJ (average power times wall), plus the warm mean. It is written by
+[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py), also when a stage fails:
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
@@ -106,14 +109,11 @@ transformer and prompt selftests passed and the decoder failed, so these timings
 | 2048² | 150.4 s | 133.6 s | 21.0 s | 77.6 s | 25.9 s | 3.1 s | 37,994 | 25.6 | 3.4 |
 | 4096² | 233.9 s | 237.2 s | 19.8 s | 73.6 s | 125.9 s | 11.1 s | 40,762 | 44.8 | 10.6 |
 
-Stage columns are warm means. A warm repeat still loads the model (~75 s), because each stage is its own process and
-the resident `tf-h3-image-server` is Metal-only. The decoder's failing row is the 6 x 10 case's block 1: 86.952%
-identical against the 90% bound (worst 3 ULP, relative 1.19e-3). No operator diverges. Every operator of that block
-passes its 1-ULP/99% bound on its own GPU input (99.7–100%, the `64188519` log's isolated checks). The block identity
-has been 86.9–87.3% in every window since 15 November. The `64188519` window printed `pass` because its gate was 85%,
-and `0d576de9` restored 90%. The gap is the fp32 GPU sums' rounding flips compounding over a block's ten operators,
-against the host fp32 sums' 95%. Matching the host's summation order in the decoder's products would be a correctness
-card of its own.
+Stage columns are warm means. In this window each warm repeat still reloaded the model (~75 s) in its own process;
+`--serve` removes that, and needs a new window. The decoder selftest's failing row is the 6 x 10 case's block 1:
+86.952% identical against the 90% bound (worst 3 ULP, relative 1.19e-3); full-size block 1 and the picture bytes
+pass. This is an open gate failure, the decoder correctness bug card 67 owns (its run measured 87.3%); the gate stays
+at 90%. **These timings are not for card 68 until card 67's decoder selftest passes.**
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
@@ -178,6 +178,9 @@ The 21 H3 launches' registered usage is nvcc 13.0's, read by `kernel-contract-li
 for sm_80/86/89/120/121 at `396df649` (16 November); every launch passes all five SMs' thread, register and shared-memory
 limits. The contract's rotary reference now rotates from the unrotated vector under the served cos/sin tables (whose
 sines reach ±1), and `h3m_project`'s output is declared and checked as bf16 values in fp32 words.
+[`limits-script.sh`](minimax-h3-cuda/limits-script.sh) `[NVCC]` repeats that audit on any host with nvcc, no GPU:
+it builds the five SMs' fatbins and runs `tf-cuda-test kernel-contract-limits zig-out/fatbin`, which reads the ELF
+images without opening a driver.
 
 Desk ran `64188519f690eb8bde9897506e241cdd6e0e4fb8` on TOP's GB10, driver 580.173.02, on 15 November,
 18:18–18:29 HKT, with no other job on TOP. `run-script.sh` (`top-43d6798bde4f`) rendered both checkpoint
