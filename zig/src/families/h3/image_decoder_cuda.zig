@@ -311,16 +311,19 @@ pub const Decoder = struct {
 
     /// One pass: `stages` on the tiles whose first cells (row, column) are `origins`.
     pub fn pass(d: *Decoder, origins: []const [2]u32, stages: Stages) !Timing {
-        return d.passImpl(origins, stages, false, &.{});
+        return d.passImpl(origins, stages, false, .{});
     }
 
-    /// One selftest block, retaining its attention residual before the FFN overwrites the stream.
-    pub fn inspectBlock(d: *Decoder, origins: []const [2]u32, index: usize, middle: []u16) !void {
-        if (middle.len != origins.len * d.tokens * W) return error.H3BadLatentLength;
-        _ = try d.passImpl(origins, .{ .embed = false, .from = index, .to = index + 1, .final = false }, true, middle);
+    /// Selftest-only snapshots taken before the FFN reuses the norm, QKV and residual buffers.
+    pub const Inspection = struct { norm: []u16 = &.{}, qkv: []u16 = &.{}, middle: []u16 = &.{} };
+
+    pub fn inspectBlock(d: *Decoder, origins: []const [2]u32, index: usize, capture: Inspection) !void {
+        const count = origins.len * d.tokens * W;
+        if (capture.norm.len != count or capture.qkv.len != 3 * count or capture.middle.len != count) return error.H3BadLatentLength;
+        _ = try d.passImpl(origins, .{ .embed = false, .from = index, .to = index + 1, .final = false }, true, capture);
     }
 
-    fn passImpl(d: *Decoder, origins: []const [2]u32, stages: Stages, comptime inspect: bool, middle: []u16) !Timing {
+    fn passImpl(d: *Decoder, origins: []const [2]u32, stages: Stages, comptime inspect: bool, capture: Inspection) !Timing {
         if (d.scratch == null or origins.len == 0 or origins.len > d.batch) return error.H3BadTiles;
         if (stages.from > stages.to or stages.to > d.plan.layers) return error.H3BadTiles;
         for (origins) |o| {
@@ -345,7 +348,7 @@ pub const Decoder = struct {
             b.add(s);
             try d.launch("h3d_embed", .{ .x = 4, .y = s.m, .z = 1 }, .{ .x = 256, .y = 1 }, 0, &b);
         }
-        for (stages.from..stages.to) |i| try d.layer(s, i, inspect, middle);
+        for (stages.from..stages.to) |i| try d.layer(s, i, inspect, capture);
         if (stages.final) {
             var a = d.args(&.{ d.dev(d.view.x), d.param(d.plan.tail(.norm_w)), d.param(d.plan.tail(.norm_b)), d.dev(d.view.xn) });
             a.add(s);
@@ -370,12 +373,16 @@ pub const Decoder = struct {
     }
 
     /// Block `i` on the pass's stream in place.
-    fn layer(d: *Decoder, s: Shape, i: usize, comptime inspect: bool, middle: []u16) !void {
+    fn layer(d: *Decoder, s: Shape, i: usize, comptime inspect: bool, capture: Inspection) !void {
         const p = d.plan;
         var a = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm1)), d.dev(d.view.xn) });
         a.add(s);
         try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
         try d.gemm(s, d.view.xn, p.block(i, .qkv_w), p.block(i, .qkv_b), null, d.view.wide, 3 * W, W);
+        if (inspect) {
+            try d.scratch.?.download(d.view.xn, std.mem.sliceAsBytes(capture.norm));
+            try d.scratch.?.download(d.view.wide, std.mem.sliceAsBytes(capture.qkv));
+        }
         var h = d.args(&.{ d.dev(d.view.wide), d.dev(d.view.cos), d.dev(d.view.sin), d.dev(d.view.q), d.dev(d.view.k), d.dev(d.view.v) });
         h.add(s);
         try d.launch("h3d_heads", .{ .x = s.m, .y = host.heads, .z = 1 }, .{ .x = 32 }, 0, &h);
@@ -383,7 +390,7 @@ pub const Decoder = struct {
         t.add(s);
         try d.launch("h3d_attention", .{ .x = @intCast((s.tokens + 7) / 8), .y = host.heads, .z = s.tiles }, .{ .x = 256 }, 0, &t);
         try d.gemm(s, d.view.o, p.block(i, .out_w), p.block(i, .out_b), p.block(i, .scale1), d.view.x, W, W);
-        if (inspect) try d.scratch.?.download(d.view.x, std.mem.sliceAsBytes(middle));
+        if (inspect) try d.scratch.?.download(d.view.x, std.mem.sliceAsBytes(capture.middle));
         var r = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm2)), d.dev(d.view.xn) });
         r.add(s);
         try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &r);

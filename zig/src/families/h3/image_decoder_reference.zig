@@ -130,7 +130,7 @@ pub fn embed(m: Model, latent: []const f32, h: usize, w: usize, x: []f32) !void 
 }
 
 /// q and k of one head RMS-normed to bf16 and rotated over their first 32 dims, as the heads kernel does.
-fn turn(src: []const f32, cos: []const u16, sin: []const u16, out: []f32) void {
+pub fn turn(src: []const f32, cos: []const u16, sin: []const u16, out: []f32) void {
     var s: f64 = 0;
     for (src) |v| s += @as(f64, v) * v;
     const ms: f32 = @floatCast(s / D);
@@ -160,6 +160,7 @@ pub const Scratch = struct {
 
     pub fn init(a: std.mem.Allocator, n: usize) !Scratch {
         var s: Scratch = undefined;
+        s.workers = 0;
         inline for (.{ .{ "xn", W }, .{ "qkv", 3 * W }, .{ "q", W }, .{ "k", W }, .{ "v", W }, .{ "o", W }, .{ "y", W }, .{ "wide", 2 * F }, .{ "act", F } }) |kv| {
             @field(s, kv[0]) = try a.alloc(f32, n * kv[1]);
         }
