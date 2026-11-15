@@ -373,3 +373,56 @@ both with zero unexpected differences. Both CUDA tools compiled without NVCC; la
 `selftest` stopped at `DriverUnavailable`, not a GPU pass. Changed Zig files passed
 `zig fmt --check`. Removed throwaway host probes verified nonzero decoder-block serial/automatic
 worker equality, rotary signs, and prompt same-input replay isolation under perturbed captures.
+
+### Fifth GPU window and short-prompt plan compatibility
+
+Desk ran `900e1350324d990b55f0ca3d6d8d1768314c93a4` on TOP's GB10, driver 580.173.02,
+on 15 November, 16:40–16:45 HKT. The authorized DeepSeek pause was 16:39–16:45.
+`run-script.sh` (`top-1d17bd32fd10`) exited 1; `mmh3-job.sh` (`top-8ec81ac5280f`) exited 0.
+The decoder still fails the same two block-identity gates. New norm1, raw-QKV and head-transform
+checks pass, but they compare each operation on its own GPU input, not an independently chained
+block. The prompt's first-layer operator diagnostics likewise do not establish whole-layer parity:
+their largest relative error is 1.72e-4, while the one-layer vision run differs by 1.16e-3 and its
+FP32 host baseline is byte-identical to FP64. No vision splice/scatter defect is established.
+All numerical gates remain unchanged, and neither checkpoint render was reached.
+
+Same prompt, seed 42, sizes and six steps; one mmh3 run per size, with the larger run reusing the
+smaller run's algorithm and tiling caches. Transformer totals sum rounded stage logs:
+
+| Stage | TensorFold GPU 2048² | mmh3 2048² | TensorFold GPU 4096² | mmh3 4096² |
+|---|---:|---:|---:|---:|
+| Prompt | Not reached | 4.2 s | Not reached | 3.8 s |
+| Transformer load | Not reached | 3.2 s | Not reached | 2.9 s |
+| Transformer, 6 steps | Not reached | 9.5 s | Not reached | 54.7 s |
+| Decoder | Not reached | 1.1 s | Not reached | 2.8 s |
+| Wall | No picture | 18.9 s | No picture | 65.2 s |
+
+The beyond-INT8 batched BF16 decoder experiment measured 0.54 s for 25 synthetic tiles through
+24 blocks, 21.8 ms/tile; it still does not measure checkpoint decoding or an end-to-end speedup.
+Receipt SHA-256 identifiers:
+
+- `900e1350/tensorfold.log`: `d95a2d654317f7987a7fff599e60d89b1f7e8f5fad4715972b69666b1292d7df`
+- `900e1350/mmh3/out/mmh3/2048.log`: `3695dbca9247bab7880dbf0bfd84959ee683bd22d65d932377a11df55e552a47`
+- `900e1350/mmh3/out/mmh3/4096.log`: `3e6e4aaed2452e3532e66352d2db56919ebc47e7d53a485991a78d8c8e476b36`
+
+Separately, the owner reported `NoAlgorithm` on the real 24-token prompt. The prompt runner had
+already selected an actual-row cuBLASLt plan but discarded it when the 16,384-row algorithm failed
+validation at that short shape. It now retains the canonical algorithm when compatible, otherwise
+validates and uses the actual-row algorithm with the same FP32 accumulation, output type and required
+bias epilogue. Either invalid status, invalid state or excess workspace refuses an algorithm;
+if both candidates fail, no plan is cached. The transformer's fixed-shape policy is unchanged.
+
+A host regression reproduces the discarded-plan failure and checks biased/unbiased 24-row outputs,
+all three rejection modes, cache reuse, and recovery after both candidates fail. This establishes the
+selection fix, not that the reported device error arose at that check. The next Desk run must also
+exercise the real prompt directly: the unchanged synthetic fail-fast gate currently prevents that
+stage. A different algorithm can change accumulation order, so prompt parity must be measured again.
+
+Local verification after the plan correction: `nice -n 10 zig build test test-golden
+tf-h3-image-prompt-cuda --summary all` exited 0, 896/896 steps succeeded, 454 tests passed and
+15 skipped (other tests cached). Server goldens were 322/335 equal with 13 known differences;
+authorization goldens were 55/55 equal, both with zero unexpected differences. The new regression
+failed against the previous implementation and passed after the correction. The default build
+passed 283/283 steps; changed Zig files passed `zig fmt --check`. Launching the prompt CLI's
+`selftest` on this Mac stopped at `DriverUnavailable` after constructing and cleaning up its fixture;
+the compile-only tool embeds no CUDA image. No corrected GPU result is claimed.

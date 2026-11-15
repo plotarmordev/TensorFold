@@ -11,3 +11,5 @@
 - Record the fourth failed Spark window and paired mmh3 timings without claiming a speedup; isolate decoder norm1, raw QKV and head transforms on their actual GPU inputs while retaining every whole-block gate.
 - Initialize the decoder reference scratch worker selector before its first projection; preserve its per-column arithmetic and serial/parallel equality.
 - Add selftest-only first-layer prompt captures and same-input FP64/FP32 operator diagnostics, with traced-versus-ordinary byte equality and unchanged whole-run acceptance gates.
+- Use the validated actual-row cuBLASLt algorithm when the canonical prompt algorithm is incompatible, preserving required bias and FP32 sums; cover 24-token shapes, rejection modes and cache recovery on the host.
+- Record the fifth failed GPU qualification and matched mmh3 timings. Same-input diagnostics do not override whole-block failures; checkpoint PNG parity and GPU stage timings remain outstanding.

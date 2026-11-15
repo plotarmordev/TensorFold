@@ -127,7 +127,7 @@ const Products = struct {
         const got = try p.plans.getOrPut(p.gpa, key);
         if (!got.found_existing) {
             errdefer p.plans.removeByPtr(got.key_ptr);
-            // the shape's algorithm is the heuristic's at the canonical row count, as cuda_gemm picks
+            // Prefer the canonical algorithm, but short prompts must use an algorithm valid at their own shape.
             var probe = try cuda.cublaslt.Linear.initEpilogue(&p.lt, canonical_rows, n, k, .f32, workspace_bytes, if (bias != 0) .bias else .none);
             defer probe.deinit();
             var l = try cuda.cublaslt.Linear.initEpilogue(&p.lt, rows, n, k, .f32, workspace_bytes, if (bias != 0) .bias else .none);
@@ -138,8 +138,12 @@ const Products = struct {
             }
             var checked: cuda.cublaslt.Heuristic = undefined;
             const s = p.lt.api.cublasLtMatmulAlgoCheck(l.handle, l.desc, l.a, l.b, l.c, l.c, &probe.algo, &checked);
-            if (s != 0 or checked.state != 0 or checked.workspace_size > workspace_bytes) return error.NoAlgorithm;
-            l.algo = probe.algo;
+            if (s == 0 and checked.state == 0 and checked.workspace_size <= workspace_bytes) {
+                l.algo = probe.algo;
+            } else {
+                const actual = p.lt.api.cublasLtMatmulAlgoCheck(l.handle, l.desc, l.a, l.b, l.c, l.c, &l.algo, &checked);
+                if (actual != 0 or checked.state != 0 or checked.workspace_size > workspace_bytes) return error.NoAlgorithm;
+            }
             l.workspace_need = checked.workspace_size;
             if (bias != 0) l.epilogue = .bias;
             got.value_ptr.* = l;
