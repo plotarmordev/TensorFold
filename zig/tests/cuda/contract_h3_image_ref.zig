@@ -357,6 +357,13 @@ pub fn gather(in: In, want: []f64, mag: []f64) void {
     }
 }
 
+/// h3p_splice: x rows pads[i] = rows[i]; a x [rows*n] in place, b rows [k*n], ints pads [k].
+pub fn splice(in: In, want: []f64, mag: []f64) void {
+    @memcpy(want, in.a);
+    @memset(mag, 0);
+    for (0..in.k) |i| @memcpy(want[@as(usize, in.ints[i]) * in.n ..][0..in.n], in.b[i * in.n ..][0..in.n]);
+}
+
 /// h3p_linear: y [rows, n] fp32 = x [rows, k] bf16 . w [n, k] bf16^T, each K sum sequential in fp32.
 pub fn linear(in: In, s: Sum, want: []f64, mag: []f64) void {
     var row: [8192]f64 = undefined;
