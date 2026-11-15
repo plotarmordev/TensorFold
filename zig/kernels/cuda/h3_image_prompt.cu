@@ -38,9 +38,8 @@ extern "C" __global__ void __launch_bounds__(256) h3p_norm(
     for (int i = threadIdx.x; i < width; i += 256) yr[i] = h(h3p_normed(f(xr[i]), r, w[i], mode));
 }
 
-// The text model's heads: q then k heads of 128 normed in place (mode as h3p_norm), turned by
-// cos, sin [rows, 64]. Heads sit `head` apart in rows `q_row`/`k_row` wide; a warp a head, each
-// lane summing the head's 128 squares in order as the host reference does.
+// The text model's heads: q then k heads of 128 normed in place (mode as h3p_norm), turned by cos, sin [rows, 64];
+// rows `q_row`/`k_row` wide, heads `head` apart; a warp a head, every lane summing its 128 squares in the host's order.
 extern "C" __global__ void __launch_bounds__(256) h3p_heads(
         bf16* q, bf16* k, const float* wq, const float* wk, const float* cs, const float* sn,
         int heads, int kv_heads, int q_row, int k_row, int head, int mode, int rotary, float eps) {
@@ -79,10 +78,8 @@ static __device__ float h3p_score(const bf16* q, const bf16* k, float scale) {
     return __fmul_rn(s, scale);
 }
 
-// o [rows, heads * 128] = softmax(q k^T / sqrt(128)) v over earlier rows (causal) or all, rounded to
-// bf16 as the reference stores it. The reference's two passes in its order: the top score (order-free,
-// lanes split the keys), then each key's weight once, the weight sum and each lane's 4 value sums over
-// the keys in order. A warp a row's head; q, k, v, o bf16; heads sit `head` apart in rows q_row/k_row/v_row.
+// o [rows, heads * 128] = softmax(q k^T / sqrt(128)) v, causal or not, in bf16; a warp a row's head, rows q/k/v_row
+// wide. The host's two passes: the top score (lanes split the keys), then each key's weight, sum and value sums in order.
 extern "C" __global__ void __launch_bounds__(256) h3p_attention(
         const bf16* q, const bf16* k, const bf16* v, bf16* o,
         int rows, int heads, int kv_heads, int q_row, int k_row, int v_row, int head,
