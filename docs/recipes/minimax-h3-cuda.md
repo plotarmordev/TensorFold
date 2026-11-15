@@ -109,11 +109,20 @@ transformer and prompt selftests passed and the decoder failed, so these timings
 | 2048² | 150.4 s | 133.6 s | 21.0 s | 77.6 s | 25.9 s | 3.1 s | 37,994 | 25.6 | 3.4 |
 | 4096² | 233.9 s | 237.2 s | 19.8 s | 73.6 s | 125.9 s | 11.1 s | 40,762 | 44.8 | 10.6 |
 
-Stage columns are warm means. In this window each warm repeat still reloaded the model (~75 s) in its own process;
-`--serve` removes that, and needs a new window. The decoder selftest's failing row is the 6 x 10 case's block 1:
-86.952% identical against the 90% bound (worst 3 ULP, relative 1.19e-3); full-size block 1 and the picture bytes
-pass. This is an open gate failure, the decoder correctness bug card 67 owns (its run measured 87.3%); the gate stays
-at 90%. **These timings are not for card 68 until card 67's decoder selftest passes.**
+Stage columns are warm means. In this window each warm repeat still reloaded the model (~75 s) in its own process.
+The decoder selftest's failing row is the 6 x 10 case's block 1: 86.952% identical against the 90% bound (worst
+3 ULP, relative 1.19e-3); full-size block 1 and the picture bytes pass. This is an open gate failure, the decoder
+correctness bug card 72 owns (card 67's run measured 87.3%); the gate stays at 90%. **These timings are not for card
+68 until card 72's decoder selftest passes.**
+
+Desk ran `7079fd3b`, the first `--serve` window (job `top-11e9222dd7d6`, 16 November, exit 1), with the same selftest
+verdicts. 2048² cold took 185.7 s (load 63.7 s, transformer 25.7 s), but the warm prompt took 88–119 s against
+60.6 s cold, and the 4096² decoder died at `cuDevicePrimaryCtxRetain: CUDA_ERROR_OUT_OF_MEMORY` after a 126.9 s
+transformer; `d3ca6199` finished it in 11 s. The server kept every transformer shard mapped after the upload: a
+second ~38 GB copy of the weights in the GB10's shared memory beside the device's. The prompt tool streams its weights
+from the host a layer at a time, so its pages were evicted and re-read mid-run (98.7 s of GPU time warm, 52.3 s
+cold), and at 4096² nothing was left for the decoder's context. `--serve` now drops the shards' mapped pages once
+the weights are on the device; its timings need a new window.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
@@ -179,8 +188,12 @@ for sm_80/86/89/120/121 at `396df649` (16 November); every launch passes all fiv
 limits. The contract's rotary reference now rotates from the unrotated vector under the served cos/sin tables (whose
 sines reach ±1), and `h3m_project`'s output is declared and checked as bf16 values in fp32 words.
 [`limits-script.sh`](minimax-h3-cuda/limits-script.sh) `[NVCC]` repeats that audit on any host with nvcc, no GPU:
-it builds the five SMs' fatbins and runs `tf-cuda-test kernel-contract-limits zig-out/fatbin`, which reads the ELF
-images without opening a driver.
+it builds the five SMs' fatbins and `tf-cuda-limits`, then audits the H3 images' records and the controls,
+reading the ELF images without opening a driver. `tf-cuda-limits` is `kernel-contract-limits` built without
+tf-cuda-test's contracts. At `7079fd3b` the script built all of tf-cuda-test and exited 1 at compile time on BOTTOM,
+before any limit ran, in `zig/tests/cuda/contract_drama3_router.zig` (unchanged from main's `c11e8331b`, not this
+recipe's code), as Desk reported it: `:100:32 'u8 cannot represent 2312'` and `:169:54 '[]align(1) const i32'`. That
+is a main bug for its own card; the scoped script's no-GPU receipt is still to run.
 
 Desk ran `64188519f690eb8bde9897506e241cdd6e0e4fb8` on TOP's GB10, driver 580.173.02, on 15 November,
 18:18–18:29 HKT, with no other job on TOP. `run-script.sh` (`top-43d6798bde4f`) rendered both checkpoint
