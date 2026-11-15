@@ -174,27 +174,67 @@ Receipt SHA-256 identifiers (the fetched card-67 logs, not newly generated runs)
 - `mmh3/out/mmh3/2048.log`: `8d392be2042b8dce54646272d508e750719f87da0f91e0fa01f23fb77b45eabc`
 - `mmh3/out/mmh3/4096.log`: `d76f2232f53af2fcf80203432961f19da1a102ca21186b2e3ed3c004b9959442`
 
-The continuation preserves all existing numerical bounds and adds independent FFN-projection and
-SwiGLU comparisons on each checked block's own GPU inputs. These read retained scratch only; production
-decoding launches are unchanged. Their device results are still pending, so GEMM accumulation order
-and transcendental rounding remain hypotheses, not established causes of the failed blocks.
+Desk ran continuation `3005ab6b3a2a6398915bc2172f134f5f9d0a966c` on the same GB10 and driver
+on 15 November, 11:41–11:49 HKT, then restored DeepSeek. `run-script.sh` (job
+`bottom-c90e34da9b1a`) exited 1. The fetched log still has **both** block identity failures above,
+including the small-case block 1 at 87.347%; it does not show only the full-size failure.
+The independent FFN projection checks passed at 99.948% identical, at most 1 ULP, on every
+checked block's GPU norm. SwiGLU was bit-identical on every GPU projection. These checks rule out
+a large isolated FFN projection/activation error, not an error elsewhere in the block.
 The window script now attempts all three synthetic selftests and refuses checkpoint renders if any
 fails, so a decoder failure no longer hides the prompt selftest's result.
 
-The prompt loader also explicitly requests the condition projection's bias epilogue before checking
-the canonical cuBLASLt algorithm. Previously the actual-row heuristic could decline bias fusion,
-leaving a no-bias descriptor while the wrapper claimed bias was enabled. A host regression exercises
-that fallback and the unsupported-canonical-algorithm refusal; it is not GPU qualification.
+The prompt selftest was reached and failed with `H3PromptRows` before reporting numerical results.
+Its synthetic fixture created the embedding tensor but omitted it from the lookup map; a
+ReleaseFast unchecked optional unwrap is undefined behavior, consistent with that validation error;
+the bad slice itself was not captured. The continuation adds the tensor to the map and checks missing
+fixture tensors explicitly. This is a fixture repair,
+not evidence that the GPU prompt encoder passes. The earlier condition-projection bias repair also
+remains unqualified on hardware.
 
-`nice -n 10 zig build test test-golden --summary all` passed locally: 892/892 build steps,
+At `3005ab6b`, `nice -n 10 zig build test test-golden --summary all` passed locally: 892/892 build steps,
 452/467 executed tests passed and 15 skipped; cached test steps are additional. Server goldens had
 322/335 equal with 13 known differences, plus 55/55 authorization goldens equal, zero unexpected
 differences. The decoder diagnostic tool compiled without NVCC (empty image, not a device test).
 The shell gate was exercised with each selftest failing in turn: all three were attempted, exit 1
 prevented renders; the all-pass case proceeded. `sh -n` and changed Zig files' format checks passed.
 
+The next decoder selftest also compares retained Q/K/V against the reference from the GPU block
+input, and recomputes attention independently in FP64 on the GPU's own Q/K/V. These readbacks leave
+production launches unchanged and retain the existing block bounds; isolated attention uses the
+existing 1-ULP/99%-identical product bound. Passing these diagnostics would not prove the remaining
+residual path or checkpoint PNG tolerance.
+
+The fixture/attention continuation passed `nice -n 10 zig build test test-golden --summary all`:
+894/894 build steps, 454/469 executed tests passed, 15 skipped, with additional cached tests.
+Server goldens remained 322/335 equal plus 13 known differences; authorization goldens were 55/55
+equal, zero unexpected differences. The new host regression writes and reopens the tiny checkpoint
+and checks the embedding exposed to the encoder against its stored bytes. Both CUDA tools compiled
+locally without NVCC (empty images, not GPU binaries). Running the prompt CLI's `selftest` constructed
+and cleaned up its tiny checkpoint, then stopped with `DriverUnavailable` on this Mac; numerical
+execution is still untested. Changed Zig files passed `zig fmt --check`; the plain `zig build`
+also passed, 283/283 steps.
+
 The remaining gates are decoder failure isolation and correction, the prompt selftest, kernel-contract
 registration and device/compiler receipts, then both checkpoint renders with same-latent CPU decoder
-comparisons and matched stage timings. The next device run must use the continuation's instrumented
-build, not repeat `96b17d83` unchanged. No evidence establishes an end-to-end win over mmh3's historical
-17.6 s.
+comparisons and matched stage timings. The next device run must use the repaired prompt fixture and
+isolated decoder attention check, not repeat `3005ab6b` unchanged. No evidence establishes an
+end-to-end win over mmh3's historical 17.6 s.
+
+The paired mmh3 run in the 11:41 window completed both sizes. One run per size, with the 4096²
+run reusing the 2048² algorithm and tiling caches; transformer totals sum rounded step logs:
+
+| Stage | TensorFold GPU 2048² | mmh3 2048² | TensorFold GPU 4096² | mmh3 4096² |
+|---|---:|---:|---:|---:|
+| Prompt | Not reached | 3.7 s | Not reached | 3.9 s |
+| Transformer load | Not reached | 3.0 s | Not reached | 3.1 s |
+| Transformer, 6 steps | Not reached | 9.5 s | Not reached | 53.7 s |
+| Decoder | Not reached | 1.0 s | Not reached | 2.8 s |
+| Wall | No picture | 18.1 s | No picture | 64.5 s |
+
+The BF16 batched decoder experiment again took 0.54 s for 25 synthetic tiles through 24 blocks
+(21.7 ms/tile); this still does not measure checkpoint decoding. Latest receipt SHA-256 identifiers:
+
+- `3005ab6b/tensorfold.log`: `c37d73c973c84bafed1ee8341028a1c64b235bd8995a2e1a2f4bbbd5646395f4`
+- `3005ab6b/mmh3/out/mmh3/2048.log`: `9b70b113ba831ed5cbc459d2b8d1e2ebb3e4009ec462c18ba76640ef93c14025`
+- `3005ab6b/mmh3/out/mmh3/4096.log`: `be22c25ffde5cf49322bc21d1aba9d582a0622da533b2b2f4bab8fa0c1576e72`

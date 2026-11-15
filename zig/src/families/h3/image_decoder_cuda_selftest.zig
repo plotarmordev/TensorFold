@@ -156,19 +156,32 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
 
     // each checked block on the GPU's own input, and the reference's chain beside it
     const input = try a.alloc(f32, tiles * per);
+    const q = try a.alloc(u16, tiles * per);
+    const keys = try a.alloc(u16, tiles * per);
+    const values = try a.alloc(u16, tiles * per);
+    const attended = try a.alloc(u16, tiles * per);
     for (0..checked) |i| {
         for (input, embedded) |*o, b| o.* = rounding.value(b);
         _ = try d.pass(origins, .{ .embed = false, .from = i, .to = i + 1, .final = false });
         @memcpy(embedded, try d.stream());
+        try d.attention(q, keys, values, attended);
+        var heads: Stat = .{};
+        var projected_values: Stat = .{};
         for (0..tiles) |k| {
             try ref.layer(model, scratch, i, input[k * per ..][0..per], n, cos, sin);
+            heads.add(q[k * per ..][0..per], scratch.q, host.head_dim);
+            heads.add(keys[k * per ..][0..per], scratch.k, host.head_dim);
+            projected_values.add(values[k * per ..][0..per], scratch.v, host.head_dim);
             try ref.layer(model, scratch, i, chained[k * per ..][0..per], n, cos, sin);
         }
         var block: Stat = .{};
         block.add(embedded, input, W);
         var name: [32]u8 = undefined;
         ok = block.report(try std.fmt.bufPrint(&name, "block {d}", .{i}), bounds.block_ulps, bounds.block_same, bounds.block_relative) and ok;
+        ok = heads.report("Q/K norm and rotary from block input", bounds.block_ulps, bounds.block_same, bounds.block_relative) and ok;
+        ok = projected_values.report("V projection from block input", bounds.block_ulps, bounds.block_same, bounds.block_relative) and ok;
         ok = try feedForward(d, model, i) and ok;
+        ok = try attention(d, i, q, keys, values, attended) and ok;
     }
 
     // norm_out and proj_out on the GPU's stream, then the reference's chain against the GPU's
@@ -253,6 +266,44 @@ fn feedForward(d: *dec.Decoder, model: ref.Model, index: usize) !bool {
     var activation: Stat = .{};
     activation.add(act, want[0..act.len], F);
     return activation.report("SwiGLU on GPU projection", bounds.product_ulps, bounds.product_same, 1) and product_ok;
+}
+
+/// Each head's softmax(q k^T / 8) v recomputed in float64 on the GPU's own retained q, k, v, compared
+/// to the GPU's retained o: it isolates the attention kernel from the heads and projection kernels.
+fn attention(d: *dec.Decoder, index: usize, q: []const u16, k: []const u16, v: []const u16, o: []const u16) !bool {
+    var arena = std.heap.ArenaAllocator.init(d.gpa);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const tiles = d.passed;
+    const n = d.tokens;
+    const D = host.head_dim;
+    const elems = tiles * n * W;
+    const want = try scratch.alloc(f32, elems);
+    const p = try scratch.alloc(f64, n);
+    for (0..tiles) |tile| for (0..host.heads) |hd| for (0..n) |t| {
+        const head = (tile * host.heads + hd) * n * D;
+        var top: f64 = -std.math.inf(f64);
+        for (0..n) |j| {
+            var dot: f64 = 0;
+            for (0..D) |c| dot += @as(f64, rounding.value(q[head + t * D + c])) * rounding.value(k[head + j * D + c]);
+            p[j] = dot * host.scale;
+            top = @max(top, p[j]);
+        }
+        var total: f64 = 0;
+        for (p) |*e| {
+            e.* = @exp(e.* - top);
+            total += e.*;
+        }
+        for (0..D) |c| {
+            var acc: f64 = 0;
+            for (0..n) |j| acc += p[j] * rounding.value(v[head + j * D + c]);
+            want[(tile * n + t) * W + hd * D + c] = @floatCast(rounding.bf16(acc / total));
+        }
+    };
+    var attended: Stat = .{};
+    attended.add(o, want, W);
+    var name: [48]u8 = undefined;
+    return attended.report(try std.fmt.bufPrint(&name, "block {d} attention on GPU heads", .{index}), bounds.product_ulps, bounds.product_same, 1);
 }
 
 fn assemble(a: std.mem.Allocator, t: host.Tiles, tiles: []const f32, len: usize) ![]f32 {

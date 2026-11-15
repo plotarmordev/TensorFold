@@ -282,6 +282,18 @@ pub const Decoder = struct {
         try d.scratch.?.download(d.view.act, std.mem.sliceAsBytes(act));
     }
 
+    /// The last block's retained attention tensors, for an independent check in the selftest: q, k, v
+    /// [tiles, heads, tokens, head_dim] as h3d_heads laid them out, o [tiles * tokens, 1,024].
+    /// The out projection and FFN leave them untouched, so they hold block `to - 1`'s values.
+    pub fn attention(d: *Decoder, q: []u16, k: []u16, v: []u16, o: []u16) !void {
+        const elems = d.passed * d.tokens * W;
+        if (q.len != elems or k.len != elems or v.len != elems or o.len != elems) return error.H3BadLatentLength;
+        try d.scratch.?.download(d.view.q, std.mem.sliceAsBytes(q));
+        try d.scratch.?.download(d.view.k, std.mem.sliceAsBytes(k));
+        try d.scratch.?.download(d.view.v, std.mem.sliceAsBytes(v));
+        try d.scratch.?.download(d.view.o, std.mem.sliceAsBytes(o));
+    }
+
     fn dev(d: *const Decoder, off: usize) u64 {
         return d.scratch.?.ptr + off;
     }
