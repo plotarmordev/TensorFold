@@ -207,6 +207,10 @@ fn frontTensors(a: std.mem.Allocator, s: *Shards, g: rules.Refiner) !struct { co
 const tiny_text: rules.Text = .{ .hidden = 256, .heads = 4, .kv_heads = 2, .ffn = 512, .vocab = 96, .layers = 2, .eps = 1e-6, .theta = 1e4, .sections = .{ 24, 20, 20 } };
 const tiny_front: rules.Refiner = .{ .text = 256, .hidden = 384, .heads = 2, .mlp = 512, .blocks = 2, .eps = 1e-5, .qk_eps = 1e-5, .final_eps = 1e-5 };
 const tiny_rows = 70;
+/// The tiny checkpoint's stored bf16 bytes for `name`, missing ones refused rather than unwrapped.
+fn bitsOf(tiny: *const Tiny, name: []const u8) !hp.Tensor {
+    return tiny.bits.get(name) orelse return error.MissingTensor;
+}
 
 /// A synthetic checkpoint folder: bf16 tensors drawn uniformly, one shard and its index.
 const Synth = struct {
@@ -258,6 +262,7 @@ const Tiny = struct {
         var text = Synth{ .a = a, .rand = rand };
         const prefix = "model.language_model.";
         const embed = try text.tensor(prefix ++ "embed_tokens.weight", .{ g.vocab, g.hidden }, 0, 1);
+        try tiny.bits.put(a, prefix ++ "embed_tokens.weight", text.entries.items[text.entries.items.len - 1].bytes);
         _ = try text.tensor("model.visual.blocks.0.norm1.weight", .{ 128, 0 }, 1, 0.2);
         const layers = try a.alloc(ref.Layer, g.layers + 1);
         for (layers, 0..) |*l, i| inline for (comptime std.meta.fieldNames(ref.Layer), rules.layerTensors(g)) |field, s| {
@@ -322,11 +327,11 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
     var bits_layer: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
     const enc = try a.alloc(u16, T * g.hidden);
     const started = seconds();
-    try runner.encode(a, g, tiny.bits.get(try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})).?, ids, pos, null, bitsLayer, &bits_layer, enc);
+    try runner.encode(a, g, try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})), ids, pos, null, bitsLayer, &bits_layer, enc);
     const enc_s = seconds() - started;
     var bits_front: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
     const out = try a.alloc(u16, T * f.hidden);
-    try runner.refine(a, f, tiny.bits.get("condition_proj.weight").?, tiny.bits.get("condition_proj.bias").?, tiny.bits.get("token_refiner.final_norm.weight").?, bitsBlock, &bits_front, enc, out);
+    try runner.refine(a, f, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"), bitsBlock, &bits_front, enc, out);
 
     // the float64 oracle and the float32-sum host run over the same weights
     const cs = try a.alloc(f32, T * 64);
@@ -348,9 +353,9 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
 
     // a second run, byte for byte the same
     const again = try a.alloc(u16, enc.len);
-    try runner.encode(a, g, tiny.bits.get(try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})).?, ids, pos, null, bitsLayer, &bits_layer, again);
+    try runner.encode(a, g, try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})), ids, pos, null, bitsLayer, &bits_layer, again);
     const out_again = try a.alloc(u16, out.len);
-    try runner.refine(a, f, tiny.bits.get("condition_proj.weight").?, tiny.bits.get("condition_proj.bias").?, tiny.bits.get("token_refiner.final_norm.weight").?, bitsBlock, &bits_front, again, out_again);
+    try runner.refine(a, f, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"), bitsBlock, &bits_front, again, out_again);
     const same = std.mem.eql(u16, enc, again) and std.mem.eql(u16, out, out_again);
     std.debug.print("encoded in {d:.3} s; again, byte for byte the same: {}\n", .{ enc_s, same });
     failed = failed or !same;
@@ -387,7 +392,7 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     const vision: hp.Vision = .{ .pads = pads, .rows = bits[0 .. n * H], .deepstack = .{ bits[n * H ..][0 .. n * H], bits[2 * n * H ..][0 .. n * H], bits[3 * n * H ..][0 .. n * H] } };
     const enc = try a.alloc(u16, T * H);
     var layer_ctx: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
-    const embed = tiny.bits.get("model.language_model.embed_tokens.weight").?;
+    const embed = try bitsOf(&tiny, "model.language_model.embed_tokens.weight");
     try runner.encode(a, g, embed, ids, pos, vision, bitsLayer, &layer_ctx, enc);
     const cs = try a.alloc(f32, T * 64);
     const sn = try a.alloc(f32, T * 64);
@@ -408,7 +413,7 @@ fn bitsLayer(ctx: *anyopaque, li: usize) anyerror!hp.LayerSet {
     var set: hp.LayerSet = undefined;
     inline for (comptime std.meta.fieldNames(hp.LayerSet), rules.layerTensors(c.g)) |field, spec| {
         const name = try std.fmt.allocPrint(c.a, "model.language_model.layers.{d}.{s}", .{ li, spec[1] });
-        @field(set, field) = c.tiny.bits.get(name) orelse return error.MissingTensor;
+        @field(set, field) = try bitsOf(c.tiny, name);
     }
     return set;
 }
@@ -418,7 +423,30 @@ fn bitsBlock(ctx: *anyopaque, bi: usize) anyerror!hp.BlockSet {
     var set: hp.BlockSet = undefined;
     inline for (comptime std.meta.fieldNames(hp.BlockSet), rules.blockTensors(tiny_front)) |field, spec| {
         const name = try std.fmt.allocPrint(c.a, "token_refiner.blocks.{d}.{s}", .{ bi, spec[1] });
-        @field(set, field) = c.tiny.bits.get(name) orelse return error.MissingTensor;
+        @field(set, field) = try bitsOf(c.tiny, name);
     }
     return set;
+}
+
+test "the CUDA selftest exposes its checkpoint embedding to the encoder" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var prng = std.Random.DefaultPrng.init(0x5133);
+    const rand = prng.random();
+    const scratch = try files.Scratch.init(io, a, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    defer scratch.deinit(io);
+    const tiny = try Tiny.write(io, a, rand, scratch.path);
+    const g = tiny_text;
+
+    // the written text shard: the embedding the GPU path feeds, read back and checked byte for byte
+    var shards = try Shards.open(io, a, a, tiny.text_dir);
+    defer shards.deinit(a);
+    const embed = try shards.tensorBytes(a, "model.language_model.embed_tokens.weight", .{ g.vocab, g.hidden });
+    try std.testing.expectEqual(2 * g.vocab * g.hidden, embed.len);
+    try std.testing.expectEqualSlices(u8, embed, try bitsOf(&tiny, "model.language_model.embed_tokens.weight"));
+    try std.testing.expectError(error.MissingTensor, bitsOf(&tiny, "model.language_model.embed_tokens.weight.missing"));
 }
