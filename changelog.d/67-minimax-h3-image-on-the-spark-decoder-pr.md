@@ -8,3 +8,6 @@
 - Repair the CUDA prompt selftest's missing synthetic embedding tensor and report absent fixture tensors explicitly; exercise the fixture against its written checkpoint on the host. Record the second failed Spark qualification and paired mmh3 timings.
 - Record the third failed Spark run: isolated decoder attention passes, while decoder block identity and prompt vision/DeepStack checks fail; neither checkpoint size reaches rendering. Add selftest-only capture of the decoder's intermediate residual to isolate output projections, LayerScale and norm2 without changing production arithmetic or whole-block bounds.
 - Keep the failing full prompt vision fixture and add identity-vision, one-layer, splice-only and DeepStack-only comparisons to localize its error without adding production tracing or relaxing numerical gates.
+- Record the fourth failed Spark window and paired mmh3 timings without claiming a speedup; isolate decoder norm1, raw QKV and head transforms on their actual GPU inputs while retaining every whole-block gate.
+- Initialize the decoder reference scratch worker selector before its first projection; preserve its per-column arithmetic and serial/parallel equality.
+- Add selftest-only first-layer prompt captures and same-input FP64/FP32 operator diagnostics, with traced-versus-ordinary byte equality and unchanged whole-run acceptance gates.

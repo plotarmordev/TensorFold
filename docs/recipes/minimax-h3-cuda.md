@@ -306,3 +306,70 @@ were launched with `selftest` locally and stopped with `DriverUnavailable`; thes
 empty images without NVCC and do not exercise the new GPU diagnostics. The prompt fixture
 cleaned up its generated checkpoint. A new Desk run is required for the new diagnostic evidence;
 no new window has been scheduled by this continuation.
+
+### Fourth GPU window: residual and vision isolation
+
+Desk ran `be106718236c04bfb7c7de11089a3c037f979e92` on the same GB10 and driver on
+15 November, 14:21–14:27 HKT, then restored DeepSeek. The TensorFold job exited 1;
+mmh3 exited 0. Qualification still fails; neither TensorFold checkpoint render was reached.
+
+The decoder's new isolated attention-output projection/LayerScale, norm2, and FFN-down
+projection/LayerScale checks all pass (99.974–100% identical, at most 1 ULP). Existing
+attention, FFN and tiled-assembly checks pass too. Whole-block identity still fails at
+87.347% for small-case block 1 and 89.974% for full-size block 0. These passing isolated
+checks do not override either failure or establish the checkpoint PNG tolerance.
+
+The prompt's identity vision path is byte-identical to its text-only run. The full vision,
+splice-only and DeepStack-only probes still fail the unchanged FP64/F32 comparison gate.
+The one-layer vision probe has relative error 1.16e-3 while the host-F32 run is bit-identical
+to FP64, so that probe requires zero relative error. Equal printed worst errors across
+probes do not identify an offending row or operator; no splice or scatter bug is established.
+
+The paired mmh3 run used the same prompt, seed 42, sizes and six steps; 4096² reused the
+2048² algorithm and tiling caches. One run per size; transformer totals sum rounded logs:
+
+| Stage | TensorFold GPU 2048² | mmh3 2048² | TensorFold GPU 4096² | mmh3 4096² |
+|---|---:|---:|---:|---:|
+| Prompt | Not reached | 5.6 s | Not reached | 7.8 s |
+| Transformer load | Not reached | 5.8 s | Not reached | 3.5 s |
+| Transformer, 6 steps | Not reached | 37.1 s | Not reached | 54.7 s |
+| Decoder | Not reached | 1.1 s | Not reached | 2.9 s |
+| Wall | No picture | 51.0 s | No picture | 70.2 s |
+
+The 2048² baseline is substantially slower than earlier windows, with step times from
+4.0 to 10.0 s. These logs do not establish why; do not attribute the change to contention,
+temperature or the candidate. No end-to-end TensorFold speedup can be calculated.
+The beyond-INT8 batched BF16 experiment remains 0.54 s for 25 synthetic tiles through
+24 blocks (21.6 ms/tile), not a checkpoint decoder measurement.
+
+Receipt SHA-256 identifiers:
+
+- `be106718/tensorfold.log`: `7325809c2ff5bbb2c8a5b42c4da666e6fa6792213f9817e99d8a46a1695fc828`
+- `be106718/mmh3/out/mmh3/2048.log`: `de4d9b181b2905017f641bdf644037f9beaadfaf0d8ae6860cb8c0e6321a0aee`
+- `be106718/mmh3/out/mmh3/4096.log`: `0b8fddb2cd5cff6dbb6f116b8ad21eb3316626df7e0d5e038f36d759fd978133`
+
+The next decoder diagnostic captures norm1 and raw QKV before the FFN reuses their storage,
+then checks norm1, QKV projection and head norm/rotary independently on actual GPU inputs.
+Its production specialization performs none of these downloads. The host reference now
+initializes its scratch worker selector explicitly; allocating its slice fields after an
+`undefined` initializer did not apply the worker field's default. That repair does not change
+the dot-product order or establish a numerical correction to the GPU failures.
+
+The prompt continuation also captures the first layer's operation boundaries in the selftest.
+Each host replay consumes the captured GPU input, including rounded projection inputs to residual
+adds, rather than chaining another replay's result. It reports distances against FP64 and FP32
+replays without replacing the unchanged whole-run gates. The traced and ordinary one-layer runs
+must remain byte-identical. Production `encode` compiles without capture downloads.
+
+The continuation still needs CUDA kernel-contract registration and compiler/device receipts,
+the unchanged numerical gates, and same-latent checkpoint PNG comparisons at both sizes before
+matched timing can qualify the GPU cutover. Kernel-name lookup and successful tool compilation
+are not kernel-contract registration. No new Desk window is scheduled by this continuation.
+
+Local continuation verification: `nice -n 10 zig build test test-golden --summary all`
+exited 0: 894/894 steps succeeded, 454 tests passed and 15 skipped (other tests cached).
+Server goldens were 322/335 equal with 13 known differences; authorization goldens 55/55,
+both with zero unexpected differences. Both CUDA tools compiled without NVCC; launching each
+`selftest` stopped at `DriverUnavailable`, not a GPU pass. Changed Zig files passed
+`zig fmt --check`. Removed throwaway host probes verified nonzero decoder-block serial/automatic
+worker equality, rotary signs, and prompt same-input replay isolation under perturbed captures.
