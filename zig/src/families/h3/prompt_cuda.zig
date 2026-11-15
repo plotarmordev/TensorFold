@@ -1,11 +1,12 @@
 //! MiniMax-H3-Image's prompt stage on CUDA: Qwen3-VL's text model to layer 50, then condition_proj and
-//! all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products sum K in reference
+//! the refiner, all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products sum K in reference
 //! order; refiner products use cuBLASLt with FP32 sums. Every value the reference stores in bf16 is rounded to bf16
 //! by a kernel before the next step reads it.
 //! The text model's layer weights stream through two alternating pinned windows and fill one set of
 //! device buffers kept for the run, so the released 32B encoder's ~85 GiB never sits on the device:
 //! one layer (~1.7 GiB) at a time.
 const std = @import("std");
+pub const seconds = @import("clock.zig").seconds;
 const cuda = @import("cuda");
 pub const rules = @import("picture_prompt.zig");
 pub const reference = @import("prompt_reference.zig");

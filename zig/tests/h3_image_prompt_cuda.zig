@@ -114,12 +114,7 @@ fn read(io: std.Io, a: std.mem.Allocator, parts: []const []const u8) ![]u8 {
     };
 }
 
-/// Wall seconds on the monotonic clock, as the host prompt tool's.
-fn seconds() f64 {
-    var t: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &t);
-    return @as(f64, @floatFromInt(t.sec)) + @as(f64, @floatFromInt(t.nsec)) / 1e9;
-}
+const seconds = hp.seconds;
 
 /// A checkpoint folder on the host, as tf-h3-image-prompt-host's: the index's name-to-shard map, each
 /// shard mapped once on first use; a layer's tensors are read, uploaded and freed before the next's.

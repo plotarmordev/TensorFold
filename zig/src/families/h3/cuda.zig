@@ -30,11 +30,7 @@ pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "at
 /// h3_attention's dynamic shared bytes: a query, a key and a value tile in bf16.
 const attention_shared = 3 * slot_tile * head_dim * 2;
 
-pub fn seconds() f64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
-    return @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) * 1e-9;
-}
+pub const seconds = @import("clock.zig").seconds;
 
 /// A block's bf16 projections (N, K) as stored, `qkvc` qkv_proj then the gate when the checkpoint has one;
 /// `norms`: norm1, norm2, q and k norms.
