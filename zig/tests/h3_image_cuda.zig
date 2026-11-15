@@ -9,9 +9,12 @@ const rows = h3image.rows;
 
 const usage =
     \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX
+    \\       tf-h3-image-cuda MODEL_DIR --serve
     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
     \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
+    \\--serve loads the model once, then renders one `picture.safetensors OUT_PREFIX` line of stdin at a time,
+    \\answering each on stdout with `done OUT_PREFIX` or `failed OUT_PREFIX`.
     \\
 ;
 
@@ -28,35 +31,77 @@ fn values(comptime T: type, bytes: []const u8) []align(1) const T {
     return std.mem.bytesAsSlice(T, bytes);
 }
 
+/// The folder's transformer, schedule and step heads, loaded once for every picture.
+const Folder = struct {
+    ck: h3.checkpoint.Shards,
+    model: *h3.Model,
+    heads: h3.checkpoint.Checkpoint,
+    pdd: picture.Pdd,
+
+    fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !Folder {
+        const heads_name = try picture.checkIndex(a, try read(init, a, dir, "model_index.json"));
+        const transformer_dir = try std.fs.path.join(a, &.{ dir, "transformer" });
+        try picture.checkTransformer(a, try read(init, a, transformer_dir, "config.json"));
+        const shard_count = try picture.shardCount(a, try read(init, a, transformer_dir, "model.safetensors.index.json"));
+        const heads_dir = std.fs.path.dirname(try std.fs.path.join(a, &.{ dir, heads_name })) orelse dir;
+        const pdd = try picture.pdd(a, try read(init, a, heads_dir, "pdd_config.json"));
+        var ck = try h3.checkpoint.Shards.open(init.gpa, transformer_dir, shard_count);
+        errdefer ck.deinit(init.gpa);
+        const model = try h3.Model.loadSharded(init.gpa, &ck);
+        errdefer model.deinit();
+        if (model.gated) return error.H3NotPictureModel; // a picture's blocks are dense: every tile sees every tile
+        const heads = try h3.checkpoint.Checkpoint.open(try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, heads_name }, 0));
+        return .{ .ck = ck, .model = model, .heads = heads, .pdd = pdd };
+    }
+
+    fn deinit(f: *Folder, gpa: std.mem.Allocator) void {
+        f.heads.deinit();
+        f.model.deinit();
+        f.ck.deinit(gpa);
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len == 2 and std.mem.eql(u8, args[1], "--self-test")) return h3.modulation_test.run(init.gpa);
-    if (args.len != 4) {
+    const serving = args.len == 3 and std.mem.eql(u8, args[2], "--serve");
+    if (args.len != 4 and !serving) {
         std.debug.print("{s}", .{usage});
         return error.BadArguments;
     }
-    const a = init.arena.allocator();
+    const started = h3.seconds();
+    var folder = try Folder.load(init, init.arena.allocator(), args[1]);
+    defer folder.deinit(init.gpa);
+    std.debug.print("model loaded in {d:.1} s\n", .{h3.seconds() - started});
+    if (!serving) return render(init, init.arena.allocator(), &folder, args[2], args[3]);
+    var in_buf: [4096]u8 = undefined;
+    var in = std.Io.File.stdin().readerStreaming(init.io, &in_buf);
+    while (try in.interface.takeDelimiter('\n')) |line| {
+        var it = std.mem.tokenizeAny(u8, line, " \t\r");
+        const case_path = it.next() orelse continue;
+        const prefix = it.next() orelse case_path;
+        var request = std.heap.ArenaAllocator.init(init.gpa);
+        defer request.deinit();
+        const verdict = if (render(init, request.allocator(), &folder, case_path, prefix)) "done" else |err| blk: {
+            std.debug.print("{s} failed: {s}\n", .{ prefix, @errorName(err) });
+            break :blk "failed";
+        };
+        try std.Io.File.stdout().writeStreamingAll(init.io, try std.fmt.allocPrint(request.allocator(), "{s} {s}\n", .{ verdict, prefix }));
+    }
+}
+
+/// One picture case through the distilled schedule on the loaded folder: its rows and latent next to OUT_PREFIX.
+fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_path: []const u8, prefix: []const u8) !void {
     const gpa = init.gpa;
     const started = h3.seconds();
-
-    // the folder: the image pipeline, an audio-free transformer, the distilled schedule and its heads
-    const heads_name = try picture.checkIndex(a, try read(init, a, args[1], "model_index.json"));
-    const transformer_dir = try std.fs.path.join(a, &.{ args[1], "transformer" });
-    try picture.checkTransformer(a, try read(init, a, transformer_dir, "config.json"));
-    const shard_count = try picture.shardCount(a, try read(init, a, transformer_dir, "model.safetensors.index.json"));
-    const heads_dir = std.fs.path.dirname(try std.fs.path.join(a, &.{ args[1], heads_name })) orelse args[1];
-    const pdd = try picture.pdd(a, try read(init, a, heads_dir, "pdd_config.json"));
+    const model = folder.model;
+    const ck = &folder.ck;
+    const pdd = folder.pdd;
     const steps = pdd.steps();
-
-    var ck = try h3.checkpoint.Shards.open(gpa, transformer_dir, shard_count);
-    defer ck.deinit(gpa);
-    const model = try h3.Model.loadSharded(gpa, &ck);
-    defer model.deinit();
-    if (model.gated) return error.H3NotPictureModel; // a picture's blocks are dense: every tile sees every tile
     const hidden = model.hidden;
 
     // the case's rows: the canvas's target grid, the text, each reference's grid
-    var case = try h3.checkpoint.Checkpoint.open(args[2]);
+    var case = try h3.checkpoint.Checkpoint.open(try a.dupeSentinel(u8, case_path, 0));
     defer case.deinit();
     const canvas_v = values(i32, try case.at("canvas", .i32, 2));
     const canvas = picture.Size{ .width = @intCast(@max(canvas_v[0], 0)), .height = @intCast(@max(canvas_v[1], 0)) };
@@ -101,15 +146,14 @@ pub fn main(init: std.process.Init) !void {
     const plan = try schedule.plan(a, .{ .text = text, .condition = held, .audio = 0, .video = target }, pdd.timesteps, pdd.timesteps);
     const times = plan.table.len;
     const lines = times * schedule.modalities;
-    var modulation = try h3.modulation.prepare(gpa, &model.driver, model.stream, &ck, plan.table, model.blocks.len, hidden);
+    var modulation = try h3.modulation.prepare(gpa, &model.driver, model.stream, ck, plan.table, model.blocks.len, hidden);
     defer modulation.deinit();
     const final = modulation.final;
     const final_norm = values(u16, try ck.at("final_layer.norm.weight", .bf16, hidden));
 
     // the step heads: the picture's distilled heads, one a step, in model_index.json's heads file
     const width = picture.row_width;
-    var heads = try h3.checkpoint.Checkpoint.open(try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ args[1], heads_name }, 0));
-    defer heads.deinit();
+    const heads = &folder.heads;
     const w_out = values(f32, try heads.at("video_out.weight", .f32, steps * width * hidden));
     const b_out = values(f32, try heads.at("video_out.bias", .f32, steps * width));
     const w_in = values(f32, try ck.at("video_patch_proj.weight", .f32, hidden * width));
@@ -146,7 +190,7 @@ pub fn main(init: std.process.Init) !void {
         .prefix_tiles = @intCast(map.prefix),
         .keep = 0,
     };
-    std.debug.print("{d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, loaded in {d:.1} s\n", .{ canvas.width, canvas.height, count, text, held, target, tiles, model.blocks.len, steps, h3.seconds() - started });
+    std.debug.print("{d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, case ready in {d:.1} s\n", .{ canvas.width, canvas.height, count, text, held, target, tiles, model.blocks.len, steps, h3.seconds() - started });
 
     const transformer = h3.seconds();
     for (0..steps) |s| {
@@ -173,11 +217,11 @@ pub fn main(init: std.process.Init) !void {
     }
     std.debug.print("transformer: {d:.2} s\n", .{h3.seconds() - transformer});
 
-    const rows_path = try std.fmt.allocPrintSentinel(a, "{s}.rows.f32", .{args[3]}, 0);
+    const rows_path = try std.fmt.allocPrintSentinel(a, "{s}.rows.f32", .{prefix}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
     const latent = try a.alloc(f32, video.len);
     try picture.unpatchify(video, target_grid, latent);
-    const latent_path = try std.fmt.allocPrintSentinel(a, "{s}.latent.f32", .{args[3]}, 0);
+    const latent_path = try std.fmt.allocPrintSentinel(a, "{s}.latent.f32", .{prefix}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = latent_path, .data = std.mem.sliceAsBytes(latent) });
-    std.debug.print("wrote {s}.latent.f32: [{d}, {d}, {d}] normalised float32\n", .{ args[3], picture.channels, target_grid.rows, target_grid.columns });
+    std.debug.print("wrote {s}.latent.f32: [{d}, {d}, {d}] normalised float32\n", .{ prefix, picture.channels, target_grid.rows, target_grid.columns });
 }

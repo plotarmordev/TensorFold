@@ -1,9 +1,5 @@
 #!/bin/sh
-# run-script.sh's pictures as a benchmark, through the Desk's GPU door on TOP's Spark:
-#   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
-# Same inputs and prebuilt bin-SHA/ tools. The selftests' PASS or FAIL is recorded, not a gate. Each size renders one
-# cold picture and three warm repeats, every stage in its own process as in run-script.sh, while nvidia-smi samples
-# memory and power. /work/out/h3-image-bench gets the pictures, the logs and SUMMARY.md (tools/zig/h3_image_bench.py).
+# run-script.sh's pictures as a benchmark through the Desk's GPU door; usage and output in ../minimax-h3-cuda.md.
 set -eu
 model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
@@ -21,7 +17,7 @@ mkdir -p "$out"
     echo "GPU, driver: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader)"
     echo "prompt: $pilot/prompt.txt, sha256 $(sha256sum <"$pilot/prompt.txt" | cut -d' ' -f1)"
     echo "seed: 42"
-    echo "runs per size: 1 cold, 3 warm"
+    echo "runs per size: 1 cold, 3 warm on one resident transformer (tf-h3-image-cuda --serve)"
 } >"$out/settings"
 selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or FAIL to selftests
     name=$1
@@ -38,12 +34,27 @@ sample() { # until killed, twice a second: time, GPU memory used (MiB), power (W
         sleep 0.5
     done
 }
+sampler= server=
 # the summary is written whenever the script exits, after a failed stage too
-trap '[ -z "$sampler" ] || kill "$sampler"; python3 tools/zig/h3_image_bench.py "$out"' EXIT
+trap '[ -z "$sampler" ] || kill "$sampler"; [ -z "$server" ] || kill "$server" 2>/dev/null || :; python3 tools/zig/h3_image_bench.py "$out"' EXIT
 stage() { # stage NAME TOOL ARGS...: the tool's log, with its times, to $case.NAME.log; shown if it fails
     log=$case.$1.log
     shift
     "$@" 2>"$log" || { cat "$log" >&2; exit 1; }
+}
+image() { # the resident transformer renders $case; the server's log since the last reply goes to $case.image.log
+    [ -n "$server" ] || {
+        mkfifo "$out/requests" "$out/replies"
+        "$bin/tf-h3-image-cuda" "$model" --serve <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" &
+        server=$!
+        exec 3>"$out/requests" 4<"$out/replies"
+        logged=0
+    }
+    echo "$case.safetensors $case" >&3
+    read -r verdict _ <&4 || verdict=
+    tail -c +$((logged + 1)) "$out/$side.server.log" >"$case.image.log"
+    logged=$(wc -c <"$out/$side.server.log")
+    [ "$verdict" = done ] || { cat "$case.image.log" >&2; exit 1; }
 }
 for side in 2048 4096; do
     for run in 1 2 3 4; do
@@ -52,11 +63,16 @@ for side in 2048 4096; do
         sampler=$!
         date +%s.%N >"$case.time"
         stage prompt "$bin/tf-h3-image-prompt-cuda" "$model/text_encoder" "$model" "$pilot/prompt.txt" "$case.safetensors" "${side}x$side" 42
-        stage image "$bin/tf-h3-image-cuda" "$model" "$case.safetensors" "$case"
+        image
         stage decoder "$bin/tf-h3-image-decoder-cuda" "$model" "$case.latent.f32" $((side / 16)) $((side / 16)) "$case.png" "${side}x$side"
         date +%s.%N >>"$case.time"
         kill "$sampler"
         sampler=
         echo "$side run $run done"
     done
+    # end of requests: the server exits; the next size loads its own, cold
+    exec 3>&- 4<&-
+    wait "$server"
+    server=
+    rm "$out/requests" "$out/replies"
 done

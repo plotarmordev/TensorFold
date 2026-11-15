@@ -11,10 +11,11 @@ condition_proj and the token refiner: 1.60 s wall, 1.50 s GPU
 wrote /work/out/x.safetensors: text [24, 4096] bf16, text_tags and ids
 prompt: 57.30 s
 """
-IMAGE = """2048x2048 canvas, 16408 rows (text 24, references 0, target 16384), 1 tiles, 60 blocks, 6 steps, loaded in 88.7 s
+WARM_IMAGE = """2048x2048 canvas, 16408 rows (text 24, references 0, target 16384), 1 tiles, 60 blocks, 6 steps, case ready in 1.2 s
 step 1/6: 6.50 s
 transformer: 26.50 s
 """
+IMAGE = "model loaded in 88.7 s\n" + WARM_IMAGE
 DECODER = """decoder weights in bf16 in 4.6 s
 2048x2048 canvas: decoded 25 tiles in 3.10 s (2.80 s on the GPU), 7.70 s in all; wrote /work/out/x.png at 2048x2048
 """
@@ -30,7 +31,7 @@ class Summary(unittest.TestCase):
         case = self.out / name
         Path(f"{case}.time").write_text(f"{start}\n{end}\n")
         Path(f"{case}.prompt.log").write_text(PROMPT)
-        Path(f"{case}.image.log").write_text(IMAGE)
+        Path(f"{case}.image.log").write_text(IMAGE if name.endswith("-1") else WARM_IMAGE)
         Path(f"{case}.decoder.log").write_text(DECODER)
         Path(f"{case}.smi").write_text(smi)
 
@@ -51,6 +52,12 @@ class Summary(unittest.TestCase):
         self.assertEqual(run["peak MiB"], 50000)
         self.assertEqual(run["avg W"], 50.0)
 
+    def test_warm_runs_on_the_resident_model_have_no_load(self):
+        self.case("2048-2", 0.0, 40.0, "")
+        run = bench.measure(self.out / "2048-2")
+        self.assertIsNone(run["load s"])
+        self.assertEqual((run["transformer s"], run["steps"]), (26.5, 6))
+
     def test_a_failed_run_keeps_what_finished(self):
         case = self.out / "4096-1"
         Path(f"{case}.time").write_text("5.0\n")
@@ -69,7 +76,7 @@ class Summary(unittest.TestCase):
         self.assertIn("- decoder FAIL", text)
         self.assertIn("| 2048² cold | 200.0 | 57.3 | 88.7 | 26.5 | 7.7 | 6 | 1000.0 | 50.0 | 10.0 |", text)
         self.assertIn("| 2048² warm 2 | 120.0 |", text)
-        self.assertIn("| 2048² warm mean | 110.0 | 57.3 | 88.7 | 26.5 | 7.7 | 6.0 | 1000.0 | 50.0 | 5.5 |", text)
+        self.assertIn("| 2048² warm mean | 110.0 | 57.3 | — | 26.5 | 7.7 | 6.0 | 1000.0 | 50.0 | 5.5 |", text)
 
     def test_a_failed_or_missing_selftest_marks_the_timings_as_not_the_sparks(self):
         self.assertIn("**Not the Spark's result: the decoder selftest failed;", bench.summary(self.out))
@@ -84,7 +91,7 @@ class Summary(unittest.TestCase):
         self.case("2048-1", 0.0, 200.0, "0, 1000, 50.0, \n")
         self.case("2048-2", 0.0, 100.0, "")
         self.case("2048-3", 0.0, 120.0, "0, 1000, 50.0, \n")
-        self.assertIn("| 2048² warm mean | 110.0 | 57.3 | 88.7 | 26.5 | 7.7 | 6.0 | — | — | — |", bench.summary(self.out))
+        self.assertIn("| 2048² warm mean | 110.0 | 57.3 | — | 26.5 | 7.7 | 6.0 | — | — | — |", bench.summary(self.out))
 
 
 if __name__ == "__main__":

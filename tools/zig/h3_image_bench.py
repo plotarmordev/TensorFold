@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""SUMMARY.md for docs/recipes/minimax-h3-cuda/bench-script.sh's output folder: every run's stage times from the
-tools' logs, and its peak memory, average power and energy from the nvidia-smi samples taken during it."""
+"""SUMMARY.md for bench-script.sh's output: each run's stage times, peak memory, average power and energy."""
 import re
 import statistics
 import sys
@@ -8,7 +7,7 @@ from pathlib import Path
 
 STAGES = {  # column: (log, pattern of its seconds)
     "prompt": ("prompt", r"^prompt: ([\d.]+) s$"),
-    "load": ("image", r"loaded in ([\d.]+) s$"),
+    "load": ("image", r"^model loaded in ([\d.]+) s$"),  # the cold run's; warm runs reuse the resident model
     "transformer": ("image", r"^transformer: ([\d.]+) s$"),
     "decoder": ("decoder", r"([\d.]+) s in all;"),
 }
@@ -32,7 +31,7 @@ def number(text):
 
 
 def samples(path):
-    """(memory MiB, watts) per sample. The Spark's unified memory reports no memory.used: then the compute processes'."""
+    """(memory MiB, watts) per sample; unified memory has no memory.used, so the compute processes' then."""
     rows = []
     for line in path.read_text().splitlines() if path.exists() else ():
         fields = [field.strip() for field in line.split(",")]
@@ -54,7 +53,7 @@ def measure(case):
     for column, (log, pattern) in STAGES.items():
         value = found(Path(f"{case}.{log}.log"), pattern)
         run[f"{column} s"] = value and float(value)
-    steps = found(Path(f"{case}.image.log"), r"(\d+) steps, loaded in")
+    steps = found(Path(f"{case}.image.log"), r"(\d+) steps, case ready in")
     run["steps"] = steps and int(steps)
     rows = samples(Path(f"{case}.smi"))
     memory = [m for m, _ in rows if m is not None]
