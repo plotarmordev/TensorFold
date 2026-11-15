@@ -85,6 +85,20 @@ CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check
 renders both picture sizes only when they pass. The 14 November tables below predate this cutover; the
 [`64188519` window](#gpu-qualification-and-the-64188519-window) measures it.
 
+### Benchmark run
+
+[`bench-script.sh`](minimax-h3-cuda/bench-script.sh) takes `run-script.sh`'s inputs and tools without its gate: it
+records each selftest's PASS or FAIL and renders anyway. Each size gets one cold picture (start to first picture) and
+three warm repeats, each stage in its own process, while `nvidia-smi` is sampled twice a second. Where unified
+memory leaves `memory.used` as `[N/A]`, the peak is the compute processes' memory instead.
+`/work/out/h3-image-bench/SUMMARY.md` lists the commit, GPU, prompt hash and seed. Per run it gives wall, prompt, load,
+transformer and decoder seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
+It is written by [`h3_image_bench.py`](../../tools/zig/h3_image_bench.py), also when a stage fails:
+
+    ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
+
+Expect about 35 minutes from the 64188519 window's stage times (~180 s and ~280 s a picture, four pictures each).
+
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
 Prompt `h3-image-pilot/prompt.txt` (the red fox, sha256 cc969bca…), seed 42, the checkpoint's six distilled steps,
