@@ -98,7 +98,22 @@ It is written by [`h3_image_bench.py`](../../tools/zig/h3_image_bench.py), also 
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
-Expect about 35 minutes from the 64188519 window's stage times (~180 s and ~280 s a picture, four pictures each).
+Desk ran `d3ca6199` on TOP's GB10 (driver 580.173.02, job `top-587035ea34ef`, 16 November, 36 minutes, exit 0). The
+transformer and prompt selftests passed and the decoder failed, so these timings are not yet the Spark's result:
+
+| Size | Wall cold | Wall warm mean | Prompt | Load | Transformer | Decoder | Peak MiB | Avg W | kJ a picture |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 150.4 s | 133.6 s | 21.0 s | 77.6 s | 25.9 s | 3.1 s | 37,994 | 25.6 | 3.4 |
+| 4096² | 233.9 s | 237.2 s | 19.8 s | 73.6 s | 125.9 s | 11.1 s | 40,762 | 44.8 | 10.6 |
+
+Stage columns are warm means. A warm repeat still loads the model (~75 s), because each stage is its own process and
+the resident `tf-h3-image-server` is Metal-only. The decoder's failing row is the 6 x 10 case's block 1: 86.952%
+identical against the 90% bound (worst 3 ULP, relative 1.19e-3). No operator diverges. Every operator of that block
+passes its 1-ULP/99% bound on its own GPU input (99.7–100%, the `64188519` log's isolated checks). The block identity
+has been 86.9–87.3% in every window since 15 November. The `64188519` window printed `pass` because its gate was 85%,
+and `0d576de9` restored 90%. The gap is the fp32 GPU sums' rounding flips compounding over a block's ten operators,
+against the host fp32 sums' 95%. Matching the host's summation order in the decoder's products would be a correctness
+card of its own.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
