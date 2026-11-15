@@ -144,6 +144,11 @@ cuBLASLt reduction, and prompt transcendentals round once from exact. The selfte
 removed and every numerical bound is unchanged. Whether the repaired kernels pass on device needs a new Desk window;
 no fixed-gate result is claimed yet.
 
+The 21 H3 launches' registered usage is nvcc 13.0's, read by `kernel-contract-limits` from fatbins built on BOTTOM
+for sm_80/86/89/120/121 at `396df649` (16 November); every launch passes all five SMs' thread, register and shared-memory
+limits. The contract's rotary reference now rotates from the unrotated vector under the served cos/sin tables (whose
+sines reach ±1), and `h3m_project`'s output is declared and checked as bf16 values in fp32 words.
+
 Desk ran `64188519f690eb8bde9897506e241cdd6e0e4fb8` on TOP's GB10, driver 580.173.02, on 15 November,
 18:18–18:29 HKT, with no other job on TOP. `run-script.sh` (`top-43d6798bde4f`) rendered both checkpoint
 sizes and exited 1 on the prompt selftest; `mmh3-job.sh` (`top-f6e5bd1bfa56`) exited 0. Every stage ran
