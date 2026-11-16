@@ -185,6 +185,12 @@ and prompt selftests passed and the decoder failed, so these timings remain **no
 Warm prompt time is back at the cold 18–22 s range at both sizes; the page-cache eviction fixed the warm regression in
 this window.
 
+Desk ran `96c87a43` with card 72's ordered FP32 projection kernel (job `top-f42e93268a64`, 16 November, exit 0). Every
+selftest passed, so these timings are the Spark's result: at 2048² the decoder took 5.6 s cold and in each warm repeat
+(5.25 s on the GPU), and 20.4 s at 4096² (20.3 s warm mean). The same job's `reference` check decoded the 2048² latent
+on the GPU and on the host reference decoder: 86.180% of bytes identical, 99.923% within 1, at most 5 apart, 56.65 dB,
+relative error 3.15e-3 against the 3e-2 bound, a pass.
+
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
 Prompt `h3-image-pilot/prompt.txt` (the red fox, sha256 cc969bca…), seed 42, the checkpoint's six distilled steps,
