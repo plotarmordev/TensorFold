@@ -51,7 +51,7 @@ fn none(_: c.Shape) usize {
 
 const norm_why = "a bf16 output follows the sum of squares as ss^-1/2: a bf16 sum's error is a few output ulps";
 
-/// h3d_linear's sequential dot over k.
+/// h3d_linear's dot over k, in increasing K.
 fn dotK(s: c.Shape) usize {
     return s.k;
 }
@@ -62,7 +62,7 @@ pub fn spec(w: Which) c.Spec {
         .embed => .{ .name = "cuda h3 image decoder h3d_embed", .accum = .f32, .depth = dot24, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 256, .k = 24 }, .{ .rows = 2, .n = 64, .k = 24 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the 24-term dot's bf16 output hides a bf16 sum's error" } },
         .rms_norm => .{ .name = "cuda h3 image decoder h3d_rms_norm", .accum = .f32, .depth = normChain, .ops = 8, .mids = 0, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1024 }, .{ .rows = 261, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .layer_norm => .{ .name = "cuda h3 image decoder h3d_layer_norm", .accum = .f32, .depth = normChain, .ops = 10, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1024 }, .{ .rows = 261, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
-        .linear => .{ .name = "cuda h3 image decoder h3d_linear", .accum = .f32, .depth = dotK, .ops = 0, .out = .f32, .served = &.{ .{ .rows = 4, .n = 128, .k = 256 }, .{ .rows = 8, .n = 256, .k = 1024 }, .{ .rows = 8, .n = 128, .k = 4096 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "each projection sums K sequentially in fp32 in the reference's own order" } },
+        .linear => .{ .name = "cuda h3 image decoder h3d_linear", .accum = .f32, .depth = dotK, .ops = 0, .out = .f32, .served = &.{ .{ .rows = 4, .n = 128, .k = 256 }, .{ .rows = 8, .n = 256, .k = 1024 }, .{ .rows = 8, .n = 128, .k = 4096 }, .{ .rows = 136, .n = 200, .k = 1000 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "each output sums K in increasing order with individually rounded fp32 multiplies and adds" } },
         .finish_bias => .{ .name = "cuda h3 image decoder h3d_finish bias", .accum = .none, .depth = none, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1 }, .{ .rows = 16, .n = 768, .k = 1 } } },
         .finish_scale => .{ .name = "cuda h3 image decoder h3d_finish layerscale", .accum = .none, .depth = none, .ops = 1, .mids = 2, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1 }, .{ .rows = 16, .n = 768, .k = 1 } } },
         .heads => .{ .name = "cuda h3 image decoder h3d_heads", .accum = .f32, .depth = headChain, .ops = 8, .mids = 4, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 3072 }, .{ .rows = 2, .n = 64, .k = 3072 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
@@ -351,7 +351,7 @@ pub const Dec = struct {
             .linear => {
                 for (b[0..3]) |p| a.add(p);
                 a.add(self.p);
-                try self.go(.{ .x = @intCast((self.p.n + 31) / 32), .y = @intCast((self.p.m + 7) / 8), .z = 1 }, .{ .x = 32, .y = 8 }, &a);
+                try self.go(.{ .x = @intCast((self.p.n + 127) / 128), .y = @intCast((self.p.m + 127) / 128), .z = 1 }, .{ .x = 256 }, &a);
             },
             .finish_bias, .finish_scale => {
                 for (b[0..4]) |p| a.add(p);
