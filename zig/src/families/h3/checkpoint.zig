@@ -10,6 +10,7 @@ const c = struct {
     extern "c" fn mmap(addr: ?*anyopaque, len: usize, prot: c_int, flags: c_int, fd: c_int, offset: i64) ?*anyopaque;
     extern "c" fn munmap(addr: ?*anyopaque, len: usize) c_int;
     extern "c" fn madvise(addr: ?*anyopaque, len: usize, advice: c_int) c_int;
+    extern "c" fn posix_fadvise(fd: c_int, offset: i64, len: i64, advice: c_int) c_int;
 };
 
 /// Where a tensor sits in the data that follows the header.
@@ -28,6 +29,8 @@ pub fn locate(names: st.Header, name: []const u8) !Span {
 
 pub const Checkpoint = struct {
     bytes: []const u8,
+    /// Open until `deinit`, so `evict` can drop the file's pages from the page cache.
+    fd: c_int,
     header: []const u8,
     data: usize,
     names: st.Header,
@@ -42,7 +45,7 @@ pub const Checkpoint = struct {
     fn openWith(path: [*:0]const u8, comptime Ops: type) !Checkpoint {
         const fd = Ops.open(path, 0);
         if (fd < 0) return error.CannotOpen;
-        defer _ = Ops.close(fd);
+        errdefer _ = Ops.close(fd);
         const size = Ops.lseek(fd, 0, 2);
         if (size < 16) return error.CannotOpen;
         const len = std.math.cast(usize, size) orelse return error.CheckpointTooLarge;
@@ -54,7 +57,7 @@ pub const Checkpoint = struct {
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
         errdefer arena.deinit();
         const names = st.parseHeader(arena.allocator(), bytes[8..][0..n], len - 8 - n) catch return error.BadHeader;
-        return .{ .bytes = bytes, .header = bytes[8 .. 8 + n], .data = 8 + n, .names = names, .arena = arena };
+        return .{ .bytes = bytes, .fd = fd, .header = bytes[8 .. 8 + n], .data = 8 + n, .names = names, .arena = arena };
     }
 
     pub fn deinit(self: *Checkpoint) void {
@@ -64,11 +67,14 @@ pub const Checkpoint = struct {
     fn deinitWith(self: *Checkpoint, comptime Ops: type) void {
         self.arena.deinit();
         _ = Ops.munmap(@ptrCast(@constCast(self.bytes.ptr)), self.bytes.len);
+        _ = Ops.close(self.fd);
     }
 
-    /// Unmaps the pages from this process, left to the page cache to reclaim and faulted back on a later read; Linux only.
+    /// Unmaps the pages, then drops them from the page cache; faulted back from disk on a later read. Linux only.
     pub fn evict(self: *const Checkpoint) void {
-        if (@import("builtin").os.tag == .linux) _ = c.madvise(@ptrCast(@constCast(self.bytes.ptr)), self.bytes.len, 4);
+        if (@import("builtin").os.tag != .linux) return;
+        _ = c.madvise(@ptrCast(@constCast(self.bytes.ptr)), self.bytes.len, 4); // MADV_DONTNEED
+        _ = c.posix_fadvise(self.fd, 0, 0, 4); // POSIX_FADV_DONTNEED: a cached copy would crowd out the prompt's
     }
 
     /// The tensor `name` of `dtype` and `count` values: its bytes as stored.
@@ -306,7 +312,7 @@ test "h3 arithmetic: tensor sizes and offsets reject overflow" {
     try std.testing.expectError(error.BadSafetensors, indexOf(arena.allocator(), "{\"a\":{\"dtype\":\"BF16\",\"shape\":[18446744073709551615,2],\"data_offsets\":[0,0]}}", 0));
     var bytes: [16]u8 = @splat(0);
     const header = "{\"a\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}";
-    const ck: Checkpoint = .{ .bytes = &bytes, .data = std.math.maxInt(usize), .header = header, .names = try indexOf(arena.allocator(), header, 2), .arena = .init(std.testing.allocator) };
+    const ck: Checkpoint = .{ .bytes = &bytes, .fd = -1, .data = std.math.maxInt(usize), .header = header, .names = try indexOf(arena.allocator(), header, 2), .arena = .init(std.testing.allocator) };
     try std.testing.expectError(error.BadHeader, ck.bf16("a"));
 }
 
@@ -385,7 +391,7 @@ test "a count-checked fetch refuses a tensor shorter than asked, another dtype a
     defer arena.deinit();
     var bytes: [8]u8 = @splat(0);
     const header = "{\"w\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[0,8]}}";
-    const ck: Checkpoint = .{ .bytes = &bytes, .data = 0, .header = header, .names = try indexOf(arena.allocator(), header, 8), .arena = .init(std.testing.allocator) };
+    const ck: Checkpoint = .{ .bytes = &bytes, .fd = -1, .data = 0, .header = header, .names = try indexOf(arena.allocator(), header, 8), .arena = .init(std.testing.allocator) };
     try std.testing.expectEqual(@as(usize, 8), (try ck.at("w", .f32, 2)).len);
     try std.testing.expectError(error.BadTensor, ck.at("w", .f32, 3));
     try std.testing.expectError(error.BadTensor, ck.at("w", .bf16, 4));

@@ -1,4 +1,4 @@
-//! kernel-contract-limits DIR: the records against nvcc's fatbins, ELF parsing only; no driver, no GPU, no contract test.
+//! kernel-contract-limits DIR: the records against nvcc's fatbins by ELF parsing alone; no driver, GPU or contract.
 const std = @import("std");
 const core = @import("core");
 const check = @import("check.zig");

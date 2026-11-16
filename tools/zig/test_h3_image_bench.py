@@ -39,8 +39,8 @@ class Summary(unittest.TestCase):
         self.case("2048-1", 100.0, 300.0, "100.0, 2000, 50.0, 1000+500\n100.5, 4000, 70.0, 3000\n")
         run = bench.measure(self.out / "2048-1")
         self.assertEqual(run["wall s"], 200.0)
-        stages = ("prompt s", "load s", "case s", "transformer s", "decoder s")
-        self.assertEqual(tuple(run[column] for column in stages), (57.3, 88.7, 1.2, 26.5, 7.7))
+        stages = ("prompt s", "load s", "case s", "transformer s", "decoder load s", "decoder s")
+        self.assertEqual(tuple(run[column] for column in stages), (57.3, 88.7, 1.2, 26.5, 4.6, 7.7))
         self.assertEqual(run["steps"], 6)
         self.assertEqual(run["peak MiB"], 4000)
         self.assertEqual(run["avg W"], 60.0)
@@ -65,7 +65,7 @@ class Summary(unittest.TestCase):
         Path(f"{case}.prompt.log").write_text(PROMPT)
         run = bench.measure(case)
         self.assertEqual(run["prompt s"], 57.3)
-        for column in ("wall s", "load s", "decoder s", "steps", "peak MiB", "avg W", "kJ"):
+        for column in ("wall s", "load s", "decoder load s", "decoder s", "steps", "peak MiB", "avg W", "kJ"):
             self.assertIsNone(run[column], column)
 
     def test_summary_records_selftests_cold_warm_and_warm_mean(self):
@@ -75,9 +75,9 @@ class Summary(unittest.TestCase):
         text = bench.summary(self.out)
         self.assertIn("- commit: abc123", text)
         self.assertIn("- decoder FAIL", text)
-        self.assertIn("| 2048² cold | 200.0 | 57.3 | 88.7 | 1.2 | 26.5 | 7.7 | 6 | 1000.0 | 50.0 | 10.0 |", text)
+        self.assertIn("| 2048² cold | 200.0 | 57.3 | 88.7 | 1.2 | 26.5 | 4.6 | 7.7 | 6 | 1000.0 | 50.0 | 10.0 |", text)
         self.assertIn("| 2048² warm 2 | 120.0 |", text)
-        self.assertIn("| 2048² warm mean | 110.0 | 57.3 | — | 1.2 | 26.5 | 7.7 | 6.0 | 1000.0 | 50.0 | 5.5 |", text)
+        self.assertIn("| 2048² warm mean | 110.0 | 57.3 | — | 1.2 | 26.5 | 4.6 | 7.7 | 6.0 | 1000.0 | 50.0 | 5.5 |", text)
 
     def test_a_failed_or_missing_selftest_marks_the_timings_as_not_the_sparks(self):
         self.assertIn("**Not the Spark's result: the decoder selftest failed;", bench.summary(self.out))
@@ -92,7 +92,7 @@ class Summary(unittest.TestCase):
         self.case("2048-1", 0.0, 200.0, "0, 1000, 50.0, \n")
         self.case("2048-2", 0.0, 100.0, "")
         self.case("2048-3", 0.0, 120.0, "0, 1000, 50.0, \n")
-        self.assertIn("| 2048² warm mean | 110.0 | 57.3 | — | 1.2 | 26.5 | 7.7 | 6.0 | — | — | — |", bench.summary(self.out))
+        self.assertIn("| 2048² warm mean | 110.0 | 57.3 | — | 1.2 | 26.5 | 4.6 | 7.7 | 6.0 | — | — | — |", bench.summary(self.out))
 
 
 if __name__ == "__main__":

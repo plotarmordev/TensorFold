@@ -95,9 +95,9 @@ repeats pay no transformer load. The prompt encoder streams its weights a layer 
 seconds, so both still run a process a picture. Where unified memory leaves `memory.used` as `[N/A]`, the peak is the
 compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens with the selftests' verdict. If any
 selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
-hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer and decoder seconds,
-steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean. It is written by
-[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py), also when a stage fails:
+hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer, decoder load and decoder
+(tiles and PNG) seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
+[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails:
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
@@ -132,13 +132,17 @@ These timings are a failing build's, **not for card 68**:
 | 2048² | 159.1 s | 138.9 s | 45.5 / 80.7 s | 51.6 s | 26.1 s | 24.1 s | 3.3 s | 39,576 | 25.7 | 3.6 |
 | 4096² | 233.8 s | 261.6 s | 17.4 / 90.2 s | 48.3 s | 38.5 s | 116.6 s | 11.1 s | 42,345 | 40.5 | 10.6 |
 
-Warm columns are means. The 4096² decoder completes again (11.1 s, as at `d3ca6199`). The warm prompt is still slow:
-the text encoder takes 69.7–75.7 s of GPU time warm against 37.4 s cold at 2048², and 79.3–87.1 s against 14.0 s
-at 4096², while the script is serial and the server waits on stdin, so the prompt is not sharing the GPU's compute.
-Its event-timed loop includes each layer's host-to-device copy from the mapped safetensors, so the time is in reading
-those pages back beside the server's ~38 GB of device weights; the logs hold no host-memory figures to show it
-further. Net of the 75 s load it saves, `--serve`'s warm wall is no better than `d3ca6199`'s process a picture
-(138.9 s against 133.6 s at 2048², 261.6 s against 237.2 s at 4096²). The case setup column is the server's
+Warm columns are means. The 4096² decoder completes again (11.1 s, as at `d3ca6199`, plus 3.6 s of decoder load the
+column then left out). The warm prompt was still slow: the text encoder took 69.7–75.7 s of GPU time warm against
+37.4 s cold at 2048², and 79.3–87.1 s against 14.0 s at 4096², while the script is serial and the server waits on
+stdin, so the prompt was not sharing the GPU's compute. Its event-timed loop includes each layer's host-to-device copy
+from the mapped safetensors. Dropping the shards' mappings left their 36.7 GiB in the page cache beside the server's
+device copy, so the text encoder's ~45 GiB likely no longer fit in the GB10's shared ~120 GB and was re-read from
+disk on every warm prompt; at 4096² cold the previous size's server had exited and freed that room. `--serve` now
+also drops the shards from the page cache (`posix_fadvise` `DONTNEED`) once the weights are on the device, and again
+after each picture's case setup, which reads the ~26 GB of AdaLN weights back; the next window's warm prompt confirms
+or refutes this. Net of the 75 s load it saves, this window's warm wall was no better than `d3ca6199`'s process a
+picture (138.9 s against 133.6 s at 2048², 261.6 s against 237.2 s at 4096²). The case setup column is the server's
 per-picture preparation before its first step, which `d3ca6199`'s table left inside the wall.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)

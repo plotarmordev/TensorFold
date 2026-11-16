@@ -21,8 +21,7 @@ static __device__ float h3p_normed(float x, float r, float w, int mode) {
     return mode == 0 ? f(h(__fmul_rn(w, f(h(__fmul_rn(x, r)))))) : f(h(__fmul_rn(__fmul_rn(x, r), w)));
 }
 
-// y = RMSNorm(x) by w with fp32 statistics, its squares summed in order as the host reference sums
-// them: a tree's other order moves the scale a ULP and flips bf16 outputs. x bf16, w fp32, y bf16.
+// y = RMSNorm(x) by w, x bf16, w fp32, y bf16: squares summed in the host's order, as a tree flips bf16 outputs.
 extern "C" __global__ void __launch_bounds__(256) h3p_norm(
         const bf16* x, const float* w, bf16* y, int width, int mode, float eps) {
     __shared__ float r;
@@ -38,8 +37,7 @@ extern "C" __global__ void __launch_bounds__(256) h3p_norm(
     for (int i = threadIdx.x; i < width; i += 256) yr[i] = h(h3p_normed(f(xr[i]), r, w[i], mode));
 }
 
-// The text model's heads: q then k heads of 128 normed in place (mode as h3p_norm), turned by cos, sin [rows, 64];
-// rows `q_row`/`k_row` wide, heads `head` apart; a warp a head, every lane summing its 128 squares in the host's order.
+// q then k heads of 128 normed in place (mode as h3p_norm) and turned by cos, sin [rows, 64]; a warp a head, in order.
 extern "C" __global__ void __launch_bounds__(256) h3p_heads(
         bf16* q, bf16* k, const float* wq, const float* wk, const float* cs, const float* sn,
         int heads, int kv_heads, int q_row, int k_row, int head, int mode, int rotary, float eps) {
@@ -78,8 +76,7 @@ static __device__ float h3p_score(const bf16* q, const bf16* k, float scale) {
     return __fmul_rn(s, scale);
 }
 
-// o [rows, heads * 128] = softmax(q k^T / sqrt(128)) v, causal or not, in bf16; a warp a row's head, rows q/k/v_row
-// wide. The host's two passes: the top score (lanes split the keys), then each key's weight, sum and value sums in order.
+// o = softmax(q k^T / sqrt(128)) v in bf16, a warp a row's head: the top score, then the host's in-order sums.
 extern "C" __global__ void __launch_bounds__(256) h3p_attention(
         const bf16* q, const bf16* k, const bf16* v, bf16* o,
         int rows, int heads, int kv_heads, int q_row, int k_row, int v_row, int head,

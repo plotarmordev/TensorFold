@@ -50,7 +50,7 @@ const Folder = struct {
         const model = try h3.Model.loadSharded(init.gpa, &ck);
         errdefer model.deinit();
         if (model.gated) return error.H3NotPictureModel; // a picture's blocks are dense: every tile sees every tile
-        ck.evict(); // the prompt and decoder stages share this memory; render reads only a few small tensors back
+        ck.evict(); // the prompt and decoder stages share this memory; each render evicts what it read back
         const heads = try h3.checkpoint.Checkpoint.open(try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, heads_name }, 0));
         return .{ .ck = ck, .model = model, .heads = heads, .pdd = pdd };
     }
@@ -151,6 +151,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     defer modulation.deinit();
     const final = modulation.final;
     const final_norm = values(u16, try ck.at("final_layer.norm.weight", .bf16, hidden));
+    ck.evict(); // the AdaLN weights prepare read (~26 GB): a cached copy would crowd the next prompt
 
     // the step heads: the picture's distilled heads, one a step, in model_index.json's heads file
     const width = picture.row_width;

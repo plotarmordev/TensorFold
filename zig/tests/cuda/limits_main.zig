@@ -1,5 +1,4 @@
-//! tf-cuda-limits DIR [IMAGE...]: kernel-contract-limits without tf-cuda-test's contracts, so it builds and runs
-//! wherever nvcc does, with no GPU; IMAGE names the records' fatbins to audit (none: every record).
+//! tf-cuda-limits DIR [IMAGE...]: kernel-contract-limits with no GPU or contracts; IMAGE picks fatbins (none: all).
 const std = @import("std");
 const fatbins = @import("contract_limits_fatbins.zig").fatbins;
 
