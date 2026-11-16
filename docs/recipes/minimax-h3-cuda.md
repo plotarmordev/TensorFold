@@ -95,8 +95,8 @@ repeats pay no transformer load. The prompt encoder streams its weights a layer 
 seconds, so both still run a process a picture. Where unified memory leaves `memory.used` as `[N/A]`, the peak is the
 compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens with the selftests' verdict. If any
 selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
-hash and seed. Per run it gives wall, prompt, load (cold run only), transformer and decoder seconds, steps, peak MiB,
-average watts and kJ (average power times wall), plus the warm mean. It is written by
+hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer and decoder seconds,
+steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean. It is written by
 [`h3_image_bench.py`](../../tools/zig/h3_image_bench.py), also when a stage fails:
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
@@ -122,7 +122,24 @@ transformer; `d3ca6199` finished it in 11 s. The server kept every transformer s
 second ~38 GB copy of the weights in the GB10's shared memory beside the device's. The prompt tool streams its weights
 from the host a layer at a time, so its pages were evicted and re-read mid-run (98.7 s of GPU time warm, 52.3 s
 cold), and at 4096² nothing was left for the decoder's context. `--serve` now drops the shards' mapped pages once
-the weights are on the device; its timings need a new window.
+the weights are on the device.
+
+Desk ran `8293c6d7` (job `top-72a3cc7eebcc`, 16 November, exit 0), same selftest verdicts, decoder FAIL (card 72).
+These timings are a failing build's, **not for card 68**:
+
+| Size | Wall cold | Wall warm mean | Prompt cold / warm | Load | Case setup | Transformer | Decoder | Peak MiB | Avg W | kJ a picture |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 159.1 s | 138.9 s | 45.5 / 80.7 s | 51.6 s | 26.1 s | 24.1 s | 3.3 s | 39,576 | 25.7 | 3.6 |
+| 4096² | 233.8 s | 261.6 s | 17.4 / 90.2 s | 48.3 s | 38.5 s | 116.6 s | 11.1 s | 42,345 | 40.5 | 10.6 |
+
+Warm columns are means. The 4096² decoder completes again (11.1 s, as at `d3ca6199`). The warm prompt is still slow:
+the text encoder takes 69.7–75.7 s of GPU time warm against 37.4 s cold at 2048², and 79.3–87.1 s against 14.0 s
+at 4096², while the script is serial and the server waits on stdin, so the prompt is not sharing the GPU's compute.
+Its event-timed loop includes each layer's host-to-device copy from the mapped safetensors, so the time is in reading
+those pages back beside the server's ~38 GB of device weights; the logs hold no host-memory figures to show it
+further. Net of the 75 s load it saves, `--serve`'s warm wall is no better than `d3ca6199`'s process a picture
+(138.9 s against 133.6 s at 2048², 261.6 s against 237.2 s at 4096²). The case setup column is the server's
+per-picture preparation before its first step, which `d3ca6199`'s table left inside the wall.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
@@ -193,7 +210,9 @@ reading the ELF images without opening a driver. `tf-cuda-limits` is `kernel-con
 tf-cuda-test's contracts. At `7079fd3b` the script built all of tf-cuda-test and exited 1 at compile time on BOTTOM,
 before any limit ran, in `zig/tests/cuda/contract_drama3_router.zig` (unchanged from main's `c11e8331b`, not this
 recipe's code), as Desk reported it: `:100:32 'u8 cannot represent 2312'` and `:169:54 '[]align(1) const i32'`. That
-is a main bug for its own card; the scoped script's no-GPU receipt is still to run.
+is a main bug for its own card. At `8293c6d7` the scoped script ran on BOTTOM: every H3 launch passes all five SMs'
+limits and both controls stay red, but `h3p_norm`, `h3p_heads` and `h3p_attention`'s records were stale (12 rows)
+after their sums moved to the host's order; the records now hold that run's measured usage.
 
 Desk ran `64188519f690eb8bde9897506e241cdd6e0e4fb8` on TOP's GB10, driver 580.173.02, on 15 November,
 18:18–18:29 HKT, with no other job on TOP. `run-script.sh` (`top-43d6798bde4f`) rendered both checkpoint
