@@ -61,7 +61,11 @@ zig build tf-h3-image-prompt-cuda tf-h3-image-cuda tf-h3-image-decoder-cuda -Dnv
 zig-out/bin/tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out/case.safetensors 2048x2048 42
 zig-out/bin/tf-h3-image-cuda MODEL_DIR out/case.safetensors out/case
 zig-out/bin/tf-h3-image-decoder-cuda MODEL_DIR out/case.latent.f32 128 128 out/case.png 2048x2048
+zig-out/bin/tf-h3-image-decoder-cuda reference MODEL_DIR out/case.latent.f32 128 128 out/case-gpu.png out/case-host.png 2048x2048
 ```
+
+`reference` decodes the same latent on the GPU and on the host reference decoder, writes both PNGs and compares the
+pictures against the selftest's 3e-2 full-chain relative bound.
 
 On the Sparks, builds and tests run only in GPU jobs on TOP, never through `bottom shell` or `middle shell`: BOTTOM and
 MIDDLE serve DeepSeek, and a host build there on 16 November had memguard kill its rank 1 three times. The job image has
@@ -119,7 +123,10 @@ compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens w
 selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
 hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer, decoder load and decoder
 (tiles and PNG) seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
-[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails:
+[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails. After both sizes the
+script decodes the 2048² latent again with `reference`: the GPU's picture and the host reference decoder's on the
+same latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits non-zero past the
+bound.
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
