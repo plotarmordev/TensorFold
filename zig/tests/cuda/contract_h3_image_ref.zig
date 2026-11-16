@@ -364,7 +364,7 @@ pub fn splice(in: In, want: []f64, mag: []f64) void {
     for (0..in.k) |i| @memcpy(want[@as(usize, in.ints[i]) * in.n ..][0..in.n], in.b[i * in.n ..][0..in.n]);
 }
 
-/// h3p_linear: y [rows, n] fp32 = x [rows, k] bf16 . w [n, k] bf16^T, each K sum sequential in fp32.
+/// y [rows, n] fp32 = x [rows, k] bf16 . w [n, k] bf16^T, each K sum sequential in fp32.
 pub fn linear(in: In, s: Sum, want: []f64, mag: []f64) void {
     var row: [8192]f64 = undefined;
     for (0..in.rows) |r| for (0..in.n) |o| {
