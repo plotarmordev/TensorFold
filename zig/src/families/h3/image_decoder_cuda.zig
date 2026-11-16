@@ -1,6 +1,6 @@
 //! MiniMax-H3-Image's image decoder on CUDA: the VAE's 2D ViT decoder in bf16, tiles in batches.
-//! The products run as cuBLASLt bf16-in/fp32-out Linears; h3d_finish adds bias and LayerScale at the
-//! Metal kernels' rounding points, so no bf16 GEMM epilogue can round a sum ahead of its bias.
+//! The products sum K sequentially in fp32; h3d_finish adds bias and LayerScale at the Metal kernels'
+//! rounding points, so no fused epilogue can round a sum ahead of its bias.
 const std = @import("std");
 const report = @import("report.zig");
 const cuda = @import("cuda");
@@ -13,7 +13,7 @@ const W = host.width;
 const F = host.ffn;
 
 const image align(16) = @embedFile("fatbin_h3_image_decoder").*;
-const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_finish", "h3d_heads", "h3d_attention", "h3d_swiglu" };
+const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_heads", "h3d_attention", "h3d_swiglu" };
 
 /// h3_image_decoder.cu's H3dShape.
 const Shape = extern struct {
@@ -41,41 +41,6 @@ pub const Stages = struct { embed: bool = true, from: usize = 0, to: usize, fina
 /// Tiles a pass holds at most; `scratch` is sized at `prepare`.
 pub const most_batch = 64;
 
-const workspace_bytes = 32 << 20;
-
-/// cuBLASLt Linears that keep their sums in fp32: y [rows, n] = x [rows, k] . w [n, k]^T in fp32.
-const Gemms = struct {
-    gpa: std.mem.Allocator,
-    lt: cuda.cublaslt.Library,
-    workspace: cuda.DeviceBuffer,
-    plans: std.AutoHashMapUnmanaged([3]u64, cuda.cublaslt.Linear) = .empty,
-
-    fn init(gpa: std.mem.Allocator, d: *const cuda.Driver) !Gemms {
-        var lt = try cuda.cublaslt.Library.open();
-        errdefer lt.close();
-        return .{ .gpa = gpa, .lt = lt, .workspace = try cuda.DeviceBuffer.alloc(d, workspace_bytes) };
-    }
-
-    fn deinit(g: *Gemms) void {
-        var it = g.plans.valueIterator();
-        while (it.next()) |l| l.deinit();
-        g.plans.deinit(g.gpa);
-        g.workspace.free();
-        g.lt.close();
-    }
-
-    fn run(g: *Gemms, stream: cuda.Stream, x: u64, w: u64, y: u64, rows: usize, n: usize, k: usize) !void {
-        const key = [3]u64{ rows, n, k };
-        const got = try g.plans.getOrPut(g.gpa, key);
-        if (!got.found_existing) {
-            got.value_ptr.* = cuda.cublaslt.Linear.init(&g.lt, rows, n, k, .f32, workspace_bytes) catch |e| {
-                g.plans.removeByPtr(got.key_ptr);
-                return e;
-            };
-        }
-        try got.value_ptr.run(x, w, y, g.workspace.ptr, workspace_bytes, stream.handle);
-    }
-};
 pub const seconds = @import("clock.zig").seconds;
 
 pub const Decoder = struct {
@@ -85,7 +50,6 @@ pub const Decoder = struct {
     module: cuda.Module,
     functions: [kernel_names.len]cuda.Function,
     queue: cuda.Stream,
-    gemms: Gemms,
     plan: host.Plan,
     theta: f32,
     /// Every parameter in bf16 on the device, laid out as `plan` says.
@@ -130,7 +94,7 @@ pub const Decoder = struct {
         const plan = try host.Plan.init(layers);
         const d = try gpa.create(Decoder);
         errdefer gpa.destroy(d);
-        d.* = .{ .gpa = gpa, .driver = undefined, .ctx = undefined, .module = undefined, .functions = undefined, .queue = undefined, .gemms = undefined, .plan = plan, .theta = theta, .weights = undefined };
+        d.* = .{ .gpa = gpa, .driver = undefined, .ctx = undefined, .module = undefined, .functions = undefined, .queue = undefined, .plan = plan, .theta = theta, .weights = undefined };
         d.driver = try cuda.Driver.open();
         errdefer d.driver.close();
         d.ctx = try cuda.Context.shared(&d.driver);
@@ -140,8 +104,6 @@ pub const Decoder = struct {
         inline for (kernel_names, 0..) |name, i| d.functions[i] = try d.module.function(name);
         // the legacy default stream: copies on it stay ordered with this decoder's own launches
         d.queue = .{ .d = &d.driver, .handle = null };
-        d.gemms = try Gemms.init(gpa, &d.driver);
-        errdefer d.gemms.deinit();
         d.weights = try cuda.DeviceBuffer.alloc(&d.driver, plan.total() * 2);
         errdefer d.weights.free();
         return d;
@@ -165,7 +127,6 @@ pub const Decoder = struct {
         if (d.scratch) |*s| s.free();
         if (d.latent) |*l| l.free();
         d.weights.free();
-        d.gemms.deinit();
         d.module.unload();
         d.ctx.deinit();
         d.driver.close();
@@ -323,15 +284,20 @@ pub const Decoder = struct {
         return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
     }
 
-    /// y = bf16(x w^T + b) via an fp32 cuBLASLt sum and h3d_finish, or with `scale` the LayerScale residual.
+    /// y = bf16(x w^T + b) via an ordered fp32 sum, or with `scale` the LayerScale residual.
     fn gemm(d: *Decoder, s: Shape, x: usize, w: usize, b: usize, scale: ?usize, y: usize, n: usize, k: usize) !void {
-        try d.gemms.run(d.queue, d.dev(x), d.param(w), d.dev(d.view.acc), s.m, n, k);
         var p = s;
         p.n = @intCast(n);
+        p.k = @intCast(k);
         p.mode = @intFromBool(scale != null);
+        var product = d.args(&.{ d.dev(x), d.param(w), d.dev(d.view.acc) });
+        product.add(p);
+        try d.launch("h3d_linear", .{ .x = @intCast((n + 127) / 128), .y = @intCast((s.m + 127) / 128), .z = 1 }, .{ .x = 256 }, 0, &product);
+        const grid: cuda.Dim3 = .{ .x = @intCast((n + 31) / 32), .y = @intCast((s.m + 7) / 8), .z = 1 };
+        const block: cuda.Dim3 = .{ .x = 32, .y = 8 };
         var a = d.args(&.{ d.dev(d.view.acc), d.param(b), d.param(scale orelse b), d.dev(y) });
         a.add(p);
-        try d.launch("h3d_finish", .{ .x = @intCast((n + 31) / 32), .y = @intCast((s.m + 7) / 8), .z = 1 }, .{ .x = 32, .y = 8 }, 0, &a);
+        try d.launch("h3d_finish", grid, block, 0, &a);
     }
 
     /// Block `i` on the pass's stream in place.

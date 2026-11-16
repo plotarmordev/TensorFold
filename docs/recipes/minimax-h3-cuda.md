@@ -61,7 +61,11 @@ zig build tf-h3-image-prompt-cuda tf-h3-image-cuda tf-h3-image-decoder-cuda -Dnv
 zig-out/bin/tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out/case.safetensors 2048x2048 42
 zig-out/bin/tf-h3-image-cuda MODEL_DIR out/case.safetensors out/case
 zig-out/bin/tf-h3-image-decoder-cuda MODEL_DIR out/case.latent.f32 128 128 out/case.png 2048x2048
+zig-out/bin/tf-h3-image-decoder-cuda reference MODEL_DIR out/case.latent.f32 128 128 out/case-gpu.png out/case-host.png 2048x2048
 ```
+
+`reference` decodes the same latent on the GPU and on the host reference decoder, writes both PNGs and compares the
+pictures against the selftest's 3e-2 full-chain relative bound.
 
 On the Sparks, builds and tests run only in GPU jobs on TOP, never through `bottom shell` or `middle shell`: BOTTOM and
 MIDDLE serve DeepSeek, and a host build there on 16 November had memguard kill its rank 1 three times. The job image has
@@ -119,7 +123,9 @@ compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens w
 selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
 hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer, decoder load and decoder
 (tiles and PNG) seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
-[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails:
+[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails. After the 2048² runs the
+script decodes that latent again with `reference`: the GPU's picture and the host reference decoder's on the same
+latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits non-zero past the bound.
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
@@ -178,6 +184,12 @@ and prompt selftests passed and the decoder failed, so these timings remain **no
 
 Warm prompt time is back at the cold 18–22 s range at both sizes; the page-cache eviction fixed the warm regression in
 this window.
+
+Desk ran `96c87a43` with card 72's ordered FP32 projection kernel (job `top-f42e93268a64`, 16 November, exit 0). Every
+selftest passed, so these timings are the Spark's result: at 2048² the decoder took 5.6 s cold and in each warm repeat
+(5.25 s on the GPU), and 20.4 s at 4096² (20.3 s warm mean). The same job's `reference` check decoded the 2048² latent
+on the GPU and on the host reference decoder: 86.180% of bytes identical, 99.923% within 1, at most 5 apart, 56.65 dB,
+relative error 3.15e-3 against the 3e-2 bound, a pass.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 

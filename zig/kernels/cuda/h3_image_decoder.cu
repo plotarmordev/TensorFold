@@ -1,6 +1,6 @@
 // MiniMax-H3-Image's image decoder (the VAE's 2D ViT decoder) on CUDA: bf16 tensors and rounding
 // points exactly as the Metal kernels (zig/kernels/metal/h3/image_decoder.metal) hold them, fp32
-// sums; cuBLASLt products write fp32 here, and h3d_finish applies bias and LayerScale at their points.
+// sums; h3d_linear sums K sequentially in fp32, and h3d_finish applies bias and LayerScale at their points.
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stddef.h>
@@ -122,7 +122,60 @@ __global__ void __launch_bounds__(256) h3d_layer_norm(
     }
 }
 
-// A cuBLASLt product's fp32 sums [m, n] to bf16 with its bias: y = bf16(acc + b); mode 1 (the
+#define H3D_TILE 128
+#define H3D_STEP 16
+
+// y [m, n] = x [m, k] . w [n, k]^T in fp32: a 128 x 128 tile a block, staged 16 K at a time through shared
+// memory. Each thread sums its 8 x 8 outputs in increasing K with unfused, individually rounded multiplies and
+// adds, the sums a sequential fp32 dot gives; zero padding past k adds +0 and leaves them unchanged.
+__global__ void __launch_bounds__(256) h3d_linear(
+        const bf16* x, const bf16* w, float* y, H3dShape p) {
+    // One float of padding a row spreads the K-major stores across banks.
+    __shared__ float xs[H3D_STEP][H3D_TILE + 1];
+    __shared__ float ws[H3D_STEP][H3D_TILE + 1];
+    const unsigned tx = threadIdx.x % 16;
+    const unsigned ty = threadIdx.x / 16;
+    const unsigned row0 = blockIdx.y * H3D_TILE;
+    const unsigned col0 = blockIdx.x * H3D_TILE;
+    float acc[8][8] = {};
+    for (unsigned k0 = 0; k0 < p.k; k0 += H3D_STEP) {
+#pragma unroll
+        for (unsigned j = 0; j < 8; ++j) {
+            const unsigned e = threadIdx.x + 256 * j;
+            const unsigned r = e / H3D_STEP;
+            const unsigned kk = e % H3D_STEP;
+            const bool in_k = k0 + kk < p.k;
+            xs[kk][r] = in_k && row0 + r < p.m ? f(x[(size_t)(row0 + r) * p.k + k0 + kk]) : 0.0f;
+            ws[kk][r] = in_k && col0 + r < p.n ? f(w[(size_t)(col0 + r) * p.k + k0 + kk]) : 0.0f;
+        }
+        __syncthreads();
+#pragma unroll
+        for (unsigned kk = 0; kk < H3D_STEP; ++kk) {
+            float a[8], b[8];
+#pragma unroll
+            for (unsigned i = 0; i < 8; ++i) a[i] = xs[kk][ty + 16 * i];
+#pragma unroll
+            for (unsigned j = 0; j < 8; ++j) b[j] = ws[kk][tx + 16 * j];
+#pragma unroll
+            for (unsigned i = 0; i < 8; ++i)
+#pragma unroll
+                for (unsigned j = 0; j < 8; ++j) acc[i][j] = __fadd_rn(acc[i][j], __fmul_rn(a[i], b[j]));
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (unsigned i = 0; i < 8; ++i) {
+        const unsigned row = row0 + ty + 16 * i;
+        if (row >= p.m) continue;
+#pragma unroll
+        for (unsigned j = 0; j < 8; ++j) {
+            const unsigned col = col0 + tx + 16 * j;
+            if (col < p.n) y[(size_t)row * p.n + col] = acc[i][j];
+        }
+    }
+}
+
+// A projection's fp32 sums [m, n] to bf16 with its bias: y = bf16(acc + b); mode 1 (the
 // LayerScale residual) instead does y = bf16(y + bf16(bf16(acc + b) * s)), the Metal gemm epilogue's
 // own rounding points, which a fused bf16 GEMM + bias cannot hold.
 __global__ void __launch_bounds__(256) h3d_finish(

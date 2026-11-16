@@ -79,4 +79,10 @@ for side in 2048 4096; do
     wait "$server"
     server=
     rm "$out/requests" "$out/replies"
+    if [ "$side" = 2048 ]; then
+        # the GPU decoder's 2048² picture beside the host reference decoder's on the same latent
+        case=$out/2048-reference
+        stage compare "$bin/tf-h3-image-decoder-cuda" reference "$model" "$out/2048-1.latent.f32" 128 128 \
+            "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048
+    fi
 done

@@ -11,7 +11,7 @@ const c = contract.spec;
 const g = contract.gates;
 
 /// The decoder's kernels: each symbol once, h3d_finish at both modes.
-pub const Which = enum { post_quant, embed, rms_norm, layer_norm, finish_bias, finish_scale, heads, attention, swiglu };
+pub const Which = enum { post_quant, embed, rms_norm, layer_norm, linear, finish_bias, finish_scale, heads, attention, swiglu };
 
 /// h3_image_decoder.cu's H3dShape, the trailing argument every decoder kernel takes.
 const Shape64 = extern struct {
@@ -51,12 +51,18 @@ fn none(_: c.Shape) usize {
 
 const norm_why = "a bf16 output follows the sum of squares as ss^-1/2: a bf16 sum's error is a few output ulps";
 
+/// h3d_linear's dot over k, in increasing K.
+fn dotK(s: c.Shape) usize {
+    return s.k;
+}
+
 pub fn spec(w: Which) c.Spec {
     return switch (w) {
         .post_quant => .{ .name = "cuda h3 image decoder h3d_post_quant", .accum = .f32, .depth = dot24, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 256, .k = 24 }, .{ .rows = 4, .n = 256, .k = 24 }, .{ .rows = 2, .n = 64, .k = 24 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the 24-term dot's bf16 output hides a bf16 sum's error" } },
         .embed => .{ .name = "cuda h3 image decoder h3d_embed", .accum = .f32, .depth = dot24, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 256, .k = 24 }, .{ .rows = 2, .n = 64, .k = 24 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the 24-term dot's bf16 output hides a bf16 sum's error" } },
         .rms_norm => .{ .name = "cuda h3 image decoder h3d_rms_norm", .accum = .f32, .depth = normChain, .ops = 8, .mids = 0, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1024 }, .{ .rows = 261, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .layer_norm => .{ .name = "cuda h3 image decoder h3d_layer_norm", .accum = .f32, .depth = normChain, .ops = 10, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1024 }, .{ .rows = 261, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
+        .linear => .{ .name = "cuda h3 image decoder h3d_linear", .accum = .f32, .depth = dotK, .ops = 0, .out = .f32, .served = &.{ .{ .rows = 4, .n = 128, .k = 256 }, .{ .rows = 8, .n = 256, .k = 1024 }, .{ .rows = 8, .n = 128, .k = 4096 }, .{ .rows = 136, .n = 200, .k = 1000 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "each output sums K in increasing order with individually rounded fp32 multiplies and adds" } },
         .finish_bias => .{ .name = "cuda h3 image decoder h3d_finish bias", .accum = .none, .depth = none, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1 }, .{ .rows = 16, .n = 768, .k = 1 } } },
         .finish_scale => .{ .name = "cuda h3 image decoder h3d_finish layerscale", .accum = .none, .depth = none, .ops = 1, .mids = 2, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1 }, .{ .rows = 16, .n = 768, .k = 1 } } },
         .heads => .{ .name = "cuda h3 image decoder h3d_heads", .accum = .f32, .depth = headChain, .ops = 8, .mids = 4, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 3072 }, .{ .rows = 2, .n = 64, .k = 3072 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
@@ -71,6 +77,7 @@ pub fn symbol(w: Which) [:0]const u8 {
         .embed => "h3d_embed",
         .rms_norm => "h3d_rms_norm",
         .layer_norm => "h3d_layer_norm",
+        .linear => "h3d_linear",
         .finish_bias, .finish_scale => "h3d_finish",
         .heads => "h3d_heads",
         .attention => "h3d_attention",
@@ -238,6 +245,17 @@ pub const Dec = struct {
                 self.outs = s.rows * 1024;
                 self.p = .{ .m = @intCast(s.rows), .eps = 1e-5 };
             },
+            .linear => {
+                if (s.k > 8192) return false;
+                const x = try self.values(s.rows * s.k, -1, 1, fill, rng, true, true);
+                const w = try self.values(s.n * s.k, -1, 1, .random, rng, true, false);
+                self.in = .{ .a = x, .b = w, .rows = s.rows, .n = s.n, .k = s.k };
+                _ = try self.upload(x, true);
+                _ = try self.upload(w, true);
+                _ = try self.output(s.rows * s.n * 4);
+                self.outs = s.rows * s.n;
+                self.p = .{ .m = @intCast(s.rows), .n = @intCast(s.n), .k = @intCast(s.k) };
+            },
             .finish_bias, .finish_scale => {
                 const acc = try self.values(s.rows * s.n, -2, 2, fill, rng, false, true);
                 const bias = try self.values(s.n, -0.5, 0.5, .random, rng, true, false);
@@ -330,6 +348,11 @@ pub const Dec = struct {
                 a.add(self.p);
                 try self.go(.{ .x = @intCast(s.rows) }, .{ .x = 256 }, &a);
             },
+            .linear => {
+                for (b[0..3]) |p| a.add(p);
+                a.add(self.p);
+                try self.go(.{ .x = @intCast((self.p.n + 127) / 128), .y = @intCast((self.p.m + 127) / 128), .z = 1 }, .{ .x = 256 }, &a);
+            },
             .finish_bias, .finish_scale => {
                 for (b[0..4]) |p| a.add(p);
                 a.add(self.p);
@@ -368,6 +391,7 @@ pub const Dec = struct {
             .embed => ref.embed(self.in, s, want, mag),
             .rms_norm => ref.rmsNorm(self.in, s, want, mag),
             .layer_norm => ref.layerNorm(self.in, s, want, mag),
+            .linear => ref.linear(self.in, s, want, mag),
             .finish_bias, .finish_scale => ref.finish(self.in, want, mag),
             .heads => ref.heads(self.in, s, want, mag),
             .attention => ref.attention(self.in, s, want, mag),
