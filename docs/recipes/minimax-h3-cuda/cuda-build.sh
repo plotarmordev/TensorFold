@@ -5,8 +5,7 @@
 # The job has no network and no C++ compiler: toolchain-stage.sh puts the archives of Zig 0.17.0 and of Arm's GNU
 # toolchain (gcc 14, nvcc's host compiler) in the pilot folder, and the job unpacks them. In /work/out:
 # - tensorfold-fatbins-SHA: the sm_121 images and SHA256SUMS, for -Dfatbins (../../receipts/drama3-pruned-main/run-script.sh)
-# - tensorfold-cuda-SHA: tf-cuda-test and the three H3 picture tools, with their images built in, and the five release
-#   SMs' images in fatbin/
+# - tensorfold-cuda-SHA: tf-cuda-test and the three H3 picture tools, with their images built in, plus fatbin/ for the five release SMs
 # - limits.log: kernel-contract-limits over those images; the job exits with its status
 # Later TOP jobs read either folder from the pilot folder once the Desk returns it there:
 #   ssh top-menu "job fetch ID" | tar -x -C DIR

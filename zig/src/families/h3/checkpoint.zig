@@ -70,7 +70,7 @@ pub const Checkpoint = struct {
         _ = Ops.close(self.fd);
     }
 
-    /// Unmaps the pages, then drops them from the page cache; faulted back from disk on a later read. Linux only.
+    /// Discards the pages from the mapping and page cache; faulted back from disk on a later read. Linux only.
     pub fn evict(self: *const Checkpoint) void {
         if (@import("builtin").os.tag != .linux) return;
         _ = c.madvise(@ptrCast(@constCast(self.bytes.ptr)), self.bytes.len, 4); // MADV_DONTNEED

@@ -167,6 +167,18 @@ or refutes this. Net of the 75 s load it saves, this window's warm wall was no b
 picture (138.9 s against 133.6 s at 2048², 261.6 s against 237.2 s at 4096²). The case setup column is the server's
 per-picture preparation before its first step, which `d3ca6199`'s table left inside the wall.
 
+Desk ran `eb8e7312cfa95a943a2c1650d9c319931bacf197` (job `top-fb95a2d49a7a`, 16 November, exit 0). The in-job
+`cuda-build.sh` build ran on TOP and wrote `limits.log`; its audit still found the 28 problems card 73 owns. Transformer
+and prompt selftests passed and the decoder failed, so these timings remain **not for card 68**. The prompt times were:
+
+| Size | Cold | Warm 1 | Warm 2 | Warm 3 | Warm mean |
+|---|---:|---:|---:|---:|---:|
+| 2048² | 18.0 s | 22.0 s | 19.3 s | 19.1 s | 20.1 s |
+| 4096² | 18.3 s | 18.8 s | 18.1 s | 18.6 s | 18.5 s |
+
+Warm prompt time is back at the cold 18–22 s range at both sizes; the page-cache eviction fixed the warm regression in
+this window.
+
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
 Prompt `h3-image-pilot/prompt.txt` (the red fox, sha256 cc969bca…), seed 42, the checkpoint's six distilled steps,
