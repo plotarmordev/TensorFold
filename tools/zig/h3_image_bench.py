@@ -8,10 +8,11 @@ from pathlib import Path
 STAGES = {  # column: (log, pattern of its seconds)
     "prompt": ("prompt", r"^prompt: ([\d.]+) s$"),
     "load": ("image", r"^model loaded in ([\d.]+) s$"),  # the cold run's; warm runs reuse the resident model
+    "case": ("image", r"case ready in ([\d.]+) s$"),  # the server's per-picture setup before its first step
     "transformer": ("image", r"^transformer: ([\d.]+) s$"),
     "decoder": ("decoder", r"([\d.]+) s in all;"),
 }
-COLUMNS = ("wall s", "prompt s", "load s", "transformer s", "decoder s", "steps", "peak MiB", "avg W", "kJ")
+COLUMNS = ("wall s", "prompt s", "load s", "case s", "transformer s", "decoder s", "steps", "peak MiB", "avg W", "kJ")
 
 
 def found(path, pattern):
