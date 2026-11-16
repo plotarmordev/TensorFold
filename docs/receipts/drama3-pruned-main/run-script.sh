@@ -1,10 +1,11 @@
 #!/bin/sh
-# Drama 3 FP8 and both pruned NVFP4 checkpoints from one commit, on a Spark, through the Desk's GPU door:
-#   ssh top-menu "job start gpu middle|bottom plotarmordev/TensorFold SHA docs/receipts/drama3-pruned-main/run-script.sh"
+# Drama 3 FP8 and both pruned NVFP4 checkpoints from one commit, on TOP's Spark, through the Desk's GPU door:
+#   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/receipts/drama3-pruned-main/run-script.sh"
 # The door runs it in the commit's checkout with the Drama pilot folder at /assets/drama3-pilot (read-only) and no
 # network, inside a window only the Desk opens; it pauses nothing. Everything it writes lands in /work/out/drama3.
 # Without a GPU (`job start` without `gpu`) it finds no /assets and stops at the path check. The job image has no C++
-# compiler for nvcc: prebuild-fatbins.sh builds this commit's kernel images into the pilot folder beforehand.
+# compiler for nvcc: a ../../recipes/minimax-h3-cuda/cuda-build.sh job at this commit builds its kernel images first,
+# and the Desk puts that job's tensorfold-fatbins-SHA in the pilot folder.
 set -eu
 pilot=/assets/drama3-pilot
 fp8=$pilot/checkpoint
