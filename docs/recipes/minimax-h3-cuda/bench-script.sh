@@ -4,8 +4,12 @@ set -eu
 model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
 commit=$(git -c safe.directory='*' rev-parse HEAD)
-bin=$pilot/bin-$commit
+bin=/work/out/tensorfold-cuda-$commit
 out=/work/out/h3-image-bench
+if ! sh docs/recipes/minimax-h3-cuda/cuda-build.sh; then
+    # The separate limits audit may fail; a build or copy failure has not reached its log.
+    [ -f /work/out/limits.log ] || exit 1
+fi
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 for path in "$model/model_index.json" "$model/text_encoder/config.json" "$pilot/prompt.txt" "$bin/tf-h3-image-cuda" "$bin/tf-h3-image-prompt-cuda" "$bin/tf-h3-image-decoder-cuda"; do
     [ -e "$path" ] || { echo "missing $path" >&2; exit 1; }

@@ -5,7 +5,8 @@
 # The job has no network and no C++ compiler: toolchain-stage.sh puts the archives of Zig 0.17.0 and of Arm's GNU
 # toolchain (gcc 14, nvcc's host compiler) in the pilot folder, and the job unpacks them. In /work/out:
 # - tensorfold-fatbins-SHA: the sm_121 images and SHA256SUMS, for -Dfatbins (../../receipts/drama3-pruned-main/run-script.sh)
-# - tensorfold-cuda-SHA: tf-cuda-test, with its images built in, and the five release SMs' images in fatbin/
+# - tensorfold-cuda-SHA: tf-cuda-test and the three H3 picture tools, with their images built in, and the five release
+#   SMs' images in fatbin/
 # - limits.log: kernel-contract-limits over those images; the job exits with its status
 # Later TOP jobs read either folder from the pilot folder once the Desk returns it there:
 #   ssh top-menu "job fetch ID" | tar -x -C DIR
@@ -31,7 +32,8 @@ export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACH
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
 # -Dfatbins takes images holding the one SASS profile, so sm_121 is built apart from the audit's five SMs
-zig build fatbins -Dsm=121 -Dnvcc=$nvcc --prefix /work/sm121
+zig build fatbins tf-h3-image-prompt-cuda tf-h3-image-cuda tf-h3-image-decoder-cuda \
+    -Dsm=121 -Dnvcc=$nvcc -Doptimize=ReleaseFast --prefix /work/sm121
 fatbins=$out/tensorfold-fatbins-$sha
 mkdir -p "$fatbins"
 cp /work/sm121/fatbin/*.fatbin "$fatbins"
@@ -40,7 +42,8 @@ zig build install fatbins kernel-contract-fatbins -Dsm=80,86,89,120,121 -Dnvcc=$
     --prefix /work/release
 cuda=$out/tensorfold-cuda-$sha
 mkdir -p "$cuda"
-cp -r /work/release/bin/tf-cuda-test /work/release/fatbin "$cuda"
+cp -r /work/release/bin/tf-cuda-test /work/sm121/bin/tf-h3-image-prompt-cuda /work/sm121/bin/tf-h3-image-cuda \
+    /work/sm121/bin/tf-h3-image-decoder-cuda /work/release/fatbin "$cuda"
 status=0
 "$cuda/tf-cuda-test" kernel-contract-limits "$cuda/fatbin" >"$out/limits.log" 2>&1 || status=$?
 tail -n 3 "$out/limits.log"

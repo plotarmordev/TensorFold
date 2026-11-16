@@ -67,9 +67,9 @@ On the Sparks, builds and tests run only in GPU jobs on TOP, never through `bott
 MIDDLE serve DeepSeek, and a host build there on 16 November had memguard kill its rank 1 three times. The job image has
 no network and no C++ compiler, so [`toolchain-stage.sh`](minimax-h3-cuda/toolchain-stage.sh) first puts the archives
 of Zig 0.17.0 and Arm's GNU toolchain 14.3 in TOP's pilot folder; [`cuda-build.sh`](minimax-h3-cuda/cuda-build.sh)
-then builds the kernel images with that gcc as nvcc's host compiler, builds `tf-cuda-test` and runs
-`kernel-contract-limits` over the five release SMs' images, writing the
-images (sm_121 alone for `-Dfatbins`) and the runner to the job output for later TOP jobs:
+then builds the kernel images with that gcc as nvcc's host compiler, builds `tf-cuda-test` and the three H3 picture
+tools, and runs `kernel-contract-limits` over the five release SMs' images. It writes the images (sm_121 alone for
+`-Dfatbins`), the runner and the picture tools to the job output for later TOP jobs:
 
 ```sh
 ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/cuda-build.sh"
@@ -96,17 +96,24 @@ CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check
 
 `tf-h3-image-prompt-cuda` runs the text encoder and refiner on CUDA, streaming one layer's weights at a time.
 `tf-h3-image-decoder-cuda` runs the VAE on CUDA. The CPU tools remain independent reference implementations.
-[`run-script.sh`](minimax-h3-cuda/run-script.sh) selects these GPU tools, runs their synthetic selftests and
-renders both picture sizes only when they pass. The 14 November tables below predate this cutover; the
+[`run-script.sh`](minimax-h3-cuda/run-script.sh) builds these GPU tools and `tf-cuda-test` with `cuda-build.sh`, runs
+their synthetic selftests and renders both picture sizes only when they pass. A failed limits audit does not replace
+that selftest gate; its `limits.log` remains in the job output. One TOP job does the build and pictures:
+
+```sh
+ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/run-script.sh"
+```
+
+The 14 November tables below predate this cutover; the
 [`64188519` window](#gpu-qualification-and-the-64188519-window) measures it.
 
 ### Benchmark run
 
-[`bench-script.sh`](minimax-h3-cuda/bench-script.sh) takes `run-script.sh`'s inputs and tools without its gate: it
-records each selftest's PASS or FAIL and renders anyway. Each size gets one cold picture (start to first picture) and
-three warm repeats, while `nvidia-smi` is sampled twice a second. The transformer stays resident: one
-`tf-h3-image-cuda MODEL --serve` a size loads the model inside the cold run and renders all four cases, so warm
-repeats pay no transformer load. The prompt encoder streams its weights a layer at a time and the decoder loads in
+[`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds in the same TOP job, then takes `run-script.sh`'s inputs
+and tools without its gate: it records each selftest's PASS or FAIL and renders anyway. Each size gets one cold picture
+(start to first picture) and three warm repeats, while `nvidia-smi` is sampled twice a second. The transformer stays
+resident: one `tf-h3-image-cuda MODEL --serve` a size loads the model inside the cold run and renders all four cases,
+so warm repeats pay no transformer load. The prompt encoder streams its weights a layer at a time and the decoder loads in
 seconds, so both still run a process a picture. Where unified memory leaves `memory.used` as `[N/A]`, the peak is the
 compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens with the selftests' verdict. If any
 selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
