@@ -28,17 +28,17 @@ pub const Which = enum {
     round,
 };
 
-/// A block's row sum: each of 256 threads chains over every 256th term, then 5 warp levels and 8 partials serial.
-fn blockChain(s: c.Shape) usize {
-    return (s.k + 255) / 256 + 5 + 8;
+/// norm's row sum of squares, sequential over the width.
+fn rowChain(s: c.Shape) usize {
+    return s.k + 2;
 }
-/// heads' 128 squares: 4 a lane, then the 5 warp levels.
+/// heads' 128 squares, sequential.
 fn headChain(_: c.Shape) usize {
-    return 4 + 5 + 2;
+    return 128 + 2;
 }
-/// attention's key dots of 128 (4 + 5 a lane), then rescales and value sums over the keys.
+/// attention's sequential key dots of 128, then the weight and value sums over the keys in order.
 fn attnChain(s: c.Shape) usize {
-    return 4 + 5 + s.k + 8;
+    return 128 + s.k + 2;
 }
 /// linear's sequential dot over k.
 fn dotK(s: c.Shape) usize {
@@ -53,8 +53,8 @@ const att_why = "softmax weights in [0, 1] with fp32 scores: the bf16 output hid
 
 pub fn spec(w: Which) c.Spec {
     return switch (w) {
-        .norm_qwen => .{ .name = "cuda h3 image prompt h3p_norm qwen", .accum = .f32, .depth = blockChain, .ops = 6, .mids = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 256, .k = 256 }, .{ .rows = 77, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
-        .norm_h3 => .{ .name = "cuda h3 image prompt h3p_norm h3", .accum = .f32, .depth = blockChain, .ops = 6, .mids = 0, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 256, .k = 256 }, .{ .rows = 77, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
+        .norm_qwen => .{ .name = "cuda h3 image prompt h3p_norm qwen", .accum = .f32, .depth = rowChain, .ops = 6, .mids = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 256, .k = 256 }, .{ .rows = 77, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
+        .norm_h3 => .{ .name = "cuda h3 image prompt h3p_norm h3", .accum = .f32, .depth = rowChain, .ops = 6, .mids = 0, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 256, .k = 256 }, .{ .rows = 77, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .heads_rotary => .{ .name = "cuda h3 image prompt h3p_heads rotary", .accum = .f32, .depth = headChain, .ops = 8, .mids = 3, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 128, .k = 128 }, .{ .rows = 77, .n = 128, .k = 128 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .heads_fused => .{ .name = "cuda h3 image prompt h3p_heads fused qkv", .accum = .f32, .depth = headChain, .ops = 8, .mids = 1, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 128, .k = 128 }, .{ .rows = 77, .n = 128, .k = 128 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .attention_causal => .{ .name = "cuda h3 image prompt h3p_attention causal", .accum = .f32, .depth = attnChain, .ops = 8, .mids = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 128, .k = 8 }, .{ .rows = 77, .n = 128, .k = 77 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = att_why } },

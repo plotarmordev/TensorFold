@@ -286,8 +286,8 @@ pub fn pheads(in: In, s: Sum, want: []f64, mag: []f64, fused: bool) void {
 }
 
 /// h3p_attention: o [rows, heads*128] = softmax(q k^T scale) v over earlier rows (causal) or all,
-/// the kernel's fp32 online softmax; want and mag per output element. a q [rows, q_row],
-/// b k [rows, k_row], d v [rows, k_row].
+/// two-pass as the kernel: the top score, then the weights' and value sums; want and mag per output
+/// element. a q [rows, q_row], b k [rows, k_row], d v [rows, k_row].
 pub fn pattention(in: In, s: Sum, want: []f64, mag: []f64) void {
     const D = in.head;
     const group = in.heads / in.kv_heads;

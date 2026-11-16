@@ -67,9 +67,9 @@ On the Sparks, builds and tests run only in GPU jobs on TOP, never through `bott
 MIDDLE serve DeepSeek, and a host build there on 16 November had memguard kill its rank 1 three times. The job image has
 no network and no C++ compiler, so [`toolchain-stage.sh`](minimax-h3-cuda/toolchain-stage.sh) first puts the archives
 of Zig 0.17.0 and Arm's GNU toolchain 14.3 in TOP's pilot folder; [`cuda-build.sh`](minimax-h3-cuda/cuda-build.sh)
-then builds the kernel images with that gcc as nvcc's host compiler, builds `tf-cuda-test` and runs
-`kernel-contract-limits` over the five release SMs' images, writing the
-images (sm_121 alone for `-Dfatbins`) and the runner to the job output for later TOP jobs:
+then builds the kernel images with that gcc as nvcc's host compiler, builds `tf-cuda-test` and the three H3 picture
+tools, and runs `kernel-contract-limits` over the five release SMs' images. It writes the images (sm_121 alone for
+`-Dfatbins`), the runner and the picture tools to the job output for later TOP jobs:
 
 ```sh
 ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/cuda-build.sh"
@@ -96,9 +96,88 @@ CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check
 
 `tf-h3-image-prompt-cuda` runs the text encoder and refiner on CUDA, streaming one layer's weights at a time.
 `tf-h3-image-decoder-cuda` runs the VAE on CUDA. The CPU tools remain independent reference implementations.
-[`run-script.sh`](minimax-h3-cuda/run-script.sh) selects these GPU tools, runs their synthetic selftests and
-renders both picture sizes only when they pass. The 14 November tables below predate this cutover; the
+[`run-script.sh`](minimax-h3-cuda/run-script.sh) builds these GPU tools and `tf-cuda-test` with `cuda-build.sh`, runs
+their synthetic selftests and renders both picture sizes only when they pass. A failed limits audit does not replace
+that selftest gate; its `limits.log` remains in the job output. One TOP job does the build and pictures:
+
+```sh
+ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/run-script.sh"
+```
+
+The 14 November tables below predate this cutover; the
 [`64188519` window](#gpu-qualification-and-the-64188519-window) measures it.
+
+### Benchmark run
+
+[`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds in the same TOP job, then takes `run-script.sh`'s inputs
+and tools without its gate: it records each selftest's PASS or FAIL and renders anyway. Each size gets one cold picture
+(start to first picture) and three warm repeats, while `nvidia-smi` is sampled twice a second. The transformer stays
+resident: one `tf-h3-image-cuda MODEL --serve` a size loads the model inside the cold run and renders all four cases,
+so warm repeats pay no transformer load. The prompt encoder streams its weights a layer at a time and the decoder loads in
+seconds, so both still run a process a picture. Where unified memory leaves `memory.used` as `[N/A]`, the peak is the
+compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens with the selftests' verdict. If any
+selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
+hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer, decoder load and decoder
+(tiles and PNG) seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
+[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails:
+
+    ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
+
+Desk ran `d3ca6199` on TOP's GB10 (driver 580.173.02, job `top-587035ea34ef`, 16 November, 36 minutes, exit 0). The
+transformer and prompt selftests passed and the decoder failed, so these timings are not yet the Spark's result:
+
+| Size | Wall cold | Wall warm mean | Prompt | Load | Transformer | Decoder | Peak MiB | Avg W | kJ a picture |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 150.4 s | 133.6 s | 21.0 s | 77.6 s | 25.9 s | 3.1 s | 37,994 | 25.6 | 3.4 |
+| 4096² | 233.9 s | 237.2 s | 19.8 s | 73.6 s | 125.9 s | 11.1 s | 40,762 | 44.8 | 10.6 |
+
+Stage columns are warm means. In this window each warm repeat still reloaded the model (~75 s) in its own process.
+The decoder selftest's failing row is the 6 x 10 case's block 1: 86.952% identical against the 90% bound (worst
+3 ULP, relative 1.19e-3); full-size block 1 and the picture bytes pass. This is an open gate failure, the decoder
+correctness bug card 72 owns (card 67's run measured 87.3%); the gate stays at 90%. **These timings are not for card
+68 until card 72's decoder selftest passes.**
+
+Desk ran `7079fd3b`, the first `--serve` window (job `top-11e9222dd7d6`, 16 November, exit 1), with the same selftest
+verdicts. 2048² cold took 185.7 s (load 63.7 s, transformer 25.7 s), but the warm prompt took 88–119 s against
+60.6 s cold, and the 4096² decoder died at `cuDevicePrimaryCtxRetain: CUDA_ERROR_OUT_OF_MEMORY` after a 126.9 s
+transformer; `d3ca6199` finished it in 11 s. The server kept every transformer shard mapped after the upload: a
+second ~38 GB copy of the weights in the GB10's shared memory beside the device's. The prompt tool streams its weights
+from the host a layer at a time, so its pages were evicted and re-read mid-run (98.7 s of GPU time warm, 52.3 s
+cold), and at 4096² nothing was left for the decoder's context. `--serve` now drops the shards' mapped pages once
+the weights are on the device.
+
+Desk ran `8293c6d7` (job `top-72a3cc7eebcc`, 16 November, exit 0), same selftest verdicts, decoder FAIL (card 72).
+These timings are a failing build's, **not for card 68**:
+
+| Size | Wall cold | Wall warm mean | Prompt cold / warm | Load | Case setup | Transformer | Decoder | Peak MiB | Avg W | kJ a picture |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 159.1 s | 138.9 s | 45.5 / 80.7 s | 51.6 s | 26.1 s | 24.1 s | 3.3 s | 39,576 | 25.7 | 3.6 |
+| 4096² | 233.8 s | 261.6 s | 17.4 / 90.2 s | 48.3 s | 38.5 s | 116.6 s | 11.1 s | 42,345 | 40.5 | 10.6 |
+
+Warm columns are means. The 4096² decoder completes again (11.1 s, as at `d3ca6199`, plus 3.6 s of decoder load the
+column then left out). The warm prompt was still slow: the text encoder took 69.7–75.7 s of GPU time warm against
+37.4 s cold at 2048², and 79.3–87.1 s against 14.0 s at 4096², while the script is serial and the server waits on
+stdin, so the prompt was not sharing the GPU's compute. Its event-timed loop includes each layer's host-to-device copy
+from the mapped safetensors. Dropping the shards' mappings left their 36.7 GiB in the page cache beside the server's
+device copy, so the text encoder's ~45 GiB likely no longer fit in the GB10's shared ~120 GB and was re-read from
+disk on every warm prompt; at 4096² cold the previous size's server had exited and freed that room. `--serve` now
+also drops the shards from the page cache (`posix_fadvise` `DONTNEED`) once the weights are on the device, and again
+after each picture's case setup, which reads the ~26 GB of AdaLN weights back; the next window's warm prompt confirms
+or refutes this. Net of the 75 s load it saves, this window's warm wall was no better than `d3ca6199`'s process a
+picture (138.9 s against 133.6 s at 2048², 261.6 s against 237.2 s at 4096²). The case setup column is the server's
+per-picture preparation before its first step, which `d3ca6199`'s table left inside the wall.
+
+Desk ran `eb8e7312cfa95a943a2c1650d9c319931bacf197` (job `top-fb95a2d49a7a`, 16 November, exit 0). The in-job
+`cuda-build.sh` build ran on TOP and wrote `limits.log`; its audit still found the 28 problems card 73 owns. Transformer
+and prompt selftests passed and the decoder failed, so these timings remain **not for card 68**. The prompt times were:
+
+| Size | Cold | Warm 1 | Warm 2 | Warm 3 | Warm mean |
+|---|---:|---:|---:|---:|---:|
+| 2048² | 18.0 s | 22.0 s | 19.3 s | 19.1 s | 20.1 s |
+| 4096² | 18.3 s | 18.8 s | 18.1 s | 18.6 s | 18.5 s |
+
+Warm prompt time is back at the cold 18–22 s range at both sizes; the page-cache eviction fixed the warm regression in
+this window.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
@@ -163,6 +242,15 @@ The 21 H3 launches' registered usage is nvcc 13.0's, read by `kernel-contract-li
 for sm_80/86/89/120/121 at `396df649` (16 November); every launch passes all five SMs' thread, register and shared-memory
 limits. The contract's rotary reference now rotates from the unrotated vector under the served cos/sin tables (whose
 sines reach ±1), and `h3m_project`'s output is declared and checked as bf16 values in fp32 words.
+[`limits-script.sh`](minimax-h3-cuda/limits-script.sh) `[NVCC]` repeats that audit on any host with nvcc, no GPU:
+it builds the five SMs' fatbins and `tf-cuda-limits`, then audits the H3 images' records and the controls,
+reading the ELF images without opening a driver. `tf-cuda-limits` is `kernel-contract-limits` built without
+tf-cuda-test's contracts. At `7079fd3b` the script built all of tf-cuda-test and exited 1 at compile time on BOTTOM,
+before any limit ran, in `zig/tests/cuda/contract_drama3_router.zig` (unchanged from main's `c11e8331b`, not this
+recipe's code), as Desk reported it: `:100:32 'u8 cannot represent 2312'` and `:169:54 '[]align(1) const i32'`. That
+is a main bug for its own card. At `8293c6d7` the scoped script ran on BOTTOM: every H3 launch passes all five SMs'
+limits and both controls stay red, but `h3p_norm`, `h3p_heads` and `h3p_attention`'s records were stale (12 rows)
+after their sums moved to the host's order; the records now hold that run's measured usage.
 
 Desk ran `64188519f690eb8bde9897506e241cdd6e0e4fb8` on TOP's GB10, driver 580.173.02, on 15 November,
 18:18–18:29 HKT, with no other job on TOP. `run-script.sh` (`top-43d6798bde4f`) rendered both checkpoint
