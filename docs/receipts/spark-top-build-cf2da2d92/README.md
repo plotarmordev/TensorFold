@@ -1,10 +1,10 @@
-# CUDA build and kernel-contract-limits in one TOP job at `1236f1b3`
+# CUDA build and kernel-contract-limits in one TOP job at `cf2da2d92`
 
-TOP's Spark (GB10, CUDA 13.0), GPU job `top-73ab1cac6c11` at `1236f1b3949f4b80d46428f50d2063060c68994e`, started 16 Nov
-2026 10:59 and exited 1 after about 18 minutes:
+TOP's Spark (GB10, CUDA 13.0), GPU job `top-7ccced985b0a` at `cf2da2d92b453cdcb2a54c5f1387e59f3cfe4193`, started 16 Nov
+2026 12:14 and exited 1 after about 19 minutes:
 
 ```sh
-ssh top-menu "job start gpu top plotarmordev/TensorFold 1236f1b3949f4b80d46428f50d2063060c68994e docs/recipes/minimax-h3-cuda/cuda-build.sh"
+ssh top-menu "job start gpu top plotarmordev/TensorFold cf2da2d92b453cdcb2a54c5f1387e59f3cfe4193 docs/recipes/minimax-h3-cuda/cuda-build.sh"
 ```
 
 The commit adding this receipt changes only documentation, so the run covers every script at the branch head.

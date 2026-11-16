@@ -75,8 +75,8 @@ images (sm_121 alone for `-Dfatbins`) and the runner to the job output for later
 ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/cuda-build.sh"
 ```
 
-Job `top-73ab1cac6c11` ran it at `1236f1b3`: the build passed and `kernel-contract-limits` exited 1 on 28 stale records
-([receipt](../receipts/spark-top-build-1236f1b3/README.md)).
+Job `top-7ccced985b0a` ran it at `cf2da2d92`: the build passed and `kernel-contract-limits` exited 1 on 28 stale records
+([receipt](../receipts/spark-top-build-cf2da2d92/README.md)).
 
 | Picture stage | Metal | Spark |
 |---|---|---|
