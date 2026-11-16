@@ -4,6 +4,44 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Docs: the GLM-5.3-Flash CUDA recipe's Verified copy drafts section lists, for one checkpoint at TP=2 with `--parallel 4`, the loads that `TF_GLM_COPIES=1` sped up and the ones it slowed, and says the default stays off (#3335). Thanks to @Bizuayeu.
+- Tests: the Qwen 3.8 27B Metal residency fixtures compile again on macOS after the DFlash2 target became a value (#3572).
+- Tests: the kernel contract's Llama `gemm_untransposed` control edits the `TF_GEMM_NAX_KERNEL` instance line again, so its planted fault fails as it should (#3157, thanks @gilby, who found and fixed it first).
+
+- Docs: the GLM-5.3-Flash recipe records the FP8 latent cache's diagnostics on FP4-Local at TP=2 on two GB10s, with its bytes a token and fixed per-stream state, and says it is not qualified (#3432). Thanks to @laudney.
+
+- KV pool: a window's pages go back to the pool once their readers are done, and a step retires under the forward's token, leaving the settle to its caller; no served path calls it yet (#3353, part of #2444). Thanks to @jschmied.
+
+- Qwen3.8-27B: `serve` drafts with DFlash2 by itself when `z-lab/Qwen3.8-27B-DFlash2` is already in the Hugging Face cache, and one line names it; nothing is downloaded, a drafter that does not open leaves the target serving alone, and `--drafter none` serves without it. The target checks every drafted token, so replies are the same tokens; the benchmark passes the drafter it chose before (#3204, fixes #3173).
+
+- Images: POST /v1/images/generations takes `n` from 1 to 4, run one after another through the engine's one-picture call, each picture with its own seed (the request's `seed` plus its index, or 42 plus its index without one) reported on its `data` item; each PNG is the one the `n: 1` request with that seed returns, and a refusal or cancel mid-way returns its error with no pictures (#3244, fixes #3223).
+
+- Nemotron on Metal without tensor units skips the lane tiles no kernel reads, with the Linear layout and MTP allocation order kept; replies are unchanged on M5 and M3 Ultra (#3375). Thanks to @jschmied.
+
+- Flint on Metal: `--drafter` takes the published `incoai/Flint-DFlash2` draft model, through the DFlash2 runtime the 27B uses; every reply equals drafts off, and greedy decode on an M5 Ultra goes from 174.6 to 233.0 tok/s at one stream and 221.4 to 289.7 at two (#3511).
+
+- Docs: `docs/api.md` documents the Ollama-compatible routes (`/api/tags`, `/api/ps`, `/api/version`, `/api/show`, `/api/chat`, `/api/generate`, `/api/embed`): what each takes and refuses, the NDJSON replies, and how each differs from its OpenAI-style route (#3496).
+
+- Qwen3-Embedding on Metal: 0.6B, 4B and 8B serve through `/v1/embeddings` on chips with tensor units, with the same refusals and MRL widths as CUDA; vectors match an FP32 reference within 0.001 cosine distance, and a batch equals its single inputs bit for bit (#3494).
+
+- Qwen3.5 on CUDA: the dense family plans each rank's share of the 27B for tensor parallelism (host only), and `--tp` above 1 is refused by name until ranks serve (#3383). Thanks to @Nipale-ai.
+
+- Prompt cache: radix pages carry their reuse identity, and a request's chunk start is decided from it, so pages are only reused where they were written for the same request shape (#2888). Thanks to @laudney.
+
+- Tests: the Metal device test `tf-flashnext-run` is built from five source files under 600 lines instead of one of 1,690; its modes and settings are unchanged (#3504).
+
+- Code: every comment in the engine and its tools is one line within 120 columns, and the multi-line docstrings are one-line comments; no code changed (lean findings 337 to 230) (#3503).
+
+- Flash Next at TP=2 on CUDA: the draft head, head-group and rollback passes replay as CUDA graphs on both ranks, and one-row split lanes skip their interleave copies; with Qwen3.8-Flash-Next NVFP4 and MTP at TP=2 on GB10s, decode is 1.2-1.4% faster and prompts 0.5-2.1% faster, with identical replies (#2837, for #2835).
+- Intel XPU: Qwen3.8-27B's prompt `gdn_out` kernel keeps its scale bookkeeping in cheaper exact forms, for 22.6% less kernel time on an Arc Pro B70 (734 to 569 ms over a 32K prompt) with byte-identical outputs, its fallback included (#2921, refs #2859). Thanks to @dinadur.
+- CI: the no-GPU host tests run as two parallel jobs, `zig` and `zig-b`, and a build check fails if any host check is in both or neither; a local `zig build test-host` still runs all of them (#3474).
+
+- Nemotron 3.5 Bolt on CUDA: the shared expert runs on the side stream in decode windows, as on Super, so decode on a GB10 is 2.9-3.0% faster at one stream and 1.4-2.1% at four, with identical replies (#2847, for #2840).
+
+- Prompt cache: `TF_CACHE_EVICT=decayed_resume` (off by default) gives a resumed snapshot bounded recency credit when the RAM store evicts, so agent conversations that keep returning outlive one-off prompts; through the real store at 16 GiB, agent traces rebuild 24-34% fewer prompt rows and at 4 GiB 4-18% fewer, no cell worse, replies unchanged (#3258, #3241).
+
+- Qwen 3.5 on CUDA reserves its forward scratch at load in its own allocation, sized to `--context` (capped at the largest prompt pass) plus the verify window, instead of always reserving the largest pass inside the weights arena, and a pass past the reservation is refused before any kernel runs; with a short `--context` the model starts on a smaller GPU (the 4B in MLX 4-bit at `--context 1024` with a 0.5 GiB memory reserve starts on a 4 GiB RTX 3050 Laptop GPU where it was refused), and on a GB10 the 27B's tokens and speed match main's (#1879, refs #1827). Thanks to @robertosantosx2.
+
 - Server: temporaries a crash left beside notes and the `--slide-graph` file are cleared when the server opens their folders, only the server's own and only when their process is gone (#3132).
 
 - LFM2.5-24B-A2B on CUDA: the five prompt-stream writes whose state a prompt-cache keep copies (a slot clear, a prompt chunk, a one-row step, a verify round and a commit) take their stream from one helper that first waits for the keeps' copies, and a host test fails if a write skips it. Replies are unchanged (#2989, after #1503). Thanks to @jschmied.

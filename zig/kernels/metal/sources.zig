@@ -79,8 +79,7 @@ pub const nemotron_head = @embedFile("nemotron_head.metal");
 /// Keyed draws over the whole vocabulary where tf_gpu_sample would keep only its 1,024 candidates.
 pub const nemotron_sample = @embedFile("nemotron_sample.metal");
 
-/// Sliding Weights: the learned change in the forward and the bounded step on captured rows.
-/// Learning in the weights: a low-rank change at every layer, and the gradients through each kind of layer to it.
+/// Sliding Weights: learned change and bounded step on captured rows; low-rank change per layer, with gradients to it.
 pub const train = @embedFile("train.metal");
 pub const train_mixers = @embedFile("train_mixers.metal");
 
@@ -251,3 +250,6 @@ pub const core_hc_activation = @embedFile("core/hc_activation.metal");
 pub const core_hc_pointwise = @embedFile("core/hc_pointwise.metal");
 
 pub const lfm2_prompt_masked = @import("lfm2/prompt_masked.zig");
+
+/// Qwen3 embeddings' projected-head RMS norm (128-wide Q and K, V unchanged).
+pub const qwen3_heads = @embedFile("qwen3/heads.metal");
