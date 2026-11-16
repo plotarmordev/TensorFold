@@ -75,6 +75,9 @@ images (sm_121 alone for `-Dfatbins`) and the runner to the job output for later
 ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/cuda-build.sh"
 ```
 
+Job `top-73ab1cac6c11` ran it at `1236f1b3`: the build passed and `kernel-contract-limits` exited 1 on 28 stale records
+([receipt](../receipts/spark-top-build-1236f1b3/README.md)).
+
 | Picture stage | Metal | Spark |
 |---|---|---|
 | Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CUDA `prompt_cuda.zig`, a layer's weights uploaded at a time; CPU reference `prompt_reference.zig`, the case from `prompt_case.zig` |
