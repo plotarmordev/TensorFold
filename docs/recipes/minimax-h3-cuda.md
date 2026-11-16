@@ -65,9 +65,10 @@ zig-out/bin/tf-h3-image-decoder-cuda MODEL_DIR out/case.latent.f32 128 128 out/c
 
 On the Sparks, builds and tests run only in GPU jobs on TOP, never through `bottom shell` or `middle shell`: BOTTOM and
 MIDDLE serve DeepSeek, and a host build there on 16 November had memguard kill its rank 1 three times. The job image has
-no network and no C++ compiler, so [`zig-stage.sh`](minimax-h3-cuda/zig-stage.sh) first puts Zig 0.17.0 in TOP's pilot
-folder; [`cuda-build.sh`](minimax-h3-cuda/cuda-build.sh) then builds the kernel images with Zig's clang as nvcc's host
-compiler, builds `tf-cuda-test` and runs `kernel-contract-limits` over the five release SMs' images, writing the
+no network and no C++ compiler, so [`toolchain-stage.sh`](minimax-h3-cuda/toolchain-stage.sh) first puts the archives
+of Zig 0.17.0 and Arm's GNU toolchain 14.3 in TOP's pilot folder; [`cuda-build.sh`](minimax-h3-cuda/cuda-build.sh)
+then builds the kernel images with that gcc as nvcc's host compiler, builds `tf-cuda-test` and runs
+`kernel-contract-limits` over the five release SMs' images, writing the
 images (sm_121 alone for `-Dfatbins`) and the runner to the job output for later TOP jobs:
 
 ```sh

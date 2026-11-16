@@ -2,8 +2,8 @@
 # Builds this commit's CUDA kernel images and tf-cuda-test on TOP's Spark and audits the images' limits, through the
 # Desk's GPU door (never `bottom shell` or `middle shell`: those Sparks serve DeepSeek):
 #   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/cuda-build.sh"
-# The job has no network and no C++ compiler: zig-stage.sh puts Zig 0.17.0's archive in the pilot folder, the job
-# unpacks it, and its clang is nvcc's host compiler. In /work/out:
+# The job has no network and no C++ compiler: toolchain-stage.sh puts the archives of Zig 0.17.0 and of Arm's GNU
+# toolchain (gcc 14, nvcc's host compiler) in the pilot folder, and the job unpacks them. In /work/out:
 # - tensorfold-fatbins-SHA: the sm_121 images and SHA256SUMS, for -Dfatbins (../../receipts/drama3-pruned-main/run-script.sh)
 # - tensorfold-cuda-SHA: tf-cuda-test, with its images built in, and the five release SMs' images in fatbin/
 # - limits.log: kernel-contract-limits over those images; the job exits with its status
@@ -11,31 +11,32 @@
 #   ssh top-menu "job fetch ID" | tar -x -C DIR
 #   tar -C DIR/out -c tensorfold-fatbins-SHA | ssh top-menu "put top tensorfold-fatbins-SHA"
 set -eu
-archive=/assets/drama3-pilot/zig-0.17.0/zig-aarch64-linux-0.17.0.tar.xz
-zig=/work/zig-aarch64-linux-0.17.0
+staged=/assets/drama3-pilot/cuda-build-toolchain
+zig=zig-aarch64-linux-0.17.0
+gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
 sha=$(git -c safe.directory='*' rev-parse HEAD)
 out=/work/out
-tools=/work/tools
-[ -e "$archive" ] || { echo "missing $archive: run zig-stage.sh" >&2; exit 1; }
-# the official build's sha256, from docs/recipes/adding-a-zig-family.md
-echo "9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8  $archive" | sha256sum -c --quiet
-tar -C /work -xJf "$archive"
+nvcc=/usr/local/cuda/bin/nvcc
+[ -d "$staged" ] || { echo "missing $staged: run toolchain-stage.sh" >&2; exit 1; }
+# the official archives' sha256, from ziglang.org's release index and Arm's .sha256asc
+(cd "$staged" && sha256sum -c --quiet) <<EOF
+9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8  $zig.tar.xz
+7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $gcc.tar.xz
+EOF
+tar -C /work -xJf "$staged/$zig.tar.xz"
+tar -C /work -xJf "$staged/$gcc.tar.xz"
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 # the checkout may be read-only: caches and builds go to /work
-export PATH=$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
+export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-mkdir -p "$tools"
-# CUDA 13.0 does not list Zig's clang release among its host compilers
-printf '#!/bin/sh\nexec %s c++ "$@"\n' "$zig/zig" >"$tools/clang++"
-printf '#!/bin/sh\nexec /usr/local/cuda/bin/nvcc -ccbin %s -allow-unsupported-compiler "$@"\n' "$tools/clang++" >"$tools/nvcc"
-chmod +x "$tools/clang++" "$tools/nvcc"
+export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
 # -Dfatbins takes images holding the one SASS profile, so sm_121 is built apart from the audit's five SMs
-zig build fatbins -Dsm=121 -Dnvcc="$tools/nvcc" --prefix /work/sm121
+zig build fatbins -Dsm=121 -Dnvcc=$nvcc --prefix /work/sm121
 fatbins=$out/tensorfold-fatbins-$sha
 mkdir -p "$fatbins"
 cp /work/sm121/fatbin/*.fatbin "$fatbins"
 (cd "$fatbins" && sha256sum *.fatbin >SHA256SUMS)
-zig build install fatbins kernel-contract-fatbins -Dsm=80,86,89,120,121 -Dnvcc="$tools/nvcc" -Doptimize=ReleaseFast \
+zig build install fatbins kernel-contract-fatbins -Dsm=80,86,89,120,121 -Dnvcc=$nvcc -Doptimize=ReleaseFast \
     --prefix /work/release
 cuda=$out/tensorfold-cuda-$sha
 mkdir -p "$cuda"
