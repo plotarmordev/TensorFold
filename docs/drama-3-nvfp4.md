@@ -84,6 +84,7 @@ python3 -m unittest discover -s tools/zig -p 'test_drama*.py'
 On a GPU, [`tools/zig/drama3_checkpoints_check.py`](../tools/zig/drama3_checkpoints_check.py) serves each checkpoint
 it is given (`--fp8`, `--pruned`, `--pruned-5900`) and fails unless each holds its experts and its fixed-seed whole and
 streamed replies equal their repeats and their concurrent lanes; it records load, peak memory, first audio, total time
-and RTF. On a Spark, [`run-script.sh`](receipts/drama3-pruned-main/run-script.sh) builds and runs it over all three
+and RTF. On TOP's Spark, [`run-script.sh`](receipts/drama3-pruned-main/run-script.sh) builds and runs it over all three
 with no arguments, from the pilot folder at `/assets/drama3-pilot`, as the GPU door runs a job; its kernel images come
-from [`prebuild-fatbins.sh`](receipts/drama3-pruned-main/prebuild-fatbins.sh), as the job image has no C++ compiler.
+from a [`cuda-build.sh`](recipes/minimax-h3-cuda/cuda-build.sh) TOP job at the same commit, as the job image has no C++
+compiler.

@@ -63,6 +63,21 @@ zig-out/bin/tf-h3-image-cuda MODEL_DIR out/case.safetensors out/case
 zig-out/bin/tf-h3-image-decoder-cuda MODEL_DIR out/case.latent.f32 128 128 out/case.png 2048x2048
 ```
 
+On the Sparks, builds and tests run only in GPU jobs on TOP, never through `bottom shell` or `middle shell`: BOTTOM and
+MIDDLE serve DeepSeek, and a host build there on 16 November had memguard kill its rank 1 three times. The job image has
+no network and no C++ compiler, so [`toolchain-stage.sh`](minimax-h3-cuda/toolchain-stage.sh) first puts the archives
+of Zig 0.17.0 and Arm's GNU toolchain 14.3 in TOP's pilot folder; [`cuda-build.sh`](minimax-h3-cuda/cuda-build.sh)
+then builds the kernel images with that gcc as nvcc's host compiler, builds `tf-cuda-test` and runs
+`kernel-contract-limits` over the five release SMs' images, writing the
+images (sm_121 alone for `-Dfatbins`) and the runner to the job output for later TOP jobs:
+
+```sh
+ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/cuda-build.sh"
+```
+
+Job `top-7ccced985b0a` ran it at `cf2da2d92`: the build passed and `kernel-contract-limits` exited 1 on 28 stale records
+([receipt](../receipts/spark-top-build-cf2da2d92/README.md)).
+
 | Picture stage | Metal | Spark |
 |---|---|---|
 | Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CUDA `prompt_cuda.zig`, a layer's weights uploaded at a time; CPU reference `prompt_reference.zig`, the case from `prompt_case.zig` |
@@ -109,7 +124,7 @@ prompt, seed 42, 2048² and 4096² and mmh3's defaults, which are the six distil
 (its logs show six). INT8 linear layers, in the text encoder as in the DiT, and its fp16 VAE are the differences.
 Its seed draws other noise, so the comparison is of times, not pixels. The job has no network:
 [`mmh3-stage.sh`](minimax-h3-cuda/mmh3-stage.sh) first stages mmh3's source, its vendored crates and Rust in the pilot
-folder on BOTTOM's CPUs, and the job builds mmh3 from them for `sm_120f`.
+folder, and the job builds mmh3 from them for `sm_120f`.
 
 The Desk ran it on BOTTOM (GB10) in the 14 Nov 08:05 window, job `bottom-5733d361f24d`; both pictures are clean foxes:
 

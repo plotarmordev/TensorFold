@@ -51,13 +51,13 @@ Verdict: pass. Both held their experts; whole and streamed replies equalled thei
 ## Spark
 
 DGX Spark (GB10, sm_121, 128 GB unified memory), driver 580.173.02, CUDA 13.0; this branch at `132bd1238`, GPU job
-`bottom-49eafd253777` on 12 Nov 2026. The job image has no C++ compiler for nvcc, so
-[`prebuild-fatbins.sh`](prebuild-fatbins.sh) first built the commit's kernel images on the Spark through `bottom shell`,
-from a clean checkout of `SHA`: `PILOT=~/Documents/drama3-pilot-20261014 IMAGE=<job image>
-docs/receipts/drama3-pruned-main/prebuild-fatbins.sh` (`zig build fatbins -Dsm=121` in the job image with g++ added,
-into `tensorfold-fatbins-SHA` in the pilot folder with `SHA256SUMS`; sha256 of those sums `fc8e7105…`).
-[`run-script.sh`](run-script.sh) takes no arguments, so the GPU door runs it as is:
-`job start gpu bottom plotarmordev/TensorFold SHA docs/receipts/drama3-pruned-main/run-script.sh`. It checks the
+`bottom-49eafd253777` on 12 Nov 2026. The job image has no C++ compiler for nvcc, so a since removed script first built
+the commit's kernel images through `bottom shell` (`zig build fatbins -Dsm=121` in the job image with g++ added, into
+`tensorfold-fatbins-SHA` in the pilot folder with `SHA256SUMS`; sha256 of those sums `fc8e7105…`). Builds no longer run
+on BOTTOM or MIDDLE, which serve DeepSeek: a
+[`cuda-build.sh`](../../recipes/minimax-h3-cuda/cuda-build.sh) job on TOP now builds that folder.
+[`run-script.sh`](run-script.sh) takes no arguments, so the GPU door ran it as is (now on TOP:
+`job start gpu top plotarmordev/TensorFold SHA docs/receipts/drama3-pruned-main/run-script.sh`). It checks the
 kernel images, builds the server with `-Dgpu=spark -Dfatbins` (no nvcc), makes a synthetic voice the way the Mac's was
 made, and runs the check over the FP8 checkpoint and both pruned ones from the pilot folder. It pauses no service.
 Raw: [`spark/results.json`](spark/results.json) and the three `spark/server-*.log`.
