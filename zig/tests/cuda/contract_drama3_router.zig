@@ -12,8 +12,8 @@ const g = contract.gates;
 const experts = 256;
 const top = 8;
 // drama3/config.zig's moe_proj rows: [shared gate 512 | up 512 | router 256 | shared gate 1 | pad 7]
-const stride = 1288;
-const r_off = 1024;
+const stride: usize = 1288;
+const r_off: usize = 1024;
 
 fn noSums(_: c.Shape) usize {
     return 0;
@@ -165,9 +165,9 @@ pub const Router = struct {
 
     pub fn check(self: *Router, at: g.Gate) !?[]const u8 {
         const n = self.shape.rows * top;
-        const picks: []align(1) const i32 = std.mem.bytesAsSlice(i32, try self.rig.bytes(self.picks, n * 4));
-        const got_p = try self.rig.gpu.gpa.dupe(i32, picks);
+        const got_p = try self.rig.gpu.gpa.alloc(i32, n);
         defer self.rig.gpu.gpa.free(got_p);
+        @memcpy(std.mem.sliceAsBytes(got_p), try self.rig.bytes(self.picks, n * 4));
         const got_w: []align(1) const f32 = std.mem.bytesAsSlice(f32, try self.rig.bytes(self.weights, n * 4));
         var poisoned: usize = 0;
         for (0..self.shape.rows) |t| {
