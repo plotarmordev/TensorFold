@@ -15,7 +15,7 @@ zig=/assets/drama3-pilot/zig-aarch64-linux-0.17.0
 sha=$(git -c safe.directory='*' rev-parse HEAD)
 out=/work/out
 tools=/work/tools
-[ -x "$zig/zig" ] || { echo "missing $zig/zig: run zig-stage.sh" >&2; exit 1; }
+[ -x "$zig/zig" ] || { echo "missing $zig/zig: run zig-stage.sh; /assets holds:" >&2; find /assets -maxdepth 3 >&2; exit 1; }
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 # the checkout may be read-only: caches and builds go to /work
 export PATH=$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
