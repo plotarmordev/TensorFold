@@ -123,10 +123,9 @@ compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens w
 selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
 hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer, decoder load and decoder
 (tiles and PNG) seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
-[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails. After both sizes the
-script decodes the 2048² latent again with `reference`: the GPU's picture and the host reference decoder's on the
-same latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits non-zero past the
-bound.
+[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails. After the 2048² runs the
+script decodes that latent again with `reference`: the GPU's picture and the host reference decoder's on the same
+latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits non-zero past the bound.
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
