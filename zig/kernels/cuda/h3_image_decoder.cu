@@ -1,6 +1,6 @@
 // MiniMax-H3-Image's image decoder (the VAE's 2D ViT decoder) on CUDA: bf16 tensors and rounding
 // points exactly as the Metal kernels (zig/kernels/metal/h3/image_decoder.metal) hold them, fp32
-// sums; cuBLASLt products write fp32 here, and h3d_finish applies bias and LayerScale at their points.
+// sums; h3d_linear sums K sequentially in fp32, and h3d_finish applies bias and LayerScale at their points.
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stddef.h>
@@ -122,7 +122,18 @@ __global__ void __launch_bounds__(256) h3d_layer_norm(
     }
 }
 
-// A cuBLASLt product's fp32 sums [m, n] to bf16 with its bias: y = bf16(acc + b); mode 1 (the
+// y [m, n] = x [m, k] . w [n, k]^T in fp32, summed sequentially like the host reference.
+__global__ void __launch_bounds__(256) h3d_linear(
+        const bf16* x, const bf16* w, float* y, H3dShape p) {
+    const unsigned col = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (col >= p.n || row >= p.m) return;
+    float sum = 0.0f;
+    for (unsigned i = 0; i < p.k; ++i) sum = __fadd_rn(sum, __fmul_rn(f(x[(size_t)row * p.k + i]), f(w[(size_t)col * p.k + i])));
+    y[(size_t)row * p.n + col] = sum;
+}
+
+// A projection's fp32 sums [m, n] to bf16 with its bias: y = bf16(acc + b); mode 1 (the
 // LayerScale residual) instead does y = bf16(y + bf16(bf16(acc + b) * s)), the Metal gemm epilogue's
 // own rounding points, which a fused bf16 GEMM + bias cannot hold.
 __global__ void __launch_bounds__(256) h3d_finish(
