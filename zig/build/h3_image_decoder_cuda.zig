@@ -13,6 +13,6 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
         .{ .name = "h3_image_decoder_cuda", .module = decoder },
     } }) });
     b.step("tf-h3-image-decoder-cuda", "MiniMax-H3-Image's image decoder on CUDA: a latent to a PNG, or its self-test").dependOn(&b.addInstallArtifact(exe, .{}).step);
-    // a build compiles the Zig side only; the fatbin's nvcc and a CUDA device live on the Spark's Desk.
+    // a build compiles the Zig side only; nvcc and a CUDA device are needed for the fatbin and the run.
     test_step.dependOn(&exe.step);
 }
