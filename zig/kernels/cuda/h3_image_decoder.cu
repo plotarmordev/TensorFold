@@ -1,4 +1,4 @@
-// MiniMax-H3-Image's VAE image decoder on CUDA: bf16 tensors and fp32 sums at the Metal kernels' rounding points.
+// MiniMax-H3-Image's VAE image decoder on CUDA: bf16 tensors, fp32 sums, the RMS norm's f64 sum.
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stddef.h>
@@ -74,21 +74,33 @@ __global__ void __launch_bounds__(256) h3d_embed(
     x[(size_t)y * 1024 + j] = v;
 }
 
-// RMSNorm, one row of 1,024 a block of 256: y = bf16((x * rsqrt(mean(x^2) + eps)) * g), all in fp32.
+// The row's 1,024 squares in f64, so the mean rounds as the host reference's f64 sum does.
+static __device__ __forceinline__ double h3d_sum_sq(double v, double* part) {
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+    if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = v;
+    __syncthreads();
+    double total = 0.0;
+    for (int w = 0; w < 8; ++w) total += part[w];
+    __syncthreads();
+    return total;
+}
+
+// RMSNorm, one row of 1,024 a block of 256: y = bf16((x * rsqrt(mean(x^2) + eps)) * g), the products in fp32.
 __global__ void __launch_bounds__(256) h3d_rms_norm(
         const bf16* x, const bf16* g, bf16* y, H3dShape p) {
-    __shared__ float part[8];
+    __shared__ double part[8];
     const unsigned row = blockIdx.x;
     const unsigned t = threadIdx.x;
     const bf16* xr = x + (size_t)row * 1024;
     float v[4];
-    float sq = 0.0f;
+    double sq = 0.0;
 #pragma unroll
     for (unsigned i = 0; i < 4; ++i) {
         v[i] = f(xr[t + 256 * i]);
-        sq += v[i] * v[i];
+        sq += (double)v[i] * (double)v[i];
     }
-    const float inv = inv_sqrt(tf_common::block_sum_serial(sq, part) / 1024.0f + p.eps);
+    const float inv = inv_sqrt((float)(h3d_sum_sq(sq, part) / 1024.0) + p.eps);
 #pragma unroll
     for (unsigned i = 0; i < 4; ++i) y[(size_t)row * 1024 + t + 256 * i] = __float2bfloat16(v[i] * inv * f(g[t + 256 * i]));
 }

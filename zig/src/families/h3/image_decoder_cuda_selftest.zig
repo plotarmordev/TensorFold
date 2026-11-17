@@ -17,7 +17,7 @@ pub const bounds = struct {
     /// fp32 sums against float64 move a bf16 output only where they straddle a rounding point: at most 1 ULP.
     pub const product_ulps: f64 = 1;
     pub const product_same: f64 = 0.99;
-    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, 7e-4); correctly rounded norms.
+    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, 7e-4); the RMS sum in f64.
     pub const block_ulps: f64 = 8;
     pub const block_same: f64 = 0.9;
     pub const block_relative: f64 = 2e-3;

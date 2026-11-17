@@ -65,8 +65,8 @@ reference decoder and fails past the 3e-2 full-chain relative bound.
 
 The decoder's selftest gates each of the 24 blocks, on the GPU's own input, at 90% of values identical to the float64
 reference (worst 8 ULPs, relative 2e-3), and the picture after two blocks at 80% of bytes identical and at most 2
-apart, the Metal decoder's bounds. The prompt's selftest gates its text, refiner and vision rows against the same
-float32-noise bounds.
+apart, the Metal decoder's bounds. Its RMS norm sums the row's squares in f64, so the norm's mean rounds as the
+reference's does. The prompt's selftest gates its text, refiner and vision rows against the same float32-noise bounds.
 Both run on a GB10 (sm_121); other served SMs compile but were not run.
 
 Same prompt, seed 42, six distilled steps, BF16 throughout, one GB10:
