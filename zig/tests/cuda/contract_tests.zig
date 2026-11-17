@@ -298,7 +298,8 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
         selection.* = .{ .rig = .{ .gpu = gpu, .s = s }, .f = try batch.function("fn_qsa_select"), .padded = padded };
     defer for (&selections) |*selection| selection.deinit();
     for (&selections) |*selection| try kernels.append(a, selection.kernel());
-    try h3_register.append(a, gpu, s, &kernels);
+    var h3 = try h3_register.append(a, gpu, s, &kernels);
+    defer h3.deinit();
     var d3_mod = try cuda.Module.load(gpu.d, kk.drama3);
     defer d3_mod.unload();
     var d3_norm = try drama3_k.Norm.init(gpu, s, d3_mod);
