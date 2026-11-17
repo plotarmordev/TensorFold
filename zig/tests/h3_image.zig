@@ -1,7 +1,7 @@
 //! MiniMax-H3-Image's transformer on Metal from a picture case: six steps teacher-forced and gated, then free.
 const std = @import("std");
 const mtl = @import("metal");
-const st = @import("safetensors");
+const st = @import("core").safetensors;
 const h3 = @import("h3");
 const fixture = @import("checkpoint_fixture");
 
@@ -100,7 +100,7 @@ pub const Folder = struct {
         try picture.checkTransformer(a, try read(init, a, transformer_dir, "config.json"));
         const shards = try picture.shardCount(a, try read(init, a, transformer_dir, "model.safetensors.index.json"));
         const pdd = try picture.pdd(a, try read(init, a, std.fs.path.dirname(try std.fs.path.join(a, &.{ dir, heads_name })) orelse dir, "pdd_config.json"));
-        const ck = try h3.Model.open(init.gpa, transformer_dir, shards);
+        const ck = try h3.Model.open(init.gpa, init.io, transformer_dir, shards);
         const heads = try h3.Tensors.open(init.gpa, try mtl.Device.init(), try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, heads_name }, 0));
         const hidden = (ck.entry("final_layer.norm.weight") orelse return error.MissingTensor).shape[0];
         var name: [32]u8 = undefined;

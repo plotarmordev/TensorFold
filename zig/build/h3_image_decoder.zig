@@ -2,16 +2,16 @@
 const std = @import("std");
 
 /// The decoder on the CPU (image_decoder_host.zig): the reference chain over tiles, the PNG writer.
-fn host(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, st: *std.Build.Module, writer: *std.Build.Module) *std.Build.Module {
-    return b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/image_decoder_host.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "safetensors", .module = st }, .{ .name = "picture_writer", .module = writer } } });
+fn host(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, core: *std.Build.Module, writer: *std.Build.Module) *std.Build.Module {
+    return b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/image_decoder_host.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "core", .module = core }, .{ .name = "picture_writer", .module = writer } } });
 }
 
 /// The tool on `metal`: the decoder and its kernels' source, and the picture writer (PNG and resampler).
 fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, metal: *std.Build.Module) *std.Build.Module {
-    const st = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = target, .optimize = optimize });
+    const core = @import("h3_host.zig").coreModule(b, target);
     const kernels = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/image_decoder.zig") });
     const writer = b.createModule(.{ .root_source_file = b.path("zig/src/picture_writer.zig"), .target = target, .optimize = optimize });
-    const decoder = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/image_decoder_metal.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "safetensors", .module = st }, .{ .name = "h3_image_decoder_kernels", .module = kernels }, .{ .name = "picture_writer", .module = writer }, .{ .name = "gpu_turn", .module = b.createModule(.{ .root_source_file = b.path("zig/src/server/gpu_turn.zig"), .target = target, .optimize = optimize }) } } });
+    const decoder = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/image_decoder_metal.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "core", .module = core }, .{ .name = "h3_image_decoder_kernels", .module = kernels }, .{ .name = "picture_writer", .module = writer }, .{ .name = "gpu_turn", .module = b.createModule(.{ .root_source_file = b.path("zig/src/server/gpu_turn.zig"), .target = target, .optimize = optimize }) } } });
     return b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_decoder.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "h3_image_decoder", .module = decoder } } });
 }
 
@@ -35,13 +35,13 @@ pub fn compileHost(b: *std.Build, target: std.Build.ResolvedTarget) void {
 
 /// `zig build tf-h3-image-decoder-host` (any target, no GPU), and its tiling/blend regression on this host.
 pub fn hostSteps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, test_step: *std.Build.Step) void {
-    const st = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = target });
+    const core = @import("h3_host.zig").coreModule(b, target);
     const writer = b.createModule(.{ .root_source_file = b.path("zig/src/picture_writer.zig"), .target = target, .optimize = optimize });
-    const exe = b.addExecutable(.{ .name = "tf-h3-image-decoder-host", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_decoder_host.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "h3_image_decoder_host", .module = host(b, target, optimize, st, writer) }} }) });
+    const exe = b.addExecutable(.{ .name = "tf-h3-image-decoder-host", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_decoder_host.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "h3_image_decoder_host", .module = host(b, target, optimize, core, writer) }} }) });
     b.step("tf-h3-image-decoder-host", "MiniMax-H3-Image's image decoder on the CPU: a latent to a PNG, no GPU").dependOn(&b.addInstallArtifact(exe, .{}).step);
     const native = b.graph.host;
     const cases = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/image_decoder_host_test.zig"), .target = native, .optimize = .ReleaseFast, .imports = &.{
-        .{ .name = "safetensors", .module = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = native }) },
+        .{ .name = "core", .module = @import("h3_host.zig").coreModule(b, native) },
         .{ .name = "picture_writer", .module = b.createModule(.{ .root_source_file = b.path("zig/src/picture_writer.zig"), .target = native }) },
     } }) });
     const run = b.addRunArtifact(cases);

@@ -27,6 +27,7 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
 /// The tool's module: the prompt path's host pieces (its Metal-only parts stay unanalyzed), the host checkpoint
 /// reader, the tokenizer and torch's randn.
 fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const core = @import("h3_host.zig").coreModule(b, target);
     const host_prompt = b.createModule(.{
         .root_source_file = b.path("zig/src/families/h3/prompt.zig"),
         .target = target,
@@ -34,7 +35,7 @@ fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
         .link_libc = true,
         .imports = &.{
             .{ .name = "qwen_vl_rope", .module = prompt.rope(b, target) },
-            .{ .name = "checkpoint_fixture", .module = fixture(b, target, optimize) },
+            .{ .name = "checkpoint_fixture", .module = @import("h3_host.zig").fixture(b, core) },
         },
     });
     const checkpoint = b.createModule(.{
@@ -42,7 +43,7 @@ fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{.{ .name = "safetensors", .module = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = target, .optimize = optimize }) }},
+        .imports = &.{.{ .name = "core", .module = core }},
     });
     return b.createModule(.{
         .root_source_file = b.path("zig/tests/h3_image_prompt_host.zig"),

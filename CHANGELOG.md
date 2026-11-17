@@ -4,9 +4,66 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Server: a grammar over 512 KiB is refused with HTTP 400 before it is compiled, so one oversized schema can no longer hold the grammar compiler for a minute (#3038).
+
+- Qwen3.8-27B on XPU: the target's and the DFlash2 drafter's RoPE tables come from core's exact helper, so they hold the reference's fp32 words; 15 of 32 and 18 of 64 values move by 1 ulp (#2000, part of #1852).
+
+- Tests: `zig build test-lane-explore-host` explores the lane host's schedules from a seed (arrivals, cancels at every stage, the backend's room for live lanes and memory pressure) around a fake target, so ordering bugs show up without hand-picked orders (#3233).
+
+- Qwen3.5 on CUDA: `qwen3_5` and `qwen3_5_moe` declare warm turns, so the server prefills a follow-up's prompt in the background and the next turn resumes past the previous reply, with replies unchanged (#2824). Thanks to @devopsfortunato.
+
+- Server: tool-call markup quoted in Markdown inline code spans and fenced code blocks stays prose, in whole replies and in streaming, instead of opening, hiding or running as a live tool call (#3588). Thanks to @gilby.
+
+- Lanes: shared draft pricing prices a chain-cut, unmeasured tail by the rule's rates instead of as a measured zero, and the cache's cut marker survives allocation errors (#2979). Thanks to @devopsfortunato.
+
+- Docs: the Nemotron 3.5 Lightning recipe gains a "Native HIP on a Strix Halo iGPU" section with its configuration, memory footprint, throughput, prefill and exactness checks, and the intro lists HIP beside Metal and CUDA (#3560). Thanks to @gilby.
+
+- Qwen3.5-2B on Metal: the engine declares `warm_turns` from its prompt cache, so a follow-up that re-renders earlier rows resumes the reply instead of prefilling the whole conversation again (#3662, from #3457). Thanks to @EugeneClaw.
+
+- DeepSeek V4.1 on CUDA: a prompt whose prefill segment is 18 to 32 rows no longer replies with repeated begin-of-sentence tokens, because the second streams buffer is now planned for 32 rows; replies at every other length are unchanged (#3366, #3388). Thanks to @sx4im for the fix, @laudney for the sweep test (#3529) and @BadAd84 for the trace and the GB10 pair receipts.
+
+- App: the built-in agent's `web_search` and `web_fetch` accept `provider: "keenable"`, an opt-in Keenable provider with no account or key; only the query or URL goes to Keenable, and the defaults are unchanged (#3637, from #2752). Thanks to @ilya-bogin-keenable.
+
+- Nemotron on Metal: row projections over windows of 4 or more rows run 8 rows at a time, then 4, 2 and 1, so each weight code is unpacked once for up to eight rows; every row's sum keeps its order, bit-equal to one row alone (#3129).
+
+- Flash Next on Metal (M1 through M4): the scale index is now the default for 4-bit experts in groups of 32, and `TF_FLASHNEXT_SCALE_INDEX=0` turns it off. Prompt passes and grouped decode windows read each group's scale and bias through the index too, and the routed experts' stored scales and biases are released once indexed; every kernel gets the same values, so replies keep their tokens. On an M3 Ultra with the MLX 4-bit checkpoint, memory in use once loaded falls from 129.6 to 122.5 GiB, drafted decode on one stream is 2.0% to 4.2% faster (prose 138.6 to 142.0 tok/s, a copy-heavy edit 282.0 to 293.8), four streams are 2.6% faster (203.1 to 208.3 tok/s) and a cold prompt's first token arrives about 1% sooner; load takes about 0.7 s longer (#2805, part of #2751).
+
+
+
+
+
+
+
+
+
+- Kolibri-1: the tree-attention cache offsets are signed, so a server with default flags no longer panics with an integer overflow on its first request when a cache sits below the origin (#3561). Thanks to @jschmied.
+
+- H3 on Metal: `Model.load` reads every transformer shard ahead of its mappings and fails the load on a missing or short shard; `TF_LOAD_PREFETCH` sets the reader count and `0` turns read-ahead off (#2999). Thanks to @plotarmordev.
+
+- App: an idle task's disabled Planning only control opens the model picker on Local, so a planning provider no longer strands the user; the ordinary model button still opens All (#3357). Thanks to @garvrao80.
+
+- Studio: local benchmark receipts with the optional `hardware.form_factor` field are accepted, kept in saved history and exports, while unknown labels, raw product IDs and extra hardware keys are still rejected (#2693). Thanks to @garvrao80.
+
+- Templates: the chat template compiler accepts Jinja's `float` filter, `float(value, default=0.0)`, instead of refusing the template, and reads text as ASCII only (#3577). Thanks to @Nipale-ai.
+
+- Tests: `tf-nemotron-hip-test invariance` checks Nemotron-H within-path bit invariance on HIP (prompt chunk cuts with the single-row first-token head, decode window widths and multi-stream grouping, and served prompt-cache resume against fresh prefill) (#3580, refs #3409).
+
+- Qwen3.8-Flash-Next on HIP: `tf_fn_idx_scores` exits inactive decode-graph tiles before synchronization and stages each tile's q rows once in LDS before walking the four key-position slots, cutting kernel time from 276.0 ms to 141.5 ms at 8K and 2,873.9 ms to 2,091.4 ms at 32K on gfx1151 with identical tokens (#3601).
+
+- Tests: the kernel contract checks each qwen27 control's source edit on every chip, for both tensor-unit settings, so a run on a chip without tensor units fails on a stale M5 edit too (#3343, follow-up to #2106). Thanks to @cshintov.
+
+- GLM-5.3-Flash on Metal: checkpoints whose routed experts are not 4/64 read each expert once a drafted window for every row that picked it, and the shared expert once; replies are unchanged, and on an M5 Ultra an 8-bit build's greedy decode goes from 50.0 to 53.0 tok/s and sampled from 46.5 to 48.8 (#3631).
+- GLM-5.3-Flash on Metal: a checkpoint that stores `layers.45.shared_head.head` drafts MTP tokens through it on one Mac while `lm_head` verifies every token, so replies are unchanged (#3632).
+- Tests: `tf-glm-run`'s `GLM_PROMPT_NLL` scores every prompt token through GLM-5.3-Flash's prompt path, the gate for prompt kernels that are not bit-identical (#3633).
+- Tests: `tf-glm-run`'s `GLM_PROMPT_NLL` scores every prompt token's loss through GLM-5.3-Flash's prompt path, a dev-tool check for comparing builds whose weights differ (#3633).
+- Qwen3.8-27B on CUDA: with paged KV and the shared prompt store, streams resumed from one prompt read each shared prefix key tile once a forward instead of once a stream, through join variants of the rows kernels that only such forwards take; on a GB10 at a 32K shared prefix, decode is 57% faster at eight streams and 28% at four with every reply equal to main's, and every other forward runs main's kernels byte for byte (#3653).
+- Docs: `docs/openclaw.md` shows how to use TensorFold from OpenClaw through the [openclaw-tensorfold](https://github.com/ashhart/openclaw-tensorfold) plugin: OpenClaw starts `tensorfold serve` on demand through its local model service and stops it when OpenClaw exits or the server sits idle, or connects to a server you run; each model's context window, image input and reasoning efforts come from `/v1/models`. Checked on Metal with Nemotron 3.5 Lightning and Qwen3.8-27B (#3341).
+
 - Docs: the GLM-5.3-Flash CUDA recipe's Verified copy drafts section lists, for one checkpoint at TP=2 with `--parallel 4`, the loads that `TF_GLM_COPIES=1` sped up and the ones it slowed, and says the default stays off (#3335). Thanks to @Bizuayeu.
 - Tests: the Qwen 3.8 27B Metal residency fixtures compile again on macOS after the DFlash2 target became a value (#3572).
 - Tests: the kernel contract's Llama `gemm_untransposed` control edits the `TF_GEMM_NAX_KERNEL` instance line again, so its planted fault fails as it should (#3157, thanks @gilby, who found and fixed it first).
+- Docs: the GLM-5.3-Flash recipe covers long agent sessions: reasoning the client sends back was about 330K of a 494K-token omp session, the model repeats itself past about 300K, and omp's `replayReasoningContent: false` keeps the prompt to messages and tool results; 1.2.9 and later GLM builds gave byte-identical replies at 458K
+- Docs: the GLM-5.3-Flash recipe covers long agent sessions: reasoning the client sends back was about 330K of a 494K-token omp session, the model repeats itself past about 300K, and omp's `replayReasoningContent: false` keeps the prompt to messages and tool results; 1.2.9 and later GLM builds gave byte-identical replies at 458K (#3576)
 
 - Docs: the GLM-5.3-Flash recipe records the FP8 latent cache's diagnostics on FP4-Local at TP=2 on two GB10s, with its bytes a token and fixed per-stream state, and says it is not qualified (#3432). Thanks to @laudney.
 
@@ -63,6 +120,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Nemotron on Metal: a new prompt is filled a chunk at a time between other streams' decode rounds, instead of stalling them for its whole prefill. Chunks are cut exactly as before, so replies are unchanged (#3054, part of #3021).
 - Nemotron Metal keeps the prompt IDs and one queued chunk across consecutive prefill steps.
   Cancellation publishes the landed prefix before keeping it and credits that work before retirement.
+- Flash Next on CUDA: `TF_FLASHNEXT_CHUNK` and `TF_FLASHNEXT_CHUNK_SOLO` are checked by name when the engine loads, so a malformed value names the variable, the supplied text and the accepted range, and a value that is empty or only spaces and tabs now reads as unset like every other setting; valid values and defaults are unchanged (#3308, #3591).
+
 - Ling-3.0-tiny on Metal: the KDA mixer uses Kimi's existing `k3_kda` kernel (full-width gate, D=128, 4 taps) wired to Ling-tiny's 16 heads. Host `mixF64` is checked against a float64 dump of `oracle/kda_inner.py` (a stdlib copy of `ling_forward.py` Model.kda from conv through y, r = identity; that file is not imported and is not edited) on 16 heads x 2 and 4 rows (worst 8.3e-10 and 1.1e-9). The copy equals Model.kda at worst abs 2.8e-14 on those shapes (fake Ckpt, r = identity, `oracle/kda_vs_model.py`). `k3_kda` versus the dump is 0.0102 at 2 rows and 0.0119 at 4 rows, gated at 2 x (2^-7 of the largest |y|); true bf16 steps at those magnitudes are about 1.3 and 1.5 (values in [1, 2) share one step of 2^-7). `k3_kda` versus the f32 mixer is 0.001953 at 2 and 4 rows (gated under 0.01). `mix`/`mixF64` return `error.KdaWidthTooWide` when W > 2048 (ReleaseFast-safe; the stack conv window is 3 x 2048). Fixture inputs regenerate byte-identical; committed y matches a regenerate to within one float64 ulp, so they are numerically reproducible, not hash-reproducible. Every check uses r = identity and a fake Ckpt. No new kernel (for #1247).
 - Ling-3.0-tiny: a host KDA reference, and a Metal check that Kimi's `k3_kda` matches it at Ling-tiny's shape; nothing is served yet (part of #1247).
 - GLM-5.3-Flash on CUDA loads NVFP4_NZ5 checkpoints, whose block-32 routed experts read E2M1's code 0b1000 as +5; every other recipe and mix is refused by name, and E2M1 checkpoints load exactly as before (#2894). Thanks to @Bizuayeu.

@@ -104,7 +104,7 @@ pub const Decoder = struct {
     }
 
     /// The decoder's tensors of `vae/diffusion_pytorch_model.safetensors`, checked, each F32 value rounded to bf16.
-    pub fn load(d: *Decoder, path: [*:0]const u8) !void {
+    pub fn load(d: *Decoder, io: std.Io, path: [*:0]const u8) !void {
         const map = try mtl.MappedFile.open(path);
         defer map.deinit();
         var arena = std.heap.ArenaAllocator.init(d.gpa);
@@ -116,7 +116,7 @@ pub const Decoder = struct {
             const e = w.header.get(it.name).?;
             s.* = .{ .path = path, .lo = w.start + e.begin, .hi = w.start + e.end };
         }
-        _ = try read_ahead.read(spans);
+        _ = try read_ahead.read(a, io, spans);
         host.read(w, d.params());
     }
 

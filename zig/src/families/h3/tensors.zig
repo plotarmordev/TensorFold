@@ -1,7 +1,7 @@
 //! Safetensors files mapped once and handed to Metal whole, and a checkpoint's shards searched by tensor name.
 const std = @import("std");
 const mtl = @import("metal");
-const st = @import("safetensors");
+const st = @import("core").safetensors;
 const read_ahead = @import("read_ahead.zig");
 
 /// A safetensors file mapped once and handed to Metal whole; a tensor is an offset into that one buffer.
@@ -101,11 +101,11 @@ pub const Checkpoint = struct {
     }
 
     /// Every shard's whole file into the page cache, ahead of the first forward's faults.
-    pub fn readAhead(self: *const Checkpoint, gpa: std.mem.Allocator) !void {
+    pub fn readAhead(self: *const Checkpoint, gpa: std.mem.Allocator, io: std.Io) !void {
         const whole = try gpa.alloc(read_ahead.Span, self.shards.len);
         defer gpa.free(whole);
         for (whole, self.shards) |*s, *shard| s.* = .{ .path = shard.path, .lo = 0, .hi = shard.map.size };
-        _ = try read_ahead.read(whole);
+        _ = try read_ahead.read(gpa, io, whole);
     }
 
     pub fn entry(self: *const Checkpoint, name: []const u8) ?st.Entry {

@@ -78,7 +78,7 @@ pub fn main(init: std.process.Init) !u8 {
     const prefix = try rules.textPrefix(shards.where.keys());
     const embed = try shards.tensorBytes(try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix}), .{ enc.text.vocab, enc.text.hidden });
     // the mapped bytes into the page cache before the uploads fault them in mid-copy
-    try shards.readAhead(a, TextNames{ .prefix = prefix, .layers = enc.text.layers });
+    try shards.readAhead(io, a, TextNames{ .prefix = prefix, .layers = enc.text.layers });
     const enc_rows = try a.alloc(u16, T * enc.text.hidden);
     var gpu_started = seconds();
     var layer_ctx: LayerCtx = .{ .shards = &shards, .g = enc.text, .prefix = prefix };
@@ -89,7 +89,7 @@ pub fn main(init: std.process.Init) !u8 {
     var front_shards = try Shards.open(io, a, gpa, transformer);
     defer front_shards.deinit(gpa);
     const front_w = try frontTensors(&front_shards, front);
-    try front_shards.readAhead(a, struct {
+    try front_shards.readAhead(io, a, struct {
         fn accepts(_: @This(), name: []const u8) bool {
             return std.mem.startsWith(u8, name, "condition_proj.") or std.mem.startsWith(u8, name, "token_refiner.");
         }
@@ -155,7 +155,7 @@ const Shards = struct {
     /// The mapped bytes of every tensor `accepts` into the page cache before the GPU's uploads fault
     /// them in one at a time, as the Metal prompt paths do (`h3/read_ahead.zig`); each shard mapped
     /// once, its accepted tensors one span.
-    fn readAhead(s: *Shards, a: std.mem.Allocator, accepts: anytype) !void {
+    fn readAhead(s: *Shards, io: std.Io, a: std.mem.Allocator, accepts: anytype) !void {
         var spans: std.ArrayList(hp.read_ahead.Span) = .empty;
         defer spans.deinit(a);
         var done: std.StringHashMapUnmanaged(void) = .empty;
@@ -173,7 +173,7 @@ const Shards = struct {
                 try spans.append(a, .{ .path = path, .lo = file.data + entry.begin, .hi = file.data + entry.end });
             };
         }
-        _ = try hp.read_ahead.read(spans.items);
+        _ = try hp.read_ahead.read(a, io, spans.items);
     }
 
     /// The bf16 tensor `name` at `shape` as stored bytes (columns 0: a vector of `rows` values).

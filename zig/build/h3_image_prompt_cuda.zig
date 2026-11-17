@@ -10,8 +10,8 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     else
         b.addWriteFiles().add("h3-image-prompt-compile-only.fatbin", "");
     const cuda = @import("cuda.zig").runtime(b, target, optimize, &.{});
-    const st = b.createModule(.{ .root_source_file = b.path("zig/src/core/safetensors.zig"), .target = target, .optimize = optimize });
-    const fixture = b.createModule(.{ .root_source_file = b.path("zig/src/core/checkpoint_fixture.zig"), .target = target, .optimize = optimize });
+    const core = @import("h3_host.zig").coreModule(b, target);
+    const fixture = @import("h3_host.zig").fixture(b, core);
     const rope = @import("h3_image_prompt.zig").rope(b, target);
     const prompt = b.createModule(.{
         .root_source_file = b.path("zig/src/families/h3/prompt_cuda.zig"),
@@ -20,7 +20,7 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
         .link_libc = true,
         .imports = &.{
             .{ .name = "cuda", .module = cuda },
-            .{ .name = "safetensors", .module = st },
+            .{ .name = "core", .module = core },
             .{ .name = "qwen_vl_rope", .module = rope },
             .{ .name = "checkpoint_fixture", .module = fixture },
         },
