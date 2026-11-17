@@ -1,4 +1,4 @@
-// MiniMax-H3-Image's image decoder (the VAE's 2D ViT decoder) on CUDA: bf16 tensors and rounding points exactly as the
+// MiniMax-H3-Image's VAE image decoder on CUDA: bf16 tensors and fp32 sums at the Metal kernels' rounding points.
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stddef.h>
@@ -123,7 +123,7 @@ __global__ void __launch_bounds__(256) h3d_layer_norm(
 #define H3D_TILE 128
 #define H3D_STEP 16
 
-// y [m, n] = x [m, k] . w [n, k]^T in fp32: a 128 x 128 tile a block, staged 16 K at a time through shared memory.
+// y [m, n] = x [m, k] . w [n, k]^T fp32: each output summed in increasing K by unfused, individually rounded fp32 ops.
 __global__ void __launch_bounds__(256) h3d_linear(
         const bf16* x, const bf16* w, float* y, H3dShape p) {
     // One float of padding a row spreads the K-major stores across banks.
@@ -171,7 +171,7 @@ __global__ void __launch_bounds__(256) h3d_linear(
     }
 }
 
-// A projection's fp32 sums [m, n] to bf16 with its bias: y = bf16(acc + b);
+// y = bf16(acc + b); mode 1 LayerScale y = bf16(y + bf16(bf16(acc + b) * s)) at the Metal epilogue's rounding.
 __global__ void __launch_bounds__(256) h3d_finish(
         const float* acc, const bf16* b, const bf16* s, bf16* y, H3dShape p) {
     const unsigned x = blockIdx.x * blockDim.x + threadIdx.x;

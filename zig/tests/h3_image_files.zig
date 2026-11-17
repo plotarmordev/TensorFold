@@ -1,4 +1,4 @@
-//! The H3-Image tools' safetensors files: aligned images, a synthetic checkpoint of one shard and its index, and the
+//! The H3-Image tools' safetensors files: aligned images, a one-shard checkpoint and index, the selftests' scratch dir.
 const std = @import("std");
 const fixture = @import("checkpoint_fixture");
 

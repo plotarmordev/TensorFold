@@ -1,4 +1,4 @@
-//! The CUDA image decoder's self-test: synthetic weights against the float64 host reference, the same staged checks
+//! The CUDA image decoder's selftest: synthetic weights vs the float64 reference; needs a CUDA device and the fatbin.
 const std = @import("std");
 const dec = @import("image_decoder_cuda.zig");
 const host = @import("image_decoder.zig");
@@ -9,7 +9,7 @@ const vae = dec.vae;
 const W = host.width;
 const side = vae.cell_pixels;
 
-/// Blocks checked one at a time against the reference, then chained; one tile also runs all 24 chained.
+/// Blocks chained into the picture's check; one tile also runs all 24 chained, and gates each on the GPU's own input.
 const checked = 2;
 
 /// Errors count bf16 ULPs of max(|reference|, its row's RMS); the host's fp32 sums spread as far from its float64 ones.
@@ -17,7 +17,7 @@ pub const bounds = struct {
     /// fp32 sums against float64 move a bf16 output only where they straddle a rounding point: at most 1 ULP.
     pub const product_ulps: f64 = 1;
     pub const product_same: f64 = 0.99;
-    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, relative 7e-4);
+    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, 7e-4); correctly rounded norms.
     pub const block_ulps: f64 = 8;
     pub const block_same: f64 = 0.9;
     pub const block_relative: f64 = 2e-3;
@@ -154,17 +154,8 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
     // each checked block on the GPU's own input, and the reference's chain beside it
     const input = try a.alloc(f32, tiles * per);
     for (0..checked) |i| {
-        for (input, embedded) |*o, b| o.* = rounding.value(b);
-        _ = try d.pass(origins, .{ .embed = false, .from = i, .to = i + 1, .final = false });
-        @memcpy(embedded, try d.stream());
-        for (0..tiles) |k| {
-            try ref.layer(model, scratch, i, input[k * per ..][0..per], n, cos, sin);
-            try ref.layer(model, scratch, i, chained[k * per ..][0..per], n, cos, sin);
-        }
-        var block: Stat = .{};
-        block.add(embedded, input, W);
-        var name: [32]u8 = undefined;
-        ok = block.report(try std.fmt.bufPrint(&name, "block {d}", .{i}), bounds.block_ulps, bounds.block_same, bounds.block_relative) and ok;
+        ok = try block(d, model, scratch, origins, i, embedded, input, cos, sin) and ok;
+        for (0..tiles) |k| try ref.layer(model, scratch, i, chained[k * per ..][0..per], n, cos, sin);
     }
 
     // norm_out and proj_out on the GPU's stream, then the reference's chain against the GPU's
@@ -233,7 +224,20 @@ fn assemble(a: std.mem.Allocator, t: host.Tiles, tiles: []const f32, len: usize)
     return out;
 }
 
-/// All 24 blocks chained, the GPU from the latent in one pass and the reference beside it.
+/// Block `i` on the GPU's own input `stream` (bf16 bits, left as the block's output) against the reference.
+fn block(d: *dec.Decoder, model: ref.Model, scratch: ref.Scratch, origins: []const [2]u32, i: usize, stream: []u16, input: []f32, cos: []const u16, sin: []const u16) !bool {
+    for (input, stream) |*o, b| o.* = rounding.value(b);
+    _ = try d.pass(origins, .{ .embed = false, .from = i, .to = i + 1, .final = false });
+    @memcpy(stream, try d.stream());
+    const per = input.len / origins.len;
+    for (0..origins.len) |k| try ref.layer(model, scratch, i, input[k * per ..][0..per], d.tokens, cos, sin);
+    var s: Stat = .{};
+    s.add(stream, input, W);
+    var name: [32]u8 = undefined;
+    return s.report(try std.fmt.bufPrint(&name, "block {d}", .{i}), bounds.block_ulps, bounds.block_same, bounds.block_relative);
+}
+
+/// All 24 blocks chained, the GPU from the latent in one pass and the reference beside it; then each block alone.
 fn deep(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, latent: []const f32, c: Case, t: host.Tiles, origins: []const [2]u32, cos: []const u16, sin: []const u16, scratch: ref.Scratch) !bool {
     try d.prepare(latent, c.rows, c.cols, t.h, t.w, t.total());
     _ = try d.pass(origins, .{ .to = vae.layers });
@@ -250,7 +254,12 @@ fn deep(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, latent: []const
         try ref.final(model, scratch, x[k * per ..][0..per], cells, want);
         s.add(gpu_rows[k * d.tokens * host.patch ..][0 .. cells * host.patch], want, host.patch);
     }
-    return s.report("output after 24 blocks", std.math.inf(f64), 0, bounds.deep_relative);
+    var ok = s.report("output after 24 blocks", std.math.inf(f64), 0, bounds.deep_relative);
+    _ = try d.pass(origins, .{ .to = 0, .final = false });
+    const stream = try a.alloc(u16, x.len);
+    @memcpy(stream, try d.stream());
+    for (0..vae.layers) |i| ok = try block(d, model, scratch, origins, i, stream, x, cos, sin) and ok;
+    return ok;
 }
 
 /// All 24 blocks on a 1024 x 1024 canvas (64 x 64 cells, 5 x 5 tiles of 16 x 16), passes of 16 tiles.

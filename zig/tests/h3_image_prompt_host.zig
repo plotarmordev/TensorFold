@@ -1,4 +1,4 @@
-//! tf-h3-image-prompt-host: MiniMax-H3-Image's prompt stage on the CPU, the same case tf-h3-image-prompt writes —
+//! tf-h3-image-prompt-host: H3-Image's prompt stage on the CPU, the tf-h3-image-prompt case on the host reference.
 const std = @import("std");
 const hp = @import("h3_prompt");
 const ck = @import("h3_checkpoint");
@@ -111,7 +111,7 @@ fn value(pair: []const u8) f32 {
     return @bitCast(@as(u32, std.mem.readInt(u16, pair[0..2], .little)) << 16);
 }
 
-/// A checkpoint folder on the host: the index's map from tensor name to shard file, each shard mapped once on first
+/// A host checkpoint folder: the index's name-to-shard map, shards mapped on first use; callers free what they convert.
 const Shards = struct {
     gpa: std.mem.Allocator,
     /// Tensor name to shard file, both in the caller's arena.

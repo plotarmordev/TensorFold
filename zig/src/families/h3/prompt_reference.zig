@@ -138,7 +138,7 @@ pub const Scratch = struct {
     }
 };
 
-/// One layer of the text model over x [T, hidden] in place: its attention and MLP, then DeepStack's vision rows added
+/// One text layer over x [T, hidden] in place: attention, MLP, DeepStack rows after layers 0-2; callers stream weights.
 pub fn encodeLayer(comptime S: type, a: std.mem.Allocator, g: rules.Text, l: Layer, li: usize, x: []f32, cos: []const f32, sin: []const f32, vision: ?Vision, s: Scratch) !void {
     const T = x.len / g.hidden;
     const H = g.hidden;

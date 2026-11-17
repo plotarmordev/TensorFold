@@ -1,4 +1,4 @@
-// MiniMax-H3-Image's prompt stage on CUDA: the glue between the checkpoint's bf16 cuBLASLt products, rounding exactly
+// MiniMax-H3-Image's prompt stage on CUDA at the Metal kernels' and reference's rounding: bf16 in, fp32 sums, bf16 out.
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stddef.h>
@@ -8,11 +8,11 @@ typedef __nv_bfloat16 bf16;
 static __device__ float f(bf16 v) { return __bfloat162float(v); }
 static __device__ bf16 h(float v) { return __float2bfloat16_rn(v); }
 
-// 1 / sqrt(x) and exp(x) one rounding from exact, as the host reference's float32 run computes them;
+// 1/sqrt(x) and exp(x) one rounding from exact as the reference computes them: rsqrtf and expf are up to 2 ULPs off.
 static __device__ float inv_sqrt(float x) { return __fdiv_rn(1.0f, __fsqrt_rn(x)); }
 static __device__ float exact_exp(float x) { return (float)exp((double)x); }
 
-// One RMSNorm value: mode 0 bf16(w * bf16(x * r)) as the Qwen text model rounds, mode 1 bf16(x * r * w) as H3's blocks
+// One RMSNorm value: mode 0 bf16(w * bf16(x * r)) as Qwen's text, mode 1 bf16(x * r * w) as H3; the weight fp32, exact.
 static __device__ float h3p_normed(float x, float r, float w, int mode) {
     return mode == 0 ? f(h(__fmul_rn(w, f(h(__fmul_rn(x, r)))))) : f(h(__fmul_rn(__fmul_rn(x, r), w)));
 }
@@ -53,7 +53,7 @@ extern "C" __global__ void __launch_bounds__(256) h3p_heads(
     const float r = inv_sqrt(__fadd_rn(ss / 128.0f, eps));
     for (int i = 0; i < 4; ++i) v[i] = h3p_normed(v[i], r, w[lane * 4 + i], mode);
     if (rotary) {
-        // channel c pairs with c + 64, 16 lanes away: rotate-half reads -x[c + 64] below the half and x[c - 64] above;
+        // channel c pairs with c + 64, 16 lanes away: -x[c + 64] below, x[c - 64] above; products round before the add.
         const float sign = lane < 16 ? -1.0f : 1.0f;
         for (int i = 0; i < 4; ++i) {
             const float o = __shfl_xor_sync(0xffffffffu, v[i], 16);
@@ -105,7 +105,7 @@ extern "C" __global__ void __launch_bounds__(256) h3p_attention(
     for (int i = 0; i < 4; ++i) out[i] = h(__fdiv_rn(acc[i], l));
 }
 
-// o [rows, width] = silu(g) * v rounded to bf16: mode 0 bf16(bf16(g / e) v) as the text model rounds, mode 1
+// o = silu(g) * v bf16: mode 0 bf16(bf16(g / e) v), mode 1 bf16(bf16(g * bf16(1 / e)) v) as H3; strides may differ.
 extern "C" __global__ void __launch_bounds__(256) h3p_glu(
         const bf16* g, const bf16* v, bf16* o, int width, int g_row, int v_row, int mode) {
     const int c = blockIdx.x * 256 + threadIdx.x;
@@ -152,7 +152,7 @@ extern "C" __global__ void __launch_bounds__(256) h3p_splice(
     x[(size_t)pads[i] * width + c] = rows_[(size_t)i * width + c];
 }
 
-// y [rows, n] fp32 = x [rows, k] bf16 . w [n, k] bf16^T, each K sum in the host reference's order.
+// y [rows, n] fp32 = x [rows, k] . w [n, k]^T bf16: K summed sequentially, its bf16 rounding the reference's own.
 extern "C" __global__ void __launch_bounds__(256) h3p_linear(
         const bf16* x, const bf16* w, float* y, int rows, int n, int k) {
     const int at = blockIdx.x * 256 + threadIdx.x;

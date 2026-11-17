@@ -22,7 +22,7 @@ pub fn config(io: std.Io, a: std.mem.Allocator, model_dir: []const u8) !vae.Conf
     return vae.config(a, try read(io, a, json, 1 << 20));
 }
 
-/// The decoded picture [3, height, width] to RGB bytes and a PNG at `path`, Pillow's LANCZOS resizing it to
+/// The decoded picture to RGB bytes and a PNG at `path`, LANCZOS-resized to `want_width` x `want_height` when needed.
 pub fn write(io: std.Io, a: std.mem.Allocator, decoded: []const f32, height: usize, width: usize, want_width: usize, want_height: usize, path: []const u8) !void {
     const rgb = try a.alloc(u8, 3 * width * height);
     try vae.pixels(decoded, height, width, rgb);

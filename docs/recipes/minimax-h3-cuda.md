@@ -63,8 +63,10 @@ writer and decoder chain. Both GPU tools have a synthetic selftest against the h
 on the prompt tool, the default run on the decoder tool. `reference` decodes one latent on the GPU and on the host
 reference decoder and fails past the 3e-2 full-chain relative bound.
 
-The decoder's selftest gates every block at 90% of values identical to the reference and its picture at 90% of bytes
-within 1, and the prompt's selftest gates its text, refiner and vision rows against the same float32-noise bounds.
+The decoder's selftest gates each of the 24 blocks, on the GPU's own input, at 90% of values identical to the float64
+reference (worst 8 ULPs, relative 2e-3), and the picture after two blocks at 80% of bytes identical and at most 2
+apart, the Metal decoder's bounds. The prompt's selftest gates its text, refiner and vision rows against the same
+float32-noise bounds.
 Both run on a GB10 (sm_121); other served SMs compile but were not run.
 
 Same prompt, seed 42, six distilled steps, BF16 throughout, one GB10:
@@ -73,9 +75,9 @@ Same prompt, seed 42, six distilled steps, BF16 throughout, one GB10:
 |---|---:|---:|---|
 | Prompt, 2048² | 88 s | 18.0 s cold, 20.1 s warm mean | selftest passes |
 | Prompt, 4096² | 98 s | 18.3 s cold, 18.5 s warm mean | selftest passes |
-| Decoder, 2048² | 218 s | 5.6 s (5.25 s on the GPU) | blocks 92.873% and 93.123% identical, picture bytes 91.201% within 1 |
-| Decoder, 4096² | 771 s | 20.4 s (20.3 s warm mean) | selftest passes |
+| Decoder, 2048² | 218 s | 5.6 s (5.25 s on the GPU) | per-block selftest to rerun on GB10 |
+| Decoder, 4096² | 771 s | 20.4 s (20.3 s warm mean) | per-block selftest to rerun on GB10 |
 
 The 2048² latent decoded on both paths is 56.65 dB PSNR from the host reference (86.180% of bytes identical, 99.923%
-within 1, at most 5 apart, relative error 3.15e-3 against the 3e-2 bound). CPU times are the same tools before this
-change; the GPU times are warm means over three repeats after one cold run.
+within 1, at most 5 apart, relative error 3.15e-3 against the 3e-2 bound). CPU times are the host reference tools on
+the same case; the GPU times are warm means over three repeats after one cold run.

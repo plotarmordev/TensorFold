@@ -54,7 +54,7 @@ fn dot(a: []const f32, b: []const f32) f64 {
     return s;
 }
 
-/// y [rows, n] = bf16(x w^T + b) for x [rows, k] bf16-exact and w [n, k], b [n] in bf16;
+/// y [rows, n] = bf16(x w^T + b), x [rows, k] bf16-exact, w [n, k] b [n] bf16; `workers` threads (0: up to 16 cores).
 pub fn linearIn(x: []const f32, w: []const u16, b: []const u16, rows: usize, n: usize, k: usize, workers: usize, y: []f32) !void {
     std.debug.assert(x.len == rows * k and w.len == n * k and b.len == n and y.len == rows * n and k <= 8192);
     const Job = struct {

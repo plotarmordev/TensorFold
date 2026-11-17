@@ -1,4 +1,4 @@
-//! MiniMax-H3-Image's prompt stage on CUDA: Qwen3-VL's text model to layer 50, then condition_proj and the refiner,
+//! MiniMax-H3-Image's prompt stage on CUDA: Qwen3-VL text to layer 50, refiner; ~85 GiB streams via two pinned windows.
 const std = @import("std");
 pub const seconds = @import("clock.zig").seconds;
 const cuda = @import("cuda");
@@ -18,7 +18,7 @@ const mode_h3: c_int = 1;
 const image align(16) = @embedFile("fatbin_h3_image_prompt").*;
 const kernel_names = [_][:0]const u8{ "h3p_norm", "h3p_heads", "h3p_attention", "h3p_glu", "h3p_add", "h3p_scatter_add", "h3p_embed", "h3p_splice", "h3p_linear", "h3p_round" };
 
-/// A presentation's vision rows, as prompt.Vision: the tower's merged rows at its image pads in bf16, and DeepStack's
+/// A presentation's vision rows, as prompt.Vision: the tower's merged bf16 rows at the pads and DeepStack's blocks.
 pub const Vision = struct {
     pads: []const u32,
     rows: []const u16,
@@ -40,7 +40,7 @@ pub const LayerSet = rules.Layer(Tensor);
 /// A refiner block's tensors in rules.Block field order.
 pub const BlockSet = rules.Block(Tensor);
 
-/// The parts of the one device scratch a pass draws from, each part aligned to 256 bytes.
+/// Device scratch parts, 256-aligned: products write shared fp32 `p` one at a time, h3p_round to bf16 out of place.
 const EncodePart = enum { x, xn, p, qb, kb, vb, att, gb, ub, act, cos, sin, idx, vision, deep };
 const RefinePart = enum { x, xn, p, qkv, att, wide, act };
 
@@ -114,7 +114,7 @@ const Dev = struct {
     }
 };
 
-/// One product's plan: cuBLASLt bf16 in, fp32 sums, fp32 out.
+/// One product's plan (cuBLASLt bf16 in, fp32 sums and out); the separate bias plan gives fused epilogues a bias only.
 const Products = struct {
     lt: cuda.cublaslt.Library,
     workspace: cuda.DeviceBuffer,
@@ -195,7 +195,7 @@ pub const Runner = struct {
         try cuda.launch.launch(r.function(name), .{ .grid = grid, .block = .{ .x = threads } }, r.stream, args);
     }
 
-    /// The driver, its primary context, the prompt kernels and the cuBLASLt plans; all freed by deinit.
+    /// The driver, context, kernels and cuBLASLt plans; heap-made: members hold `&r.driver`, which a copy would move.
     pub fn init(gpa: std.mem.Allocator) !*Runner {
         const r = try gpa.create(Runner);
         errdefer gpa.destroy(r);
@@ -226,7 +226,7 @@ pub const Runner = struct {
         r.gpa.destroy(r);
     }
 
-    /// `bytes` through the two pinned stages onto `dst` in 64 MiB windows, each stage waited only when its turn comes
+    /// `bytes` to `dst` in 64 MiB windows via two pinned stages, each waited when its turn returns; stream-ordered.
     fn copy(r: *Runner, bytes: []const u8, dst: u64) !void {
         var done: usize = 0;
         var turn: usize = 0;
@@ -255,7 +255,7 @@ pub const Runner = struct {
         try r.launch("h3p_norm", .{ .x = @intCast(rows) }, 256, &args);
     }
 
-    /// The text model's heads: q and k bf16 in place, normed and turned by the [rows, 64] rotary tables `rot` (cos,
+    /// The text model's heads: q, k bf16 in place, normed, rotated by the [rows, 64] tables `rot` (cos, sin pointers).
     fn heads(r: *const Runner, q: u64, k: u64, wq: u64, wk: u64, rot: ?[2]u64, count: usize, kv_count: usize, q_row: usize, k_row: usize, head: usize, rows: usize, eps: f32, mode: c_int) !void {
         var args: cuda.Args = .{};
         for ([_]u64{ q, k, wq, wk, if (rot) |t| t[0] else 0, if (rot) |t| t[1] else 0 }) |p| args.add(p);
@@ -300,7 +300,7 @@ pub const Runner = struct {
         try r.launch(name, .{ .x = @intCast((width + 255) / 256), .y = @intCast(rows) }, 256, &args);
     }
 
-    /// The text model's rows leaving its last run layer [T, hidden] bf16 for `ids` at M-RoPE positions `pos`, vision
+    /// Last-layer rows [T, hidden] bf16 for `ids` at M-RoPE `pos`, vision spliced at pads; `layer` live till return.
     pub fn encode(
         r: *Runner,
         a: std.mem.Allocator,
@@ -408,7 +408,7 @@ pub const Runner = struct {
         try dst.download(0, std.mem.sliceAsBytes(out));
     }
 
-    /// A layer's 11 tensors' device buffers, held for the run: each next layer uploads into them, its copies
+    /// A layer's 11 device buffers held for the run; a later tensor of another size is refused rather than reallocated.
     const LayerDev = struct {
         bufs: [11]?cuda.DeviceBuffer,
         ptrs: rules.Layer(u64),
@@ -432,7 +432,7 @@ pub const Runner = struct {
         }
     }
 
-    /// condition_proj, the refiner's blocks over every row as one document, its final norm: rows [T, text] bf16 to out
+    /// condition_proj, refiner blocks, final norm: rows [T, text] bf16 to `out` [T, hidden]; `block` live till return.
     pub fn refine(
         r: *Runner,
         a: std.mem.Allocator,

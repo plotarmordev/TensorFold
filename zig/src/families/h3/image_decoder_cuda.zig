@@ -1,4 +1,4 @@
-//! MiniMax-H3-Image's image decoder on CUDA: the VAE's 2D ViT decoder in bf16, tiles in batches.
+//! MiniMax-H3-Image's image decoder on CUDA, bf16 tiles in batches: K sequential fp32, h3d_finish at Metal's points.
 const std = @import("std");
 const report = @import("report.zig");
 const cuda = @import("cuda");
@@ -86,7 +86,7 @@ pub const Decoder = struct {
         acc: usize = 0,
     };
 
-    /// `layers` blocks and the rotary `theta`, the driver and kernels up, the weights' buffer unfilled.
+    /// `layers` blocks and `theta`, weights unfilled; heap-made so `DeviceBuffer.d` and driver pointers stay stable.
     pub fn init(gpa: std.mem.Allocator, layers: usize, theta: f32) !*Decoder {
         const plan = try host.Plan.init(layers);
         const d = try gpa.create(Decoder);
@@ -139,7 +139,7 @@ pub const Decoder = struct {
         try cuda.launch.launch(d.function(name), .{ .grid = grid, .block = block, .shared = shared }, d.queue, call);
     }
 
-    /// The decoder's tensors of `path` (the VAE's diffusion_pytorch_model.safetensors), checked, each F32 value
+    /// The decoder's tensors of `path` (the VAE's safetensors), checked, each F32 rounded to bf16 in `plan`'s layout.
     pub fn load(d: *Decoder, io: std.Io, a: std.mem.Allocator, path: []const u8) !void {
         const bytes = try host_decoder.read(io, a, path, 8 << 30);
         const w = try host.weights(a, bytes, d.plan);

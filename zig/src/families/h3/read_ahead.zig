@@ -1,4 +1,4 @@
-//! Weight bytes read into the page cache before the GPU or a loader touches their mapping, through core's checked
+//! Weight bytes read into the page cache before the GPU or a loader faults their mapping, via core's checked reader.
 const std = @import("std");
 const core = @import("core");
 const ahead = core.checkpoint_read_ahead;

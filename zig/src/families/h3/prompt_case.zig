@@ -1,4 +1,4 @@
-//! The prompt stage's case file on the host: the request on the command line, and the tensors that make a picture case
+//! The prompt stage's host case file: the command-line request and the picture case's tensors, tf-h3-image's layout.
 const std = @import("std");
 const picture = @import("picture.zig");
 const rules = @import("picture_prompt.zig");
@@ -13,7 +13,7 @@ pub fn size(text: []const u8) !picture.Size {
     return .{ .width = try std.fmt.parseInt(usize, text[0..x], 10), .height = try std.fmt.parseInt(usize, text[x + 1 ..], 10) };
 }
 
-/// A presentation as a case file: with `request` its canvas, requested size and the seed's starting rows (drawn by
+/// A presentation as a case file: the request, size and seed rows, `extra` tensors, ids, text rows; data at 16 bytes.
 pub fn write(a: std.mem.Allocator, hidden: usize, p: rules.Presentation, text: []const u16, request: ?Request, draw: *const fn (u64, []f32) void, extra: []const fixture.Entry) ![]u8 {
     const T = p.ids.len;
     const ids = try a.alloc(i32, T);
