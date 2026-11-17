@@ -152,6 +152,7 @@ test {
     _ = @import("limit_pins_test.zig");
     _ = @import("flag_deps_test.zig");
     _ = @import("think_split_test.zig");
+    _ = @import("reasoning_recovered_test.zig");
     _ = @import("stream_scan_text.zig");
     _ = @import("stream_scan_bench.zig");
     _ = @import("stream_memory_wire_test.zig");
@@ -170,6 +171,7 @@ test {
     _ = @import("completion_prompt_test.zig");
     _ = @import("cancel_ids.zig");
     _ = @import("cancel_route_test.zig");
+    _ = @import("prompt_list_test.zig");
     _ = @import("hf_eos_http_test.zig");
     _ = @import("token_stream_test.zig");
     _ = @import("reply_gpu_seconds_test.zig");
@@ -235,6 +237,9 @@ test {
     _ = @import("slide_talks.zig");
     _ = @import("startup.zig");
     _ = @import("responses_include_test.zig");
+    _ = @import("message_starts_test.zig");
+    _ = @import("message_starts_proof_test.zig");
+    _ = @import("message_marks_test.zig");
     _ = @import("responses_store.zig");
     _ = @import("cortheon/cortheon.zig");
     _ = @import("cortheon/cortheon_test.zig");
@@ -271,6 +276,7 @@ test {
     _ = @import("slide_retention_test.zig");
     _ = @import("slide_shrink_test.zig");
     _ = @import("slide_correction_test.zig");
+    _ = @import("benchmark_form_factor_test.zig");
 }
 
 test {
@@ -298,6 +304,7 @@ test {
 test {
     _ = @import("models_idle_audit_test.zig");
     _ = @import("penalty_request_test.zig");
+    _ = @import("cors_test.zig");
     _ = @import("deepseek_fixture_test.zig");
     _ = @import("uocr_chat_test.zig");
 }

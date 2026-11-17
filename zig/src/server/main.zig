@@ -19,9 +19,10 @@ const benchmark = @import("benchmark.zig");
 const checkpoint_cli = @import("checkpoint_cli");
 const pdf_worker = @import("pdf_worker.zig");
 const web_cli = @import("web_cli.zig");
+const launch_cli = @import("launch_cli.zig");
 
 const usage_line = "usage: tensorfold serve [-h] [--config FILE.toml] [--host HOST] [--port PORT] [--unix-socket PATH] [--name NAME] [--chat-template FILE]" ++
-    " [--alias ALIAS] [--allowed-host NAME] [--allowed-origin ORIGIN] [--api-key API_KEY] [--api-key-file API_KEY_FILE] [--metrics-open] [--dashboard]" ++
+    " [--alias ALIAS] [--allowed-host NAME] [--allowed-origin ORIGIN] [--cors-origin ORIGIN] [--api-key API_KEY] [--api-key-file API_KEY_FILE] [--metrics-open] [--dashboard]" ++
     " [--max-inflight N] [--max-inflight-per-key N] [--requests-per-second N] [--request-burst N]" ++
     " [--max-connections N] [--max-connections-per-address N] [--trusted-proxy ADDRESS]" ++
     " [--context CONTEXT] [--profile stable] [--speed-up SETTINGS] [--prompt-cache-gib PROMPT_CACHE_GIB] [--prompt-cache-disk DIR]" ++
@@ -65,12 +66,18 @@ pub fn main(init: std.process.Init) !u8 {
         return 0;
     }
     if (argv.len == 2 and (std.mem.eql(u8, argv[1], "--help") or std.mem.eql(u8, argv[1], "-h"))) {
-        try std.Io.File.stdout().writeStreamingAll(io, "usage: tensorfold-native --version | capabilities --json | models [--json] | info MODEL | pull REPO[@REVISION] | slide rollback FOLDER | web [ARGS...] | slide audit [flags] | serve MODEL [flags] | benchmark MODEL [flags]\n" ++ usage_line);
+        try std.Io.File.stdout().writeStreamingAll(io, "usage: tensorfold-native --version | capabilities --json | models [--json] | info MODEL | pull REPO[@REVISION] | rm REPO[@REVISION] | slide rollback FOLDER | web [ARGS...] | launch <agent> [args...] | slide audit [flags] | serve MODEL [flags] | benchmark MODEL [flags]\n" ++ usage_line);
         return 0;
     }
     if (argv.len >= 2 and std.mem.eql(u8, argv[1], "web")) {
         const options = @import("build_options");
         return web_cli.main(init, argv[2..], .{ .version = options.version, .is_release = options.is_release });
+    }
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "launch")) {
+        var launch_out: [1024]u8 = undefined;
+        var launch_writer = std.Io.File.stdout().writerStreaming(io, &launch_out);
+        defer launch_writer.interface.flush() catch {};
+        return launch_cli.command(&.{ .a = a, .io = io, .environ = init.environ_map, .out = &launch_writer.interface }, argv[2..]);
     }
     if (argv.len >= 3 and std.mem.eql(u8, argv[1], "serve")) {
         for (argv[2..]) |arg| if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -100,7 +107,7 @@ pub fn main(init: std.process.Init) !u8 {
         } else return benchmark.main(init, argv[2..], engines.capabilities(a));
     }
     if (argv.len < 2 or !std.mem.eql(u8, argv[1], "serve")) {
-        std.debug.print("usage: tensorfold-native capabilities --json | models [--json] | info MODEL | pull REPO[@REVISION] | slide rollback FOLDER | slide audit [flags] | serve MODEL [flags] | benchmark MODEL [flags]\n", .{});
+        std.debug.print("usage: tensorfold-native capabilities --json | models [--json] | info MODEL | pull REPO[@REVISION] | rm REPO[@REVISION] | slide rollback FOLDER | slide audit [flags] | serve MODEL [flags] | benchmark MODEL [flags]\n", .{});
         return 2;
     }
     const started = std.Io.Clock.awake.now(io).toNanoseconds();

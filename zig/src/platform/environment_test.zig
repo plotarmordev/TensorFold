@@ -62,6 +62,8 @@ const valid = [_]Case{
     .{ .name = "TF_CUDA_CARVEOUT", .raw = "0", .n = 0 },
     .{ .name = "TF_CUDA_CARVEOUT", .raw = "1", .n = 1 },
     .{ .name = "TF_CUDA_CARVEOUT_MIB", .raw = "1792", .n = 1792 },
+    .{ .name = "TENSORFOLD_UNIFIED_HOST_COUNTS", .raw = "0", .n = 0 },
+    .{ .name = "TENSORFOLD_UNIFIED_HOST_COUNTS", .raw = "1", .n = 1 },
     .{ .name = "TF_MTP_DRAFTS", .raw = "0", .n = 0 },
     .{ .name = "TF_MTP_DRAFTS", .raw = "4294967295", .n = std.math.maxInt(u32) },
     .{ .name = "TF_DSPINE_WINDOW", .raw = "16", .n = 16 },
@@ -103,6 +105,8 @@ const valid = [_]Case{
     .{ .name = "TF_QWEN27_SLOT_RESUME", .raw = "1", .n = 1 },
     .{ .name = "TF_QWEN27_METAL_KV_PAGES", .raw = "0", .n = 0 },
     .{ .name = "TF_QWEN27_METAL_KV_PAGES", .raw = "1", .n = 1 },
+    .{ .name = "TF_QWEN27_JOIN", .raw = "0", .n = 0 },
+    .{ .name = "TF_QWEN27_JOIN", .raw = "1", .n = 1 },
     .{ .name = "TF_QWEN35_METAL_KV_PAGES", .raw = "0", .n = 0 },
     .{ .name = "TF_QWEN35_METAL_KV_PAGES", .raw = "1", .n = 1 },
     .{ .name = "XPU_A8_BITS", .raw = "4", .n = 4 },
@@ -323,7 +327,7 @@ test "environment: a legacy alias is checked only while its canonical name is un
 }
 
 test "environment: the Metal Qwen and slide-learning switches take their forms, read blank as unset and name a refusal" {
-    const flags = [_][:0]const u8{ "TF_QWEN27_SLOT_RESUME", "TF_QWEN27_METAL_KV_PAGES", "TF_QWEN35_METAL_KV_PAGES", "TF_SLIDE_TAKE_OUT_CHECK", "TF_SLIDE_TAP_CHECK" };
+    const flags = [_][:0]const u8{ "TF_QWEN27_SLOT_RESUME", "TF_QWEN27_METAL_KV_PAGES", "TF_QWEN27_JOIN", "TF_QWEN35_METAL_KV_PAGES", "TF_SLIDE_TAKE_OUT_CHECK", "TF_SLIDE_TAP_CHECK" };
     for (flags) |name| {
         try t.expectEqual(@as(?u64, 0), try e.parse(name, "0"));
         try t.expectEqual(@as(?u64, 1), try e.parse(name, "1"));
@@ -340,5 +344,6 @@ test "environment: the Metal Qwen and slide-learning switches take their forms, 
     try t.expect(try e.value(bool, "TF_QWEN27_SLOT_RESUME", "", true));
     try t.expect(!(try e.value(bool, "TF_QWEN27_SLOT_RESUME", "0", true)));
     try t.expect(!(try e.value(bool, "TF_QWEN27_METAL_KV_PAGES", null, false)));
+    try t.expect(try e.value(bool, "TF_QWEN27_JOIN", null, true) and !(try e.value(bool, "TF_QWEN27_JOIN", "0", true)));
     try t.expect(try e.value(bool, "TF_QWEN35_METAL_KV_PAGES", "1", false));
 }
