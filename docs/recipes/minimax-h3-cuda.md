@@ -65,10 +65,12 @@ reference decoder and fails past the 3e-2 full-chain relative bound.
 
 The decoder's selftest gates each of the 24 blocks, on the GPU's own input, at 90% of values identical to the float64
 reference (worst 8 ULPs, relative 2e-3), and the picture after two blocks at 80% of bytes identical and at most 2
-apart, the Metal decoder's bounds. Its RMS norm sums the row's squares in f64, so the norm's mean rounds as the
-reference's does, at no measurable cost (43.4 ms a tile against 43.2 ms). The prompt's selftest gates its text,
-refiner and vision rows against the same float32-noise bounds. On the GB10 both pass every check: the decoder's 37
-checks pass and its lowest block reads 94.363% identical. Other served SMs compile but were not run.
+apart, the Metal decoder's bounds (its recipe reports the measured at most 1 apart, not its bound). Its RMS norm sums
+the row's squares in f64, so the norm's mean rounds as the reference's does, at no measurable cost (43.4 ms a tile
+against 43.2 ms). The prompt's selftest gates its text, refiner and vision rows against the same float32-noise bounds.
+On the GB10 both pass every check: the decoder's 37 checks pass and its lowest block (9) reads 92.037% identical.
+[The run's lines](receipts/h3-image-cuda-gb10-f12ff3f3/README.md) are each block's. Other served SMs compile but
+were not run.
 
 Same prompt, seed 42, six distilled steps, BF16 throughout, one GB10:
 
