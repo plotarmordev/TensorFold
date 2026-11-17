@@ -521,7 +521,7 @@ test "a failed compile releases every pipeline built before it; a load counts ea
     defer device.deinit();
     var made: Made = .{};
     try std.testing.expectError(error.KernelCompile, build(gpa, device, "", &made)); // after the row kernels
-    try std.testing.expectEqual(@as(usize, nw * 8 + 4), made.released);
+    try std.testing.expectEqual(@as(usize, nw * 10 + 4), made.released);
     try std.testing.expectEqual(@as(usize, 0), made.n);
     var all: Made = .{};
     var p = try build(gpa, device, comptime kernels.generatedSource("kda_rows"), &all);
