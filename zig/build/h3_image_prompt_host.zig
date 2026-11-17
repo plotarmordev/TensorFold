@@ -3,7 +3,6 @@ const std = @import("std");
 const prompt = @import("h3_image_prompt.zig");
 
 /// `zig build tf-h3-image-prompt-host` (any -Dtarget, among them aarch64-linux-gnu for the Spark) and
-/// `test-h3-image-prompt-host`, the case writer byte for byte the Metal tool's layout, under `test`.
 pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, test_step: *std.Build.Step) void {
     const tool_step = b.step("tf-h3-image-prompt-host", "MiniMax-H3-Image's prompt stage on the CPU: Qwen3-VL to layer 50, the token refiner, the picture case");
     const exe = b.addExecutable(.{ .name = "tf-h3-image-prompt-host", .root_module = tool(b, target, optimize) });
@@ -25,7 +24,6 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
 }
 
 /// The tool's module: the prompt path's host pieces (its Metal-only parts stay unanalyzed), the host checkpoint
-/// reader, the tokenizer and torch's randn.
 fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     const core = @import("h3_host.zig").coreModule(b, target);
     const host_prompt = b.createModule(.{

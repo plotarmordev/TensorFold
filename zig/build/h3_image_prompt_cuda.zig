@@ -1,9 +1,7 @@
-//! MiniMax-H3-Image's prompt path on CUDA: tf-h3-image-prompt-cuda, its kernel image built by `-Dnvcc`
-//! or compile-only without it; host tests cover the selftest's synthetic checkpoint and its callbacks.
+//! MiniMax-H3-Image's prompt path on CUDA: tf-h3-image-prompt-cuda, its kernel image built by `-Dnvcc` or compile-only
 const std = @import("std");
 
-/// `zig build tf-h3-image-prompt-cuda`: a prompt to the refiner's text rows on CUDA, and its synthetic
-/// selftest against the float64 host reference.
+/// `zig build tf-h3-image-prompt-cuda`: a prompt to the refiner's text rows on CUDA, and its synthetic selftest
 pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, opts: @import("options.zig").Cuda, test_step: *std.Build.Step) void {
     const image = if (opts.nvcc) |nvcc|
         @import("cuda_fatbin.zig").fatbin(b, nvcc, b.addSystemCommand(&.{ nvcc, "--version" }).captureStdOut(.{}), .{ .name = "h3_image_prompt", .flags = &.{"-O3"}, .min_sm = 80 }, opts.sms)

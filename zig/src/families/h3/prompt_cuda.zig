@@ -1,10 +1,4 @@
-//! MiniMax-H3-Image's prompt stage on CUDA: Qwen3-VL's text model to layer 50, then condition_proj and
-//! the refiner, all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products sum K in reference
-//! order; refiner products use cuBLASLt with FP32 sums. Every value the reference stores in bf16 is rounded to bf16
-//! by a kernel before the next step reads it.
-//! The text model's layer weights stream through two alternating pinned windows and fill one set of
-//! device buffers kept for the run, so the released 32B encoder's ~85 GiB never sits on the device:
-//! one layer (~1.7 GiB) at a time.
+//! MiniMax-H3-Image's prompt stage on CUDA: Qwen3-VL's text model to layer 50, then condition_proj and the refiner,
 const std = @import("std");
 pub const seconds = @import("clock.zig").seconds;
 const cuda = @import("cuda");
@@ -24,8 +18,7 @@ const mode_h3: c_int = 1;
 const image align(16) = @embedFile("fatbin_h3_image_prompt").*;
 const kernel_names = [_][:0]const u8{ "h3p_norm", "h3p_heads", "h3p_attention", "h3p_glu", "h3p_add", "h3p_scatter_add", "h3p_embed", "h3p_splice", "h3p_linear", "h3p_round" };
 
-/// A presentation's vision rows, as prompt.Vision: the tower's merged rows at its image pads in bf16,
-/// and DeepStack's three blocks added after encoder layers 0 to 2.
+/// A presentation's vision rows, as prompt.Vision: the tower's merged rows at its image pads in bf16, and DeepStack's
 pub const Vision = struct {
     pads: []const u32,
     rows: []const u16,
@@ -47,9 +40,7 @@ pub const LayerSet = rules.Layer(Tensor);
 /// A refiner block's tensors in rules.Block field order.
 pub const BlockSet = rules.Block(Tensor);
 
-/// The parts of the one device scratch a pass draws from, each part aligned to 256 bytes. Products
-/// all write the shared fp32 `p` (they run one at a time on one stream), then `h3p_round` moves the
-/// value to its bf16 buffer — out of place, so a round never writes what another thread still reads.
+/// The parts of the one device scratch a pass draws from, each part aligned to 256 bytes.
 const EncodePart = enum { x, xn, p, qb, kb, vb, att, gb, ub, act, cos, sin, idx, vision, deep };
 const RefinePart = enum { x, xn, p, qkv, att, wide, act };
 
@@ -123,8 +114,7 @@ const Dev = struct {
     }
 };
 
-/// One product's plan: cuBLASLt bf16 in, fp32 sums, fp32 out. The bias variant's plan is separate so a
-/// fused fp32 epilogue is picked only where a bias exists; bf16 bias values convert exactly.
+/// One product's plan: cuBLASLt bf16 in, fp32 sums, fp32 out.
 const Products = struct {
     lt: cuda.cublaslt.Library,
     workspace: cuda.DeviceBuffer,
@@ -206,7 +196,6 @@ pub const Runner = struct {
     }
 
     /// The driver, its primary context, the prompt kernels and the cuBLASLt plans; all freed by deinit.
-    /// Heap-made: the stream, events and buffers each hold `&r.driver`, which a returned copy would move.
     pub fn init(gpa: std.mem.Allocator) !*Runner {
         const r = try gpa.create(Runner);
         errdefer gpa.destroy(r);
@@ -237,9 +226,7 @@ pub const Runner = struct {
         r.gpa.destroy(r);
     }
 
-    /// `bytes` through the two pinned stages onto `dst` in 64 MiB windows, each stage waited only when
-    /// its turn comes again, so a copy runs while the other window is filled; the uploads order ahead
-    /// of later work on the runner's stream.
+    /// `bytes` through the two pinned stages onto `dst` in 64 MiB windows, each stage waited only when its turn comes
     fn copy(r: *Runner, bytes: []const u8, dst: u64) !void {
         var done: usize = 0;
         var turn: usize = 0;
@@ -268,8 +255,7 @@ pub const Runner = struct {
         try r.launch("h3p_norm", .{ .x = @intCast(rows) }, 256, &args);
     }
 
-    /// The text model's heads: q and k bf16 in place, normed and turned by the [rows, 64] rotary
-    /// tables `rot` (cos, sin device pointers) when set.
+    /// The text model's heads: q and k bf16 in place, normed and turned by the [rows, 64] rotary tables `rot` (cos,
     fn heads(r: *const Runner, q: u64, k: u64, wq: u64, wk: u64, rot: ?[2]u64, count: usize, kv_count: usize, q_row: usize, k_row: usize, head: usize, rows: usize, eps: f32, mode: c_int) !void {
         var args: cuda.Args = .{};
         for ([_]u64{ q, k, wq, wk, if (rot) |t| t[0] else 0, if (rot) |t| t[1] else 0 }) |p| args.add(p);
@@ -314,10 +300,7 @@ pub const Runner = struct {
         try r.launch(name, .{ .x = @intCast((width + 255) / 256), .y = @intCast(rows) }, 256, &args);
     }
 
-    /// The text model's rows leaving its last run layer [T, hidden] bf16 for `ids` at M-RoPE positions
-    /// `pos`, vision rows spliced at the pads when given. `layer` gives a layer's 11 bf16 tensors in
-    /// rules.layerTensors field order (its host memory must stay live until the call returns);
-    /// `embed` is the bf16 table [vocab, hidden].
+    /// The text model's rows leaving its last run layer [T, hidden] bf16 for `ids` at M-RoPE positions `pos`, vision
     pub fn encode(
         r: *Runner,
         a: std.mem.Allocator,
@@ -425,9 +408,7 @@ pub const Runner = struct {
         try dst.download(0, std.mem.sliceAsBytes(out));
     }
 
-    /// A layer's 11 tensors' device buffers, held for the run: each next layer uploads into them,
-    /// its copies stream-ordered after the previous layer's reads; a field's buffer is the first
-    /// layer's size, a later tensor of another size refused rather than reallocated under queued work.
+    /// A layer's 11 tensors' device buffers, held for the run: each next layer uploads into them, its copies
     const LayerDev = struct {
         bufs: [11]?cuda.DeviceBuffer,
         ptrs: rules.Layer(u64),
@@ -451,9 +432,7 @@ pub const Runner = struct {
         }
     }
 
-    /// condition_proj, the refiner's blocks over every row as one document, its final norm:
-    /// rows [T, text] bf16 to out [T, hidden] bf16. `block` gives a block's 8 bf16 tensors in
-    /// rules.blockTensors field order, live until the call returns.
+    /// condition_proj, the refiner's blocks over every row as one document, its final norm: rows [T, text] bf16 to out
     pub fn refine(
         r: *Runner,
         a: std.mem.Allocator,

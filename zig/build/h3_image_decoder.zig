@@ -12,7 +12,7 @@ fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
     const kernels = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/image_decoder.zig") });
     const writer = b.createModule(.{ .root_source_file = b.path("zig/src/picture_writer.zig"), .target = target, .optimize = optimize });
     const decoder = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/image_decoder_metal.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "core", .module = core }, .{ .name = "h3_image_decoder_kernels", .module = kernels }, .{ .name = "picture_writer", .module = writer } } });
-    return b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_decoder.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "h3_image_decoder", .module = decoder } } });
+    return b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_decoder.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "h3_image_decoder", .module = decoder }, .{ .name = "picture_writer", .module = writer } } });
 }
 
 /// `zig build tf-h3-image-decoder` (metal_targets.zig): its shaders compile at load, on any Apple GPU.

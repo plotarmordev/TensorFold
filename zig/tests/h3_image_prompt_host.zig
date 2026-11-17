@@ -1,5 +1,4 @@
 //! tf-h3-image-prompt-host: MiniMax-H3-Image's prompt stage on the CPU, the same case tf-h3-image-prompt writes —
-//! Qwen3-VL's text to layer 50 and the two-block refiner by the host reference, no Metal.
 const std = @import("std");
 const hp = @import("h3_prompt");
 const ck = @import("h3_checkpoint");
@@ -112,8 +111,7 @@ fn value(pair: []const u8) f32 {
     return @bitCast(@as(u32, std.mem.readInt(u16, pair[0..2], .little)) << 16);
 }
 
-/// A checkpoint folder on the host: the index's map from tensor name to shard file, each shard mapped once on
-/// first use. The shards stay mapped; a caller converts the tensors it needs and frees those.
+/// A checkpoint folder on the host: the index's map from tensor name to shard file, each shard mapped once on first
 const Shards = struct {
     gpa: std.mem.Allocator,
     /// Tensor name to shard file, both in the caller's arena.

@@ -23,7 +23,6 @@ pub fn config(io: std.Io, a: std.mem.Allocator, model_dir: []const u8) !vae.Conf
 }
 
 /// The decoded picture [3, height, width] to RGB bytes and a PNG at `path`, Pillow's LANCZOS resizing it to
-/// `want_width` x `want_height` first when that differs from the canvas (the Metal decoder's own write).
 pub fn write(io: std.Io, a: std.mem.Allocator, decoded: []const f32, height: usize, width: usize, want_width: usize, want_height: usize, path: []const u8) !void {
     const rgb = try a.alloc(u8, 3 * width * height);
     try vae.pixels(decoded, height, width, rgb);

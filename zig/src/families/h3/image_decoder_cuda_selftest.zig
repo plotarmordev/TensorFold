@@ -1,6 +1,4 @@
-//! The CUDA image decoder's self-test: synthetic weights against the float64 host reference, the same
-//! staged checks and bounds as the Metal decoder's self-test (zig/tests/h3_image_decoder_selftest.zig).
-//! Needs a CUDA device and the h3_image_decoder fatbin; a host-only build never reaches `run`.
+//! The CUDA image decoder's self-test: synthetic weights against the float64 host reference, the same staged checks
 const std = @import("std");
 const dec = @import("image_decoder_cuda.zig");
 const host = @import("image_decoder.zig");
@@ -19,8 +17,7 @@ pub const bounds = struct {
     /// fp32 sums against float64 move a bf16 output only where they straddle a rounding point: at most 1 ULP.
     pub const product_ulps: f64 = 1;
     pub const product_same: f64 = 0.99;
-    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, relative 7e-4); the CUDA
-    /// norms use the Metal reduction order and correctly rounded reciprocal square roots.
+    /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, relative 7e-4);
     pub const block_ulps: f64 = 8;
     pub const block_same: f64 = 0.9;
     pub const block_relative: f64 = 2e-3;

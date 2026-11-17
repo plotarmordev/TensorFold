@@ -1,6 +1,4 @@
-//! tf-h3-image-prompt-cuda: MiniMax-H3-Image's prompt stage on CUDA, the same case
-//! tf-h3-image-prompt(-host) writes — Qwen3-VL's text to layer 50 and the two-block refiner on the
-//! GPU, or its synthetic selftest against the float64 host reference.
+//! tf-h3-image-prompt-cuda: MiniMax-H3-Image's prompt stage on CUDA, the same case tf-h3-image-prompt(-host) writes —
 const std = @import("std");
 const hp = @import("h3_prompt_cuda");
 const tokenizer = @import("tokenizer");
@@ -116,8 +114,7 @@ fn read(io: std.Io, a: std.mem.Allocator, parts: []const []const u8) ![]u8 {
 
 const seconds = hp.seconds;
 
-/// A checkpoint folder on the host, as tf-h3-image-prompt-host's: the index's name-to-shard map, each
-/// shard mapped once on first use; a layer's tensors are read, uploaded and freed before the next's.
+/// A checkpoint folder on the host, as tf-h3-image-prompt-host's: the index's name-to-shard map, each shard mapped
 const Shards = struct {
     gpa: std.mem.Allocator,
     /// Tensor name to shard file, both in the caller's arena.
@@ -152,9 +149,7 @@ const Shards = struct {
         return s.folder.shard(s.gpa, file);
     }
 
-    /// The mapped bytes of every tensor `accepts` into the page cache before the GPU's uploads fault
-    /// them in one at a time, as the Metal prompt paths do (`h3/read_ahead.zig`); each shard mapped
-    /// once, its accepted tensors one span.
+    /// The mapped bytes of every tensor `accepts` into the page cache before the GPU's uploads fault them in one at a
     fn readAhead(s: *Shards, io: std.Io, a: std.mem.Allocator, accepts: anytype) !void {
         var spans: std.ArrayList(hp.read_ahead.Span) = .empty;
         defer spans.deinit(a);
@@ -244,8 +239,7 @@ fn frontTensors(s: *Shards, g: rules.Refiner) !struct { cond_w: hp.Tensor, cond_
     return .{ .cond_w = w.cond_w, .cond_b = w.cond_b, .final_norm = w.final_norm };
 }
 
-/// The selftest's geometry, as tf-h3-image-prompt's: two layers of a 256-wide text model
-/// (4 query and 2 KV heads), a 384-wide refiner; 70 rows, past one 64-row tile.
+/// The selftest's geometry, as tf-h3-image-prompt's: two layers of a 256-wide text model (4 query and 2 KV heads), a
 const tiny_text: rules.Text = .{ .hidden = 256, .heads = 4, .kv_heads = 2, .ffn = 512, .vocab = 96, .layers = 2, .eps = 1e-6, .theta = 1e4, .sections = .{ 24, 20, 20 } };
 const tiny_front: rules.Refiner = .{ .text = 256, .hidden = 384, .heads = 2, .mlp = 512, .blocks = 2, .eps = 1e-5, .qk_eps = 1e-5, .final_eps = 1e-5 };
 const tiny_rows = 70;
@@ -286,8 +280,7 @@ const Synth = struct {
     }
 };
 
-/// The tiny text model and refiner written under `dir` (text_encoder/, transformer/), their host
-/// copies for the float64 reference and their stored bf16 bytes for the GPU path.
+/// The tiny text model and refiner written under `dir` (text_encoder/, transformer/), their host copies for the
 const Tiny = struct {
     text_dir: []const u8,
     front_dir: []const u8,
@@ -331,9 +324,7 @@ const Tiny = struct {
     }
 };
 
-/// A whole run's rows against float64, gated by a float32-sum host run's distance from it, as
-/// tf-h3-image-prompt's `whole` gates: 1 - cosine and relative error at most twice the host run's,
-/// cosine at least 0.999.
+/// A whole run's rows against float64, gated by a float32-sum host run's distance from it, as tf-h3-image-prompt's
 fn whole(a: std.mem.Allocator, label: []const u8, ours: []const u16, sum32: []const f32, exact: []const f32, width: usize) !bool {
     const host_noise = match.match(try match.bf16s(a, sum32), exact, width);
     const m = match.match(ours, exact, width);
@@ -402,8 +393,7 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
     std.debug.print("encoded in {d:.3} s; again, byte for byte the same: {}\n", .{ enc_s, same });
     failed = failed or !same;
 
-    // an edit's rows: a 6-pad vision block spliced at the marks, DeepStack's blocks scattered after
-    // layers 0 to 2 — the full run, then each part alone so a failure names splice, scatter or layer growth
+    // an edit's rows: a 6-pad vision block spliced at the marks, DeepStack's blocks scattered after layers 0 to 2 —
     failed = !try withPicture(runner, a, rand, tiny) or failed;
     std.debug.print("{s}\n", .{if (failed) "FAIL" else "PASS every gate"});
     return @intFromBool(failed);

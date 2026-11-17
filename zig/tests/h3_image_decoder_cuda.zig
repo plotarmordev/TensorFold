@@ -92,8 +92,7 @@ fn reference(init: std.process.Init, a: std.mem.Allocator, model_dir: []const u8
     return compare(a, ours, theirs, height, width);
 }
 
-/// The two decoded pictures [3, height, width]: the bytes' share identical and within 1, the largest difference,
-/// PSNR, and the relative error against the selftest's full-chain bound.
+/// The two decoded pictures [3, height, width]: the bytes' share identical and within 1, the largest difference, PSNR,
 fn compare(a: std.mem.Allocator, ours: []const f32, theirs: []const f32, height: usize, width: usize) !bool {
     var dd: f64 = 0;
     var norm: f64 = 0;

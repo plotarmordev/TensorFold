@@ -15,8 +15,7 @@ const Bytes = struct {
     }
 };
 
-/// The case the Metal tool built before the writer moved: the same tensors in the same order, through the
-/// fixture's own image with the header padded by hand.
+/// The case the Metal tool built before the writer moved: the same tensors in the same order, through the fixture's
 fn was(a: std.mem.Allocator, hidden: usize, p: rules.Presentation, text: []const u16, request: case.Request, extra: []const fixture.Entry) ![]u8 {
     const canvas = try picture.canvas(request.size.width, request.size.height, request.min_area);
     const start = try picture.startRows(a, try picture.gridOf(canvas), request.seed, &noise.randn);
