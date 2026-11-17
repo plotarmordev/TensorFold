@@ -1,7 +1,7 @@
 //! MiniMax H3 / FastH3's transformer on Metal in the checkpoint's bf16: one denoising forward over the packed rows.
 const std = @import("std");
 const mtl = @import("metal");
-const st = @import("safetensors");
+const st = @import("core").safetensors;
 const tensors = @import("tensors.zig");
 const kernels = @import("h3_kernels");
 const block = @import("block.zig");
@@ -137,16 +137,16 @@ pub const Model = struct {
     }
 
     /// `checkpoint_dir`: the FastH3 transformer folder of `shards` files. `case`: tools/zig/h3_case.py's output.
-    pub fn load(gpa: std.mem.Allocator, checkpoint_dir: []const u8, shards: usize, case: *Tensors, options: Options) !*Model {
-        return bind(gpa, try open(gpa, checkpoint_dir, shards), case, options);
+    pub fn load(gpa: std.mem.Allocator, io: std.Io, checkpoint_dir: []const u8, shards: usize, case: *Tensors, options: Options) !*Model {
+        return bind(gpa, try open(gpa, io, checkpoint_dir, shards), case, options);
     }
 
     /// The checkpoint's shards mapped and read into the page cache: the weights every `bind` reads in place.
-    pub fn open(gpa: std.mem.Allocator, checkpoint_dir: []const u8, shards: usize) !Checkpoint {
+    pub fn open(gpa: std.mem.Allocator, io: std.Io, checkpoint_dir: []const u8, shards: usize) !Checkpoint {
         const device = try mtl.Device.init();
         if (!@import("source.zig").available(device)) return error.NeedsTensorUnits;
         const ck = try Checkpoint.open(gpa, device, checkpoint_dir, shards);
-        try ck.readAhead(gpa);
+        try ck.readAhead(gpa, io);
         return ck;
     }
 

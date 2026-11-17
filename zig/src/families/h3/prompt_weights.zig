@@ -73,7 +73,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, device: mtl.Device, dir: []const
         var it = out[made - 1].names.iterator();
         while (it.next()) |e| if (wanted.accepts(e.key_ptr.*)) try spans.append(arena, out[made - 1].span(e.value_ptr.*));
     }
-    _ = try read_ahead.read(spans.items);
+    _ = try read_ahead.read(arena, io, spans.items);
     return .{ .files = out };
 }
 
