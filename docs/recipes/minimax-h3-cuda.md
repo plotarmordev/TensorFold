@@ -66,8 +66,9 @@ reference decoder and fails past the 3e-2 full-chain relative bound.
 The decoder's selftest gates each of the 24 blocks, on the GPU's own input, at 90% of values identical to the float64
 reference (worst 8 ULPs, relative 2e-3), and the picture after two blocks at 80% of bytes identical and at most 2
 apart, the Metal decoder's bounds. Its RMS norm sums the row's squares in f64, so the norm's mean rounds as the
-reference's does. The prompt's selftest gates its text, refiner and vision rows against the same float32-noise bounds.
-Both run on a GB10 (sm_121); other served SMs compile but were not run.
+reference's does, at no measurable cost (43.4 ms a tile against 43.2 ms). The prompt's selftest gates its text,
+refiner and vision rows against the same float32-noise bounds. On the GB10 both pass every check: the decoder's 37
+checks pass and its lowest block reads 94.363% identical. Other served SMs compile but were not run.
 
 Same prompt, seed 42, six distilled steps, BF16 throughout, one GB10:
 
@@ -75,8 +76,8 @@ Same prompt, seed 42, six distilled steps, BF16 throughout, one GB10:
 |---|---:|---:|---|
 | Prompt, 2048² | 88 s | 18.0 s cold, 20.1 s warm mean | selftest passes |
 | Prompt, 4096² | 98 s | 18.3 s cold, 18.5 s warm mean | selftest passes |
-| Decoder, 2048² | 218 s | 5.6 s (5.25 s on the GPU) | per-block selftest to rerun on GB10 |
-| Decoder, 4096² | 771 s | 20.4 s (20.3 s warm mean) | per-block selftest to rerun on GB10 |
+| Decoder, 2048² | 218 s | 5.6 s (5.25 s on the GPU) | selftest passes |
+| Decoder, 4096² | 771 s | 20.4 s (20.3 s warm mean) | selftest passes |
 
 The 2048² latent decoded on both paths is 56.65 dB PSNR from the host reference (86.180% of bytes identical, 99.923%
 within 1, at most 5 apart, relative error 3.15e-3 against the 3e-2 bound). CPU times are the host reference tools on
