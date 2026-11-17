@@ -30,6 +30,17 @@ pub const bounds = struct {
     pub const bytes_most: u8 = 2;
 };
 
+/// The picture's gate: the Metal decoder's bytes bound, 80% identical and at most 2 apart.
+fn picturePass(fraction: f64, most: u8) bool {
+    return fraction >= bounds.bytes_same and most <= bounds.bytes_most;
+}
+
+test "picture gate: the Metal decoder's bytes bound at its edges" {
+    try std.testing.expect(picturePass(bounds.bytes_same, bounds.bytes_most));
+    try std.testing.expect(!picturePass(bounds.bytes_same - 0.001, 0));
+    try std.testing.expect(!picturePass(1.0, bounds.bytes_most + 1));
+}
+
 /// bf16's ULP at magnitude v: 2^(e - 8) for v in [2^(e - 1), 2^e).
 fn ulp(v: f64) f64 {
     if (v == 0) return 0x1p-133;
@@ -206,7 +217,7 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
         most = @max(most, if (x > y) x - y else y - x);
     }
     const fraction = @as(f64, @floatFromInt(same)) / @as(f64, @floatFromInt(ours.len));
-    const bytes_ok = fraction >= bounds.bytes_same and most <= bounds.bytes_most;
+    const bytes_ok = picturePass(fraction, most);
     std.debug.print("  picture bytes: {d:.3}% identical, at most {d} apart ({s})\n", .{ 100 * fraction, most, if (bytes_ok) "pass" else "FAIL" });
     ok = ok and bytes_ok;
     if (c.deep) ok = try deep(a, d, model, latent, c, t, origins, cos, sin, scratch) and ok;
