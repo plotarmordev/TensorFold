@@ -62,7 +62,9 @@ test "selftest scratch: a run, passing or failing, removes its own folder and ke
     try std.testing.expectError(error.GateFailed, run(io, a, parent, true));
     try std.testing.expectEqualStrings("keep", try tmp.dir.readFileAlloc(io, "sentinel", a, .limited(16)));
     try std.testing.expectEqualStrings("{}", try tmp.dir.readFileAlloc(io, "text_encoder/config.json", a, .limited(16)));
-    var it = tmp.dir.iterate();
+    var dir = try std.Io.Dir.cwd().openDir(io, parent, .{ .iterate = true });
+    defer dir.close(io);
+    var it = dir.iterate();
     var left: usize = 0;
     while (try it.next(io)) |_| left += 1;
     try std.testing.expectEqual(2, left);

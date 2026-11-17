@@ -180,8 +180,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = dashboard })).step);
     // the backend options are declared for every target, so one build script may pass the same flags on every OS
     const cuda_options = @import("zig/build/options.zig").cuda(b);
-    @import("zig/build/h3_image_decoder_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
-    @import("zig/build/h3_image_prompt_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
+    // their selftests read checkpoints through mmap, which Windows lacks
+    if (target.result.os.tag != .windows) {
+        @import("zig/build/h3_image_decoder_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
+        @import("zig/build/h3_image_prompt_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
+    }
     const tp_options = @import("zig/build/options.zig").tp(b);
     switch (target.result.os.tag) {
         .macos => metalTargets(b, target, optimize, draft_ids, build_options, test_step),
