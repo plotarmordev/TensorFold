@@ -1,5 +1,4 @@
-//! MiniMax-H3-Image's CUDA kernels (h3_image_decoder.cu, h3_image_prompt.cu, h3_image_modulation.cu)
-//! in float64: each kernel's formula unrounded; the bf16 roundings a kernel takes mid-value are its spec's mids.
+//! MiniMax-H3-Image's CUDA kernels (decoder, prompt, modulation) in float64, with their bf16 mid-roundings.
 const std = @import("std");
 const core = @import("core");
 
@@ -63,9 +62,7 @@ fn magOf(terms: []const f64) f64 {
     return m;
 }
 
-/// h3d_post_quant: tok [tiles * cells, 24] = bf16(pw [24,24] . bf16(lat) + pb [24]) per tile cell.
-/// a lat [24, rows*cols] fp32, ints origin (row, col) pairs, b pw, d pb; out tiles*cells*24.
-/// in.rows and in.n give the latent plane as rows x n (cols).
+/// h3d_post_quant: per tile cell, bf16(pw . bf16(lat) + pb); a lat, ints origin, b pw, d pb; out tiles*cells*24.
 pub fn postQuant(in: In, s: Sum, want: []f64, mag: []f64) void {
     const cells = in.h * in.w;
     const plane = in.rows * in.n;
@@ -83,8 +80,7 @@ pub fn postQuant(in: In, s: Sum, want: []f64, mag: []f64) void {
     }
 }
 
-/// h3d_embed: x [tiles * tokens, 1024]: cells tokens from ew . tok + eb to bf16, 4 register rows, one zero row.
-/// a tok [tiles*cells,24], b ew [1024,24], d eb [1024], e reg [4,1024]; out tiles*tokens*1024.
+/// h3d_embed: cells tokens from ew . tok + eb to bf16, 4 register rows and one zero; a tok, b ew, d eb, e reg.
 pub fn embed(in: In, s: Sum, want: []f64, mag: []f64) void {
     const cells = in.h * in.w;
     var terms: [24]f64 = undefined;
@@ -111,8 +107,7 @@ pub fn embed(in: In, s: Sum, want: []f64, mag: []f64) void {
     }
 }
 
-/// h3d_rms_norm: y [m, 1024] = bf16(x * rsqrt(mean(x^2) + eps) * g), the squares summed in fp32.
-/// a x [m, 1024], b g [1024].
+/// h3d_rms_norm: bf16(x * rsqrt(mean(x^2) + eps) * g), the squares summed in fp32; a x [m, 1024], b g [1024].
 pub fn rmsNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
     var terms: [1024]f64 = undefined;
     for (0..in.rows) |r| {
@@ -126,8 +121,7 @@ pub fn rmsNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
     }
 }
 
-/// h3d_layer_norm: y = bf16((x - mean) * rstd * g + b); mean and rstd from fp32 sums over 1024.
-/// a x [m, 1024], b g [1024], d b [1024].
+/// h3d_layer_norm: bf16((x - mean) * rstd * g + b), mean and rstd from fp32 sums; a x, b g, d b.
 pub fn layerNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
     var terms: [1024]f64 = undefined;
     for (0..in.rows) |r| {
@@ -143,8 +137,7 @@ pub fn layerNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
     }
 }
 
-/// h3d_finish: mode 0 y = bf16(acc + b); mode 1 (LayerScale residual) y = bf16(y + bf16(bf16(acc + b) * s)).
-/// a acc [m, n] fp32, b bias [n], d scale [n], e the residual y rows (read and written in mode 1).
+/// h3d_finish: mode 0 bf16(acc + b); mode 1 bf16(y + bf16(bf16(acc + b) * s)); a acc, b bias, d scale, e y.
 pub fn finish(in: In, want: []f64, mag: []f64) void {
     for (0..in.rows * in.n) |i| {
         const cix = i % in.n;
@@ -154,9 +147,7 @@ pub fn finish(in: In, want: []f64, mag: []f64) void {
     }
 }
 
-/// h3d_heads: per (tile, token, head): q and k RMS-normed (no weight) to bf16, their first 32 dims
-/// half-turned in bf16 by cs/sn [tokens, 32]; v copied. want layout: q || k || v, each [(tile*16+head)*tokens+t, 64].
-/// a qkv [tiles*tokens, 3072], b cs [tokens, 32], d sn [tokens, 32].
+/// h3d_heads: q and k RMS-normed to bf16, their first 32 dims half-turned by cs/sn, v copied; a qkv, b cs, d sn.
 pub fn heads(in: In, s: Sum, want: []f64, mag: []f64) void {
     const T = in.tokens;
     const block = in.tiles * 16 * T * 64; // elements of one of q, k, v
@@ -186,9 +177,7 @@ pub fn heads(in: In, s: Sum, want: []f64, mag: []f64) void {
     };
 }
 
-/// h3d_attention: softmax(q k^T * scale) v per (tile, head, query), fp32 scores and sums.
-/// q, k, v each [tiles*16*tokens, 64]; o [tiles*tokens, 1024] (a row holds the 16 heads of 64).
-/// a q, b k, d v; NaN scores are dropped by fmaxf as the kernel's warp_max does.
+/// h3d_attention: softmax(q k^T * scale) v per (tile, head, query); a q, b k, d v; NaN scores drop as warp_max.
 pub fn attention(in: In, s: Sum, want: []f64, mag: []f64) void {
     const T = in.tokens;
     var sc: [288]f64 = undefined;
@@ -228,8 +217,7 @@ pub fn swiglu(in: In, want: []f64, mag: []f64) void {
     };
 }
 
-/// h3p_norm: y [rows, width] = RMSNorm(x) by w: mode 0 bf16(w * bf16(x * r)) (Qwen), mode 1 bf16(x * r * w) (H3).
-/// a x [rows, width] bf16-valued, b w [width] fp32.
+/// h3p_norm: RMSNorm(x) by w, mode 0 bf16(w * bf16(x * r)) (Qwen), mode 1 bf16(x * r * w) (H3); a x, b w.
 pub fn norm(in: In, s: Sum, want: []f64, mag: []f64) void {
     const width = in.n;
     var terms: [4096]f64 = undefined;
@@ -244,11 +232,7 @@ pub fn norm(in: In, s: Sum, want: []f64, mag: []f64) void {
     }
 }
 
-/// h3p_heads: q and k heads of `head` (128) normed in place (mode as h3p_norm), turned by cos, sin
-/// [rows, 64] when rotary. want layout: q || k as separate output slots (rotary form), or the one fused
-/// qkv row's q and k slices rewritten in place (refiner form, `fused`): v and inter-head spans keep `a`.
-/// a q [rows, q_row] or fused qkv [rows, q_row]; b k [rows, k_row] (unused when fused);
-/// d wq [128], e wk [128], f cos, g sin.
+/// h3p_heads: q and k normed (mode as h3p_norm), turned by cos/sin when rotary; fused qkv's slices rewritten.
 pub fn pheads(in: In, s: Sum, want: []f64, mag: []f64, fused: bool) void {
     const D = in.head;
     const stride = if (in.stride == 0) D else in.stride;
@@ -285,9 +269,7 @@ pub fn pheads(in: In, s: Sum, want: []f64, mag: []f64, fused: bool) void {
     };
 }
 
-/// h3p_attention: o [rows, heads*128] = softmax(q k^T scale) v over earlier rows (causal) or all,
-/// two-pass as the kernel: the top score, then the weights' and value sums; want and mag per output
-/// element. a q [rows, q_row], b k [rows, k_row], d v [rows, k_row].
+/// h3p_attention: softmax(q k^T scale) v, two-pass (the top score, then weight and value sums); a q, b k, d v.
 pub fn pattention(in: In, s: Sum, want: []f64, mag: []f64) void {
     const D = in.head;
     const group = in.heads / in.kv_heads;
@@ -318,8 +300,7 @@ pub fn pattention(in: In, s: Sum, want: []f64, mag: []f64) void {
     };
 }
 
-/// h3p_glu: o [rows, width] = silu(g) * v: mode 0 bf16(bf16(g/e) v), mode 1 bf16(bf16(g * bf16(1/e)) v).
-/// a g [rows, width], b v [rows, width].
+/// h3p_glu: silu(g) * v, mode 0 bf16(bf16(g/e) v), mode 1 bf16(bf16(g * bf16(1/e)) v); a g, b v.
 pub fn glu(in: In, want: []f64, mag: []f64) void {
     for (0..in.rows * in.n) |i| {
         const x = in.a[i];
@@ -338,8 +319,7 @@ pub fn add(in: In, want: []f64, mag: []f64) void {
     }
 }
 
-/// h3p_scatter_add: x rows idx[i] = bf16(x + y[i]); a x [rows*n] in place, b y [k*n], ints idx [k].
-/// want holds the whole x buffer after the scatter.
+/// h3p_scatter_add: rows idx[i] = bf16(x + y[i]); a x in place, b y [k*n], ints idx [k]; want is all of x.
 pub fn scatterAdd(in: In, want: []f64, mag: []f64) void {
     @memcpy(want, in.a);
     @memset(mag, 0);

@@ -1,5 +1,4 @@
-//! MiniMax-H3-Image's decoder CUDA kernels (h3_image_decoder.cu) under the contract,
-//! each against its float64 formula in contract_h3_image_ref.zig.
+//! MiniMax-H3-Image's decoder CUDA kernels under the contract, each against its float64 formula.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
