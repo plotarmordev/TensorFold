@@ -17,7 +17,7 @@ const images = struct {
     pub const prompt align(16) = @embedFile("fatbin_h3_image_prompt").*;
 };
 
-/// H3's loaded images and kernel rigs: the gates read them until `deinit`.
+/// H3's loaded images and kernel rigs: the gates hold pointers into it, so it lives in the caller's frame until `deinit`.
 pub const Loaded = struct {
     h3_mod: cuda.Module,
     h3d_mod: cuda.Module,
@@ -39,9 +39,8 @@ pub const Loaded = struct {
     }
 };
 
-/// Loads H3's three images and appends every kernel they register.
-pub fn append(a: std.mem.Allocator, gpu: check.Gpu, s: cuda.Stream, kernels: *std.ArrayList(g.Kernel)) !Loaded {
-    var l: Loaded = undefined;
+/// Loads H3's three images and appends every kernel they register; `l` must outlive the gates.
+pub fn append(l: *Loaded, a: std.mem.Allocator, gpu: check.Gpu, s: cuda.Stream, kernels: *std.ArrayList(g.Kernel)) !void {
     l.h3_mod = try cuda.Module.load(gpu.d, &images.h3);
     const h3_which = comptime std.enums.values(h3_k.Which);
     for (h3_which, &l.h3_list) |w, *m| {
@@ -64,5 +63,4 @@ pub fn append(a: std.mem.Allocator, gpu: check.Gpu, s: cuda.Stream, kernels: *st
         m.* = .{ .rig = .{ .gpu = gpu, .s = s }, .which = w, .f = try l.h3p_mod.function(h3p_k.symbol(w)), .arena = std.heap.ArenaAllocator.init(a) };
     }
     for (&l.h3p_list) |*m| try kernels.append(a, m.kernel());
-    return l;
 }
