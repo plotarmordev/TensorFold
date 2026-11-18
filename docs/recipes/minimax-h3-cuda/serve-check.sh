@@ -16,13 +16,24 @@ rm -rf "$out"
 mkdir -p "$out"
 "$bin/tf-h3-image-prompt-cuda" "$model/text_encoder" "$model" "$pilot/prompt.txt" "$out/a.safetensors" 512x512 42 262144
 python3 - "$out/a.safetensors" "$out/b.safetensors" <<'EOF'
-import sys
-import numpy as np
-from safetensors.numpy import load_file, save_file
-case = load_file(sys.argv[1])
-case["references"] = np.array([[2, 2]], dtype=np.int32)
-case["anchors"] = np.random.default_rng(7).standard_normal((1, 96)).astype(np.float32)
-save_file(case, sys.argv[2])
+import json, random, struct, sys
+# b's case: a plus a 2 x 2 reference grid and its anchor rows, in safetensors' stdlib format (no numpy on TOP)
+with open(sys.argv[1], "rb") as f:
+    n = struct.unpack("<Q", f.read(8))[0]
+    header = json.loads(f.read(n))
+    data = bytearray(f.read())
+rng = random.Random(7)
+for name, dtype, shape, raw in (
+    ("references", "I32", [1, 2], struct.pack("<2i", 2, 2)),
+    ("anchors", "F32", [1, 96], struct.pack("<96f", *[rng.gauss(0, 1) for _ in range(96)])),
+):
+    at = len(data)
+    header[name] = {"dtype": dtype, "shape": shape, "data_offsets": [at, at + len(raw)]}
+    data += raw
+head = json.dumps(header, separators=(",", ":")).encode()
+head += b" " * (-len(head) % 8)
+with open(sys.argv[2], "wb") as f:
+    f.write(struct.pack("<Q", len(head)) + head + data)
 EOF
 for c in a b; do "$bin/tf-h3-image-cuda" "$model" "$out/$c.safetensors" "$out/fresh-$c"; done
 printf '%s\n' "$out/a.safetensors $out/served-1" "$out/a.safetensors $out/served-2" \

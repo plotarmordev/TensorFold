@@ -11,7 +11,7 @@
 # audit, which put bench-script.sh past the Desk's 20 minutes.
 # H3_BUILD=limits builds the five SMs' images and kernel-contract-limits alone, no CLI or tf-cuda-test: the audit
 # as its own job, never inside a timed bench.
-# H3_BUILD=contract builds tf-cuda-test for sm_121 alone and runs the int8 kernels' gates 1-5 (`kernel-contract h3 int8`).
+# H3_BUILD=contract builds tf-cuda-test for sm_121 alone and runs the int8 kernels' gates 1-4 (`kernel-contract h3 int8`).
 # Later TOP jobs read either folder from the pilot folder once the Desk returns it there:
 #   ssh top-menu "job fetch ID" | tar -x -C DIR
 #   tar -C DIR/out -c tensorfold-fatbins-SHA | ssh top-menu "put top tensorfold-fatbins-SHA"

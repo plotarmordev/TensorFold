@@ -289,7 +289,8 @@ The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
    the measured candidates; MXFP8 block scaling (cuBLASLt's 32-element `UE8M0` mode, compute capability 10.0+; the
    outer-vector mode is 9.0 only) writes bf16 straight from the product. Then the Mac-render gates on the `--int8`
    picture before `--int8` becomes the default; the two kernels' records are in the registry as of `cadab6b2`, and
-   `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-5 (`contract_h3_int8.zig`).
+   `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4 (`contract_h3_int8.zig`);
+   the limits audit (gate 5) is `limits-job.sh`'s own window.
 2. **Attention**, 1.76 s a picture at ~5% of the GB10's bf16 rate: mmh3's INT8/FP8 attention, or a block whose
    registers leave room for four CTAs an SM instead of two.
 3. **The host rows outside the blocks**, 1.2 s a picture (`rows_in`, the final norm, `rows_out`): mmh3 runs them on
