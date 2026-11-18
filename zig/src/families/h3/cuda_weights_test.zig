@@ -128,6 +128,7 @@ const Mock = struct {
         m.gpa = std.testing.allocator;
         m.driver = driver();
         m.blocks = &.{};
+        m.int8 = null;
         m.load_stages = .{ .{}, .{} };
         m.load_failed = false;
         m.retained_next = null;
