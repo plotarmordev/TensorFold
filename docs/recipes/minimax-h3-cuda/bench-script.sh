@@ -53,8 +53,9 @@ image() { # the resident transformer renders $case; the server's log since the l
         mkfifo "$out/requests" "$out/replies"
         # each server closes this script's FIFO fds: a later server would inherit an earlier one's write end and
         # the earlier server would never see EOF when the script closes it
+        # H3_PROFILE (on unless set empty) prints each picture's block stages; its waits cost a few ms a step
         # shellcheck disable=SC2046 # --int8 or no word at all
-        "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = int8 ] && echo --int8) <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
+        H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = int8 ] && echo --int8) <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         server=$!
         exec 3>"$out/requests" 4<"$out/replies"

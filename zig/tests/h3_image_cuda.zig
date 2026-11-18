@@ -214,6 +214,10 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     };
     std.debug.print("{d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, case ready in {d:.1} s\n", .{ canvas.width, canvas.height, count, text, held, target, tiles, model.blocks.len, steps, h3.seconds() - started });
 
+    // H3_PROFILE: wait after every block stage and print where the steps went (the waits cost a few ms a step)
+    const profiling = (init.environ_map.get("H3_PROFILE") orelse "").len > 0;
+    model.profile = profiling;
+    model.spent = @splat(0);
     const transformer = h3.seconds();
     for (0..steps) |s| {
         const step = h3.seconds();
@@ -237,7 +241,16 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         picture.euler(video, velocity, pdd.deltas[s]);
         std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - step });
     }
-    std.debug.print("transformer: {d:.2} s\n", .{h3.seconds() - transformer});
+    const spent = h3.seconds() - transformer;
+    std.debug.print("transformer: {d:.2} s\n", .{spent});
+    if (profiling) {
+        var blocks: f64 = 0;
+        for (h3.stages, model.spent) |name, s| {
+            std.debug.print("  {s}: {d:.2} s\n", .{ name, s });
+            blocks += s;
+        }
+        std.debug.print("  outside the blocks: {d:.2} s\n", .{spent - blocks});
+    }
 
     const rows_path = try std.fmt.allocPrintSentinel(a, "{s}.rows.f32", .{prefix}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
