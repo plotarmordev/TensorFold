@@ -215,8 +215,9 @@ The rounds left, in order, each needing its own Desk window:
 2. **The decoder resident.** `tf-h3-image-decoder-cuda --serve` loads the VAE once a size, so a warm picture pays
    its 5.8 s of tiles and the PNG but not the 1.7 s load; the tiles are the next decoder round.
 3. **INT8 linear layers**, mmh3's step (1.4 s against 4.07 s): 19.3 B of the 33.1 B parameters are projections, about
-   159 TFLOP of a step's ~273, so BF16 at this rate cannot reach 17.6 s on its own. It needs the Mac-render gates
-   against the BF16 picture before it can be the default.
+   159 TFLOP of a step's ~273, so BF16 at this rate cannot reach 17.6 s on its own. At mmh3's 1.4 s a step the six
+   steps would take ~8.5 s and the warm picture would sit near 15 s with today's decoder; it needs the Mac-render
+   gates against the BF16 picture before it can be the default.
 4. **Our own rounds beyond mmh3**, in the order the profile suggests: the decoder (5.8 s against mmh3's 1.0 s fp16
    VAE) is now the second-largest stage, and a 4.07 s step is ~273 TFLOP, ~67 TFLOPS, about half the GB10's BF16
    peak, so a BF16 GEMM and attention retune is its own round. The step's host tail (final norm and `rows_in`/`rows_out`
