@@ -59,3 +59,11 @@
 - Desk's `df74446f` window: a warm 2048² picture at **28.9 s** (prompt 1.07, transformer 22.2, decoder 5.6) against 31.4 s,
   the latent at cosine 0.9961 against BF16's. A step fell only from 4.07 s to 3.69 s, so the next round profiles the
   step under `--int8` before attention; BF16 stays the default until the Mac-render gates pass on the `--int8` picture.
+
+### MiniMax-H3-Image on CUDA: a step's host rows on every core, a warm 2048² picture at 20.6 s
+
+- `H3_PROFILE` makes `tf-h3-image-cuda` print each picture's block stages and the time outside them; the bench sets it.
+  The `--int8` step's 1.5 s outside the blocks was the host's serial `rows_in`, final norm and `rows_out`.
+- `tf-h3-image-cuda` splits those rows over the host's cores, each row's sums in the serial order (the latent is
+  byte-identical): the transformer fell from 21.8 s to 13.9 s and a warm 2048² picture to **20.6 s** (prompt 1.07,
+  transformer 13.9, decoder 5.6), 3 s above mmh3's 17.6 s.

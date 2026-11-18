@@ -251,21 +251,27 @@ cosine against the Mac. But a step only fell from 4.07 s to 3.69 s: the projecti
 GB10, so INT8 alone cannot give mmh3's 1.4 s. The job ran over its 20 min (build and selftests took 20 min of it) and was
 stopped in its host `reference` decode; the limits audit fails on the two new unregistered kernels.
 
-The rounds left, in order, each needing its own window:
+`d6fadca4` (job `top-d6126e31f157`) printed the step's profile (`H3_PROFILE`, on in `bench-script.sh`): of a warm
+21.8 s transformer, **9.2 s was outside the blocks**, the host's serial `rows_in`, final norm and `rows_out` over
+4,096 rows (~1.5 s a step), not attention. In the blocks: mlp in 4.08, q k v gate 2.68, attention 1.76, mlp out 1.72,
+heads 0.96, attention out 0.93, norms 0.52 s. `87168278` (job `top-bca977754b29`) splits those host rows over the
+cores, each row's sums in the serial order: the latent is byte-identical to `d6fadca4`'s, the transformer takes
+13.9 s (1.2 s outside the blocks) and a warm 2048² picture **20.6 s** mean (20.55, 20.55, 20.69: prompt 1.07,
+transformer 13.9, decoder 5.6), cold 164.7 s. The job ran 30 min, over its 20 min: the limits audit's fatbin build
+took most of it.
 
-1. **The step's profile under `--int8`** (`tf_h3_profile`): what fills 3.69 s once the products are int8. The scalar
-   `h3_attention` over the 4,120 rows (~114 TFLOP a step) is the expected block, then mmh3's
-   INT8/FP8 attention; the quantize and dequantize passes come next. Then the Mac-render gates on the `--int8` picture
-   and the two kernels' limits entries before `--int8` becomes the default.
+The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
+
+1. **The int8 products' own rate**: the six projection stages take 1.69 s of a 2.3 s step, ~95 TOPS, a fifth of the
+   GB10's dense int8. The int32 sums' round trip through `h3_dequantize` and the twice-read `h3_quantize` rows are
+   the measured candidates; MXFP8 block scaling (cuBLASLt's 32-element `UE8M0` mode, compute capability 10.0+; the
+   outer-vector mode is 9.0 only) writes bf16 straight from the product. Then the Mac-render gates on the `--int8`
+   picture and the two kernels' limits entries before `--int8` becomes the default.
 2. **The decoder's tiles**, 5.6 s against mmh3's 1.0 s fp16 VAE: 121 tiles of 256 pixels take 43 ms each on the GB10
    against 13.4 ms on an M3 Ultra. The sequential fp32 sums are its selftest's gate, so the round is the scalar
    kernel's own tiling (a 128 x 128 tile, a 16-deep K stage, no second buffer), not tensor cores.
-3. **The prompt's stream**, 45 GiB in 1.11 s at 41 GB/s: its weights are resident and read once a layer, so a deeper
-   window is the next lever.
+3. **Attention**, 1.76 s a picture: mmh3's INT8/FP8 attention.
 4. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
-
-The step's host tail (final norm and `rows_in`/`rows_out` over the 4,120 rows, ~2.4 GFLOP each) is ~0.1 s and not
-worth moving.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
