@@ -1,4 +1,5 @@
-// MiniMax-H3-Image's prompt stage on CUDA at the Metal kernels' and reference's rounding: bf16 in, fp32 sums, bf16 out.
+// MiniMax-H3-Image's prompt stage on CUDA at the Metal kernels' and reference's rounding: bf16 in, fp32 products,
+// the norms' squares in f64, bf16 out.
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stddef.h>
@@ -8,26 +9,30 @@ typedef __nv_bfloat16 bf16;
 static __device__ float f(bf16 v) { return __bfloat162float(v); }
 static __device__ bf16 h(float v) { return __float2bfloat16_rn(v); }
 
-// 1/sqrt(x) and exp(x) one rounding from exact as the reference computes them: rsqrtf and expf are up to 2 ULPs off.
-static __device__ float inv_sqrt(float x) { return __fdiv_rn(1.0f, __fsqrt_rn(x)); }
+// exp(x) one rounding from exact as the reference computes it: expf is up to 2 ULPs off.
 static __device__ float exact_exp(float x) { return (float)exp((double)x); }
 
-// One RMSNorm value: mode 0 bf16(w * bf16(x * r)) as Qwen's text, mode 1 bf16(x * r * w) as H3; the weight fp32, exact.
-static __device__ float h3p_normed(float x, float r, float w, int mode) {
-    return mode == 0 ? f(h(__fmul_rn(w, f(h(__fmul_rn(x, r)))))) : f(h(__fmul_rn(__fmul_rn(x, r), w)));
+// One RMSNorm value: mode 0 bf16(w * bf16(x * r)) as Qwen's text, mode 1 bf16(x * r * w) as H3; r f64, the weight fp32.
+static __device__ float h3p_normed(float x, double r, float w, int mode) {
+    const float p = (float)((double)x * r);
+    return mode == 0 ? __fmul_rn(w, f(h(p))) : __fmul_rn(p, w);
 }
 
-// y = RMSNorm(x) by w, x bf16, w fp32, y bf16: squares summed in the host's order, as a tree flips bf16 outputs.
+// y = RMSNorm(x) by w, x bf16, w fp32, y bf16: squares summed in f64 in the host's order, so the inverse root is the
+// reference's bits, where a tree's sum would flip bf16 outputs.
 extern "C" __global__ void __launch_bounds__(256) h3p_norm(
         const bf16* x, const float* w, bf16* y, int width, int mode, float eps) {
-    __shared__ float r;
+    __shared__ double r;
     const int row = blockIdx.x;
     const bf16* xr = x + (size_t)row * width;
     bf16* yr = y + (size_t)row * width;
     if (threadIdx.x == 0) {
-        float s = 0.0f;
-        for (int i = 0; i < width; ++i) s = __fadd_rn(s, __fmul_rn(f(xr[i]), f(xr[i])));
-        r = inv_sqrt(__fadd_rn(s / (float)width, eps));
+        double s = 0.0;
+        for (int i = 0; i < width; ++i) {
+            const double v = f(xr[i]);
+            s += v * v;
+        }
+        r = 1.0 / sqrt(s / (double)width + (double)eps);
     }
     __syncthreads();
     for (int i = threadIdx.x; i < width; i += 256) yr[i] = h(h3p_normed(f(xr[i]), r, w[i], mode));
@@ -45,15 +50,20 @@ extern "C" __global__ void __launch_bounds__(256) h3p_heads(
     bf16* x = is_q ? q + (size_t)row * q_row + (size_t)hh * head
                    : k + (size_t)row * k_row + (size_t)(hh - heads) * head;
     const float* w = is_q ? wq : wk;
-    float ss = 0.0f;
-    for (int i = 0; i < 128; ++i) ss = __fadd_rn(ss, __fmul_rn(f(x[i]), f(x[i])));
+    double ss = 0.0;
+    for (int i = 0; i < 128; ++i) {
+        const double v = f(x[i]);
+        ss += v * v;
+    }
     float v[4];
     for (int i = 0; i < 4; ++i) v[i] = f(x[lane * 4 + i]);
     __syncwarp();
-    const float r = inv_sqrt(__fadd_rn(ss / 128.0f, eps));
+    const double r = 1.0 / sqrt(ss / 128.0 + (double)eps);
     for (int i = 0; i < 4; ++i) v[i] = h3p_normed(v[i], r, w[lane * 4 + i], mode);
     if (rotary) {
-        // channel c pairs with c + 64, 16 lanes away: -x[c + 64] below, x[c - 64] above; products round before the add.
+        // the norm's store rounding, as the host turns the stored values; channel c pairs with c + 64, 16 lanes
+        // away: -x[c + 64] below, x[c - 64] above; products round before the add.
+        for (int i = 0; i < 4; ++i) v[i] = f(h(v[i]));
         const float sign = lane < 16 ? -1.0f : 1.0f;
         for (int i = 0; i < 4; ++i) {
             const float o = __shfl_xor_sync(0xffffffffu, v[i], 16);
