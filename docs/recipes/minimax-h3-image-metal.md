@@ -990,6 +990,27 @@ episode 1's recorded 13.03 s (6 steps 11.39 s). Every latent and PNG is sha1 `f3
 as card 68's warm runs before the change. A TOP-menu voice note sent during step 2 of a later request came back whole
 in 8.38 s; that step waited 7.31 s for speech and reported `timing_valid=false`.
 
+### H3's own products, measured
+
+Card 84 replaced MLX's `gemm_nax` with `h3_gemm_32x64` (`kernels/metal/h3/h3_gemm.metal`): 64 x 128 a threadgroup,
+each of its four warps 32 x 64, so a loaded fragment feeds two MMAs where MLX's 32 x 32 warp feeds one. Each output's
+K chain is MLX's, 32-deep steps in order. Ten dispatches a shape in one command buffer, 4,120 rows, best of three:
+
+| Product | Shape (n x k) | MLX | H3's own |
+|---|---|---|---|
+| fc1 | 28,672 x 5,376 | 118 | 116 TFLOP/s |
+| q k v | 21,504 x 5,376 | 118 | 116 |
+| out | 5,376 x 7,168 | 113 | 108 |
+| fc2 | 5,376 x 14,336 | 89 | 103 |
+
+The products are at the tensor units' rate and a wider tile does not move them; the only shape that gains is fc2, worth
+0.3 s of the six steps. Warm 2048 requests took 12.12 and 12.13 s (6 steps 10.49 and 10.52 s, decoder 1.38 and 1.40 s)
+against 12.30 s before. The latent and PNG stay sha1 `f3563c56…` / `904814d6…`.
+
+A profile stage's seconds cover all 300 block calls of the six steps, so attention is not a gap either: its 1.54 s is
+149 TFLOP at 96 TFLOP/s, the products' own rate, and a step is 168 TFLOP. Six steps are 1,006 TFLOP in 10.7 s, about
+94 TFLOP/s against the 118 the fc1 shape reaches.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
