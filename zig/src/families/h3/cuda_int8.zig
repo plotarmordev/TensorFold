@@ -1,5 +1,5 @@
 //! mmh3's INT8 linear layers on the H3 CUDA blocks: each projection's weight rows and each activation row Hadamard-rotated
-//! in 128-wide chunks (ConvRot's outlier spreading), quantized to int8 at its absmax, summed exactly in int32 by
+//! in 256-wide groups (ConvRot's outlier spreading), quantized to int8 at its absmax, summed exactly in int32 by
 //! cuBLASLt, and scaled back to bf16 rows. The bf16 weights are freed once quantized.
 const std = @import("std");
 const cuda = @import("cuda");
@@ -51,7 +51,7 @@ pub const Int8 = struct {
     }
 
     fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize) !Weight {
-        if (k % 128 != 0 or k > 14336 or n % 4 != 0) return error.BadGeometry; // h3_quantize's quantize_chunks
+        if (k % 256 != 0 or k > 14336 or n % 4 != 0) return error.BadGeometry; // h3_quantize's quantize_groups
         const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * 4), .n = n, .k = k };
         try launchQuantize(self, bf16.ptr, w.q.ptr, w.scales(), n, k);
         try self.stream.synchronize();

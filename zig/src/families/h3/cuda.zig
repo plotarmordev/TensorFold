@@ -298,7 +298,7 @@ pub const Model = struct {
                 for ([_]u64{ g.qkvc, b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
                 for ([_]usize{ heads, width, in.rot, tiles * slot_tile }) |n| args.add(@as(c_int, @intCast(n)));
                 args.add(eps);
-                try self.launch("h3_heads", .{ .x = @intCast(owned) }, 256, 0, &args);
+                try self.launch("h3_heads", .{ .x = @intCast(owned), .y = @intCast(heads) }, 256, 0, &args);
             }
             try self.lap("heads", &mark);
             if (dense) {
