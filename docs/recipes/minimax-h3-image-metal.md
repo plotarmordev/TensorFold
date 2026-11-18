@@ -965,6 +965,27 @@ equal to card 50's one-shot seed-42 latent. `tools/zig/h3_image_compare.py` give
 0, pixel maximum 0. `zig build test-h3-image-server` runs the resident side of its parity test on queues holding the
 checkpoint's residency set.
 
+### Products in 64-row-tile bands, measured
+
+Card 81, same machine, ReleaseFast, card 34's `prompt.txt`, seed 42, one resident server. A product's threadgroups
+walk `1 << swizzle` row tiles under each weight tile before moving on (`block.zig`). MLX's 2 sends a 2048 picture's
+4,120 rows past every weight tile 16 times; 6 keeps all 65 row tiles on one weight tile while it is cached. Each
+output's sums are unchanged. Step GPU seconds in one server per row, A and B alternated in the same process:
+
+| swizzle | 2048 step | 4096 step 1 |
+|---|---|---|
+| 2 (before) | 1.90-1.91 | 10.29 |
+| 4 | 1.84-1.85 | 10.22 |
+| 5 | | 10.17 |
+| 6 (now) | 1.79-1.81 | 10.14 |
+| 7 | 1.91 | |
+| 6 on a 128 x 128 tile | 1.84 | |
+
+With 6, warm 2048 requests took 12.54 and 12.99 s (6 steps 10.81 and 10.93 s) at a load average near 30, against
+episode 1's recorded 13.03 s (6 steps 11.39 s). Every latent and PNG is sha1 `f3563c56…` / `904814d6…`, the same bytes
+as card 68's warm runs before the change. A TOP-menu voice note sent during step 2 of a later request came back whole
+in 8.38 s; that step waited 7.31 s for speech and reported `timing_valid=false`.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
