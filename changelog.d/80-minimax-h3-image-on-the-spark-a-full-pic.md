@@ -50,3 +50,12 @@
   the 2048 runs. `9cf468df`'s ~1.5 h hang was that leak, not the 4096² stage.
 - INT8 linear layers are the one round left for mmh3's 17.6 s: at its 1.4 s a step the six steps take ~8.5 s and a
   warm 2048² picture sits near 15.2 s with today's prompt and decoder.
+
+### MiniMax-H3-Image on CUDA: `--int8` projections, a warm 2048² picture at 28.9 s
+
+- `tf-h3-image-cuda --int8` runs the blocks' projections as mmh3 does: weight and activation rows Hadamard-rotated in
+  128-wide chunks, int8 at their absmax, exact int32 sums in cuBLASLt (`Gemm.runInt`), one bf16 rounding back; the bf16
+  projections are freed once quantized. `bench-script.sh` runs it (`H3_LINEAR=bf16` for the old path).
+- Desk's `df74446f` window: a warm 2048² picture at **28.9 s** (prompt 1.07, transformer 22.2, decoder 5.6) against 31.4 s,
+  the latent at cosine 0.9961 against BF16's. A step fell only from 4.07 s to 3.69 s, so the next round profiles the
+  step under `--int8` before attention; BF16 stays the default until the Mac-render gates pass on the `--int8` picture.

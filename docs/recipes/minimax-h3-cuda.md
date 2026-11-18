@@ -243,12 +243,20 @@ selftest passed and the job exited 0: a warm 2048² picture took **31.4 s** mean
 most 5 apart, PSNR 56.65 dB, relative error 3.15e-3 against the 3e-2 bound, a pass. The host decode is the job's
 longest stage after the build, so a round takes ~25 min.
 
+`df74446f` (job `top-de80ff04ca02`, 18 November) ran the transformer with `--int8`: every projection's weight rows and
+activation rows Hadamard-rotated in 128-wide chunks, int8 at their absmax, exact int32 sums in cuBLASLt and one bf16
+rounding back. Every selftest passed and a warm 2048² picture took **28.9 s** mean (prompt 1.07, transformer 22.2,
+decoder 5.6), cold 170.5 s; the latent's cosine against `f825b43c`'s BF16 latent is 0.9961, the BF16 picture's own
+cosine against the Mac. But a step only fell from 4.07 s to 3.69 s: the projections were not most of the step on the
+GB10, so INT8 alone cannot give mmh3's 1.4 s. The job ran over its 20 min (build and selftests took 20 min of it) and was
+stopped in its host `reference` decode; the limits audit fails on the two new unregistered kernels.
+
 The rounds left, in order, each needing its own window:
 
-1. **INT8 linear layers**, mmh3's step (1.4 s against 4.07 s): 19.3 B of the 33.1 B parameters are projections, about
-   159 TFLOP of a step's ~273, so BF16 at this rate cannot reach 17.6 s. At mmh3's 1.4 s a step the six steps take
-   ~8.5 s and a warm 2048² picture sits near **15.2 s** (1.11 + 8.5 + 5.6), under mmh3's 17.6 s, with today's prompt
-   and decoder. It needs the Mac-render gates against the BF16 picture before it can be the default.
+1. **The step's profile under `--int8`** (`tf_h3_profile`): what fills 3.69 s once the products are int8. The scalar
+   `h3_attention` over the 4,120 rows (~114 TFLOP a step) is the expected block, then mmh3's
+   INT8/FP8 attention; the quantize and dequantize passes come next. Then the Mac-render gates on the `--int8` picture
+   and the two kernels' limits entries before `--int8` becomes the default.
 2. **The decoder's tiles**, 5.6 s against mmh3's 1.0 s fp16 VAE: 121 tiles of 256 pixels take 43 ms each on the GB10
    against 13.4 ms on an M3 Ultra. The sequential fp32 sums are its selftest's gate, so the round is the scalar
    kernel's own tiling (a 128 x 128 tile, a 16-deep K stage, no second buffer), not tensor cores.
