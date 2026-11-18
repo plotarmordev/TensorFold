@@ -1011,6 +1011,17 @@ A profile stage's seconds cover all 300 block calls of the six steps, so attenti
 149 TFLOP at 96 TFLOP/s, the products' own rate, and a step is 168 TFLOP. Six steps are 1,006 TFLOP in 10.7 s, about
 94 TFLOP/s against the 118 the fc1 shape reaches.
 
+### int8 fc1, measured and not landed
+
+The same 32 x 64-warp loop on `int8_t` fragments with `int32` sums ran the fc1 shape (4,096 x 28,672 x 5,376) at
+215 TOP/s against 96 TFLOP/s for bf16 in one probe; `half` ran at bf16's rate. With fc1 in int8, each weight row at its
+absolute max over 127 (quantized once at bind) and each normed row likewise per request, a warm 2048 picture took
+11.01 s (6 steps 9.36 s). Against episode 1's Mac latent and PNG it scored cosine 0.9948, PSNR 28.34 dB, mean pixel
+diff 4.37 and max 243: the mean misses card 80's 4.1 floor. Scales per 256 values of each normed row did worse (cosine
+0.9934, 27.09 dB, mean 4.64, max 247) and slower (11.50 s), since each 256-deep block folds its sums into fp32. Neither
+holds the same picture, so the products stay bf16; the patch and receipts are kept outside the repo in
+`h3-image-runs/84/` (`int8-fc1-grouped.patch`, `rec/i8*`).
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
