@@ -113,8 +113,10 @@ The 14 November tables below predate this cutover; the
 
 ### Benchmark run
 
-[`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds in the same TOP job, then takes `run-script.sh`'s inputs
-and tools without its gate: it records each selftest's PASS or FAIL and renders anyway. Each size in
+[`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds the sm_121 tools alone in the same TOP job
+(`H3_BUILD=sm121 cuda-build.sh`: the five release SMs and their limits audit stay `cuda-build.sh`'s own job, which put
+a bench past the Desk's 20 minutes), then takes `run-script.sh`'s inputs and tools without its gate: it records each
+selftest's PASS or FAIL and renders anyway. Each size in
 `H3_BENCH_SIZES` (default `2048`) gets one cold picture
 (start to first picture) and three warm repeats, while `nvidia-smi` is sampled twice a second. The transformer stays
 resident: one `tf-h3-image-cuda MODEL --serve` a size loads the model inside the cold run and renders all four cases,

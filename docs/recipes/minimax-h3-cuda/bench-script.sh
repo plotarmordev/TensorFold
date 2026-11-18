@@ -6,10 +6,8 @@ pilot=/assets/drama3-pilot/h3-image-pilot
 commit=$(git -c safe.directory='*' rev-parse HEAD)
 bin=/work/out/tensorfold-cuda-$commit
 out=/work/out/h3-image-bench
-if ! sh docs/recipes/minimax-h3-cuda/cuda-build.sh; then
-    # The separate limits audit may fail; a build or copy failure has not reached its log.
-    [ -f /work/out/limits.log ] || exit 1
-fi
+# the sm_121 tools only: the five SMs' build and limits audit are cuda-build.sh's own job
+H3_BUILD=sm121 sh docs/recipes/minimax-h3-cuda/cuda-build.sh
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 for path in "$model/model_index.json" "$model/text_encoder/config.json" "$pilot/prompt.txt" "$bin/tf-h3-image-cuda" "$bin/tf-h3-image-prompt-cuda" "$bin/tf-h3-image-decoder-cuda"; do
     [ -e "$path" ] || { echo "missing $path" >&2; exit 1; }

@@ -7,6 +7,8 @@
 # - tensorfold-fatbins-SHA: the sm_121 images and SHA256SUMS, for -Dfatbins (../../receipts/drama3-pruned-main/run-script.sh)
 # - tensorfold-cuda-SHA: tf-cuda-test and the three H3 picture tools, with their images built in, plus fatbin/ for the five release SMs
 # - limits.log: kernel-contract-limits over those images; the job exits with its status
+# H3_BUILD=sm121 stops once the three picture tools are in tensorfold-cuda-SHA: no release SMs, tf-cuda-test or
+# audit, which put bench-script.sh past the Desk's 20 minutes.
 # Later TOP jobs read either folder from the pilot folder once the Desk returns it there:
 #   ssh top-menu "job fetch ID" | tar -x -C DIR
 #   tar -C DIR/out -c tensorfold-fatbins-SHA | ssh top-menu "put top tensorfold-fatbins-SHA"
@@ -37,12 +39,13 @@ fatbins=$out/tensorfold-fatbins-$sha
 mkdir -p "$fatbins"
 cp /work/sm121/fatbin/*.fatbin "$fatbins"
 (cd "$fatbins" && sha256sum *.fatbin >SHA256SUMS)
-zig build install fatbins kernel-contract-fatbins -Dsm=80,86,89,120,121 -Dnvcc=$nvcc -Doptimize=ReleaseFast \
-    --prefix /work/release
 cuda=$out/tensorfold-cuda-$sha
 mkdir -p "$cuda"
-cp -r /work/release/bin/tf-cuda-test /work/sm121/bin/tf-h3-image-prompt-cuda /work/sm121/bin/tf-h3-image-cuda \
-    /work/sm121/bin/tf-h3-image-decoder-cuda /work/release/fatbin "$cuda"
+cp /work/sm121/bin/tf-h3-image-prompt-cuda /work/sm121/bin/tf-h3-image-cuda /work/sm121/bin/tf-h3-image-decoder-cuda "$cuda"
+[ "${H3_BUILD:-}" != sm121 ] || exit 0
+zig build install fatbins kernel-contract-fatbins -Dsm=80,86,89,120,121 -Dnvcc=$nvcc -Doptimize=ReleaseFast \
+    --prefix /work/release
+cp -r /work/release/bin/tf-cuda-test /work/release/fatbin "$cuda"
 status=0
 "$cuda/tf-cuda-test" kernel-contract-limits "$cuda/fatbin" >"$out/limits.log" 2>&1 || status=$?
 tail -n 3 "$out/limits.log"
