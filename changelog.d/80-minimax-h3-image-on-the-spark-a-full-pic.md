@@ -96,3 +96,15 @@
   `reference` passed at 86.044% of bytes identical, 99.917% within 1, at most 6 apart, PSNR 56.60 dB, relative
   error 3.16e-3 against the 3e-2 bound. The fma's decoder fell from 5.3 s to 4.9 s (4.95 to 4.54 on the GPU); the
   transformer stays at 13.9 s, so the gap to mmh3's 17.6 s is its int8 products, its attention and the host rows.
+
+### MiniMax-H3-Image on CUDA: the int8 kernels' gates, the served tables' regression
+
+- `zig/tests/cuda/contract_h3_int8.zig` puts `h3_quantize` and `h3_dequantize` through gates 1-4 against float64:
+  the 128-wide rotation's Sylvester signs, the absmax scale, every code within a rounding tie, the stated infinity
+  and NaN rules, five byte-identical repeats and eight shapes each. `check-job.sh` runs those gates and
+  `serve-check.sh` (one resident transformer renders 512² cases a, a, b, a; every latent must equal its case's
+  fresh run byte for byte) as one TOP job.
+- Job `top-de7892d85798` at `1c5074d3` (exit 0): both kernels passed, `h3_dequantize`'s shapes within 0.996 of
+  their bound, the live sm_121 limits passed, and served 1-4 matched fresh a, a, b, a. `serve-check.sh` writes
+  case b (a plus a 2 x 2 reference grid and its anchors) in safetensors' stdlib format, since TOP's python3 has
+  no numpy.
