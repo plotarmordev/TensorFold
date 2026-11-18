@@ -7,14 +7,13 @@ fn record(comptime symbol: []const u8, comptime image: []const u8, threads: u32,
     return .{ .launch = .{ .name = "h3_image " ++ symbol, .symbol = symbol, .image = image, .threads = threads, .min_sm = min_sm }, .usage = usage };
 }
 
-/// nvcc 13.0's usage, the compiler of the release fatbins (kernel-contract-limits, 16 Nov 2026). h3d_linear's 62
-/// registers are the cap its `__launch_bounds__(512, 2)` holds; the next audit window records nvcc's own count.
+/// nvcc 13.0's usage, the compiler of the release fatbins (kernel-contract-limits, 16 Nov 2026).
 pub const records = [_]registry.CudaRecord{
     record("h3d_post_quant", "h3_image_decoder", 256, 80, .{ .{ .regs = 32, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 } }),
     record("h3d_embed", "h3_image_decoder", 256, 80, .{ .{ .regs = 32, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 } }),
     record("h3d_rms_norm", "h3_image_decoder", 256, 80, .{ .{ .regs = 30, .static = 32, .bound = 256 }, .{ .regs = 30, .static = 32, .bound = 256 }, .{ .regs = 30, .static = 32, .bound = 256 }, .{ .regs = 25, .static = 32, .bound = 256 }, .{ .regs = 25, .static = 32, .bound = 256 } }),
     record("h3d_layer_norm", "h3_image_decoder", 256, 80, .{ .{ .regs = 32, .static = 64, .bound = 256 }, .{ .regs = 32, .static = 64, .bound = 256 }, .{ .regs = 32, .static = 64, .bound = 256 }, .{ .regs = 26, .static = 64, .bound = 256 }, .{ .regs = 26, .static = 64, .bound = 256 } }),
-    record("h3d_linear", "h3_image_decoder", 512, 80, .{ .{ .regs = 62, .static = 16512, .bound = 512 }, .{ .regs = 62, .static = 16512, .bound = 512 }, .{ .regs = 62, .static = 16512, .bound = 512 }, .{ .regs = 62, .static = 16512, .bound = 512 }, .{ .regs = 62, .static = 16512, .bound = 512 } }),
+    record("h3d_linear", "h3_image_decoder", 256, 80, .{ .{ .regs = 121, .static = 16512, .bound = 256 }, .{ .regs = 121, .static = 16512, .bound = 256 }, .{ .regs = 121, .static = 16512, .bound = 256 }, .{ .regs = 121, .static = 16512, .bound = 256 }, .{ .regs = 121, .static = 16512, .bound = 256 } }),
     record("h3d_finish", "h3_image_decoder", 256, 80, .{ .{ .regs = 14, .static = 0, .bound = 256 }, .{ .regs = 14, .static = 0, .bound = 256 }, .{ .regs = 14, .static = 0, .bound = 256 }, .{ .regs = 14, .static = 0, .bound = 256 }, .{ .regs = 14, .static = 0, .bound = 256 } }),
     record("h3d_heads", "h3_image_decoder", 32, 80, .{ .{ .regs = 23, .static = 0, .bound = 32 }, .{ .regs = 24, .static = 0, .bound = 32 }, .{ .regs = 22, .static = 0, .bound = 32 }, .{ .regs = 21, .static = 0, .bound = 32 }, .{ .regs = 21, .static = 0, .bound = 32 } }),
     record("h3d_attention", "h3_image_decoder", 256, 80, .{ .{ .regs = 37, .static = 11264, .bound = 256 }, .{ .regs = 48, .static = 11264, .bound = 256 }, .{ .regs = 48, .static = 11264, .bound = 256 }, .{ .regs = 48, .static = 11264, .bound = 256 }, .{ .regs = 48, .static = 11264, .bound = 256 } }),

@@ -315,7 +315,7 @@ pub const Decoder = struct {
         p.mode = @intFromBool(scale != null);
         var product = d.args(&.{ d.dev(x), d.param(w), d.dev(d.view.acc) });
         product.add(p);
-        try d.launch("h3d_linear", .{ .x = @intCast((n + 127) / 128), .y = @intCast((s.m + 127) / 128), .z = 1 }, .{ .x = 512 }, 0, &product);
+        try d.launch("h3d_linear", .{ .x = @intCast((n + 127) / 128), .y = @intCast((s.m + 127) / 128), .z = 1 }, .{ .x = 256 }, 0, &product);
         try d.lap("products");
         const grid: cuda.Dim3 = .{ .x = @intCast((n + 31) / 32), .y = @intCast((s.m + 7) / 8), .z = 1 };
         const block: cuda.Dim3 = .{ .x = 32, .y = 8 };
