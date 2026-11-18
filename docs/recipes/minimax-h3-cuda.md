@@ -298,7 +298,7 @@ opt-in; `b4c5c42`'s 19.9 s was the same `--int8` picture.
 `160c5d8b` (job `top-d86e73f6e28d`, 19 November, exit 0) tried two candidates and is reverted: `h3_heads` over a
 [tiles, heads] grid kept its stage at 0.99 s (0.96 s before, so the stage is bound by its reads, not its 65 blocks),
 and rotating the int8 rows in 256-wide groups as mmh3's ConvRot does left the picture where it was (28.14 dB, 4.23
-mean apart, cosine 0.9944). Warm 18.3 s mean (18.2, 18.3, 18.3). A per-row int8 scale is the gap, not the rotation.
+mean apart, cosine 0.9944). Warm 18.3 s mean (18.2, 18.3, 18.3). The rotation's width is not the picture's gap.
 
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
