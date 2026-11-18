@@ -10,6 +10,9 @@ const cuda = @import("cuda");
 const lt_ = cuda.cublaslt;
 const h3 = @import("cuda.zig");
 const workspace_bytes = @import("cuda_gemm.zig").workspace_bytes;
+const seconds = @import("clock.zig").seconds;
+/// Algorithms the heuristic offers each int8 shape for timing.
+const offers = 8;
 const Model = h3.Model;
 
 /// A projection (N, K): its int8 rows, then N fp32 row scales.
@@ -100,7 +103,7 @@ pub const Int8 = struct {
         const xq = acc + rows * t.widest(self) * 4;
         const xs = xq + rows * t.widest(self);
         try launchQuantize(self, x, xq, xs, rows, w.k);
-        const p = try t.plan(self, rows, w.n, w.k);
+        const p = try t.plan(self, rows, w, xq, acc);
         try p.runInt(w.q.ptr, xq, acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
         return .{ .acc = acc, .xs = xs };
     }
@@ -117,13 +120,51 @@ pub const Int8 = struct {
         t.rows = rows;
     }
 
-    /// Column-major D^T (n, rows) = W (k, n stored)^T . X^T (k, rows), int32 sums: cuBLASLt's int8 TN layout.
-    fn plan(t: *Int8, self: *Model, rows: usize, n: usize, k: usize) !*const lt_.Gemm {
-        const got = try t.plans.getOrPut(self.gpa, .{ rows, n, k });
+    /// Column-major D^T (n, rows) = W (k, n stored)^T . X^T (k, rows), int32 sums: cuBLASLt's int8 TN layout. The
+    /// algorithm is the fastest of the heuristic's offers on the first picture's own operands.
+    fn plan(t: *Int8, self: *Model, rows: usize, w: Weight, xq: u64, acc: u64) !*const lt_.Gemm {
+        const got = try t.plans.getOrPut(self.gpa, .{ rows, w.n, w.k });
         if (got.found_existing) return got.value_ptr;
         errdefer t.plans.removeByPtr(got.key_ptr);
-        got.value_ptr.* = try lt_.Gemm.init(&self.gemms.lt, t.handle, .{ .ta = .t, .m = n, .n = rows, .k = k, .a = .i8, .b = .i8, .c = .i32, .lda = k, .ldb = k, .ldc = n }, workspace_bytes);
+        var g = try lt_.Gemm.init(&self.gemms.lt, t.handle, .{ .ta = .t, .m = w.n, .n = rows, .k = w.k, .a = .i8, .b = .i8, .c = .i32, .lda = w.k, .ldb = w.k, .ldc = w.n }, workspace_bytes);
+        errdefer g.deinit();
+        try t.fastest(self, &g, w.q.ptr, xq, acc);
+        got.value_ptr.* = g;
         return got.value_ptr;
+    }
+
+    /// Times each of the heuristic's first `offers` algorithms on these operands and keeps the fastest. The int32 sums
+    /// are exact, so every algorithm writes the same bytes; one that fails to run is passed over.
+    fn fastest(t: *Int8, self: *Model, g: *lt_.Gemm, a: u64, b: u64, c: u64) !void {
+        const lt = &self.gemms.lt;
+        var pref: lt_.Preference = null;
+        try lt.check(lt.api.cublasLtMatmulPreferenceCreate(&pref), "cublasLtMatmulPreferenceCreate");
+        defer _ = lt.api.cublasLtMatmulPreferenceDestroy(pref);
+        const limit: u64 = workspace_bytes;
+        try lt.check(lt.api.cublasLtMatmulPreferenceSetAttribute(pref, lt_.pref_max_workspace_bytes, &limit, @sizeOf(u64)), "set workspace");
+        var found: [offers]lt_.Heuristic = undefined;
+        var count: c_int = 0;
+        try lt.check(lt.api.cublasLtMatmulAlgoGetHeuristic(t.handle, g.desc, g.a, g.b, g.c, g.c, pref, offers, &found, &count), "cublasLtMatmulAlgoGetHeuristic");
+        var best: ?lt_.Heuristic = null;
+        var best_time = std.math.inf(f64);
+        for (found[0..@intCast(count)]) |h| {
+            if (h.state != 0) continue;
+            g.algo = h.algo;
+            g.workspace_need = h.workspace_size;
+            g.runInt(a, b, c, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle) catch continue;
+            try self.stream.synchronize();
+            const start = seconds();
+            for (0..3) |_| try g.runInt(a, b, c, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
+            try self.stream.synchronize();
+            const took = seconds() - start;
+            if (took < best_time) {
+                best_time = took;
+                best = h;
+            }
+        }
+        const chosen = best orelse return error.NoAlgorithm;
+        g.algo = chosen.algo;
+        g.workspace_need = chosen.workspace_size;
     }
 };
 
