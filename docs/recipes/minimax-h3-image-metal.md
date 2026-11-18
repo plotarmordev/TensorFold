@@ -49,6 +49,9 @@ rotary positions. Supporting edits would also require checking reference geometr
 conditioning, not just comparing row counts.
 Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
 A bad request prints its error and the server reads the next line.
+Start it with `profile` after `MODEL_DIR` to print each request's six steps by stage, each stage in its own command
+buffer: `rows in`, `norms`, `q k v gate`, `heads`, `attention`, `attention out`, `mlp in`, `mlp out`, `final`. The
+waits make the request slower than an unprofiled one, so the stage seconds are for diagnosis, not for a speed gate.
 
 At startup the server puts every weight file it maps (text encoder, refiner, transformer, step heads) and the decoder's
 bf16 weights in one residency set on the three stages' queues (`holdWeights`), and prints the GiB it holds: 117.6 on
@@ -166,8 +169,9 @@ no system prompt.
 It writes `text` BF16 [rows, 5,376], `text_tags` I32 [rows] and `ids` I32 [rows], aligned. `tf-h3-image` reads the
 first two as a case's own.
 
-**Precision.** Weights are bf16, read in place. Products run in simdgroup matrices with fp32 sums. Norms keep fp32
-statistics, and the softmax and its sums stay in fp32. Each step rounds to bf16 where the reference's bf16 arithmetic
+**Precision.** Weights are bf16, read in place, but for fc1's int8 copy (see "int8 fc1, landed"). Products run in
+simdgroup matrices with fp32 sums. Norms keep fp32 statistics, and the softmax and its sums stay in fp32. Each step
+rounds to bf16 where the reference's bf16 arithmetic
 does:
 
 - the text model's norms round x r before the weight;
@@ -432,7 +436,8 @@ tensor units.
 3. Each tile runs `post_quant_conv`, then its cells become tokens through `x_embedder`, with the 4 registers and one
    zero token appended.
 4. The 2D rotary table is built, and the 24 blocks run, then `norm_out` and `proj_out`.
-5. Each token's 768 values are unpatchified to its 16 x 16 pixels. Up to 16 tiles run in one command buffer.
+5. Each token's 768 values are unpatchified to its 16 x 16 pixels. Up to 64 tiles run in one command buffer: two
+   passes at 2048 x 2048, where a pass of 16 took eight.
 6. Tiles are blended in float32: the top band against the tile above, then the left band against the tile to the left,
    both as decoded.
 7. The result is mapped to [0, 1] with ImageNet's statistics, clamped and truncated to bytes.
@@ -673,6 +678,14 @@ On an M3 Ultra all 31 pass gates 1 to 4 and every control goes red as planted.
 The contract found one fault, now fixed: the prompt path's attention filled a row's last block of 4 keys with its last
 key at weight 0, so an infinite value there gave 0 x Inf = NaN where float64 keeps the infinity. A padded key now adds
 nothing; finite outputs keep their bytes.
+
+The transformer's products are registered too (`tf-kernel-contract --only 'h3 product'`): the 32x64-warp bf16 GEMM
+in its whole and ragged forms bit-equal to MLX's gemm_nax that it replaced at every served shape and edge, fc1's int8
+form against float64 at its scales at a 2048 picture's 4,120 and 4,096 rows, and `h3_quantize_rows` against its formula
+at its 4,120 activation and 28,672 weight rows; each with its launch limits. On the
+M5 Ultra all four pass gates 1 to 4. The contract found that the quantizer dropped NaN, since `max` ignores it: a NaN
+activation took a finite scale and became an ordinary value. A group holding NaN now takes a NaN scale; finite inputs
+keep their bytes.
 
 ## Speed: a byte-identical cold-start win
 
@@ -985,6 +998,59 @@ With 6, warm 2048 requests took 12.54 and 12.99 s (6 steps 10.81 and 10.93 s) at
 episode 1's recorded 13.03 s (6 steps 11.39 s). Every latent and PNG is sha1 `f3563c56…` / `904814d6…`, the same bytes
 as card 68's warm runs before the change. A TOP-menu voice note sent during step 2 of a later request came back whole
 in 8.38 s; that step waited 7.31 s for speech and reported `timing_valid=false`.
+
+### H3's own products, measured
+
+Card 84 replaced MLX's `gemm_nax` with `h3_gemm_32x64` (`kernels/metal/h3/h3_gemm.metal`): 64 x 128 a threadgroup,
+each of its four warps 32 x 64, so a loaded fragment feeds two MMAs where MLX's 32 x 32 warp feeds one. Each output's
+K chain is MLX's, 32-deep steps in order. Ten dispatches a shape in one command buffer, 4,120 rows, best of three:
+
+| Product | Shape (n x k) | MLX | H3's own |
+|---|---|---|---|
+| fc1 | 28,672 x 5,376 | 118 | 116 TFLOP/s |
+| q k v | 21,504 x 5,376 | 118 | 116 |
+| out | 5,376 x 7,168 | 113 | 108 |
+| fc2 | 5,376 x 14,336 | 89 | 103 |
+
+The products are at the tensor units' rate and a wider tile does not move them; the only shape that gains is fc2, worth
+0.3 s of the six steps. Warm 2048 requests took 12.12 and 12.13 s (6 steps 10.49 and 10.52 s, decoder 1.38 and 1.40 s)
+against 12.30 s before. The latent and PNG stay sha1 `f3563c56…` / `904814d6…`.
+
+A profile stage's seconds cover all 300 block calls of the six steps, so attention is not a gap either: its 1.54 s is
+149 TFLOP at 96 TFLOP/s, the products' own rate, and a step is 168 TFLOP. Six steps are 1,006 TFLOP in 10.7 s, about
+94 TFLOP/s against the 118 the fc1 shape reaches.
+
+### int8 fc1, landed
+
+The same 32 x 64-warp loop on `int8_t` fragments with `int32` sums ran the fc1 shape (4,096 x 28,672 x 5,376) at
+215 TOP/s against 96 TFLOP/s for bf16 in one probe; `half` ran at bf16's rate. Card 34's prompt, seed 42, one resident
+server, a warm 2048 picture each, against episode 1's latent and PNG (card 80's cross-precision rule: cosine >= 0.99,
+PSNR >= 28.2 dB, mean pixel diff <= 4.1):
+
+| fc1 quantizer | latent cosine | PSNR | mean pixel diff | max | 6 steps | picture |
+|---|---|---|---|---|---|---|
+| both operands at a row's absolute max | 0.994759 | 28.342 | 4.365 | 243 | 9.24 s | 10.99 s |
+| the same on fc1 and fc2 | 0.942927 | 18.733 | 14.849 | 255 | 9.23 s | 10.92 s |
+| weights per 256 values of K, activations a row (landed) | 0.995344 | 28.240 | 4.011 | 245 | 9.54 s | 11.14 s |
+
+A row's absolute max misses the mean floor by 0.27. fc2 in int8 does not hold the picture at all: SwiGLU's rows have
+outliers that one row scale cannot cover. fc1's weights grouped per 256 values of K hold the rule, so fc1 runs in int8
+(`h3_gemm_32x64_i8`): `bind` quantizes every block's fc1 rows once (`h3_quantize_rows`, one simdgroup a row, its
+groups in turn) into a private 7.7 GiB copy, each block quantizes `xn` a row before its product, and each 256-deep
+block's int32 sums fold into fp32 at the weights' scales for that block, the row's scale last. The fold costs about
+0.10 s a step against the ungrouped quantizer. The other products stay bf16 and byte-identical. Only the released
+layout's (a picture's) fc1 runs in int8: a FastH3 clip's binding makes no copy and its fc1 stays the bf16 product,
+which `test-h3-gemm` holds bit for bit against MLX's kernel at whole and ragged rows.
+
+`tf-h3-image-server` joins each binding's int8 copy to its weights' residency set while the binding lives: in shared
+storage a step's encode took 0.42 s, private 0.19 s, joined 0.04 s. Cold and warm requests give the same latent
+(sha1 `8b9e75b5…`, PNG `7bf89a7f…`), and `test-h3-gemm` holds the quantizer and the int8 product against an exact
+dequantized product to one bf16 rounding across a ragged tile.
+
+Built from this card's head, the same server and request lines: warm 2048 pictures took 11.14 and 11.16 s (prompt 0.22, 6 steps
+9.54 and 9.47, decoder 1.37 and 1.43), against 12.12 s in bf16 and episode 1's 13.03 s; the cold one 16.05 s with a 3.78 s bind. The
+receipts are kept outside the repo in `h3-image-runs/84/rec/ship*`. The 11 s target is not met; the decision on this
+card took the same picture at about 11.1-11.4 s over a changed one under 11 s.
 
 ### Next, ranked
 

@@ -17,8 +17,8 @@ const usage =
     \\
 ;
 
-/// Tiles a pass decodes at most.
-const batch = 16;
+/// Tiles a pass decodes at most: the decoder's scratch is sized for this many, and every tile's pixels are independent.
+const batch = dec.most_batch;
 
 /// The image decoder loaded once: its config and weights, its kernels built.
 pub const Vae = struct {

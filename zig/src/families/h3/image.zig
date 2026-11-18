@@ -5,6 +5,7 @@ const prompt = @import("prompt.zig");
 const decoder = @import("image_decoder_metal.zig");
 
 pub const Model = h3.Model;
+pub const stages = h3.stages;
 pub const Checkpoint = h3.Checkpoint;
 pub const Tensors = h3.Tensors;
 pub const modulation = h3.modulation;
@@ -21,6 +22,7 @@ pub const Runner = prompt.Runner;
 pub const Vision = prompt.Vision;
 
 pub const Decoder = decoder.Decoder;
+pub const most_batch = decoder.most_batch;
 pub const host = decoder.host;
 pub const vae = decoder.vae;
 pub const host_decoder = decoder.host_decoder;
