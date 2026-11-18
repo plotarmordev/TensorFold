@@ -1038,7 +1038,9 @@ outliers that one row scale cannot cover. fc1's weights grouped per 256 values o
 (`h3_gemm_32x64_i8`): `bind` quantizes every block's fc1 rows once (`h3_quantize_rows`, one simdgroup a row, its
 groups in turn) into a private 7.7 GiB copy, each block quantizes `xn` a row before its product, and each 256-deep
 block's int32 sums fold into fp32 at the weights' scales for that block, the row's scale last. The fold costs about
-0.10 s a step against the ungrouped quantizer. The other products stay bf16 and byte-identical.
+0.10 s a step against the ungrouped quantizer. The other products stay bf16 and byte-identical. Only the released
+layout's (a picture's) fc1 runs in int8: a FastH3 clip's binding makes no copy and its fc1 stays the bf16 product,
+which `test-h3-gemm` holds bit for bit against MLX's kernel at whole and ragged rows.
 
 `tf-h3-image-server` joins each binding's int8 copy to its weights' residency set while the binding lives: in shared
 storage a step's encode took 0.42 s, private 0.19 s, joined 0.04 s. Cold and warm requests give the same latent
