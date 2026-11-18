@@ -37,6 +37,7 @@ pub const Int8 = struct {
     /// Replaces every block's bf16 projections with int8 ones, freeing each bf16 buffer once it is quantized.
     pub fn quantize(self: *Model) !void {
         if (self.gated) return error.H3NotPictureModel; // the dense forward's three of q, k, v only
+        if (self.mlp % 4 != 0) return error.BadGeometry; // h3_swiglu_int8's four outputs a thread
         try self.ctx.makeCurrent();
         var handle: lt_.Handle = null;
         try self.gemms.lt.check(self.gemms.lt.api.cublasLtCreate(&handle), "cublasLtCreate");
