@@ -218,13 +218,14 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     const profiling = if (init.environ_map.get("H3_PROFILE")) |v| v.len > 0 else false;
     model.profile = profiling;
     model.spent = @splat(0);
+    var host: Host = .{ .x = x, .video = video, .normed = normed, .velocity = velocity, .w_in = w_in, .b_in = b_in, .final_norm = final_norm, .final = final, .first = text + held, .hidden = hidden };
     const transformer = h3.seconds();
     for (0..steps) |s| {
         const step = h3.seconds();
         // the stream: the text's rows, each reference's, then the video's through the float projection
         @memcpy(x[0 .. text * hidden], text_rows);
         if (anchors) |v| rows.rowsIn(v, w_in, b_in, x, text, held, width, hidden);
-        rows.rowsIn(video, w_in, b_in, x, text + held, target, width, hidden);
+        split(target, &host, Host.in);
         in.line = @intFromPtr(adaln[s * count ..].ptr);
         const checked = try model.plan(&in);
         try model.drain();
@@ -236,8 +237,11 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         _ = try model.forward(&device);
         try h3.host.readback(model, &in, checked);
         // the final norm over every row, then this step's head over the target's rows
-        rows.finalNorm(x, final_norm, final, line_of[s * count ..][0..count], normed, hidden, h3.eps);
-        rows.rowsOut(normed, w_out[s * width * hidden ..][0 .. width * hidden], b_out[s * width ..][0..width], velocity, text + held, target, hidden, width);
+        host.line = line_of[s * count ..][0..count];
+        host.w_out = w_out[s * width * hidden ..][0 .. width * hidden];
+        host.b_out = b_out[s * width ..][0..width];
+        split(count, &host, Host.norm);
+        split(target, &host, Host.out);
         picture.euler(video, velocity, pdd.deltas[s]);
         std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - step });
     }
@@ -259,4 +263,48 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     const latent_path = try std.fmt.allocPrintSentinel(a, "{s}.latent.f32", .{prefix}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = latent_path, .data = std.mem.sliceAsBytes(latent) });
     std.debug.print("wrote {s}.latent.f32: [{d}, {d}, {d}] normalised float32\n", .{ prefix, picture.channels, target_grid.rows, target_grid.columns });
+}
+
+/// A step's host rows: the video's rows in, the final norm and the step's head out, each over rows lo..hi.
+/// Every row's sums keep rows_reference's order, so a split picture is the serial one bit for bit.
+const Host = struct {
+    x: []u16,
+    video: []const f32,
+    normed: []u16,
+    velocity: []f32,
+    w_in: []align(1) const f32,
+    b_in: []align(1) const f32,
+    final_norm: []align(1) const u16,
+    final: []const u16,
+    first: usize, // the target's first row in the stream
+    hidden: usize,
+    line: []const i32 = &.{},
+    w_out: []align(1) const f32 = &.{},
+    b_out: []align(1) const f32 = &.{},
+
+    fn in(h: *const Host, lo: usize, hi: usize) void {
+        rows.rowsIn(h.video[lo * picture.row_width ..], h.w_in, h.b_in, h.x, h.first + lo, hi - lo, picture.row_width, h.hidden);
+    }
+    fn norm(h: *const Host, lo: usize, hi: usize) void {
+        rows.finalNorm(h.x[lo * h.hidden .. hi * h.hidden], h.final_norm, h.final, h.line[lo..hi], h.normed[lo * h.hidden ..], h.hidden, h3.eps);
+    }
+    fn out(h: *const Host, lo: usize, hi: usize) void {
+        rows.rowsOut(h.normed, h.w_out, h.b_out, h.velocity[lo * picture.row_width ..], h.first + lo, hi - lo, h.hidden, picture.row_width);
+    }
+};
+
+/// f(ctx, lo, hi) over 0..n in contiguous parts, one a host core (at most 16); a part whose thread fails runs here.
+fn split(n: usize, ctx: *const Host, comptime f: fn (*const Host, usize, usize) void) void {
+    var threads: [16]?std.Thread = @splat(null);
+    const parts = @max(1, @min(threads.len, std.Thread.getCpuCount() catch 1, n));
+    for (1..parts) |p| {
+        const lo = n * p / parts;
+        const hi = n * (p + 1) / parts;
+        threads[p] = std.Thread.spawn(.{}, f, .{ ctx, lo, hi }) catch blk: {
+            f(ctx, lo, hi);
+            break :blk null;
+        };
+    }
+    f(ctx, 0, n / parts);
+    for (threads[1..parts]) |t| if (t) |th| th.join();
 }
