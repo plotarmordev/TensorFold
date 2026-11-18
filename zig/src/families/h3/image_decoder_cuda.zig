@@ -15,6 +15,9 @@ const F = host.ffn;
 const image align(16) = @embedFile("fatbin_h3_image_decoder").*;
 const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_heads", "h3d_attention", "h3d_swiglu" };
 
+/// H3_PROFILE's stages, in the order a pass runs them: where a warm picture's decoder seconds go.
+pub const profile_stages = [_][]const u8{ "embedding", "norms", "products", "finish", "heads", "attention", "swiglu" };
+
 /// h3_image_decoder.cu's H3dShape.
 const Shape = extern struct {
     tiles: u32 = 0,
@@ -69,6 +72,10 @@ pub const Decoder = struct {
     view: View = .{},
     /// A download's staging: `stream` or `projected` bytes, reused between reads.
     staged: std.ArrayListUnmanaged(u8) = .empty,
+    /// H3_PROFILE: wait after every stage and keep where a picture's decoder seconds went.
+    profile: bool = false,
+    spent: [profile_stages.len]f64 = @splat(0),
+    mark: f64 = 0,
 
     /// A scratch view's byte offset inside `scratch`.
     const View = struct {
@@ -140,6 +147,17 @@ pub const Decoder = struct {
 
     fn launch(d: *const Decoder, comptime name: []const u8, grid: cuda.Dim3, block: cuda.Dim3, shared: u32, call: *cuda.Args) !void {
         try cuda.launch.launch(d.function(name), .{ .grid = grid, .block = block, .shared = shared }, d.queue, call);
+    }
+
+    /// H3_PROFILE: the stage's seconds since the last lap, once its launches have finished.
+    fn lap(d: *Decoder, comptime stage: []const u8) !void {
+        if (!d.profile) return;
+        try d.drain();
+        const now = seconds();
+        inline for (profile_stages, 0..) |s, i| {
+            if (comptime std.mem.eql(u8, s, stage)) d.spent[i] += now - d.mark;
+        }
+        d.mark = now;
     }
 
     /// The decoder's tensors of `path` (the VAE's diffusion_pytorch_model.safetensors), checked, each
@@ -262,6 +280,7 @@ pub const Decoder = struct {
         try d.scratch.?.upload(d.view.origins, std.mem.sliceAsBytes(origins));
         const started = seconds();
         try begin.record(d.queue);
+        if (d.profile) d.mark = seconds();
         const s: Shape = .{ .tiles = @intCast(origins.len), .h = @intCast(d.h), .w = @intCast(d.w), .tokens = @intCast(d.tokens), .rows = @intCast(d.rows), .cols = @intCast(d.cols), .m = @intCast(origins.len * d.tokens) };
         if (stages.embed) {
             var a = d.args(&.{ d.latent.?.ptr, d.dev(d.view.origins), d.param(d.plan.head(.post_w)), d.param(d.plan.head(.post_b)), d.dev(d.view.tok) });
@@ -271,11 +290,13 @@ pub const Decoder = struct {
             b.add(s);
             try d.launch("h3d_embed", .{ .x = 4, .y = s.m, .z = 1 }, .{ .x = 256, .y = 1 }, 0, &b);
         }
+        try d.lap("embedding");
         for (stages.from..stages.to) |i| try d.layer(s, i);
         if (stages.final) {
             var a = d.args(&.{ d.dev(d.view.x), d.param(d.plan.tail(.norm_w)), d.param(d.plan.tail(.norm_b)), d.dev(d.view.xn) });
             a.add(s);
             try d.launch("h3d_layer_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
+            try d.lap("norms");
             try d.gemm(s, d.view.xn, d.plan.tail(.proj_w), d.plan.tail(.proj_b), null, d.view.out, host.patch, W);
         }
         try end.record(d.queue);
@@ -286,6 +307,8 @@ pub const Decoder = struct {
 
     /// y = bf16(x w^T + b) via an ordered fp32 sum, or with `scale` the LayerScale residual.
     fn gemm(d: *Decoder, s: Shape, x: usize, w: usize, b: usize, scale: ?usize, y: usize, n: usize, k: usize) !void {
+        // h3d_linear loads K eight at a time
+        if (k % 8 != 0) return error.H3BadShape;
         var p = s;
         p.n = @intCast(n);
         p.k = @intCast(k);
@@ -293,11 +316,13 @@ pub const Decoder = struct {
         var product = d.args(&.{ d.dev(x), d.param(w), d.dev(d.view.acc) });
         product.add(p);
         try d.launch("h3d_linear", .{ .x = @intCast((n + 127) / 128), .y = @intCast((s.m + 127) / 128), .z = 1 }, .{ .x = 256 }, 0, &product);
+        try d.lap("products");
         const grid: cuda.Dim3 = .{ .x = @intCast((n + 31) / 32), .y = @intCast((s.m + 7) / 8), .z = 1 };
         const block: cuda.Dim3 = .{ .x = 32, .y = 8 };
         var a = d.args(&.{ d.dev(d.view.acc), d.param(b), d.param(scale orelse b), d.dev(y) });
         a.add(p);
         try d.launch("h3d_finish", grid, block, 0, &a);
+        try d.lap("finish");
     }
 
     /// Block `i` on the pass's stream in place.
@@ -306,21 +331,26 @@ pub const Decoder = struct {
         var a = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm1)), d.dev(d.view.xn) });
         a.add(s);
         try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
+        try d.lap("norms");
         try d.gemm(s, d.view.xn, p.block(i, .qkv_w), p.block(i, .qkv_b), null, d.view.wide, 3 * W, W);
         var h = d.args(&.{ d.dev(d.view.wide), d.dev(d.view.cos), d.dev(d.view.sin), d.dev(d.view.q), d.dev(d.view.k), d.dev(d.view.v) });
         h.add(s);
         try d.launch("h3d_heads", .{ .x = s.m, .y = host.heads, .z = 1 }, .{ .x = 32 }, 0, &h);
+        try d.lap("heads");
         var t = d.args(&.{ d.dev(d.view.q), d.dev(d.view.k), d.dev(d.view.v), d.dev(d.view.o) });
         t.add(s);
         try d.launch("h3d_attention", .{ .x = @intCast((s.tokens + 7) / 8), .y = host.heads, .z = s.tiles }, .{ .x = 256 }, 0, &t);
+        try d.lap("attention");
         try d.gemm(s, d.view.o, p.block(i, .out_w), p.block(i, .out_b), p.block(i, .scale1), d.view.x, W, W);
         var r = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm2)), d.dev(d.view.xn) });
         r.add(s);
         try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &r);
+        try d.lap("norms");
         try d.gemm(s, d.view.xn, p.block(i, .w1_w), p.block(i, .w1_b), null, d.view.wide, 2 * F, W);
         var u = d.args(&.{ d.dev(d.view.wide), d.dev(d.view.act) });
         u.add(s);
         try d.launch("h3d_swiglu", .{ .x = @intCast(F / 32), .y = @intCast((s.m + 7) / 8), .z = 1 }, .{ .x = 32, .y = 8 }, 0, &u);
+        try d.lap("swiglu");
         try d.gemm(s, d.view.act, p.block(i, .w2_w), p.block(i, .w2_b), p.block(i, .scale2), d.view.x, W, F);
     }
 
@@ -328,6 +358,7 @@ pub const Decoder = struct {
     pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, batch: usize, out: []f32) !Timing {
         const t = try host.tiles(a, c, rows, cols);
         if (layers > d.plan.layers) return error.H3BadTiles;
+        d.spent = @splat(0);
         const per = @min(batch, @min(most_batch, t.total()));
         try d.prepare(raw, rows, cols, t.h, t.w, per);
         var assembly = try vae.Assembler.init(a, t.rows, t.cols, 3, out);
@@ -351,6 +382,14 @@ pub const Decoder = struct {
                 try assembly.place(at.r, at.c, tile);
             }
             k += n;
+        }
+        if (d.profile) {
+            var seen: f64 = 0;
+            for (profile_stages, d.spent) |name, spent| {
+                std.debug.print("  {s}: {d:.2} s\n", .{ name, spent });
+                seen += spent;
+            }
+            std.debug.print("  outside the stages: {d:.2} s\n", .{took.gpu - seen});
         }
         return took;
     }

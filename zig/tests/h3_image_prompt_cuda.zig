@@ -18,6 +18,7 @@ const match = @import("h3_image_match.zig");
 
 const usage =
     \\usage: tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
+    \\       tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR --serve
     \\       tf-h3-image-prompt-cuda selftest [WORK_DIR]
     \\  TEXT_ENCODER_DIR  MiniMax-H3's text_encoder/ (Qwen3-VL): config.json, its index and shards
     \\  MODEL_DIR         the MiniMax-H3-Image folder: model_index.json, tokenizer/, transformer/
@@ -27,10 +28,11 @@ const usage =
     \\  WIDTHxHEIGHT      a text-to-image case: the canvas (grown to MIN_AREA, default 2048 x 2048, at the size's
     \\                    ratio, sides snapped to 32), its starting rows from SEED (default 0) as torch's CPU randn
     \\                    draws them, and the requested size
+    \\  --serve           the weights loaded once, then one `prompt.txt out.safetensors WxH [SEED [MIN_AREA]]` line
+    \\                    of stdin per picture, each answered `done OUT` or `failed OUT` on stdout
     \\  selftest          the GPU kernels on a tiny synthetic checkpoint against the float64 host reference;
     \\                    WORK_DIR (default under TMPDIR) holds a new folder with the checkpoint while it runs
     \\Exit 0: done or every gate passed; 1: a gate failed.
-    \\
 ;
 
 pub fn main(init: std.process.Init) !u8 {
@@ -42,68 +44,138 @@ pub fn main(init: std.process.Init) !u8 {
         const dir = if (args.len == 3) args[2] else try std.fs.path.join(a, &.{ tmp, "tf-h3-image-prompt-cuda-selftest" });
         return selftest(init, a, gpa, dir);
     }
-    if (args.len < 5 or args.len > 8) {
+    const serving = args.len == 4 and std.mem.eql(u8, args[3], "--serve");
+    if ((args.len < 5 or args.len > 8) and !serving) {
         std.debug.print("{s}", .{usage});
         return 2;
     }
-    const request: ?stage.Request = if (args.len >= 6) .{
-        .size = try stage.size(args[5]),
-        .seed = if (args.len >= 7) try std.fmt.parseInt(u64, args[6], 10) else 0,
-        .min_area = if (args.len == 8) try std.fmt.parseInt(u64, args[7], 10) else picture.default_min_area,
+    var loaded = try Loaded.open(init.io, a, gpa, args[1], args[2]);
+    defer loaded.deinit(gpa);
+    if (serving) return serve(init, gpa, &loaded);
+    try pictureRun(init.io, a, &loaded, args[3], args[4], args[5..]);
+    return 0;
+}
+
+/// What every picture shares: the checked geometry, the tokenizer, the runner and the weights
+/// resident on the device, the shard mappings kept only for their names — their pages evicted once
+/// the resident copy landed, so a served process pins no host copy of the weights.
+const Loaded = struct {
+    enc: rules.Encoder,
+    front: rules.Refiner,
+    tok: tokenizer.Tokenizer,
+    shards: Shards,
+    front_shards: Shards,
+    runner: *hp.Runner,
+    res: hp.Resident,
+
+    fn open(io: std.Io, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
+        // the folder and its tokenizer, checked as the host prompt path checks them
+        const enc = try rules.checkEncoder(a, try read(io, a, &.{ encoder_dir, "config.json" }));
+        _ = try picture.checkIndex(a, try read(io, a, &.{ model_dir, "model_index.json" }));
+        const transformer = try std.fs.path.join(a, &.{ model_dir, "transformer" });
+        const front = try rules.checkRefiner(a, try read(io, a, &.{ transformer, "config.json" }));
+        var tok = try tokenizer.loadTokenizer(io, a, try std.fs.path.join(a, &.{ model_dir, "tokenizer" }));
+        errdefer tok.deinit();
+
+        const runner = try hp.Runner.init(gpa);
+        errdefer runner.deinit();
+
+        var shards = try Shards.open(io, a, gpa, encoder_dir);
+        errdefer shards.deinit(gpa);
+        const prefix = try rules.textPrefix(shards.where.keys());
+        const embed = try shards.tensorBytes(try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix}), .{ enc.text.vocab, enc.text.hidden });
+        var front_shards = try Shards.open(io, a, gpa, transformer);
+        errdefer front_shards.deinit(gpa);
+        const front_w = try frontTensors(&front_shards, front);
+
+        // the whole stage's weights into one device arena; the shards' pages then leave the cache
+        const started = seconds();
+        var layer_ctx: LayerCtx = .{ .shards = &shards, .g = enc.text, .prefix = prefix };
+        var block_ctx: BlockCtx = .{ .shards = &front_shards, .g = front };
+        const res = try hp.loadResident(runner, a, enc.text, front, embed, layerOf, &layer_ctx, blockOf, &block_ctx, front_w.cond_w, front_w.cond_b, front_w.final_norm);
+        std.debug.print("{d:.2} GiB of prompt weights resident in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), seconds() - started });
+        for (shards.folder.files.values()) |*file| file.evict();
+        for (front_shards.folder.files.values()) |*file| file.evict();
+        return .{ .enc = enc, .front = front, .tok = tok, .shards = shards, .front_shards = front_shards, .runner = runner, .res = res };
+    }
+
+    fn deinit(l: *Loaded, gpa: std.mem.Allocator) void {
+        l.res.deinit();
+        l.runner.deinit();
+        l.front_shards.deinit(gpa);
+        l.shards.deinit(gpa);
+        l.tok.deinit();
+    }
+};
+
+/// One line of --serve's stdin per picture: `prompt.txt out.safetensors WxH [SEED [MIN_AREA]]`,
+/// answered `done OUT` or `failed OUT` on stdout.
+fn serve(init: std.process.Init, gpa: std.mem.Allocator, loaded: *Loaded) !u8 {
+    var in_buf: [4096]u8 = undefined;
+    var in = std.Io.File.stdin().readerStreaming(init.io, &in_buf);
+    while (try in.interface.takeDelimiter('\n')) |line| {
+        var request = std.heap.ArenaAllocator.init(gpa);
+        defer request.deinit();
+        var it = std.mem.tokenizeAny(u8, line, " \t\r");
+        const prompt_path = it.next() orelse continue;
+        const out_path = it.next() orelse prompt_path;
+        var extra: [3][]const u8 = undefined;
+        var rest: usize = 0;
+        while (it.next()) |arg| {
+            if (rest == extra.len) {
+                rest += 1;
+                break;
+            }
+            extra[rest] = arg;
+            rest += 1;
+        }
+        const verdict = blk: {
+            if (rest > extra.len) break :blk "failed";
+            pictureRun(init.io, request.allocator(), loaded, prompt_path, out_path, extra[0..rest]) catch |err| {
+                std.debug.print("{s} failed: {s}\n", .{ out_path, @errorName(err) });
+                break :blk "failed";
+            };
+            break :blk "done";
+        };
+        try std.Io.File.stdout().writeStreamingAll(init.io, try std.fmt.allocPrint(request.allocator(), "{s} {s}\n", .{ verdict, out_path }));
+    }
+    return 0;
+}
+
+/// One picture: its prompt presented and run through the resident weights to `out`'s case file.
+/// `rest` is the optional WIDTHxHEIGHT, SEED and MIN_AREA. `prompt: {d:.2} s` closes the log; the
+/// bench parser reads it.
+fn pictureRun(io: std.Io, a: std.mem.Allocator, loaded: *Loaded, prompt_path: []const u8, out_path: []const u8, rest: []const []const u8) !void {
+    if (rest.len > 3) return error.BadArguments;
+    const request: ?stage.Request = if (rest.len >= 1) .{
+        .size = try stage.size(rest[0]),
+        .seed = if (rest.len >= 2) try std.fmt.parseInt(u64, rest[1], 10) else 0,
+        .min_area = if (rest.len == 3) try std.fmt.parseInt(u64, rest[2], 10) else picture.default_min_area,
     } else null;
     const started = seconds();
 
-    // the folder and its tokenizer, checked as the host prompt path checks them
-    const io = init.io;
-    const enc = try rules.checkEncoder(a, try read(io, a, &.{ args[1], "config.json" }));
-    _ = try picture.checkIndex(a, try read(io, a, &.{ args[2], "model_index.json" }));
-    const transformer = try std.fs.path.join(a, &.{ args[2], "transformer" });
-    const front = try rules.checkRefiner(a, try read(io, a, &.{ transformer, "config.json" }));
-    var tok = try tokenizer.loadTokenizer(io, a, try std.fs.path.join(a, &.{ args[2], "tokenizer" }));
-    defer tok.deinit();
-    var prompt: []const u8 = try std.Io.Dir.cwd().readFileAlloc(io, args[3], a, .limited(16 << 20));
+    var prompt: []const u8 = try std.Io.Dir.cwd().readFileAlloc(io, prompt_path, a, .limited(16 << 20));
     if (std.mem.endsWith(u8, prompt, "\n")) prompt = prompt[0 .. prompt.len - 1];
     if (std.mem.endsWith(u8, prompt, "\r")) prompt = prompt[0 .. prompt.len - 1];
 
-    const p = try rules.present(a, &tok, enc.marks, &.{}, prompt);
-    const pos = try rules.positions(a, p, enc.marks, &.{});
+    const p = try rules.present(a, &loaded.tok, loaded.enc.marks, &.{}, prompt);
+    const pos = try rules.positions(a, p, loaded.enc.marks, &.{});
     const T = p.ids.len;
+    const runner = loaded.runner;
 
-    var runner = try hp.Runner.init(gpa);
-    defer runner.deinit();
-
-    // the text model, one layer's tensors read from the shards at a time
-    var shards = try Shards.open(io, a, gpa, args[1]);
-    defer shards.deinit(gpa);
-    const prefix = try rules.textPrefix(shards.where.keys());
-    const embed = try shards.tensorBytes(try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix}), .{ enc.text.vocab, enc.text.hidden });
-    // the mapped bytes into the page cache before the uploads fault them in mid-copy
-    try shards.readAhead(io, a, TextNames{ .prefix = prefix, .layers = enc.text.layers });
-    const enc_rows = try a.alloc(u16, T * enc.text.hidden);
+    const enc_rows = try a.alloc(u16, T * loaded.enc.text.hidden);
     var gpu_started = seconds();
-    var layer_ctx: LayerCtx = .{ .shards = &shards, .g = enc.text, .prefix = prefix };
-    try runner.encode(a, enc.text, embed, p.ids, pos, null, layerOf, &layer_ctx, enc_rows);
-    std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU\n", .{ T, enc.text.layers, seconds() - gpu_started, runner.gpu });
+    try runner.encode(a, loaded.enc.text, &loaded.res, p.ids, pos, null, enc_rows);
+    std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU\n", .{ T, loaded.enc.text.layers, seconds() - gpu_started, runner.gpu });
 
-    // condition_proj and the two-block refiner, their tensors read in order
-    var front_shards = try Shards.open(io, a, gpa, transformer);
-    defer front_shards.deinit(gpa);
-    const front_w = try frontTensors(&front_shards, front);
-    try front_shards.readAhead(io, a, struct {
-        fn accepts(_: @This(), name: []const u8) bool {
-            return std.mem.startsWith(u8, name, "condition_proj.") or std.mem.startsWith(u8, name, "token_refiner.");
-        }
-    }{});
-    const text = try a.alloc(u16, T * front.hidden);
+    const text = try a.alloc(u16, T * loaded.front.hidden);
     gpu_started = seconds();
-    var block_ctx: BlockCtx = .{ .shards = &front_shards, .g = front };
-    try runner.refine(a, front, front_w.cond_w, front_w.cond_b, front_w.final_norm, blockOf, &block_ctx, enc_rows, text);
+    try runner.refine(loaded.front, &loaded.res, enc_rows, text);
     std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU\n", .{ seconds() - gpu_started, runner.gpu });
 
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = args[4], .data = try stage.write(a, front.hidden, p, text, request, &noise.randn, &.{}) });
-    std.debug.print("wrote {s}: text [{d}, {d}] bf16, text_tags and ids\n", .{ args[4], T, front.hidden });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = try stage.write(a, loaded.front.hidden, p, text, request, &noise.randn, &.{}) });
+    std.debug.print("wrote {s}: text [{d}, {d}] bf16, text_tags and ids\n", .{ out_path, T, loaded.front.hidden });
     std.debug.print("prompt: {d:.2} s\n", .{seconds() - started});
-    return 0;
 }
 
 fn read(io: std.Io, a: std.mem.Allocator, parts: []const []const u8) ![]u8 {
@@ -152,30 +224,6 @@ const Shards = struct {
         return s.folder.shard(s.gpa, file);
     }
 
-    /// The mapped bytes of every tensor `accepts` into the page cache before the GPU's uploads fault
-    /// them in one at a time, as the Metal prompt paths do (`h3/read_ahead.zig`); each shard mapped
-    /// once, its accepted tensors one span.
-    fn readAhead(s: *Shards, io: std.Io, a: std.mem.Allocator, accepts: anytype) !void {
-        var spans: std.ArrayList(hp.read_ahead.Span) = .empty;
-        defer spans.deinit(a);
-        var done: std.StringHashMapUnmanaged(void) = .empty;
-        defer done.deinit(a);
-        var it = s.where.iterator();
-        while (it.next()) |e| {
-            if (!accepts.accepts(e.key_ptr.*)) continue;
-            const gop = try done.getOrPut(a, e.value_ptr.*);
-            if (gop.found_existing) continue;
-            const file = try s.shard(e.key_ptr.*);
-            const path = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ s.folder.dir, e.value_ptr.* }, 0);
-            var names = file.names.iterator();
-            while (names.next()) |n| if (accepts.accepts(n.key_ptr.*)) {
-                const entry = n.value_ptr.*;
-                try spans.append(a, .{ .path = path, .lo = file.data + entry.begin, .hi = file.data + entry.end });
-            };
-        }
-        _ = try hp.read_ahead.read(a, io, spans.items);
-    }
-
     /// The bf16 tensor `name` at `shape` as stored bytes (columns 0: a vector of `rows` values).
     fn tensorBytes(s: *Shards, name: []const u8, shape: rules.Shape) !hp.Tensor {
         const e = try (try s.shard(name)).bf16(name);
@@ -186,23 +234,6 @@ const Shards = struct {
             return error.H3UnexpectedTensor;
         }
         return e.bytes;
-    }
-};
-
-/// The text model's embedding and its first `layers` layers under `prefix`, the prompt path's set.
-const TextNames = struct {
-    prefix: []const u8,
-    layers: usize,
-
-    fn accepts(t: TextNames, name: []const u8) bool {
-        if (!std.mem.startsWith(u8, name, t.prefix)) return false;
-        const rest = name[t.prefix.len..];
-        if (std.mem.eql(u8, rest, "embed_tokens.weight")) return true;
-        if (!std.mem.startsWith(u8, rest, "layers.")) return false;
-        const tail = rest["layers.".len..];
-        const dot = std.mem.indexOfScalar(u8, tail, '.') orelse return false;
-        const i = std.fmt.parseInt(usize, tail[0..dot], 10) catch return false;
-        return i < t.layers;
     }
 };
 
@@ -353,7 +384,7 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
     defer scratch.deinit(io);
     const tiny = try Tiny.write(io, a, rand, scratch.path);
 
-    var runner = try hp.Runner.init(gpa);
+    const runner = try hp.Runner.init(gpa);
     defer runner.deinit();
     std.debug.print("synthetic text model {d} wide ({d} layers run of {d}), refiner {d} wide, {d} rows\n", .{ g.hidden, g.layers, g.layers + 1, f.hidden, tiny_rows });
     var failed = false;
@@ -364,16 +395,18 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
     const pos = try a.alloc([3]i32, T);
     for (pos, 0..) |*p, i| p.* = @splat(@intCast(i));
 
-    // the GPU run's weight callbacks answer from the tiny checkpoint's stored bf16 bytes
+    // the resident weights, loaded once from the tiny checkpoint's stored bf16 bytes
     const prefix = "model.language_model.";
     var bits_layer: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
+    var bits_front: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
+    var res = try hp.loadResident(runner, a, g, f, try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})), bitsLayer, &bits_layer, bitsBlock, &bits_front, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"));
+    defer res.deinit();
     const enc = try a.alloc(u16, T * g.hidden);
     const started = seconds();
-    try runner.encode(a, g, try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})), ids, pos, null, bitsLayer, &bits_layer, enc);
+    try runner.encode(a, g, &res, ids, pos, null, enc);
     const enc_s = seconds() - started;
-    var bits_front: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
     const out = try a.alloc(u16, T * f.hidden);
-    try runner.refine(a, f, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"), bitsBlock, &bits_front, enc, out);
+    try runner.refine(f, &res, enc, out);
 
     // the float64 oracle and the float32-sum host run over the same weights
     const cs = try a.alloc(f32, T * 64);
@@ -395,22 +428,22 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
 
     // a second run, byte for byte the same
     const again = try a.alloc(u16, enc.len);
-    try runner.encode(a, g, try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})), ids, pos, null, bitsLayer, &bits_layer, again);
+    try runner.encode(a, g, &res, ids, pos, null, again);
     const out_again = try a.alloc(u16, out.len);
-    try runner.refine(a, f, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"), bitsBlock, &bits_front, again, out_again);
+    try runner.refine(f, &res, again, out_again);
     const same = std.mem.eql(u16, enc, again) and std.mem.eql(u16, out, out_again);
     std.debug.print("encoded in {d:.3} s; again, byte for byte the same: {}\n", .{ enc_s, same });
     failed = failed or !same;
 
     // an edit's rows: a 6-pad vision block spliced at the marks, DeepStack's blocks scattered after
     // layers 0 to 2 — the full run, then each part alone so a failure names splice, scatter or layer growth
-    failed = !try withPicture(runner, a, rand, tiny) or failed;
+    failed = !try withPicture(runner, &res, a, rand, &tiny) or failed;
     std.debug.print("{s}\n", .{if (failed) "FAIL" else "PASS every gate"});
     return @intFromBool(failed);
 }
 
 /// Preserve the failing full vision case, then separate no-op writes, layer growth, splice and DeepStack.
-fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny: Tiny) !bool {
+fn withPicture(runner: *hp.Runner, res: *const hp.Resident, a: std.mem.Allocator, rand: std.Random, tiny: *const Tiny) !bool {
     const g = tiny_text;
     const H = g.hidden;
     const n = 6;
@@ -434,8 +467,7 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     const cs = try a.alloc(f32, T * 64);
     const sn = try a.alloc(f32, T * 64);
     rules.rotary(cs, sn, pos, g.theta, g.sections);
-    var layer_ctx: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
-    const embed = try bitsOf(&tiny, "model.language_model.embed_tokens.weight");
+    const embed = try bitsOf(tiny, "model.language_model.embed_tokens.weight");
 
     // Preserve embedding rows for no-op splices; zero DeepStack blocks separate the two vision operations.
     const zeros = try a.alloc(u16, n * H);
@@ -454,10 +486,10 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
 
     // Equal inputs must retain the same arithmetic with the vision copy/add path enabled.
     const plain = try a.alloc(u16, T * H);
-    try runner.encode(a, g, embed, ids, pos, null, bitsLayer, &layer_ctx, plain);
+    try runner.encode(a, g, res, ids, pos, null, plain);
     const noop = try a.alloc(u16, T * H);
     const noop_vision: hp.Vision = .{ .pads = pads, .rows = keep, .deepstack = .{ zeros, zeros, zeros } };
-    try runner.encode(a, g, embed, ids, pos, noop_vision, bitsLayer, &layer_ctx, noop);
+    try runner.encode(a, g, res, ids, pos, noop_vision, noop);
     const noop_same = std.mem.eql(u16, plain, noop);
     std.debug.print("a no-op vision (embedding rows spliced back, DeepStack zero) byte for byte the text-only run: {}\n", .{noop_same});
 
@@ -487,7 +519,7 @@ fn withPicture(runner: *hp.Runner, a: std.mem.Allocator, rand: std.Random, tiny:
     const sum32 = try a.alloc(f32, T * H);
     var ok = noop_same;
     for (probes) |probe| {
-        try runner.encode(a, probe.geometry, embed, ids, pos, probe.gpu, bitsLayer, &layer_ctx, enc);
+        try runner.encode(a, probe.geometry, res, ids, pos, probe.gpu, enc);
         try ref.encode(f64, a, probe.geometry, tiny.host, ids, cs, sn, probe.host, exact);
         try ref.encode(f32, a, probe.geometry, tiny.host, ids, cs, sn, probe.host, sum32);
         ok = try whole(a, probe.label, enc, sum32, exact, H) and ok;

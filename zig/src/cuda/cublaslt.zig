@@ -1,4 +1,5 @@
-//! cuBLASLt opened at runtime: descriptors, layouts, heuristics, matmul with fp32 compute only (no TF32 or fast modes).
+//! cuBLASLt opened at runtime: descriptors, layouts, heuristics, matmul with fp32 compute (no TF32 or fast modes), or
+//! exact int32 sums of int8 operands.
 
 const std = @import("std");
 const platform = @import("sys");
@@ -20,8 +21,9 @@ pub const Heuristic = extern struct {
     reserved: [4]c_int,
 };
 
-pub const DataType = enum(c_int) { f32 = 0, f16 = 2, bf16 = 14 };
+pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14 };
 pub const compute_32f: c_int = 68;
+pub const compute_32i: c_int = 72;
 pub const Op = enum(c_int) { n = 0, t = 1 };
 pub const Order = enum(c_int) { col = 0, row = 1 };
 
@@ -214,7 +216,8 @@ pub const Linear = struct {
     }
 };
 
-/// One column-major product `C = alpha op(A) op(B) + beta C`, C [m, n], batched with element strides; FP32 compute.
+/// One column-major product `C = alpha op(A) op(B) + beta C`, C [m, n], batched with element strides; FP32 compute,
+/// or int32 sums when C is `.i32` (A and B `.i8`, see `Gemm.runInt`).
 pub const Spec = struct {
     ta: Op = .n,
     tb: Op = .n,
@@ -250,7 +253,8 @@ pub const Gemm = struct {
         g.lt = lt;
         g.handle = handle;
         const api = lt.api;
-        try lt.check(api.cublasLtMatmulDescCreate(&g.desc, compute_32f, .f32), "cublasLtMatmulDescCreate");
+        const exact = s.c == .i32;
+        try lt.check(api.cublasLtMatmulDescCreate(&g.desc, if (exact) compute_32i else compute_32f, if (exact) .i32 else .f32), "cublasLtMatmulDescCreate");
         errdefer _ = api.cublasLtMatmulDescDestroy(g.desc);
         const ta: c_int = @backingInt(s.ta);
         const tb: c_int = @backingInt(s.tb);
@@ -290,6 +294,14 @@ pub const Gemm = struct {
     pub fn run(g: *const Gemm, alpha: f32, a: abi.DevicePtr, b: abi.DevicePtr, beta: f32, c: abi.DevicePtr, workspace: abi.DevicePtr, workspace_len: usize, stream: abi.Stream) Error!void {
         if (workspace_len < g.workspace_need) return error.Invalid;
         try g.lt.check(g.lt.api.cublasLtMatmul(g.handle, g.desc, &alpha, a, g.a, b, g.b, &beta, c, g.c, c, g.c, &g.algo, workspace, workspace_len, stream), "cublasLtMatmul");
+    }
+
+    /// C = op(A) op(B) as exact int32 sums of int8 operands, on a plan whose C is `.i32`.
+    pub fn runInt(g: *const Gemm, a: abi.DevicePtr, b: abi.DevicePtr, c: abi.DevicePtr, workspace: abi.DevicePtr, workspace_len: usize, stream: abi.Stream) Error!void {
+        if (workspace_len < g.workspace_need) return error.Invalid;
+        const one: i32 = 1;
+        const zero: i32 = 0;
+        try g.lt.check(g.lt.api.cublasLtMatmul(g.handle, g.desc, &one, a, g.a, b, g.b, &zero, c, g.c, c, g.c, &g.algo, workspace, workspace_len, stream), "cublasLtMatmul");
     }
 
     fn layout(lt: *const Library, t: DataType, rows: u64, cols: u64, ld: u64, batch: u32, stride: u64) Error!Layout {

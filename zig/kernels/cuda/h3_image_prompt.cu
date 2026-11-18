@@ -162,17 +162,51 @@ extern "C" __global__ void __launch_bounds__(256) h3p_splice(
 // y [rows, n] fp32 = x [rows, k] bf16 . w [n, k] bf16^T, each K sum in the host reference's order.
 // The text encoder's short rows make a sequential dot product preferable to a differently ordered tiled GEMM:
 // its bf16 rounding points then coincide with the reference's instead of failing a zero-noise vision baseline.
+// y [rows,n] = x [rows,k] . w [n,k]^T: a warp owns one output column and its lanes load the
+// column's k weights in coalesced 256-element windows (eight a lane, one 16-byte load), so a
+// column's row is read once per 32-row group instead of once per row and 512 bytes stay in flight
+// per warp. Each lane sums its own row over those windows in the reference's k order, eight at a
+// time with the loads issued together, so every output's fp32 sum is the sequential dot the host
+// computes. A 32-element window left the stage memory-latency bound: 45 GiB took 5.5 s, 8 GB/s.
 extern "C" __global__ void __launch_bounds__(256) h3p_linear(
         const bf16* x, const bf16* w, float* y, int rows, int n, int k) {
-    const int at = blockIdx.x * 256 + threadIdx.x;
-    if (at >= rows * n) return;
-    const int row = at / n;
-    const int col = at % n;
-    const bf16* xr = x + (size_t)row * k;
+    __shared__ __align__(16) bf16 win[8][256]; // one window a warp
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int col = blockIdx.x * 8 + warp;
+    if (col >= n) return;
     const bf16* wr = w + (size_t)col * k;
-    float sum = 0.0f;
-    for (int i = 0; i < k; ++i) sum = __fadd_rn(sum, __fmul_rn(f(xr[i]), f(wr[i])));
-    y[at] = sum;
+    // k a multiple of 8 keeps the column's start and every eight-element step 16-byte aligned
+    const bool vec = ((size_t)wr & 15) == 0;
+    for (int base = 0; base < rows; base += 32) {
+        const int row = base + lane;
+        const bf16* xr = x + (size_t)row * k;
+        float sum = 0.0f;
+        for (int i0 = 0; i0 < k; i0 += 256) {
+            bf16* dst = win[warp] + lane * 8;
+            const int at = i0 + lane * 8;
+            if (vec && at + 8 <= k) *reinterpret_cast<uint4*>(dst) = *reinterpret_cast<const uint4*>(wr + at);
+            else for (int u = 0; u < 8; ++u) dst[u] = at + u < k ? wr[at + u] : h(0.0f);
+            __syncwarp();
+            const int jn = min(256, k - i0);
+            for (int u = 0; u < jn; u += 8) {
+                // the row's next eight x values, then their products in the reference's k order
+                float xv[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+                const int atx = i0 + u;
+                if (row < rows) {
+                    if (vec && atx + 8 <= k) {
+                        __align__(16) bf16 xs[8];
+                        *reinterpret_cast<uint4*>(xs) = *reinterpret_cast<const uint4*>(xr + atx);
+                        for (int i = 0; i < 8; ++i) xv[i] = f(xs[i]);
+                    } else for (int i = 0; i < 8; ++i) if (atx + i < k) xv[i] = f(xr[atx + i]);
+                    for (int i = 0; i < 8 && u + i < jn; ++i)
+                        sum = __fadd_rn(sum, __fmul_rn(xv[i], f(win[warp][u + i])));
+                }
+            }
+            __syncwarp();
+        }
+        if (row < rows) y[(size_t)row * n + col] = sum;
+    }
 }
 
 // y [n] = bf16(x [n]): a product's fp32 rows at their one rounding to bf16, the reference's every output.
