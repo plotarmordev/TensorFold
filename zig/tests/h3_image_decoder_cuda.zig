@@ -9,12 +9,15 @@ const vae = dec.vae;
 const usage =
     \\usage: tf-h3-image-decoder-cuda MODEL_DIR latent.f32 ROWS COLUMNS out.png [WIDTHxHEIGHT]
     \\       tf-h3-image-decoder-cuda reference MODEL_DIR latent.f32 ROWS COLUMNS gpu.png host.png [WIDTHxHEIGHT]
+    \\       tf-h3-image-decoder-cuda MODEL_DIR --serve
     \\       tf-h3-image-decoder-cuda selftest
     \\  MODEL_DIR     the MiniMax-H3-Image folder: vae/config.json and vae/diffusion_pytorch_model.safetensors
     \\  latent.f32    the normalised latent [24, ROWS, COLUMNS] in float32, as tf-h3-image writes it
     \\  WIDTHxHEIGHT  the requested size: the 16 COLUMNS x 16 ROWS canvas is resized to it (Pillow's LANCZOS)
     \\reference decodes the same latent on the GPU and on the host's reference decoder, writes both PNGs and compares
     \\the pictures against the selftest's full-chain relative bound; it exits 1 past it.
+    \\--serve loads the decoder once, then decodes one `latent.f32 ROWS COLUMNS out.png [WIDTHxHEIGHT]` line
+    \\of stdin per picture, answering each `done OUT` or `failed OUT` on stdout.
     \\selftest runs the kernels on synthetic weights against a float64 host reference; it exits 1 past a bound.
     \\
 ;
@@ -143,9 +146,14 @@ pub fn main(init: std.process.Init) !void {
         if (!ok) std.process.exit(1);
         return;
     }
-    if (args.len != 6 and args.len != 7) {
+    if (args.len != 6 and args.len != 7 and !(args.len == 3 and std.mem.eql(u8, args[2], "--serve"))) {
         std.debug.print("{s}", .{usage});
         std.process.exit(2);
+    }
+    if (args.len == 3) {
+        var v = try Vae.load(init, a, args[1]);
+        defer v.d.deinit();
+        return serve(init, &v);
     }
     const rows = std.fmt.parseInt(usize, args[3], 10) catch return error.H3BadPictureGrid;
     const cols = std.fmt.parseInt(usize, args[4], 10) catch return error.H3BadPictureGrid;
@@ -153,4 +161,40 @@ pub fn main(init: std.process.Init) !void {
     const v = try Vae.load(init, a, args[1]);
     defer v.d.deinit();
     try v.png(init, a, latent, rows, cols, if (args.len == 7) try dec.host.size(args[6]) else null, args[5]);
+}
+
+/// `--serve`'s stdin: one `latent.f32 ROWS COLUMNS out.png [WIDTHxHEIGHT]` line per picture, each answered
+/// `done OUT` or `failed OUT` on stdout, the decoder's weights loaded once and kept.
+fn serve(init: std.process.Init, v: *Vae) !void {
+    var in_buf: [4096]u8 = undefined;
+    var in = std.Io.File.stdin().readerStreaming(init.io, &in_buf);
+    while (try in.interface.takeDelimiter('\n')) |line| {
+        var request = std.heap.ArenaAllocator.init(init.gpa);
+        defer request.deinit();
+        const a = request.allocator();
+        var fields: [5][]const u8 = undefined;
+        var count: usize = 0;
+        var it = std.mem.tokenizeAny(u8, line, " \t\r");
+        while (it.next()) |field| {
+            if (count == fields.len) {
+                count += 1;
+                break;
+            }
+            fields[count] = field;
+            count += 1;
+        }
+        const verdict = blk: {
+            if (count < 4 or count > fields.len) break :blk "failed";
+            const rows = std.fmt.parseInt(usize, fields[1], 10) catch break :blk "failed";
+            const cols = std.fmt.parseInt(usize, fields[2], 10) catch break :blk "failed";
+            const want: ?dec.host.Size = if (count == 5) dec.host.size(fields[4]) catch break :blk "failed" else null;
+            const latent = latentOf(init, a, fields[0], rows, cols) catch break :blk "failed";
+            v.png(init, a, latent, rows, cols, want, fields[3]) catch |err| {
+                std.debug.print("{s} failed: {s}\n", .{ fields[3], @errorName(err) });
+                break :blk "failed";
+            };
+            break :blk "done";
+        };
+        try std.Io.File.stdout().writeStreamingAll(init.io, try std.fmt.allocPrint(a, "{s} {s}\n", .{ verdict, if (count >= 4) fields[3] else "-" }));
+    }
 }

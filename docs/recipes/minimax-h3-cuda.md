@@ -117,8 +117,8 @@ The 14 November tables below predate this cutover; the
 and tools without its gate: it records each selftest's PASS or FAIL and renders anyway. Each size gets one cold picture
 (start to first picture) and three warm repeats, while `nvidia-smi` is sampled twice a second. The transformer stays
 resident: one `tf-h3-image-cuda MODEL --serve` a size loads the model inside the cold run and renders all four cases,
-so warm repeats pay no transformer load. The prompt encoder streams its weights a layer at a time and the decoder loads in
-seconds, so both still run a process a picture. Where unified memory leaves `memory.used` as `[N/A]`, the peak is the
+so warm repeats pay no transformer load. `tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL --serve` and
+`tf-h3-image-decoder-cuda MODEL --serve` likewise load their weights once a size and serve the four cases. Where unified memory leaves `memory.used` as `[N/A]`, the peak is the
 compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens with the selftests' verdict. If any
 selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
 hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer, decoder load and decoder
@@ -212,7 +212,8 @@ The rounds left, in order, each needing its own Desk window:
    from `--serve` with the weights on the device: ~48 GiB beside the transformer's 39.4 GiB in the GB10's shared
    memory. The pilot prompt is 24 rows, so the encoder's arithmetic is under a second and the refiner's 0.3 s: a warm
    prompt should fall from 16.3 s to about 1 s; the first Desk window times it.
-2. **The decoder resident**, its 1.7 s load paid once, its 5.8 s of tiles unchanged.
+2. **The decoder resident.** `tf-h3-image-decoder-cuda --serve` loads the VAE once a size, so a warm picture pays
+   its 5.8 s of tiles and the PNG but not the 1.7 s load; the tiles are the next decoder round.
 3. **INT8 linear layers**, mmh3's step (1.4 s against 4.07 s): 19.3 B of the 33.1 B parameters are projections, about
    159 TFLOP of a step's ~273, so BF16 at this rate cannot reach 17.6 s on its own. It needs the Mac-render gates
    against the BF16 picture before it can be the default.

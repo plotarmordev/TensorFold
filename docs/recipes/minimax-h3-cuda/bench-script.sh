@@ -21,7 +21,7 @@ mkdir -p "$out"
     echo "GPU, driver: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader)"
     echo "prompt: $pilot/prompt.txt, sha256 $(sha256sum <"$pilot/prompt.txt" | cut -d' ' -f1)"
     echo "seed: 42"
-    echo "runs per size: 1 cold, 3 warm on one resident prompt and transformer"
+    echo "runs per size: 1 cold, 3 warm on one resident prompt, transformer and decoder"
 } >"$out/settings"
 selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or FAIL to selftests
     name=$1
@@ -38,9 +38,9 @@ sample() { # until killed, twice a second: time, GPU memory used (MiB), power (W
         sleep 0.5
     done
 }
-sampler= server= prompt_server=
+sampler= server= prompt_server= decoder_server=
 # the summary is written whenever the script exits, after a failed stage too
-trap '[ -z "$sampler" ] || kill "$sampler"; [ -z "$server" ] || kill "$server" 2>/dev/null || :; [ -z "$prompt_server" ] || kill "$prompt_server" 2>/dev/null || :; python3 tools/zig/h3_image_bench.py "$out"' EXIT
+trap '[ -z "$sampler" ] || kill "$sampler"; [ -z "$server" ] || kill "$server" 2>/dev/null || :; [ -z "$prompt_server" ] || kill "$prompt_server" 2>/dev/null || :; [ -z "$decoder_server" ] || kill "$decoder_server" 2>/dev/null || :; python3 tools/zig/h3_image_bench.py "$out"' EXIT
 stage() { # stage NAME TOOL ARGS...: the tool's log, with its times, to $case.NAME.log; shown if it fails
     log=$case.$1.log
     shift
@@ -74,6 +74,20 @@ prompt_stage() { # the resident prompt stage writes $case's picture case; its ne
     prompt_logged=$(wc -c <"$out/$side.prompt-server.log")
     [ "$verdict" = done ] || { cat "$case.prompt.log" >&2; exit 1; }
 }
+decoder_stage() { # the resident decoder writes $case.png; its new log bytes go to $case.decoder.log
+    [ -n "$decoder_server" ] || {
+        mkfifo "$out/decoder-requests" "$out/decoder-replies"
+        "$bin/tf-h3-image-decoder-cuda" "$model" --serve <"$out/decoder-requests" >"$out/decoder-replies" 2>"$out/$side.decoder-server.log" &
+        decoder_server=$!
+        exec 7>"$out/decoder-requests" 8<"$out/decoder-replies"
+        decoder_logged=0
+    }
+    echo "$case.latent.f32 $((side / 16)) $((side / 16)) $case.png ${side}x$side" >&7
+    read -r verdict _ <&8 || verdict=
+    tail -c +$((decoder_logged + 1)) "$out/$side.decoder-server.log" >"$case.decoder.log"
+    decoder_logged=$(wc -c <"$out/$side.decoder-server.log")
+    [ "$verdict" = done ] || { cat "$case.decoder.log" >&2; exit 1; }
+}
 for side in 2048 4096; do
     for run in 1 2 3 4; do
         case=$out/$side-$run
@@ -82,7 +96,7 @@ for side in 2048 4096; do
         date +%s.%N >"$case.time"
         prompt_stage
         image
-        stage decoder "$bin/tf-h3-image-decoder-cuda" "$model" "$case.latent.f32" $((side / 16)) $((side / 16)) "$case.png" "${side}x$side"
+        decoder_stage
         date +%s.%N >>"$case.time"
         kill "$sampler"
         sampler=
@@ -97,6 +111,10 @@ for side in 2048 4096; do
     wait "$prompt_server"
     prompt_server=
     rm "$out/prompt-requests" "$out/prompt-replies"
+    exec 7>&- 8<&-
+    wait "$decoder_server"
+    decoder_server=
+    rm "$out/decoder-requests" "$out/decoder-replies"
     if [ "$side" = 2048 ]; then
         # the GPU decoder's 2048² picture beside the host reference decoder's on the same latent
         case=$out/2048-reference
