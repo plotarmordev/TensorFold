@@ -199,7 +199,9 @@ At `96c87a43` a warm 2048² picture took 77.0 s: prompt 16.9 s, case setup 26.6 
 decoder 3.2 s load and 5.5 s tiles. mmh3's is 17.6 s. The case setup was the AdaLN tables, built again for every
 picture from ~26 GB of projection weights read back from the shards. Text-to-image's tables depend on the six
 timesteps alone, so `--serve` keeps the last picture's tables and rebuilds them only for a case with other
-timesteps (a reference's keyframe row).
+timesteps (a reference's keyframe row). [`serve-check.sh`](minimax-h3-cuda/serve-check.sh) proves the reuse: one
+server renders 512² cases a, a, b, a (b adds a 2 x 2 reference, so its table gains the keyframe timestep) and each
+latent must equal its case's fresh run byte for byte; the job exits 1 on a miss.
 
 Desk ran that change (`fd812222`, job `top-d795bf3e6c37`, 18 November, exit 0, `bench-script.sh`). Every selftest
 passed and the `reference` check repeated `96c87a43`'s numbers (PSNR 56.65 dB, relative error 3.15e-3 against the
@@ -285,7 +287,8 @@ The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
    GB10's dense int8. The int32 sums' round trip through `h3_dequantize` and the twice-read `h3_quantize` rows are
    the measured candidates; MXFP8 block scaling (cuBLASLt's 32-element `UE8M0` mode, compute capability 10.0+; the
    outer-vector mode is 9.0 only) writes bf16 straight from the product. Then the Mac-render gates on the `--int8`
-   picture before `--int8` becomes the default; the two kernels' records are in the registry as of `cadab6b2`.
+   picture before `--int8` becomes the default; the two kernels' records are in the registry as of `cadab6b2`, and
+   `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-5 (`contract_h3_int8.zig`).
 2. **Attention**, 1.76 s a picture at ~5% of the GB10's bf16 rate: mmh3's INT8/FP8 attention, or a block whose
    registers leave room for four CTAs an SM instead of two.
 3. **The host rows outside the blocks**, 1.2 s a picture (`rows_in`, the final norm, `rows_out`): mmh3 runs them on
