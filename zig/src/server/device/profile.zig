@@ -36,144 +36,75 @@ pub fn load(a: Allocator, io: std.Io, file: []const u8) ?Doc {
     return parse(a, bytes);
 }
 
-/// The profile read through JSON values: a typed parse links compiler-rt's quad floats, and with them its memcpy over libSystem's.
 pub fn parse(a: Allocator, bytes: []const u8) ?Doc {
-    const root = std.json.parseFromSliceLeaky(std.json.Value, a, bytes, .{ .allocate = .alloc_always }) catch return null;
-    if (root != .object) return null;
-    const doc = readDoc(a, root.object) catch return null;
+    const parsed = std.json.parseFromSlice(std.json.Value, a, bytes, .{ .parse_numbers = false }) catch return null;
+    defer parsed.deinit();
+    const doc = readValue(Doc, a, parsed.value) catch return null;
     return if (doc.schema == schema) doc else null;
 }
 
-fn readDoc(a: Allocator, o: std.json.ObjectMap) !Doc {
-    return .{
-        .schema = try int(u32, o, "schema", schema),
-        .scanned_at = try text(o, "scanned_at", null),
-        .binary_version = try text(o, "binary_version", null),
-        .fingerprint = try text(o, "fingerprint", null),
-        .scan = try enumeration(Scan, o, "scan", null),
-        .machine = try readMachine(a, try object(o, "machine")),
-        .support = try readSupport(a, try object(o, "support")),
-    };
-}
-
-fn readMachine(a: Allocator, o: std.json.ObjectMap) !machine.Machine {
-    return .{
-        .os = try enumeration(machine.Os, o, "os", null),
-        .os_version = try text(o, "os_version", ""),
-        .arch = try text(o, "arch", null),
-        .cpu = try text(o, "cpu", ""),
-        .cores = try int(u32, o, "cores", 0),
-        .performance_cores = try int(u32, o, "performance_cores", 0),
-        .efficiency_cores = try int(u32, o, "efficiency_cores", 0),
-        .ram = try int(u64, o, "ram", 0),
-        .gpu_wired_limit = try int(u64, o, "gpu_wired_limit", 0),
-        .wsl = try flag(o, "wsl", false),
-        .gpus = try gpus(a, o.get("gpus")),
-    };
-}
-
-fn gpus(a: Allocator, v: ?std.json.Value) ![]const machine.Gpu {
-    const list = v orelse return &.{};
-    if (list != .array) return error.BadProfile;
-    const out = try a.alloc(machine.Gpu, list.array.items.len);
-    for (out, list.array.items) |*g, item| {
-        if (item != .object) return error.BadProfile;
-        const o = item.object;
-        g.* = .{
-            .vendor = try enumeration(machine.Vendor, o, "vendor", null),
-            .name = try text(o, "name", null),
-            .memory = try int(u64, o, "memory", 0),
-            .unified = try flag(o, "unified", false),
-            .sm = try int(u32, o, "sm", 0),
-            .gfx = try text(o, "gfx", ""),
-            .pci = try text(o, "pci", ""),
-            .source = try enumeration(machine.Source, o, "source", .os),
-        };
+// The typed integer parser's quad-float fallback pulls compiler-rt's memcpy into the native server.
+fn readValue(comptime T: type, a: Allocator, source: std.json.Value) std.json.ParseFromValueError!T {
+    switch (@typeInfo(T)) {
+        .int => switch (source) {
+            .number_string, .string => |raw| return decimalInteger(T, raw),
+            else => return error.UnexpectedToken,
+        },
+        .optional => |info| {
+            if (source == .null) return null;
+            return try readValue(info.child, a, source);
+        },
+        .@"struct" => |info| {
+            if (source != .object) return error.UnexpectedToken;
+            var result: T = undefined;
+            inline for (info.field_names, info.field_types, info.field_attrs) |name, Field, attrs| {
+                @field(result, name) = if (source.object.get(name)) |v|
+                    try readValue(Field, a, v)
+                else
+                    attrs.defaultValue(Field) orelse return error.MissingField;
+            }
+            return result;
+        },
+        .pointer => |info| {
+            if (info.size != .slice) @compileError("device profiles only contain slice pointers");
+            if (info.child == u8 and source == .string) return a.dupe(u8, source.string);
+            if (source != .array) return error.UnexpectedToken;
+            const values = try a.alloc(info.child, source.array.items.len);
+            for (values, source.array.items) |*out, item| out.* = try readValue(info.child, a, item);
+            return values;
+        },
+        .bool, .@"enum" => return std.json.innerParseFromValue(T, a, source, .{}),
+        else => @compileError("unsupported device profile type " ++ @typeName(T)),
     }
-    return out;
 }
 
-fn readSupport(a: Allocator, o: std.json.ObjectMap) !support.Support {
-    return .{
-        .backend = try optionalText(o, "backend"),
-        .gpu = try optionalInt(usize, o, "gpu"),
-        .reason = try text(o, "reason", ""),
-        .certain = try flag(o, "certain", true),
-        .formats = try strings(a, o.get("formats")),
-        .unavailable = try unavailable(a, o.get("unavailable")),
-        .notes = try strings(a, o.get("notes")),
-        .budget = try int(u64, o, "budget", 0),
-        .budget_rule = try text(o, "budget_rule", ""),
-    };
-}
-
-fn unavailable(a: Allocator, v: ?std.json.Value) ![]const support.Unavailable {
-    const list = v orelse return &.{};
-    if (list != .array) return error.BadProfile;
-    const out = try a.alloc(support.Unavailable, list.array.items.len);
-    for (out, list.array.items) |*u, item| {
-        if (item != .object) return error.BadProfile;
-        u.* = .{ .family = try text(item.object, "family", null), .reason = try text(item.object, "reason", null) };
+fn decimalInteger(comptime T: type, raw: []const u8) std.json.ParseFromValueError!T {
+    if (std.mem.indexOfAny(u8, raw, ".eE") == null) return std.fmt.parseInt(T, raw, 10);
+    const negative = raw[0] == '-';
+    const unsigned = if (negative or raw[0] == '+') raw[1..] else raw;
+    const split = std.mem.indexOfAny(u8, unsigned, "eE") orelse unsigned.len;
+    const mantissa = unsigned[0..split];
+    const exponent = if (split == unsigned.len) 0 else try std.fmt.parseInt(i64, unsigned[split + 1 ..], 10);
+    const point = std.mem.indexOfScalar(u8, mantissa, '.') orelse mantissa.len;
+    const decimal_places: i64 = @intCast(mantissa.len -| (point + 1));
+    const significant = std.mem.trimEnd(u8, mantissa, "0");
+    const zeros: i64 = @intCast(mantissa.len - significant.len);
+    var seen_digit = zeros != 0;
+    var value: T = 0;
+    for (significant, 0..) |ch, index| {
+        if (index == point) continue;
+        if (ch < '0' or ch > '9') return error.InvalidNumber;
+        seen_digit = true;
+        value = try std.math.add(T, try std.math.mul(T, value, 10), ch - '0');
     }
-    return out;
-}
-
-fn strings(a: Allocator, v: ?std.json.Value) ![]const []const u8 {
-    const list = v orelse return &.{};
-    if (list != .array) return error.BadProfile;
-    const out = try a.alloc([]const u8, list.array.items.len);
-    for (out, list.array.items) |*s, item| {
-        if (item != .string) return error.BadProfile;
-        s.* = item.string;
-    }
-    return out;
-}
-
-fn object(o: std.json.ObjectMap, key: []const u8) !std.json.ObjectMap {
-    const v = o.get(key) orelse return error.BadProfile;
-    if (v != .object) return error.BadProfile;
-    return v.object;
-}
-
-fn int(comptime T: type, o: std.json.ObjectMap, key: []const u8, default: ?T) !T {
-    const v = o.get(key) orelse return default orelse error.BadProfile;
-    if (v == .integer) return std.math.cast(T, v.integer) orelse error.BadProfile;
-    if (v == .number_string) return std.fmt.parseInt(T, v.number_string, 10) catch error.BadProfile;
-    return error.BadProfile;
-}
-
-fn optionalInt(comptime T: type, o: std.json.ObjectMap, key: []const u8) !?T {
-    const v = o.get(key) orelse return null;
-    if (v == .null) return null;
-    return try int(T, o, key, null);
-}
-
-fn text(o: std.json.ObjectMap, key: []const u8, default: ?[]const u8) ![]const u8 {
-    const v = o.get(key) orelse return default orelse error.BadProfile;
-    if (v != .string) return error.BadProfile;
-    return v.string;
-}
-
-fn optionalText(o: std.json.ObjectMap, key: []const u8) !?[]const u8 {
-    const v = o.get(key) orelse return null;
-    if (v == .null) return null;
-    if (v != .string) return error.BadProfile;
-    return v.string;
-}
-
-fn flag(o: std.json.ObjectMap, key: []const u8, default: ?bool) !bool {
-    const v = o.get(key) orelse return default orelse error.BadProfile;
-    if (v != .bool) return error.BadProfile;
-    return v.bool;
-}
-
-fn enumeration(comptime E: type, o: std.json.ObjectMap, key: []const u8, default: ?E) !E {
-    const v = o.get(key) orelse return default orelse error.BadProfile;
-    if (v != .string) return error.BadProfile;
-    inline for (@typeInfo(E).@"enum".field_names, @typeInfo(E).@"enum".field_values) |name, value| {
-        if (std.mem.eql(u8, v.string, name)) return @as(E, @enumFromInt(value));
-    }
-    return error.BadProfile;
+    if (!seen_digit) return error.InvalidNumber;
+    if (value == 0) return 0;
+    if (negative) return error.Overflow;
+    const places = try std.math.add(i64, exponent, zeros - decimal_places);
+    if (places < 0) return error.InvalidNumber;
+    const power = std.math.cast(T, places) orelse return error.Overflow;
+    const scale = std.math.powi(T, 10, power) catch return error.Overflow;
+    return std.math.mul(T, value, scale);
 }
 
 pub fn write(w: *std.Io.Writer, doc: Doc) !void {

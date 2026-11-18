@@ -4,6 +4,56 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Server: `background: true` on `POST /v1/responses` answers at once with a queued response and generates the reply after the POST returns; `GET /v1/responses/{id}` polls it and `POST /v1/responses/{id}/cancel` or `DELETE` stops it, at most 64 are queued or running per server (16 per key, 256 MiB of copied requests) before a create answers 429, and `stream: true` with `background` is refused (#3220).
+
+- Qwen 3.5 on CUDA: a dropped kept prompt state's pinned host buffer goes to a spare list of at most two, and the next save or recall blank of the same size reuses it instead of pinning new memory; spares count inside the prompt-cache budget and are freed before any state is evicted (#2841).
+
+- Flash Next: when an assistant makes several tool calls and their results arrive out of call order, each result is now placed after its own call's ID before the prompt is rendered, since Flash Next's template gives the model anonymous result blocks in order; only a contiguous run with exactly one result per call is reordered, any other run keeps arrival order, and every other request and backend renders as before (#3775). Thanks to @srh3877.
+
+- HIP: at head size 256 on long spans (16,384 keys or more), the planned decode walk scores keys in its own kernels without per-element tests or a per-key branch, with byte-identical scores (Qwen3.6-35B-A3B, Qwen3.8-27B); Nemotron's d = 128 kernels are unchanged (#3508). Thanks to @AbrahamCete.
+
+- Lanes: Qwen 3.5's bounded top-k row draw moves into core's shared sampler (`core/lanes/sampling_row_topk.zig`), the same code and the same tokens (#3214, part of #2460). Thanks to @jschmied.
+
+- Server: a slow grammar compile no longer holds up other requests' grammars; a request waits at most 2,000 ms for its grammar and past that gets HTTP 400 naming the limit, each model runs at most 4 compiles at once, and grammars that compile within the limit are unchanged (#3231).
+
+- App: confirming an `ultrathink` effort change now applies it (#3502). Thanks to @AIFlowML.
+
+- App: bots keep their own reasoning effort instead of sharing the app-wide setting (#3500). Thanks to @AIFlowML.
+
+- App: the Parallel search tests no longer depend on the system's DNS (#3489). Thanks to @AIFlowML.
+
+- App: Git keeps working in the sandbox when macOS selects Xcode without a legacy `xcode_select_link` (#3479). Thanks to @AIFlowML.
+
+- App: an oversized scroll delta is refused as a bad request instead of stopping the computer-use helper (#3470). Thanks to @AIFlowML.
+
+- App: returning a parked ticket to Ready releases its previous assignee, so another Room seat can take it (#3469). Thanks to @AIFlowML.
+
+- App: the computer-use key table and request parser are tested on Linux with Swift Testing; the native checks stay on macOS (#3465). Thanks to @AIFlowML.
+
+- App: Kanban tickets have a Details action to read and edit their title, description, type, priority and effort, and archived tickets can be restored (#3464). Thanks to @AIFlowML.
+
+- App: Room health shows each Room's worktree path and its Git branch (#3463). Thanks to @AIFlowML.
+
+- App: MCP servers bundled inside macOS apps can load their own frameworks; the bundle stays read-only and other app bundles stay out of reach (#3423). Thanks to @AIFlowML.
+
+- `tensorfold device`: when the memory reserve leaves a known zero bytes for weights, a nonempty checkpoint is reported too large and the text report shows 0.0 GiB; unknown memory keeps the old fallback (#3773, fixes #3770). Thanks to @AIFlowML.
+
+- macOS: the native binary imports `_memcpy` from libSystem again, so the release link check passes; the saved device profile is decoded with checked decimal arithmetic and keeps its format (#3761, fixes #3760). Thanks to @AIFlowML.
+
+- Server: a reranker server also answers `/score`, TEI's `/rerank` with `texts` and Cohere's `/v2/rerank`, each translated onto the existing `/v1/rerank` path (#3203).
+
+- Shared decoding: fixed DFlash2 block work stays separate from verification rows; MTP heads keep their step costs and copied rows keep their measured cost feedback (#3755).
+
+- Nemotron 3.5 Transcribe on CUDA: the language model loads from the bf16 release as published, with exact bf16 caches and no conversion. The audio encoder runs on the GPU: log-mel, the ASR encoder, the streaming speaker encoder and its cache, fusion and projection. `tf-cuda-test audio-check` writes every encoder stage. Every other Nemotron checkpoint loads as before, and audio input in the server follows in #1632 (#1631). Thanks to @BobClawblaw, and to @cwschroeder for the CI report.
+
+- CUDA: Gemma 4, Dory and Spark2.5 can keep conversations on disk through the shared kept-image store (#3135, part of #840). Thanks to @jschmied.
+
+- CUDA: a dense Qwen 3.5 MLP's NVFP4 prompt gate, up and activation run in one launch for prompt rows past 16, with the same bytes (#3252). Thanks to @jschmied.
+
+- Images: with `stream: true`, `POST /v1/images/generations` streams each denoising step's progress (`image_generation.progress`) and, with `preview_interval`, partial previews while the picture generates, then the PNG (#3245).
+
+- DeepSeek-V4.1 on Metal: decode launches of 6 to 16 rows (draft verify windows, alone or with other streams' rows) run the dense FP8 projections on a simdgroup-matrix tile that splits K over simdgroups in the row kernel's own group tree, so every row's bits equal the row kernel's one row at a time; launches of 1 to 5 rows keep the row kernel. On the release weights two drafted streams decode 3.7 to 5.5% faster on an M5 Ultra and 3.6 to 5.4% faster on an M3 Ultra, other stream counts are level, and every token is unchanged; `time-dsv41-metal-synth` times the dispatch classes per row without a checkpoint (#2973, part of #2984).
+
 - Tools: add the heat-exchanger agent evaluation and its bounded Python execution helper (#3086).
 
 - Packaging: a Grafana dashboard for the engine's Prometheus metrics (TTFT and TPOT quantiles, decode rate, running and waiting requests, KV use, draft acceptance, prompt cache, memory and admission), with a host test that rejects unwritten metrics (#3141).
@@ -13,6 +63,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Tests: `zig build test-tokenizer-host` runs every tokenizer test, unfiltered, on the host without a GPU or shader compiler, and is part of the nightly Linux and macOS fast checks; before, CI reached only the tokenizer's two EOS policy tests (#3082).
 - Bench: add served agent-cache traces and token-qualified A/B comparisons (#3263).
 - CI: remove the redundant nightly Linux host shard while retaining the fast, compile, HIP and DeepSeek shards (#3276).
+- Metal: Spark2.5 and Llama build their tensor-unit prompt attention from one shared source, Llama's at WINDOW 0 and RING 0; the compiled code is unchanged (#3269, part of #2251). Thanks to @jschmied.
 
 - Docs: the README is now a short quick start and docs list; setup, serve flags and model tables moved to the new run guide and supported models pages, and the Zig preview and 1.0.0 release notes moved into docs/ (#3170). Thanks to @jayleaton.
 
