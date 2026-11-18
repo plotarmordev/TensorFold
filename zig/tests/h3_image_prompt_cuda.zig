@@ -52,7 +52,7 @@ pub fn main(init: std.process.Init) !u8 {
     var loaded = try Loaded.open(init.io, a, gpa, args[1], args[2]);
     defer loaded.deinit(gpa);
     if (serving) return serve(init, gpa, &loaded);
-    try pictureRun(init.io, a, &loaded, args[3], args[4], args[5..]);
+    try pictureRun(init.io, a, gpa, &loaded, args[3], args[4], args[5..]);
     return 0;
 }
 
@@ -67,6 +67,8 @@ const Loaded = struct {
     front_shards: Shards,
     runner: *hp.Runner,
     res: hp.Resident,
+    /// The last prompt and its refined text rows, both in `gpa`: a repeated prompt skips the encoder and refiner.
+    kept: ?struct { prompt: []u8, text: []u16 } = null,
 
     fn open(io: std.Io, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
         // the folder and its tokenizer, checked as the host prompt path checks them
@@ -100,6 +102,10 @@ const Loaded = struct {
     }
 
     fn deinit(l: *Loaded, gpa: std.mem.Allocator) void {
+        if (l.kept) |k| {
+            gpa.free(k.prompt);
+            gpa.free(k.text);
+        }
         l.res.deinit();
         l.runner.deinit();
         l.front_shards.deinit(gpa);
@@ -131,7 +137,7 @@ fn serve(init: std.process.Init, gpa: std.mem.Allocator, loaded: *Loaded) !u8 {
         }
         const verdict = blk: {
             if (rest > extra.len) break :blk "failed";
-            pictureRun(init.io, request.allocator(), loaded, prompt_path, out_path, extra[0..rest]) catch |err| {
+            pictureRun(init.io, request.allocator(), gpa, loaded, prompt_path, out_path, extra[0..rest]) catch |err| {
                 std.debug.print("{s} failed: {s}\n", .{ out_path, @errorName(err) });
                 break :blk "failed";
             };
@@ -142,10 +148,10 @@ fn serve(init: std.process.Init, gpa: std.mem.Allocator, loaded: *Loaded) !u8 {
     return 0;
 }
 
-/// One picture: its prompt presented and run through the resident weights to `out`'s case file.
-/// `rest` is the optional WIDTHxHEIGHT, SEED and MIN_AREA. `prompt: {d:.2} s` closes the log; the
-/// bench parser reads it.
-fn pictureRun(io: std.Io, a: std.mem.Allocator, loaded: *Loaded, prompt_path: []const u8, out_path: []const u8, rest: []const []const u8) !void {
+/// One picture: its prompt presented and run through the resident weights to `out`'s case file, or
+/// the kept rows reused when the prompt is the last one's. `rest` is the optional WIDTHxHEIGHT, SEED
+/// and MIN_AREA. `prompt: {d:.2} s` closes the log; the bench parser reads it.
+fn pictureRun(io: std.Io, a: std.mem.Allocator, gpa: std.mem.Allocator, loaded: *Loaded, prompt_path: []const u8, out_path: []const u8, rest: []const []const u8) !void {
     if (rest.len > 3) return error.BadArguments;
     const request: ?stage.Request = if (rest.len >= 1) .{
         .size = try stage.size(rest[0]),
@@ -159,6 +165,17 @@ fn pictureRun(io: std.Io, a: std.mem.Allocator, loaded: *Loaded, prompt_path: []
     if (std.mem.endsWith(u8, prompt, "\r")) prompt = prompt[0 .. prompt.len - 1];
 
     const p = try rules.present(a, &loaded.tok, loaded.enc.marks, &.{}, prompt);
+    const T = p.ids.len;
+    const kept = if (loaded.kept) |k| if (std.mem.eql(u8, k.prompt, prompt)) k.text else null else null;
+    const text = kept orelse try encode(a, gpa, loaded, p, prompt);
+
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = try stage.write(a, loaded.front.hidden, p, text, request, &noise.randn, &.{}) });
+    std.debug.print("wrote {s}: text [{d}, {d}] bf16, text_tags and ids\n", .{ out_path, T, loaded.front.hidden });
+    std.debug.print("prompt: {d:.2} s\n", .{seconds() - started});
+}
+
+/// The prompt's text rows through the resident encoder and refiner, kept in `gpa` for the next picture.
+fn encode(a: std.mem.Allocator, gpa: std.mem.Allocator, loaded: *Loaded, p: rules.Presentation, prompt: []const u8) ![]u16 {
     const pos = try rules.positions(a, p, loaded.enc.marks, &.{});
     const T = p.ids.len;
     const runner = loaded.runner;
@@ -168,14 +185,19 @@ fn pictureRun(io: std.Io, a: std.mem.Allocator, loaded: *Loaded, prompt_path: []
     try runner.encode(a, loaded.enc.text, &loaded.res, p.ids, pos, null, enc_rows);
     std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU\n", .{ T, loaded.enc.text.layers, seconds() - gpu_started, runner.gpu });
 
-    const text = try a.alloc(u16, T * loaded.front.hidden);
+    const text = try gpa.alloc(u16, T * loaded.front.hidden);
+    errdefer gpa.free(text);
     gpu_started = seconds();
     try runner.refine(loaded.front, &loaded.res, enc_rows, text);
     std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU\n", .{ seconds() - gpu_started, runner.gpu });
 
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = try stage.write(a, loaded.front.hidden, p, text, request, &noise.randn, &.{}) });
-    std.debug.print("wrote {s}: text [{d}, {d}] bf16, text_tags and ids\n", .{ out_path, T, loaded.front.hidden });
-    std.debug.print("prompt: {d:.2} s\n", .{seconds() - started});
+    const kept_prompt = try gpa.dupe(u8, prompt);
+    if (loaded.kept) |k| {
+        gpa.free(k.prompt);
+        gpa.free(k.text);
+    }
+    loaded.kept = .{ .prompt = kept_prompt, .text = text };
+    return text;
 }
 
 fn read(io: std.Io, a: std.mem.Allocator, parts: []const []const u8) ![]u8 {
