@@ -1,6 +1,7 @@
 //! mmh3's INT8 linear layers on the H3 CUDA blocks: each projection's weight rows and each activation row Hadamard-rotated
-//! in 128-wide chunks (ConvRot's outlier spreading), quantized to int8 at its absmax, summed exactly in int32 by
-//! cuBLASLt, and scaled back to bf16 rows. The bf16 weights are freed once quantized.
+//! in 128-wide chunks (ConvRot's outlier spreading), quantized to int8 at its absmax and summed exactly in int32 by
+//! cuBLASLt. The sums' consumers (`h3_heads_int8`, `h3_swiglu_int8`) scale them to bf16 as they read them, so no bf16
+//! rows of the product are written. The bf16 weights are freed once quantized.
 //!
 //! Only the two projections whose products int8 makes faster are quantized: `qkvc` and `fc1`. `out` and `fc2` measured
 //! no faster (they are bound by their weight reads, not their arithmetic) and their quantization was most of the
@@ -21,13 +22,16 @@ pub const Weight = struct {
     n: usize,
     k: usize,
 
-    fn scales(w: Weight) u64 {
+    pub fn scales(w: Weight) u64 {
         return w.q.ptr + w.n * w.k;
     }
 };
 
 /// One block's quantized projections.
 pub const Block = struct { qkvc: Weight, fc1: Weight };
+
+/// An int8 product in scratch: int32 sums (rows, n) and the rows' fp32 scales.
+pub const Product = struct { acc: u64, xs: u64 };
 
 pub const Int8 = struct {
     blocks: []Block,
@@ -76,16 +80,6 @@ pub const Int8 = struct {
         self.gpa.destroy(t);
     }
 
-    /// y (rows, w.n) bf16 = x (rows, w.k) bf16 . w^T through the int8 product.
-    pub fn run(t: *Int8, self: *Model, x: u64, w: Weight, y: u64, rows: usize) !void {
-        const p = try t.product(self, x, w, rows);
-        var args: cuda.Args = .{};
-        for ([_]u64{ p.acc, p.xs, w.scales(), y }) |a| args.add(a);
-        args.add(@as(c_int, @intCast(rows)));
-        args.add(@as(c_int, @intCast(w.n)));
-        try self.launch("h3_dequantize", .{ .x = 1024 }, 256, 0, &args);
-    }
-
     /// act (rows, w.n / 2) = swiglu of x . w^T [gate | value], the int32 sums scaled in h3_swiglu_int8 itself.
     pub fn mlpIn(t: *Int8, self: *Model, x: u64, w: Weight, act: u64, rows: usize) !void {
         const p = try t.product(self, x, w, rows);
@@ -97,7 +91,7 @@ pub const Int8 = struct {
     }
 
     /// x's rows quantized and their int32 sums against w in scratch: `acc` (rows, w.n), the rows' scales `xs`.
-    fn product(t: *Int8, self: *Model, x: u64, w: Weight, rows: usize) !struct { acc: u64, xs: u64 } {
+    pub fn product(t: *Int8, self: *Model, x: u64, w: Weight, rows: usize) !Product {
         try t.reserve(self, rows);
         const acc = t.scratch.ptr;
         const xq = acc + rows * t.widest(self) * 4;

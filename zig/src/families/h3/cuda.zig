@@ -26,7 +26,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_heads_int8", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -289,16 +289,23 @@ pub const Model = struct {
             // the block before left its MLP's rows in y: its gated add runs with this block's first norm
             if (index == 0) try self.norm(in.x, b.norms.ptr, tab, tab, in.line, -1, scale_a, shift_a) else try self.norm(in.x, b.norms.ptr, tab - table_bytes, tab, in.line, gate_m, scale_a, shift_a);
             try self.lap("norms", &mark);
-            try self.project(g.xn, b.qkvc.ptr, if (self.int8) |t| t.blocks[index].qkvc else null, g.qkvc, rows, width, hidden);
+            const qkvc = if (self.int8) |t| try t.product(self, g.xn, t.blocks[index].qkvc, rows) else blk: {
+                try self.gemms.run(self.stream, g.xn, b.qkvc.ptr, g.qkvc, rows, width, hidden);
+                break :blk null;
+            };
             try self.lap("q k v gate", &mark);
             {
-                // q, k and v in tile order, beginning at tile zero
+                // q, k and v in tile order, beginning at tile zero; an int8 product's sums are rounded here
                 const at = own0 * slot_tile * head_dim * 2;
                 var args: cuda.Args = .{};
-                for ([_]u64{ g.qkvc, b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
+                if (qkvc) |p| {
+                    for ([_]u64{ p.acc, p.xs, self.int8.?.blocks[index].qkvc.scales() }) |a| args.add(a);
+                } else args.add(g.qkvc);
+                for ([_]u64{ b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
                 for ([_]usize{ heads, width, in.rot, tiles * slot_tile }) |n| args.add(@as(c_int, @intCast(n)));
                 args.add(eps);
-                try self.launch("h3_heads", .{ .x = @intCast(owned) }, 256, 0, &args);
+                const grid: cuda.Dim3 = .{ .x = @intCast(owned) };
+                if (qkvc == null) try self.launch("h3_heads", grid, 256, 0, &args) else try self.launch("h3_heads_int8", grid, 256, 0, &args);
             }
             try self.lap("heads", &mark);
             if (dense) {
@@ -331,7 +338,7 @@ pub const Model = struct {
                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
                 try self.lap("gate mix", &mark);
             }
-            try self.project(g.ya, b.out.ptr, null, g.y, rows, hidden, inner);
+            try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
             try self.lap("attention out", &mark);
             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m);
             try self.lap("norms", &mark);
@@ -345,7 +352,7 @@ pub const Model = struct {
                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
             }
             try self.lap("mlp in", &mark);
-            try self.project(g.act, b.fc2.ptr, null, g.y, rows, hidden, self.mlp);
+            try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
             try self.lap("mlp out", &mark);
         }
         {
@@ -357,11 +364,5 @@ pub const Model = struct {
         }
         try self.stream.synchronize();
         return seconds() - started;
-    }
-
-    /// y (rows, n) = x (rows, k) . w^T: through the int8 weight `q` when quantized, else the bf16 `w`.
-    fn project(self: *Model, x: u64, w: u64, q: ?@import("cuda_int8.zig").Weight, y: u64, rows: usize, n: usize, k: usize) !void {
-        if (q) |weight| return self.int8.?.run(self, x, weight, y, rows);
-        try self.gemms.run(self.stream, x, w, y, rows, n, k);
     }
 };
