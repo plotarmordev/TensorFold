@@ -270,18 +270,28 @@ unchanged (6 x 10 block 1 97.912%). Every selftest passed and a warm 2048² pict
 loads were not its bound; the next decoder round profiles its stages before changing a kernel. The bench now builds
 only the sm_121 tools, so the job fits the Desk's 20 minutes.
 
+`cadab6b2` (job `top-be5b4a237e9f`, 19 November, exit 0) fuses `h3d_linear`'s products into one rounded
+`__fmaf_rn` — one rounding a product instead of two, half the instructions — and prints the decoder's per-stage
+seconds under `H3_PROFILE`. Every selftest passed; a warm 2048² picture took **@@WARM@@ s** mean (@@RUNS@@: prompt
+@@PROMPT@@, transformer @@TRANSFORMER@@, decoder @@DECODER@@), cold @@COLD@@ s, peak @@PEAK@@ MiB. The decoder's GPU
+@@DGPU@@ s split into @@STAGES@@, the next round's starting point. `reference` repeated its pass at @@REF@@. The
+fma's decoder fell from @@OLD@@ s to @@DECODER@@ s.
+
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
-1. **The int8 products' own rate**: the six projection stages take 1.69 s of a 2.3 s step, ~95 TOPS, a fifth of the
+1. **The int8 products' own rate**: the six projection stages take 1.69 s of a 2.3 s step, ~100 TOPS, a fifth of the
    GB10's dense int8. The int32 sums' round trip through `h3_dequantize` and the twice-read `h3_quantize` rows are
    the measured candidates; MXFP8 block scaling (cuBLASLt's 32-element `UE8M0` mode, compute capability 10.0+; the
    outer-vector mode is 9.0 only) writes bf16 straight from the product. Then the Mac-render gates on the `--int8`
-   picture and the two kernels' limits entries before `--int8` becomes the default.
-2. **The decoder's tiles**, 5.3 s against mmh3's 1.0 s fp16 VAE. The ordered fp32 sums are its selftest's gate:
-   cuBLASLt's tensor-core products failed its 90% block identity at 86.952% (card 72), so tensor cores are out; a
-   per-stage profile (products, attention, norms, `h3d_finish`'s fp32 round trip) picks the kernel.
-3. **Attention**, 1.76 s a picture: mmh3's INT8/FP8 attention.
-4. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
+   picture before `--int8` becomes the default; the two kernels' records are in the registry as of `cadab6b2`.
+2. **Attention**, 1.76 s a picture at ~5% of the GB10's bf16 rate: mmh3's INT8/FP8 attention, or a block whose
+   registers leave room for four CTAs an SM instead of two.
+3. **The host rows outside the blocks**, 1.2 s a picture (`rows_in`, the final norm, `rows_out`): mmh3 runs them on
+   the device.
+4. **The decoder's floor with its gate**: the ordered fp32 products, fused into one fma, are ~2.4 s a picture at the
+   GB10's fp32 rate; mmh3's 1.0 s VAE is fp16 tensor cores, which the selftest's 90% block identity (86.952% with
+   tensor cores, card 72) keeps out.
+5. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 

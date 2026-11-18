@@ -51,7 +51,7 @@ image() { # the resident transformer renders $case; the server's log since the l
         mkfifo "$out/requests" "$out/replies"
         # each server closes this script's FIFO fds: a later server would inherit an earlier one's write end and
         # the earlier server would never see EOF when the script closes it
-        # H3_PROFILE (on unless set empty) prints each picture's block stages; its waits cost a few ms a step
+        # H3_PROFILE (on unless set empty) prints each picture's block stages and the decoder's stages; its waits cost a few ms a step
         # shellcheck disable=SC2046 # --int8 or no word at all
         H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = int8 ] && echo --int8) <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
@@ -83,7 +83,7 @@ prompt_stage() { # the resident prompt stage writes $case's picture case; its ne
 decoder_stage() { # the resident decoder writes $case.png; its new log bytes go to $case.decoder.log
     [ -n "$decoder_server" ] || {
         mkfifo "$out/decoder-requests" "$out/decoder-replies"
-        "$bin/tf-h3-image-decoder-cuda" "$model" --serve <"$out/decoder-requests" >"$out/decoder-replies" 2>"$out/$side.decoder-server.log" \
+        H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-decoder-cuda" "$model" --serve <"$out/decoder-requests" >"$out/decoder-replies" 2>"$out/$side.decoder-server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         decoder_server=$!
         exec 7>"$out/decoder-requests" 8<"$out/decoder-replies"

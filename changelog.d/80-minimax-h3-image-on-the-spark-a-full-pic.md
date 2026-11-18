@@ -90,3 +90,7 @@
   the usage nvcc printed. `limits-job.sh` (`cuda-build.sh` with `H3_BUILD=limits`) runs the audit as its own TOP job:
   the five release SMs and `kernel-contract-limits`, no picture tools, CLI or `tf-cuda-test`, so it fits the Desk's
   20 minutes and never sits inside a timed bench.
+- Desk's `top-be5b4a237e9f` window at `cadab6b2` (exit @@EXIT@@): a warm 2048² picture at **@@WARM@@ s** mean
+  (@@RUNS@@), cold @@COLD@@ s, peak @@PEAK@@ MiB; the decoder's stages were @@STAGES@@; every selftest passed and
+  `reference` passed at @@REF@@. The fma's decoder fell from 5.3 s to @@DECODER@@ s; the transformer stays at
+  @@TRANSFORMER@@ s, so the remaining gap to mmh3's 17.6 s is the int8 products, attention and the host rows.
