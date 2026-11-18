@@ -8,9 +8,11 @@ pub const checkpoint = @import("checkpoint.zig");
 pub const host = @import("cuda_host.zig");
 pub const modulation = @import("cuda_modulation.zig");
 pub const modulation_test = @import("cuda_modulation_test.zig");
+pub const rows_test = @import("cuda_rows_test.zig");
 pub const image_host = @import("image_host.zig");
 const Gemms = @import("cuda_gemm.zig").Gemms;
 pub const Int8 = @import("cuda_int8.zig").Int8;
+pub const Rows = @import("cuda_rows.zig").Rows;
 
 pub const head_dim = 128;
 pub const eps: f32 = 1e-5;
@@ -24,7 +26,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_dequantize" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -96,8 +98,8 @@ pub const Model = struct {
         return self;
     }
 
-    /// The driver, context, kernels and GEMM handles before the weights are read.
-    fn setup(gpa: std.mem.Allocator) !*Model {
+    /// The driver, context, kernels and GEMM handles before the weights are read; with no weights, for the selftests.
+    pub fn setup(gpa: std.mem.Allocator) !*Model {
         try @import("cuda_load_retained.zig").admit();
         const self = try gpa.create(Model);
         var ordinary_cleanup = true;
@@ -333,8 +335,8 @@ pub const Model = struct {
             try self.lap("attention out", &mark);
             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m);
             try self.lap("norms", &mark);
-            try self.project(g.xn, b.fc1.ptr, if (self.int8) |t| t.blocks[index].fc1 else null, g.wide, rows, 2 * self.mlp, hidden);
-            {
+            if (self.int8) |t| try t.mlpIn(self, g.xn, t.blocks[index].fc1, g.act, rows) else {
+                try self.gemms.run(self.stream, g.xn, b.fc1.ptr, g.wide, rows, 2 * self.mlp, hidden);
                 var args: cuda.Args = .{};
                 args.add(g.wide);
                 args.add(g.act);
