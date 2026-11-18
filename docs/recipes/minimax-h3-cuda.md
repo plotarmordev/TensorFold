@@ -71,7 +71,7 @@ against 43.2 ms). The prompt's norm and head kernels sum their squares in f64 to
 reference's bits, and the head kernel rounds each normed value before the turn, as the host does. The prompt's selftest
 gates its text, refiner and vision rows against the same float32-noise bounds.
 On the GB10 both pass every check: the decoder's 37 checks pass and its lowest block (9) reads 92.037% identical.
-[The run's lines](receipts/h3-image-cuda-gb10-f12ff3f3/README.md) are each block's. Other served SMs compile but
+[The run's lines](../receipts/h3-image-cuda-gb10-0bfee52e/README.md) are each block's. Other served SMs compile but
 were not run.
 
 Same prompt, seed 42, six distilled steps, BF16 throughout, one GB10:
