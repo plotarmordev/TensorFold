@@ -51,7 +51,7 @@ pub const Int8 = struct {
     }
 
     fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize) !Weight {
-        if (k % 128 != 0 or n % 4 != 0) return error.BadGeometry;
+        if (k % 128 != 0 or k > 14336 or n % 4 != 0) return error.BadGeometry; // h3_quantize's quantize_chunks
         const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * 4), .n = n, .k = k };
         try launchQuantize(self, bf16.ptr, w.q.ptr, w.scales(), n, k);
         try self.stream.synchronize();
@@ -73,6 +73,26 @@ pub const Int8 = struct {
 
     /// y (rows, w.n) bf16 = x (rows, w.k) bf16 . w^T through the int8 product.
     pub fn run(t: *Int8, self: *Model, x: u64, w: Weight, y: u64, rows: usize) !void {
+        const p = try t.product(self, x, w, rows);
+        var args: cuda.Args = .{};
+        for ([_]u64{ p.acc, p.xs, w.scales(), y }) |a| args.add(a);
+        args.add(@as(c_int, @intCast(rows)));
+        args.add(@as(c_int, @intCast(w.n)));
+        try self.launch("h3_dequantize", .{ .x = 1024 }, 256, 0, &args);
+    }
+
+    /// act (rows, w.n / 2) = swiglu of x . w^T [gate | value], the int32 sums scaled in h3_swiglu_int8 itself.
+    pub fn mlpIn(t: *Int8, self: *Model, x: u64, w: Weight, act: u64, rows: usize) !void {
+        const p = try t.product(self, x, w, rows);
+        var args: cuda.Args = .{};
+        for ([_]u64{ p.acc, p.xs, w.scales(), act }) |a| args.add(a);
+        args.add(@as(c_int, @intCast(rows)));
+        args.add(@as(c_int, @intCast(w.n / 2)));
+        try self.launch("h3_swiglu_int8", .{ .x = 1024 }, 256, 0, &args);
+    }
+
+    /// x's rows quantized and their int32 sums against w in scratch: `acc` (rows, w.n), the rows' scales `xs`.
+    fn product(t: *Int8, self: *Model, x: u64, w: Weight, rows: usize) !struct { acc: u64, xs: u64 } {
         try t.reserve(self, rows);
         const acc = t.scratch.ptr;
         const xq = acc + rows * t.widest(self) * 4;
@@ -80,11 +100,7 @@ pub const Int8 = struct {
         try launchQuantize(self, x, xq, xs, rows, w.k);
         const p = try t.plan(self, rows, w.n, w.k);
         try p.runInt(w.q.ptr, xq, acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
-        var args: cuda.Args = .{};
-        for ([_]u64{ acc, xs, w.scales(), y }) |a| args.add(a);
-        args.add(@as(c_int, @intCast(rows)));
-        args.add(@as(c_int, @intCast(w.n)));
-        try self.launch("h3_dequantize", .{ .x = 1024 }, 256, 0, &args);
+        return .{ .acc = acc, .xs = xs };
     }
 
     fn widest(_: *const Int8, self: *const Model) usize {
