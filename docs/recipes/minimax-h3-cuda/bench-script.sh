@@ -21,6 +21,7 @@ mkdir -p "$out"
     echo "GPU, driver: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader)"
     echo "prompt: $pilot/prompt.txt, sha256 $(sha256sum <"$pilot/prompt.txt" | cut -d' ' -f1)"
     echo "seed: 42"
+    echo "sizes: ${H3_BENCH_SIZES:-2048}"
     echo "runs per size: 1 cold, 3 warm on one resident prompt, transformer and decoder"
 } >"$out/settings"
 selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or FAIL to selftests
@@ -88,7 +89,7 @@ decoder_stage() { # the resident decoder writes $case.png; its new log bytes go 
     decoder_logged=$(wc -c <"$out/$side.decoder-server.log")
     [ "$verdict" = done ] || { cat "$case.decoder.log" >&2; exit 1; }
 }
-for side in 2048 4096; do
+for side in ${H3_BENCH_SIZES:-2048}; do
     for run in 1 2 3 4; do
         case=$out/$side-$run
         sample >"$case.smi" &
@@ -115,10 +116,11 @@ for side in 2048 4096; do
     wait "$decoder_server"
     decoder_server=
     rm "$out/decoder-requests" "$out/decoder-replies"
-    if [ "$side" = 2048 ]; then
-        # the GPU decoder's 2048² picture beside the host reference decoder's on the same latent
-        case=$out/2048-reference
-        stage compare "$bin/tf-h3-image-decoder-cuda" reference "$model" "$out/2048-1.latent.f32" 128 128 \
-            "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048
-    fi
 done
+# the GPU decoder's 2048² picture beside the host reference decoder's on the same latent, after the
+# resident servers freed their arenas: the host decoder needs the memory they held
+if [ -f "$out/2048-1.latent.f32" ]; then
+    case=$out/2048-reference
+    stage compare "$bin/tf-h3-image-decoder-cuda" reference "$model" "$out/2048-1.latent.f32" 128 128 \
+        "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048
+fi
