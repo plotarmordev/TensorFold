@@ -255,7 +255,7 @@ pub const Prm = struct {
                 self.outs = s.rows * q_row;
             },
             .attention_causal, .attention_fused => {
-                // q [k, 4*128], k/v [k, 2*128]: a sequence of s.k rows; causal for the text model, all rows for the refiner.
+                // q [k, 4*128], k/v [k, 2*128]: s.k rows; causal for the text model, all rows for the refiner.
                 const n = s.k;
                 const heads = 4;
                 const kv = 2;

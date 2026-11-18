@@ -17,7 +17,7 @@ const images = struct {
     pub const prompt align(16) = @embedFile("fatbin_h3_image_prompt").*;
 };
 
-/// H3's loaded images and kernel rigs: the gates hold pointers into it, so it lives in the caller's frame until `deinit`.
+/// H3's loaded images and kernel rigs: the gates point into it, so it lives in the caller's frame until `deinit`.
 pub const Loaded = struct {
     h3_mod: cuda.Module,
     h3d_mod: cuda.Module,

@@ -1,5 +1,4 @@
-// MiniMax-H3-Image's prompt stage on CUDA at the Metal kernels' and reference's rounding: bf16 in, fp32 products,
-// the norms' squares in f64, bf16 out.
+// MiniMax-H3-Image's prompt stage on CUDA: bf16 in, fp32 products, the norms' squares in f64, bf16 out.
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stddef.h>
@@ -18,8 +17,7 @@ static __device__ float h3p_normed(float x, double r, float w, int mode) {
     return mode == 0 ? __fmul_rn(w, f(h(p))) : __fmul_rn(p, w);
 }
 
-// y = RMSNorm(x) by w, x bf16, w fp32, y bf16: squares summed in f64 in the host's order, so the inverse root is the
-// reference's bits, where a tree's sum would flip bf16 outputs.
+// y = RMSNorm(x) by w: squares summed in f64 in the host's order, so the inverse root is the reference's bits.
 extern "C" __global__ void __launch_bounds__(256) h3p_norm(
         const bf16* x, const float* w, bf16* y, int width, int mode, float eps) {
     __shared__ double r;
@@ -61,8 +59,7 @@ extern "C" __global__ void __launch_bounds__(256) h3p_heads(
     const double r = 1.0 / sqrt(ss / 128.0 + (double)eps);
     for (int i = 0; i < 4; ++i) v[i] = h3p_normed(v[i], r, w[lane * 4 + i], mode);
     if (rotary) {
-        // the norm's store rounding, as the host turns the stored values; channel c pairs with c + 64, 16 lanes
-        // away: -x[c + 64] below, x[c - 64] above; products round before the add.
+        // round as the host stores the norm; channel c pairs with c +- 64 (16 lanes away); products round first.
         for (int i = 0; i < 4; ++i) v[i] = f(h(v[i]));
         const float sign = lane < 16 ? -1.0f : 1.0f;
         for (int i = 0; i < 4; ++i) {

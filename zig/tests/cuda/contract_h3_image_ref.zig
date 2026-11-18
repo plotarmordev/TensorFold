@@ -1,5 +1,4 @@
-//! MiniMax-H3-Image's CUDA kernels (decoder, prompt, modulation) in float64, with their bf16 mid-roundings.
-//! Each output is the value before the store's own rounding, which the contract's bound adds (h3p_round's is its formula).
+//! MiniMax-H3-Image's CUDA kernels in float64 with their bf16 mid-roundings, before each output's store rounding.
 const std = @import("std");
 const core = @import("core");
 
