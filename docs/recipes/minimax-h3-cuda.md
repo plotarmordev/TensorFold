@@ -270,12 +270,14 @@ unchanged (6 x 10 block 1 97.912%). Every selftest passed and a warm 2048² pict
 loads were not its bound; the next decoder round profiles its stages before changing a kernel. The bench now builds
 only the sm_121 tools, so the job fits the Desk's 20 minutes.
 
-`cadab6b2` (job `top-be5b4a237e9f`, 19 November, exit 0) fuses `h3d_linear`'s products into one rounded
-`__fmaf_rn` — one rounding a product instead of two, half the instructions — and prints the decoder's per-stage
-seconds under `H3_PROFILE`. Every selftest passed; a warm 2048² picture took **@@WARM@@ s** mean (@@RUNS@@: prompt
-@@PROMPT@@, transformer @@TRANSFORMER@@, decoder @@DECODER@@), cold @@COLD@@ s, peak @@PEAK@@ MiB. The decoder's GPU
-@@DGPU@@ s split into @@STAGES@@, the next round's starting point. `reference` repeated its pass at @@REF@@. The
-fma's decoder fell from @@OLD@@ s to @@DECODER@@ s.
+`b4c5c42` (job `top-c3142e924abc`, 19 November, exit 0) fuses `h3d_linear`'s products into one rounded `__fmaf_rn`
+— one rounding a product instead of two, half the instructions — and prints the decoder's per-stage seconds under
+`H3_PROFILE`. Every selftest passed; a warm 2048² picture took **19.9 s** mean (19.9, 19.9, 20.0: prompt 1.1,
+transformer 13.9, decoder 4.9), cold 161.6 s, peak 71,147 MiB. The decoder's 4.54 s of GPU time split into products
+2.26 s, attention 1.88 s, finish 0.25 s, swiglu 0.08 s, heads 0.04 s, norms 0.02 s and embedding 0.00 s: the
+products are half of it, and attention is 1.88 s, so both are latency-bound rather than rate-bound. `reference`
+repeated its pass at 86.044% of bytes identical, 99.917% within 1, at most 6 apart, PSNR 56.60 dB, relative error
+3.16e-3 against the 3e-2 bound. The fma took the decoder's GPU time from 4.95 s to 4.54 s.
 
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
@@ -288,9 +290,11 @@ The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
    registers leave room for four CTAs an SM instead of two.
 3. **The host rows outside the blocks**, 1.2 s a picture (`rows_in`, the final norm, `rows_out`): mmh3 runs them on
    the device.
-4. **The decoder's floor with its gate**: the ordered fp32 products, fused into one fma, are ~2.4 s a picture at the
-   GB10's fp32 rate; mmh3's 1.0 s VAE is fp16 tensor cores, which the selftest's 90% block identity (86.952% with
-   tensor cores, card 72) keeps out.
+4. **The decoder's occupancy**: the fma took the products' GPU time from 4.95 s to 4.54 s, only 8%, so they are
+   latency-bound, not rate-bound: 121 registers a thread leave two CTAs an SM, 8 warps. Attention is 1.88 s of the
+   4.54 s with 217 registers at 128 threads, the same two CTAs. A 128 x 128 product tile run by 512 threads at 4 x 8
+   outputs each halves the registers and doubles the warps with the same per-output fma order; the attention block
+   wants the same. Tensor cores stay out: the selftest's 90% block identity (86.952% with them, card 72) fails.
 5. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)

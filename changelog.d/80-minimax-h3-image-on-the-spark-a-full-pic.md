@@ -90,7 +90,9 @@
   the usage nvcc printed. `limits-job.sh` (`cuda-build.sh` with `H3_BUILD=limits`) runs the audit as its own TOP job:
   the five release SMs and `kernel-contract-limits`, no picture tools, CLI or `tf-cuda-test`, so it fits the Desk's
   20 minutes and never sits inside a timed bench.
-- Desk's `top-be5b4a237e9f` window at `cadab6b2` (exit @@EXIT@@): a warm 2048² picture at **@@WARM@@ s** mean
-  (@@RUNS@@), cold @@COLD@@ s, peak @@PEAK@@ MiB; the decoder's stages were @@STAGES@@; every selftest passed and
-  `reference` passed at @@REF@@. The fma's decoder fell from 5.3 s to @@DECODER@@ s; the transformer stays at
-  @@TRANSFORMER@@ s, so the remaining gap to mmh3's 17.6 s is the int8 products, attention and the host rows.
+- Desk's `top-c3142e924abc` window at `b4c5c42` (exit 0): a warm 2048² picture at **19.9 s** mean (19.9, 19.9,
+  20.0), cold 161.6 s, peak 71,147 MiB. The decoder's 4.54 s of GPU time split into products 2.26 s, attention
+  1.88 s, finish 0.25 s, swiglu 0.08 s, heads 0.04 s, norms 0.02 s and embedding 0.00 s. Every selftest passed and
+  `reference` passed at 86.044% of bytes identical, 99.917% within 1, at most 6 apart, PSNR 56.60 dB, relative
+  error 3.16e-3 against the 3e-2 bound. The fma's decoder fell from 5.3 s to 4.9 s (4.95 to 4.54 on the GPU); the
+  transformer stays at 13.9 s, so the gap to mmh3's 17.6 s is its int8 products, its attention and the host rows.
