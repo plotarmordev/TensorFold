@@ -679,6 +679,13 @@ The contract found one fault, now fixed: the prompt path's attention filled a ro
 key at weight 0, so an infinite value there gave 0 x Inf = NaN where float64 keeps the infinity. A padded key now adds
 nothing; finite outputs keep their bytes.
 
+The transformer's products are registered too (`tf-kernel-contract --only 'h3 product'`): the 32x64-warp bf16 GEMM
+in its whole and ragged forms bit-equal to MLX's gemm_nax that it replaced at every served shape and edge, fc1's int8
+form against float64 at its scales, and `h3_quantize_rows` against its formula; each with its launch limits. On the
+M5 Ultra all four pass gates 1 to 4. The contract found that the quantizer dropped NaN, since `max` ignores it: a NaN
+activation took a finite scale and became an ordinary value. A group holding NaN now takes a NaN scale; finite inputs
+keep their bytes.
+
 ## Speed: a byte-identical cold-start win
 
 A first picture after the weights leave the page cache spent most of its time waiting on disk, not the GPU. Each tool
