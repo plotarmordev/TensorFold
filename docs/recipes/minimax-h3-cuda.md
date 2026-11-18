@@ -225,24 +225,39 @@ decoder. Every selftest passed, and a warm 2048² picture fell to **35.3 s** (pr
 started. `bench-script.sh` now runs that compare after the servers close (their arenas freed) and measures 2048² by
 default; `H3_BENCH_SIZES='2048 4096'` runs both sizes, which waits on the 4096² memory round.
 
-The prompt is still memory-latency bound: 45 GiB in 5.48 s is 8 GB/s, and the 32-element window keeps only 64 bytes
-in flight per warp. The next round widens it to 256 elements (eight a lane, one 16-byte load) so 512 bytes stay in
-flight and eight products follow each load; the dots keep the same sequential order, so the text rows stay identical.
+The prompt's window widened to 256 weights a warp (eight a lane, one 16-byte load), so 512 bytes stay in flight and
+eight products follow each load; the dots keep the same sequential order.
+
+Desk ran `f825b43c` (job `top-b16eaa3d03bd`, 18 November) with that window: the prompt fell from 5.48 s to **1.1 s**
+warm (45 GiB at 41 GB/s) and a warm 2048² picture from 35.3 s to **31.0 s** (prompt 1.14, transformer 24.21, decoder
+5.60; cold 178.3 s). The same job asked cuBLASLt's heuristic at the picture's own 4,120 rows instead of the canonical
+16,384-row batch, and the transformer measured 23.91–24.54 s against `9cf468df`'s 24.13 s: the canonical policy stays
+and that round is reverted. The job then hung after the 2048 runs, before its `reference` compare and the 4096² stage:
+the script's FIFO fds leaked into the resident servers, so the last server held the others' request write ends and
+`wait` never saw EOF. `9cf468df`'s ~1.5 h hang was the same leak, not the 4096² stage.
+
+Desk ran `cecba1009` (job `top-1166fad2c210`, 18 November) with the script's fds closed in every server. Every
+selftest passed and the job exited 0: a warm 2048² picture took **31.4 s** mean (prompt 1.1, transformer 24.5, decoder
+5.7), cold 170.3 s, peak 86.8 GiB, 64.9 W and 2.0 kJ a picture. Its `reference` compare decoded the latent on the GPU
+(5.58 s) and on the host (215.6 s) and repeated `96c87a43`'s numbers: 86.180% of bytes identical, 99.923% within 1, at
+most 5 apart, PSNR 56.65 dB, relative error 3.15e-3 against the 3e-2 bound, a pass. The host decode is the job's
+longest stage after the build, so a round takes ~25 min.
 
 The rounds left, in order, each needing its own window:
 
-1. **The prompt's wider window**, above: 5.48 s toward the ~1 s its resident weights should cost, which alone takes a
-   warm 2048² picture near 30 s.
-2. **INT8 linear layers**, mmh3's step (1.4 s against 4.07 s): 19.3 B of the 33.1 B parameters are projections, about
-   159 TFLOP of a step's ~273, so BF16 at this rate cannot reach 17.6 s on its own. At mmh3's 1.4 s a step the six
-   steps would take ~8.5 s and the warm picture would sit near 15 s with today's decoder; it needs the Mac-render
-   gates against the BF16 picture before it can be the default.
-3. **The decoder's tiles**, 5.7 s against mmh3's 1.0 s fp16 VAE: 121 tiles of 256 pixels take 43 ms each on the GB10
-   against 13.4 ms on an M3 Ultra, so the tiles are the decoder's next round, gated by the `reference` compare.
-4. **A BF16 GEMM and attention retune**: a 4.07 s step is ~273 TFLOP, ~67 TFLOPS, about half the GB10's BF16 peak.
-   The plans choose their algorithm at the canonical 16,384 rows rather than the picture's 4,120; choosing at the
-   picture's own shape and among the fewest-wave algorithms is its own A/B. The step's host tail (final norm and
-   `rows_in`/`rows_out` over the 4,120 rows, ~2.4 GFLOP each) is ~0.1 s and not worth moving.
+1. **INT8 linear layers**, mmh3's step (1.4 s against 4.07 s): 19.3 B of the 33.1 B parameters are projections, about
+   159 TFLOP of a step's ~273, so BF16 at this rate cannot reach 17.6 s. At mmh3's 1.4 s a step the six steps take
+   ~8.5 s and a warm 2048² picture sits near **15.2 s** (1.11 + 8.5 + 5.6), under mmh3's 17.6 s, with today's prompt
+   and decoder. It needs the Mac-render gates against the BF16 picture before it can be the default.
+2. **The decoder's tiles**, 5.6 s against mmh3's 1.0 s fp16 VAE: 121 tiles of 256 pixels take 43 ms each on the GB10
+   against 13.4 ms on an M3 Ultra. The sequential fp32 sums are its selftest's gate, so the round is the scalar
+   kernel's own tiling (a 128 x 128 tile, a 16-deep K stage, no second buffer), not tensor cores.
+3. **The prompt's stream**, 45 GiB in 1.11 s at 41 GB/s: its weights are resident and read once a layer, so a deeper
+   window is the next lever.
+4. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
+
+The step's host tail (final norm and `rows_in`/`rows_out` over the 4,120 rows, ~2.4 GFLOP each) is ~0.1 s and not
+worth moving.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 

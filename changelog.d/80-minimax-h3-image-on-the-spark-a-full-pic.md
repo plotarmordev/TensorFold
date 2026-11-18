@@ -32,3 +32,21 @@
   decoder gets the memory they held: the `9cf468df` job thrashed there and never reached 4096². It measures
   2048² by default (`H3_BENCH_SIZES='2048 4096'` runs both), since the 4096² decoder's buffers pass the
   GB10's memory beside the resident prompt (round 2's OOM) and wait on their own round.
+
+### MiniMax-H3-Image on CUDA: the prompt at 1.1 s, a warm 2048² picture at 31.4 s
+
+- The 256-weight window (`c4673100`) took the resident prompt from 5.48 s to **1.1 s** warm (45 GiB at 41 GB/s) in
+  Desk's `f825b43c` window: a warm 2048² picture fell from 35.3 s to **31.0 s** (prompt 1.14, transformer 24.21,
+  decoder 5.60); cold 178.3 s.
+- `cecba1009` repeated it with the fixed script: every selftest passed, a warm 2048² picture took **31.4 s** mean
+  (prompt 1.1, transformer 24.5, decoder 5.7), cold 170.3 s, peak 86.8 GiB, 64.9 W and 2.0 kJ a picture, and the job
+  exited 0. Its `reference` compare passed with `96c87a43`'s numbers: 86.180% of bytes identical, 99.923% within 1,
+  at most 5 apart, PSNR 56.65 dB, relative error 3.15e-3 against the 3e-2 bound.
+- Asking cuBLASLt's heuristic at the picture's 4,120 rows instead of the canonical 16,384-row batch measured the
+  same transformer (23.91–24.54 s against 24.13 s), so that round is reverted and the upstream arithmetic policy
+  stays.
+- `bench-script.sh` closes its FIFO fds in each resident server: the decoder server, started last, held the
+  transformer's and prompt's request write ends, so closing them never gave those servers EOF and `wait` hung after
+  the 2048 runs. `9cf468df`'s ~1.5 h hang was that leak, not the 4096² stage.
+- INT8 linear layers are the one round left for mmh3's 17.6 s: at its 1.4 s a step the six steps take ~8.5 s and a
+  warm 2048² picture sits near 15.2 s with today's prompt and decoder.
