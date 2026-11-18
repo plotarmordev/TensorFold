@@ -1,0 +1,2 @@
+# MiniMax-H3-Image: products in 64-row-tile bands on Metal
+- The H3 transformer's bf16 products walk 64 row tiles under each weight tile instead of MLX's 4, so a 2048x2048 picture reads each weight tile once while it is cached. On an M5 Ultra a 2048 step takes 1.79-1.81 s of GPU instead of 1.90 s and a 4096 step 10.14 s instead of 10.29 s; warm 2048 pictures in `tf-h3-image-server` took 12.54 and 12.99 s against episode 1's 13.03 s, same prompt, seed and six steps. Latents and PNGs are byte-identical to before, and a voice note sent mid-render still came back in 8.4 s.
