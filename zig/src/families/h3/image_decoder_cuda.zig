@@ -286,6 +286,8 @@ pub const Decoder = struct {
 
     /// y = bf16(x w^T + b) via an ordered fp32 sum, or with `scale` the LayerScale residual.
     fn gemm(d: *Decoder, s: Shape, x: usize, w: usize, b: usize, scale: ?usize, y: usize, n: usize, k: usize) !void {
+        // h3d_linear loads K eight at a time
+        if (k % 8 != 0) return error.H3BadShape;
         var p = s;
         p.n = @intCast(n);
         p.k = @intCast(k);
