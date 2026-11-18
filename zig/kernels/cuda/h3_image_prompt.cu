@@ -162,17 +162,32 @@ extern "C" __global__ void __launch_bounds__(256) h3p_splice(
 // y [rows, n] fp32 = x [rows, k] bf16 . w [n, k] bf16^T, each K sum in the host reference's order.
 // The text encoder's short rows make a sequential dot product preferable to a differently ordered tiled GEMM:
 // its bf16 rounding points then coincide with the reference's instead of failing a zero-noise vision baseline.
+// y [rows,n] = x [rows,k] . w [n,k]^T: a warp owns one output column and its lanes load the
+// column's k weights in coalesced 32-element windows, so a column's row is read once per 32-row
+// group instead of once per row. Each lane sums its own row over those windows in the reference's
+// k order, so every output's fp32 sum is the sequential dot the host computes.
 extern "C" __global__ void __launch_bounds__(256) h3p_linear(
         const bf16* x, const bf16* w, float* y, int rows, int n, int k) {
-    const int at = blockIdx.x * 256 + threadIdx.x;
-    if (at >= rows * n) return;
-    const int row = at / n;
-    const int col = at % n;
-    const bf16* xr = x + (size_t)row * k;
+    __shared__ bf16 win[8][32]; // one window a warp
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int col = blockIdx.x * 8 + warp;
+    if (col >= n) return;
     const bf16* wr = w + (size_t)col * k;
-    float sum = 0.0f;
-    for (int i = 0; i < k; ++i) sum = __fadd_rn(sum, __fmul_rn(f(xr[i]), f(wr[i])));
-    y[at] = sum;
+    for (int base = 0; base < rows; base += 32) {
+        const int row = base + lane;
+        float sum = 0.0f;
+        for (int i0 = 0; i0 < k; i0 += 32) {
+            win[warp][lane] = i0 + lane < k ? wr[i0 + lane] : h(0.0f);
+            __syncwarp();
+            if (row < rows) {
+                const bf16* xr = x + (size_t)row * k + i0;
+                const int jn = min(32, k - i0);
+                for (int j = 0; j < jn; ++j) sum = __fadd_rn(sum, __fmul_rn(f(xr[j]), f(win[warp][j])));
+            }
+        }
+        if (row < rows) y[(size_t)row * n + col] = sum;
+    }
 }
 
 // y [n] = bf16(x [n]): a product's fp32 rows at their one rounding to bf16, the reference's every output.

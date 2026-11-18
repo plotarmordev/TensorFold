@@ -319,7 +319,7 @@ pub const Runner = struct {
         var args: cuda.Args = .{};
         for ([_]u64{ x, w, y }) |p| args.add(p);
         for ([_]usize{ rows, n, k }) |v| args.add(@as(c_int, @intCast(v)));
-        try r.launch("h3p_linear", .{ .x = @intCast((rows * n + 255) / 256) }, 256, &args);
+        try r.launch("h3p_linear", .{ .x = @intCast((n + 7) / 8) }, 256, &args);
     }
 
     fn norm(r: *const Runner, x: u64, w: u64, y: u64, rows: usize, width: usize, eps: f32, mode: c_int) !void {

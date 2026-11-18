@@ -12,3 +12,12 @@
 ### MiniMax-H3-Image on CUDA: the decoder resident across served pictures
 
 - `tf-h3-image-decoder-cuda --serve` loads the VAE's weights once and decodes one latent line per picture, so a warm picture pays its tiles and PNG but not the 1.7 s load; `bench-script.sh` keeps that server beside the prompt's and the transformer's for each size.
+
+### MiniMax-H3-Image on CUDA: the prompt's products read each weight once, coalesced
+
+- `h3p_linear` now gives each output column a warp whose lanes load the column's k weights in coalesced
+  32-element windows into shared memory, and each lane sums one row over them in the reference's k order. The
+  old thread-per-output kernel read every weight row once per output row from a 10 KB stride, so the pilot
+  prompt's 24 rows re-read the text encoder's ~45 GiB of weights 24 times, uncoalesced: the resident prompt
+  cost 35.8 s warm at 2048² and 9.5 s at 4096² instead of the second the residency was meant to buy.
+- The products' sums keep the sequential fp32 dot and every value's rounding, so the text rows are unchanged.
