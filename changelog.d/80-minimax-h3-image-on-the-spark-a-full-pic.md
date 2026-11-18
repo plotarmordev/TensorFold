@@ -76,3 +76,17 @@
   `top-9d030e00d7aa`, every selftest passing.
 - `bench-script.sh` builds only the sm_121 tools (`H3_BUILD=sm121 cuda-build.sh`); the five release SMs and their
   limits audit stay `cuda-build.sh`'s, and a bench round now takes ~10 minutes against the Desk's 20.
+
+### MiniMax-H3-Image on CUDA: the decoder's products fuse into one rounded fma
+
+- `h3d_linear` sums each product as `__fmaf_rn(a, b, acc)`: one rounding a product instead of two, so the sums sit
+  closer to the float64 reference the decoder selftest compares against, at half the instructions of the unfused
+  multiply and add it replaced. The selftest's gate is unchanged (90% of a block's bf16 values identical, worst 8
+  ULPs, relative 2e-3).
+- `tf-h3-image-decoder-cuda` prints the decoder's per-stage seconds under `H3_PROFILE` (`embedding`, `norms`,
+  `products`, `finish`, `heads`, `attention`, `swiglu`), with the same waits `tf-h3-image-cuda` makes, so the next
+  decoder round starts from a measured split instead of a guess.
+- `h3_quantize` and `h3_dequantize`, the two launches `tf-h3-image-cuda --int8` adds, are in the kernel registry with
+  the usage nvcc printed. `limits-job.sh` (`cuda-build.sh` with `H3_BUILD=limits`) runs the audit as its own TOP job:
+  the five release SMs and `kernel-contract-limits`, no picture tools, CLI or `tf-cuda-test`, so it fits the Desk's
+  20 minutes and never sits inside a timed bench.
