@@ -114,7 +114,8 @@ The 14 November tables below predate this cutover; the
 ### Benchmark run
 
 [`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds in the same TOP job, then takes `run-script.sh`'s inputs
-and tools without its gate: it records each selftest's PASS or FAIL and renders anyway. Each size gets one cold picture
+and tools without its gate: it records each selftest's PASS or FAIL and renders anyway. Each size in
+`H3_BENCH_SIZES` (default `2048`) gets one cold picture
 (start to first picture) and three warm repeats, while `nvidia-smi` is sampled twice a second. The transformer stays
 resident: one `tf-h3-image-cuda MODEL --serve` a size loads the model inside the cold run and renders all four cases,
 so warm repeats pay no transformer load. `tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL --serve` and
@@ -123,9 +124,10 @@ compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens w
 selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
 hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer, decoder load and decoder
 (tiles and PNG) seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
-[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails. After the 2048² runs the
-script decodes that latent again with `reference`: the GPU's picture and the host reference decoder's on the same
-latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits non-zero past the bound.
+[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails. After the resident
+servers close, the script decodes the 2048² latent again with `reference`: the GPU's picture and the host reference
+decoder's on the same latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits
+non-zero past the bound. The host decoder needs the memory the servers held, so it runs once their arenas are free.
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
@@ -203,25 +205,44 @@ passed and the `reference` check repeated `96c87a43`'s numbers (PSNR 56.65 dB, r
 resident), transformer 24.4 s (4.07 s a step), decoder 1.7 s load and 5.8 s tiles; cold 136.1 s, peak 39.4 GiB,
 50.3 W and 2.5 kJ a picture. At 4096² warm is 161.6 s (prompt 18.0, transformer 119.2, decoder 2.2 + 20.6).
 
-The rounds left, in order, each needing its own Desk window:
+Desk ran `d1743eb5` (job `top-5ec3983b311d`, 18 November, exit 0), the resident prompt and decoder servers beside the
+transformer's tables. Every selftest passed, but a warm 2048² picture **rose to 68.6 s** (round 1: 49.7 s): prompt
+35.8 s, transformer 24.2 s, decoder 2.4 s load and 5.7 s tiles; cold 206.1 s. At 4096² the warm prompt was 9.5 s
+against 35.8 s at 2048², so the resident prompt did not cost the ~1 s its weights on the device should.
 
-1. **The prompt stage resident.** It is the largest remaining non-arithmetic cost: 16.3 s warm, of which ~13.1 s is
-   the text encoder's event-timed loop, and that loop is the ~45 GiB of layer weights copied through the pinned
-   staging a layer at a time. The prompt tool uploads every layer, the refiner's front end and
-   its blocks into one device arena once (`prompt_cuda.loadResident`), evicts the shards' pages, and serves pictures
-   from `--serve` with the weights on the device: ~48 GiB beside the transformer's 39.4 GiB in the GB10's shared
-   memory. The pilot prompt is 24 rows, so the encoder's arithmetic is under a second and the refiner's 0.3 s: a warm
-   prompt should fall from 16.3 s to about 1 s; the first Desk window times it.
-2. **The decoder resident.** `tf-h3-image-decoder-cuda --serve` loads the VAE once a size, so a warm picture pays
-   its 5.8 s of tiles and the PNG but not the 1.7 s load; the tiles are the next decoder round.
-3. **INT8 linear layers**, mmh3's step (1.4 s against 4.07 s): 19.3 B of the 33.1 B parameters are projections, about
+`h3p_linear` gave every output element its own thread walking that element's weight row: with 24 rows each of a
+column's k weights was read 24 times, and neighbouring threads read rows 10 KB apart, so each load used a fraction of
+its 32-byte sector. The text encoder's ~45 GiB of weights became ~1.1 TB of traffic, and the memory system's rate,
+not the arithmetic, set the stage's time. A warp now owns each output column: its lanes load the column in coalesced
+32-element windows into shared memory, and each lane sums one row over them in the reference's k order, so the column
+is read once per 32-row group. The dots keep the sequential fp32 sum and every value's rounding, so the text rows are
+unchanged.
+
+Desk ran `9cf468df` (job `top-225420da214f`, 18 November) with that kernel, the resident prompt, transformer and
+decoder. Every selftest passed, and a warm 2048² picture fell to **35.3 s** (prompt 5.49, transformer 24.13, decoder
+5.60); cold 179.1 s, whose prompt server uploads 48.35 GiB in 51.7 s. The job then hung after the 2048 runs in the
+`reference` compare: with the three servers holding ~87 GiB, the host decoder thrashed, and the 4096² stage never
+started. `bench-script.sh` now runs that compare after the servers close (their arenas freed) and measures 2048² by
+default; `H3_BENCH_SIZES='2048 4096'` runs both sizes, which waits on the 4096² memory round.
+
+The prompt is still memory-latency bound: 45 GiB in 5.48 s is 8 GB/s, and the 32-element window keeps only 64 bytes
+in flight per warp. The next round widens it to 256 elements (eight a lane, one 16-byte load) so 512 bytes stay in
+flight and eight products follow each load; the dots keep the same sequential order, so the text rows stay identical.
+
+The rounds left, in order, each needing its own window:
+
+1. **The prompt's wider window**, above: 5.48 s toward the ~1 s its resident weights should cost, which alone takes a
+   warm 2048² picture near 30 s.
+2. **INT8 linear layers**, mmh3's step (1.4 s against 4.07 s): 19.3 B of the 33.1 B parameters are projections, about
    159 TFLOP of a step's ~273, so BF16 at this rate cannot reach 17.6 s on its own. At mmh3's 1.4 s a step the six
    steps would take ~8.5 s and the warm picture would sit near 15 s with today's decoder; it needs the Mac-render
    gates against the BF16 picture before it can be the default.
-4. **Our own rounds beyond mmh3**, in the order the profile suggests: the decoder (5.8 s against mmh3's 1.0 s fp16
-   VAE) is now the second-largest stage, and a 4.07 s step is ~273 TFLOP, ~67 TFLOPS, about half the GB10's BF16
-   peak, so a BF16 GEMM and attention retune is its own round. The step's host tail (final norm and `rows_in`/`rows_out`
-   over the 4,120 rows, ~2.4 GFLOP each) is ~0.1 s and not worth moving.
+3. **The decoder's tiles**, 5.7 s against mmh3's 1.0 s fp16 VAE: 121 tiles of 256 pixels take 43 ms each on the GB10
+   against 13.4 ms on an M3 Ultra, so the tiles are the decoder's next round, gated by the `reference` compare.
+4. **A BF16 GEMM and attention retune**: a 4.07 s step is ~273 TFLOP, ~67 TFLOPS, about half the GB10's BF16 peak.
+   The plans choose their algorithm at the canonical 16,384 rows rather than the picture's 4,120; choosing at the
+   picture's own shape and among the fewest-wave algorithms is its own A/B. The step's host tail (final norm and
+   `rows_in`/`rows_out` over the 4,120 rows, ~2.4 GFLOP each) is ~0.1 s and not worth moving.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 

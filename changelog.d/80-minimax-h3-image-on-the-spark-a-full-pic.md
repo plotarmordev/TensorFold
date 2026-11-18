@@ -21,3 +21,14 @@
   prompt's 24 rows re-read the text encoder's ~45 GiB of weights 24 times, uncoalesced: the resident prompt
   cost 35.8 s warm at 2048² and 9.5 s at 4096² instead of the second the residency was meant to buy.
 - The products' sums keep the sequential fp32 dot and every value's rounding, so the text rows are unchanged.
+
+### MiniMax-H3-Image on CUDA: the prompt's window widened to 256 weights a warp
+
+- `h3p_linear` streams each output column through a 256-element shared window, eight weights a lane as one
+  16-byte load, instead of 32: 512 bytes stay in flight per warp and eight products follow each load, while
+  the dots keep the reference's sequential fp32 order so the text rows are unchanged. The 32-element window
+  still left the resident prompt at 5.48 s (8 GB/s, memory-latency bound) in Desk's `9cf468df` window.
+- `bench-script.sh` runs the decoder's `reference` compare after the resident servers close, so the host
+  decoder gets the memory they held: the `9cf468df` job thrashed there and never reached 4096². It measures
+  2048² by default (`H3_BENCH_SIZES='2048 4096'` runs both), since the 4096² decoder's buffers pass the
+  GB10's memory beside the resident prompt (round 2's OOM) and wait on their own round.
