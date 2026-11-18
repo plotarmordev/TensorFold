@@ -230,6 +230,8 @@ The Desk ran it on BOTTOM (GB10) in the 14 Nov 08:05 window, job `bottom-5733d36
 On the GPU stage both share, INT8 linear makes mmh3's step 2.7× faster at 2048² and 2.2× at 4096². The rest of the
 gap is TensorFold's CPU prompt, host load and CPU decoder, which mmh3 runs on the GPU. mmh3's quoted ~24 s at 4096²
 is three PDMD-LoRA steps as half-size drafts plus one full step with INT8/FP8 attention, a different composition.
+[The mmh3 study](../mmh3-h3-image-study.md) lists what mmh3 does differently at its own code, the same picture both
+ways, and what each of its tricks would save our warm 31.4 s picture.
 
 ### GPU qualification and the `64188519` window
 
