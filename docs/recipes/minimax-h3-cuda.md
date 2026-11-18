@@ -194,15 +194,32 @@ relative error 3.15e-3 against the 3e-2 bound, a pass.
 At `96c87a43` a warm 2048² picture took 77.0 s: prompt 16.9 s, case setup 26.6 s, transformer 23.6 s (3.94 s a step),
 decoder 3.2 s load and 5.5 s tiles. mmh3's is 17.6 s. The case setup was the AdaLN tables, built again for every
 picture from ~26 GB of projection weights read back from the shards. Text-to-image's tables depend on the six
-timesteps alone, so `--serve` now keeps the last picture's tables and rebuilds them only for a case with other
-timesteps (a reference's keyframe row); a warm picture's case setup should fall to the case file's read. The rest of
-the gap, in order, each needing its own Desk window:
+timesteps alone, so `--serve` keeps the last picture's tables and rebuilds them only for a case with other
+timesteps (a reference's keyframe row).
 
-1. The prompt stage resident as the transformer is (16.9 s, of which 12.4 s is the text encoder on the GPU).
-2. The decoder resident, its 3.2 s load paid once.
-3. INT8 linear layers, mmh3's step (1.4 s against 3.94 s): 19.3 B of the 33.1 B parameters are projections, about
-   159 TFLOP of a step's ~183, so BF16 at this rate cannot reach 17.6 s on its own. It needs the Mac-render gates
+Desk ran that change (`fd812222`, job `top-d795bf3e6c37`, 18 November, exit 0, `bench-script.sh`). Every selftest
+passed and the `reference` check repeated `96c87a43`'s numbers (PSNR 56.65 dB, relative error 3.15e-3 against the
+3e-2 bound). A warm 2048² picture fell from 77.0 s to **49.7 s**: prompt 16.3 s, case setup 0 s (the tables stay
+resident), transformer 24.4 s (4.07 s a step), decoder 1.7 s load and 5.8 s tiles; cold 136.1 s, peak 39.4 GiB,
+50.3 W and 2.5 kJ a picture. At 4096² warm is 161.6 s (prompt 18.0, transformer 119.2, decoder 2.2 + 20.6).
+
+The rounds left, in order, each needing its own Desk window:
+
+1. **The prompt stage resident.** It is the largest remaining non-arithmetic cost: 16.3 s warm, of which ~13.1 s is
+   the text encoder's event-timed loop, and that loop is the ~45 GiB of layer weights copied through the pinned
+   staging a layer at a time. The prompt tool uploads every layer, the refiner's front end and
+   its blocks into one device arena once (`prompt_cuda.loadResident`), evicts the shards' pages, and serves pictures
+   from `--serve` with the weights on the device: ~48 GiB beside the transformer's 39.4 GiB in the GB10's shared
+   memory. The pilot prompt is 24 rows, so the encoder's arithmetic is under a second and the refiner's 0.3 s: a warm
+   prompt should fall from 16.3 s to about 1 s; the first Desk window times it.
+2. **The decoder resident**, its 1.7 s load paid once, its 5.8 s of tiles unchanged.
+3. **INT8 linear layers**, mmh3's step (1.4 s against 4.07 s): 19.3 B of the 33.1 B parameters are projections, about
+   159 TFLOP of a step's ~273, so BF16 at this rate cannot reach 17.6 s on its own. It needs the Mac-render gates
    against the BF16 picture before it can be the default.
+4. **Our own rounds beyond mmh3**, in the order the profile suggests: the decoder (5.8 s against mmh3's 1.0 s fp16
+   VAE) is now the second-largest stage, and a 4.07 s step is ~273 TFLOP, ~67 TFLOPS, about half the GB10's BF16
+   peak, so a BF16 GEMM and attention retune is its own round. The step's host tail (final norm and `rows_in`/`rows_out`
+   over the 4,120 rows, ~2.4 GFLOP each) is ~0.1 s and not worth moving.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
