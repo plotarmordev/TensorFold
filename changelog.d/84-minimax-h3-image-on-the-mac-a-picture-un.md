@@ -1,0 +1,7 @@
+# MiniMax-H3-Image: a warm picture's stages, and the decoder in two passes
+
+- `tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR profile` prints each request's six steps by stage, each stage in its own command buffer (slower; diagnostic). `h3.Model.profile` and its stage names already existed; the server exposes the switch and `image.zig` re-exports `stages`.
+- On an M5 Ultra (256 GiB, macOS 27.0), card 34's `prompt.txt`, seed 42, 2048x2048, one resident server at load 12: a warm request's stages were `mlp in` 3.39 s, `q k v gate` 2.48 s, `mlp out` 2.20 s, `attention` 1.54 s, `attention out` 0.89 s, `norms` 0.14 s, `heads` 0.10 s and `rows in`/`final` 0.03 s, 10.69 s of GPU across the six steps. The biggest block is the fc1 product (28,672 x 5,376).
+- The four products' activation reads work out to 7.4-9.9 GB a step at their 128-column tiles, about 850-900 GB/s at the measured stage seconds, so they are memory-bound rather than compute-bound; the attention kernel is the other gap at about 1.9 TFLOP/s by the same arithmetic.
+- The decoder now decodes up to 64 tiles a pass instead of 16 (two passes at 2048x2048 instead of eight). The latent and PNG are byte-identical (sha1 `f3563c56…` / `904814d6…`).
+- A warm 2048 picture took 12.30 s (prompt 0.22, 6 steps 10.71, decoder 1.36), against episode 1's 13.03 s. The 11 s target is not met: the products need a wider tile (256 columns), which this card did not land.

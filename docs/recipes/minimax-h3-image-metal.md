@@ -49,6 +49,9 @@ rotary positions. Supporting edits would also require checking reference geometr
 conditioning, not just comparing row counts.
 Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
 A bad request prints its error and the server reads the next line.
+Start it with `profile` after `MODEL_DIR` to print each request's six steps by stage, each stage in its own command
+buffer: `rows in`, `norms`, `q k v gate`, `heads`, `attention`, `attention out`, `mlp in`, `mlp out`, `final`. The
+waits make the request slower than an unprofiled one, so the stage seconds are for diagnosis, not for a speed gate.
 
 At startup the server puts every weight file it maps (text encoder, refiner, transformer, step heads) and the decoder's
 bf16 weights in one residency set on the three stages' queues (`holdWeights`), and prints the GiB it holds: 117.6 on
@@ -432,7 +435,8 @@ tensor units.
 3. Each tile runs `post_quant_conv`, then its cells become tokens through `x_embedder`, with the 4 registers and one
    zero token appended.
 4. The 2D rotary table is built, and the 24 blocks run, then `norm_out` and `proj_out`.
-5. Each token's 768 values are unpatchified to its 16 x 16 pixels. Up to 16 tiles run in one command buffer.
+5. Each token's 768 values are unpatchified to its 16 x 16 pixels. Up to 64 tiles run in one command buffer: two
+   passes at 2048 x 2048, where a pass of 16 took eight.
 6. Tiles are blended in float32: the top band against the tile above, then the left band against the tile to the left,
    both as decoded.
 7. The result is mapped to [0, 1] with ImageNet's statistics, clamped and truncated to bytes.

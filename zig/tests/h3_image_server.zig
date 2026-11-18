@@ -8,11 +8,12 @@ const image_tool = @import("h3_image.zig");
 const decoder_tool = @import("h3_image_decoder.zig");
 
 const usage =
-    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR
+    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile]
     \\  then one request a line on stdin: WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt
     \\  each writes OUT_PREFIX.safetensors, .h3case.safetensors, .rows.f32, .latent.f32 and .png as
     \\  tf-h3-image-prompt, tf-h3-image (free) and tf-h3-image-decoder do, and prints a timing line;
     \\  a request with the last one's canvas, rows and tags reuses its transformer binding
+    \\  profile: each request's six steps by stage, each stage in its own command buffer (slower; diagnostic)
     \\
 ;
 
@@ -84,7 +85,8 @@ fn holdWeights(init: std.process.Init, a: std.mem.Allocator, encoder: *const pro
 
 pub fn main(init: std.process.Init) !u8 {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len != 3) {
+    const profile = args.len == 4 and std.mem.eql(u8, args[3], "profile");
+    if (args.len != 3 and !profile) {
         std.debug.print("{s}", .{usage});
         return 2;
     }
@@ -119,7 +121,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (fields.len == 0) continue;
         var request = std.heap.ArenaAllocator.init(init.gpa);
         defer request.deinit();
-        serve(init, request.allocator(), &encoder, &folder, &vae, &binding, weights, fields) catch |err| {
+        serve(init, request.allocator(), &encoder, &folder, &vae, &binding, weights, fields, profile) catch |err| {
             std.debug.print("request failed: {s}\n", .{@errorName(err)});
         };
     }
@@ -147,7 +149,7 @@ fn nextLine(in: *std.Io.Reader) !?[]const u8 {
 }
 
 /// One request line: its prompt's case, the six steps on the bound (or a new) transformer, its PNG, a timing line.
-fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae, binding: *?Binding, weights: ?mtl.ResidencySet, line: []const u8) !void {
+fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae, binding: *?Binding, weights: ?mtl.ResidencySet, line: []const u8, profile: bool) !void {
     var it = std.mem.tokenizeAny(u8, line, " \t");
     const size = try prompt_tool.size(it.next() orelse return error.BadRequest);
     const seed = try std.fmt.parseInt(u64, it.next() orelse return error.BadRequest, 10);
@@ -173,7 +175,19 @@ fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Enc
     const reused = try rebind(init.gpa, folder, binding, &case, tags, weights);
     const bound = mtl.clock.seconds();
 
-    const out = try image_tool.free(a, binding.*.?.model, folder, &case, prefix);
+    const model = binding.*.?.model;
+    if (profile) {
+        model.profile = true;
+        model.spent = @splat(0);
+    }
+    defer {
+        if (profile) model.profile = false;
+    }
+    const out = try image_tool.free(a, model, folder, &case, prefix);
+    if (profile) {
+        std.debug.print("{s}: six steps by stage, each stage in its own command buffer:\n", .{prefix});
+        for (h3.stages, model.spent) |stage, seconds| std.debug.print("  {s}: {d:.3} s\n", .{ stage, seconds });
+    }
     const denoised = mtl.clock.seconds();
     try vae.png(init, a, out.latent, case.grid.rows, case.grid.columns, .{ .width = size.width, .height = size.height }, try std.fmt.allocPrint(a, "{s}.png", .{prefix}));
     const done = mtl.clock.seconds();
