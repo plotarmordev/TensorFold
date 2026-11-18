@@ -215,7 +215,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     std.debug.print("{d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, case ready in {d:.1} s\n", .{ canvas.width, canvas.height, count, text, held, target, tiles, model.blocks.len, steps, h3.seconds() - started });
 
     // H3_PROFILE: wait after every block stage and print where the steps went (the waits cost a few ms a step)
-    const profiling = (init.environ_map.get("H3_PROFILE") orelse "").len > 0;
+    const profiling = if (init.environ_map.get("H3_PROFILE")) |v| v.len > 0 else false;
     model.profile = profiling;
     model.spent = @splat(0);
     const transformer = h3.seconds();
