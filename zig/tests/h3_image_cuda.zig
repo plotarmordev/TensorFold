@@ -37,6 +37,8 @@ const Folder = struct {
     model: *h3.Model,
     heads: h3.checkpoint.Checkpoint,
     pdd: picture.Pdd,
+    modulation: ?h3.modulation.Tables = null,
+    times: []f32 = &.{},
 
     fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !Folder {
         const heads_name = try picture.checkIndex(a, try read(init, a, dir, "model_index.json"));
@@ -56,9 +58,24 @@ const Folder = struct {
     }
 
     fn deinit(f: *Folder, gpa: std.mem.Allocator) void {
+        if (f.modulation) |*m| m.deinit();
+        gpa.free(f.times);
         f.heads.deinit();
         f.model.deinit();
         f.ck.deinit(gpa);
+    }
+
+    /// The AdaLN tables for `times`, kept across --serve pictures: they depend on the timesteps alone, and preparing
+    /// them reads ~26 GB of projection weights. A case with other timesteps (a reference's keyframe row) replaces them.
+    fn tables(f: *Folder, gpa: std.mem.Allocator, times: []const f32) !*h3.modulation.Tables {
+        if (f.modulation != null and std.mem.eql(f32, f.times, times)) return &f.modulation.?;
+        if (f.modulation) |*m| m.deinit();
+        f.modulation = null;
+        gpa.free(f.times);
+        f.times = &.{};
+        f.modulation = try h3.modulation.prepare(gpa, &f.model.driver, f.model.stream, &f.ck, times, f.model.blocks.len, f.model.hidden);
+        f.times = try gpa.dupe(f32, times);
+        return &f.modulation.?;
     }
 };
 
@@ -147,11 +164,10 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     const plan = try schedule.plan(a, .{ .text = text, .condition = held, .audio = 0, .video = target }, pdd.timesteps, pdd.timesteps);
     const times = plan.table.len;
     const lines = times * schedule.modalities;
-    var modulation = try h3.modulation.prepare(gpa, &model.driver, model.stream, ck, plan.table, model.blocks.len, hidden);
-    defer modulation.deinit();
+    const modulation = try folder.tables(gpa, plan.table);
     const final = modulation.final;
     const final_norm = values(u16, try ck.at("final_layer.norm.weight", .bf16, hidden));
-    ck.evict(); // the AdaLN weights prepare read (~26 GB): a cached copy would crowd the next prompt
+    ck.evict(); // the weights this case read (~26 GB when it prepared the tables): a cached copy would crowd the next prompt
 
     // the step heads: the picture's distilled heads, one a step, in model_index.json's heads file
     const width = picture.row_width;
