@@ -59,35 +59,25 @@ __global__ void __launch_bounds__(256) h3_gate_add(__nv_bfloat16* X, const __nv_
     for (int c = threadIdx.x; c < C; c += blockDim.x) x[c] = __float2bfloat16(f(x[c]) + f(y[c]) * bf(g[c]));
 }
 
-// A row of the q, k, v projection: bf16 values, or an int8 product's int32 sums rounded to bf16 as h3_dequantize
-// rounds them (sum, then the row's and the column's scale).
-struct Bf16Row {
-    const __nv_bfloat16* p;
-    __device__ float operator[](int c) const { return f(p[c]); }
-};
-struct Int8Row {
-    const int* p;
-    const float* sw;
-    float s;
-    __device__ float operator[](int c) const { return bf(p[c] * s * sw[c]); }
-};
-
 // q, k, v to bf16 in tile order: head RMSNorm, then split-half rotary rounded as the reference's bf16 tables round it.
-template <class Row>
-__device__ __forceinline__ void heads_body(Row qkv, const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS,
-                                           const float* SIN, int row, __nv_bfloat16* TQ, __nv_bfloat16* TK,
-                                           __nv_bfloat16* TV, int H, int ROT, int slots, float eps) {
-    const int s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32, slot = blockIdx.x * 64 + s;
+__global__ void __launch_bounds__(256) h3_heads(
+        const __nv_bfloat16* QKV, const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS, const float* SIN,
+        const int* ROWOF, __nv_bfloat16* TQ, __nv_bfloat16* TK, __nv_bfloat16* TV, int H, int stride, int ROT, int slots,
+        float eps) {
+    const int tile = blockIdx.x, s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32, slot = tile * 64 + s;
+    const int row = ROWOF[slot];
     const bool live = row >= 0;
     const float* cs = COS + static_cast<size_t>(live ? row : 0) * ROT;
     const float* sn = SIN + static_cast<size_t>(live ? row : 0) * ROT;
     for (int head = 0; head < H; ++head) {
-        const int qc = head * 128, kc = qc + H * 128, vc = kc + H * 128;
+        const __nv_bfloat16* qr = QKV + static_cast<size_t>(live ? row : 0) * stride + head * 128;
+        const __nv_bfloat16* kr = qr + H * 128;
+        const __nv_bfloat16* vr = kr + H * 128;
         float q[32], k[32], sq = 0.0f, sk = 0.0f;
 #pragma unroll
         for (int j = 0; j < 32; ++j) {
-            q[j] = live ? qkv[qc + c0 + j] : 0.0f;
-            k[j] = live ? qkv[kc + c0 + j] : 0.0f;
+            q[j] = live ? f(qr[c0 + j]) : 0.0f;
+            k[j] = live ? f(kr[c0 + j]) : 0.0f;
             sq += q[j] * q[j];
             sk += k[j] * k[j];
         }
@@ -111,37 +101,16 @@ __device__ __forceinline__ void heads_body(Row qkv, const __nv_bfloat16* NQ, con
                     const bool low = c < ROT;
                     const int p = low ? c + ROT : c - ROT, t = low ? c : c - ROT;
                     const float sign = low ? -1.0f : 1.0f, co = bf(cs[t]), si = bf(sn[t]);
-                    const float qp = bf(qkv[qc + p] * qi * f(NQ[p])), kp = bf(qkv[kc + p] * ki * f(NK[p]));
+                    const float qp = bf(f(qr[p]) * qi * f(NQ[p])), kp = bf(f(kr[p]) * ki * f(NK[p]));
                     a[e] = bf(a[e] * co) + bf(sign * qp * si);
                     b[e] = bf(b[e] * co) + bf(sign * kp * si);
                 }
             }
             *reinterpret_cast<uint32_t*>(TQ + at + j) = pack2(a[0], a[1]);
             *reinterpret_cast<uint32_t*>(TK + at + j) = pack2(b[0], b[1]);
-            *reinterpret_cast<uint32_t*>(TV + at + j) = pack2(qkv[vc + c0 + j], qkv[vc + c0 + j + 1]);
+            *reinterpret_cast<uint32_t*>(TV + at + j) = *reinterpret_cast<const uint32_t*>(vr + c0 + j);
         }
     }
-}
-
-__global__ void __launch_bounds__(256) h3_heads(
-        const __nv_bfloat16* QKV, const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS, const float* SIN,
-        const int* ROWOF, __nv_bfloat16* TQ, __nv_bfloat16* TK, __nv_bfloat16* TV, int H, int stride, int ROT, int slots,
-        float eps) {
-    const int row = ROWOF[blockIdx.x * 64 + (threadIdx.x >> 2)];
-    const Bf16Row qkv{QKV + static_cast<size_t>(row >= 0 ? row : 0) * stride};
-    heads_body(qkv, NQ, NK, COS, SIN, row, TQ, TK, TV, H, ROT, slots, eps);
-}
-
-// h3_heads straight from an int8 product's int32 sums ACC (rows, stride) and its scales: h3_dequantize's bf16 rows
-// are never written, and TQ, TK, TV are the bytes the two kernels make.
-__global__ void __launch_bounds__(256) h3_heads_int8(
-        const int* ACC, const float* SX, const float* SW, const __nv_bfloat16* NQ, const __nv_bfloat16* NK,
-        const float* COS, const float* SIN, const int* ROWOF, __nv_bfloat16* TQ, __nv_bfloat16* TK, __nv_bfloat16* TV,
-        int H, int stride, int ROT, int slots, float eps) {
-    const int row = ROWOF[blockIdx.x * 64 + (threadIdx.x >> 2)];
-    const int r = row >= 0 ? row : 0;
-    const Int8Row qkv{ACC + static_cast<size_t>(r) * stride, SW, SX[r]};
-    heads_body(qkv, NQ, NK, COS, SIN, row, TQ, TK, TV, H, ROT, slots, eps);
 }
 
 // Each tile's mean q, k and v over its real rows, in fp32. QP, KP, VP: (H, tiles, 128). Grid [tiles, H], 32 threads.
