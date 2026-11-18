@@ -191,6 +191,19 @@ selftest passed, so these timings are the Spark's result: at 2048² the decoder 
 on the GPU and on the host reference decoder: 86.180% of bytes identical, 99.923% within 1, at most 5 apart, 56.65 dB,
 relative error 3.15e-3 against the 3e-2 bound, a pass.
 
+At `96c87a43` a warm 2048² picture took 77.0 s: prompt 16.9 s, case setup 26.6 s, transformer 23.6 s (3.94 s a step),
+decoder 3.2 s load and 5.5 s tiles. mmh3's is 17.6 s. The case setup was the AdaLN tables, built again for every
+picture from ~26 GB of projection weights read back from the shards. Text-to-image's tables depend on the six
+timesteps alone, so `--serve` now keeps the last picture's tables and rebuilds them only for a case with other
+timesteps (a reference's keyframe row); a warm picture's case setup should fall to the case file's read. The rest of
+the gap, in order, each needing its own Desk window:
+
+1. The prompt stage resident as the transformer is (16.9 s, of which 12.4 s is the text encoder on the GPU).
+2. The decoder resident, its 3.2 s load paid once.
+3. INT8 linear layers, mmh3's step (1.4 s against 3.94 s): 19.3 B of the 33.1 B parameters are projections, about
+   159 TFLOP of a step's ~183, so BF16 at this rate cannot reach 17.6 s on its own. It needs the Mac-render gates
+   against the BF16 picture before it can be the default.
+
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
 Prompt `h3-image-pilot/prompt.txt` (the red fox, sha256 cc969bca…), seed 42, the checkpoint's six distilled steps,
