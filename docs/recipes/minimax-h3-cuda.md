@@ -300,24 +300,40 @@ opt-in; `b4c5c42`'s 19.9 s was the same `--int8` picture.
 and rotating the int8 rows in 256-wide groups as mmh3's ConvRot does left the picture where it was (28.14 dB, 4.23
 mean apart, cosine 0.9944). Warm 18.3 s mean (18.2, 18.3, 18.3). The rotation's width is not the picture's gap.
 
+`cb217aa2` (job `top-24813192cb2f`, 19 November, exit 0) ran the decoder's occupancy round and the int8 selection, and
+`c30403d9` reverts the decoder half. `h3d_linear` over a 128 x 128 tile on 512 threads at 4 x 8 outputs a thread
+(`__launch_bounds__(512, 2)`, ~55 registers, two CTAs and 32 warps an SM, one 16-byte prefetch a thread) measured
+products **3.00 s** against 2.26 s at 256 threads: a 4 x 8 thread reads 12 floats of shared memory for 32 products where
+8 x 8 reads 16 for 64, so the shared-memory rate, not the warps, bounds the tile. `h3d_attention`'s eight 16-byte key
+loads measured 1.89 s against 1.88 s, so the dot's loads were not its bound. The decoder selftest and the same-latent
+reference passed on that build (86.117% of bytes identical, 99.916% within 1, at most 5 apart, PSNR 56.62 dB, relative
+error 3.16e-3 against the 3e-2 bound). The same job quantized `qkvc` and `fc1` alone: the picture is **28.69 dB** and
+**4.01** apart on average from episode 1's Mac PNG with latent cosine 0.9952 (28.15 dB, 4.23, 0.9945 with every
+projection in int8), so every gate passes and int8 is now `tf-h3-image-cuda`'s default, `--bf16` opting out. `out` and
+`fc2` in bf16 cost 0.72 s of that window (mlp out 1.78 → 2.30, attention out 0.94 → 1.14) and their quantization was
+what held the picture at 28.15 dB. `c30403d9` repeated the bench with the decoder reverted (job `top-85cea73cbb20`,
+exit 0): every selftest passed, the same-latent check passed at 86.117% of bytes identical and 56.62 dB, the picture
+measured the same 28.69 dB, 4.01 apart and 0.9952, and a warm 2048² picture took **18.9 s** mean (18.9, 18.9, 18.9:
+prompt 1.1, transformer 12.8, decoder 4.9), cold 157.8 s, peak 76,665 MiB.
+
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
-1. **The int8 products' own rate**: the six projection stages take 1.69 s of a 2.0 s step, ~100 TOPS, a fifth of the
-   GB10's dense int8; `bd734252` removed `fc1`'s dequantize round trip and the second read of each quantized row.
-   MXFP8 block scaling (cuBLASLt's 32-element `UE8M0` mode, compute capability 10.0+; the outer-vector mode is 9.0
-   only) writes bf16 straight from the product. The `--int8` picture fails the Mac-render gates (28.15 dB, 4.23 mean
-   apart), so it is not the default; a finer scale (per 128-chunk instead of per row) is the next candidate. The
-   two kernels' records are in the registry as of `cadab6b2`, and
+1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
+   int8, a third of the GB10's dense rate, and their int32 sums make a round trip through `h3_dequantize`. A product
+   that writes bf16 straight from the tile would remove that trip, and a per-128-chunk scale would let the products
+   carry the picture without the bf16 fallbacks. The two kernels' records are in the registry as of `cadab6b2`, and
    `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4 (`contract_h3_int8.zig`);
    the limits audit (gate 5) is `limits-job.sh`'s own window.
-2. **Attention**, 1.76 s a picture at ~5% of the GB10's bf16 rate: mmh3's INT8/FP8 attention, or a block whose
-   registers leave room for four CTAs an SM instead of two.
+2. **Attention**: 1.74 s a picture in the transformer, 217 registers at 128 threads and two CTAs an SM (8 warps), and
+   1.89 s in the decoder, whose 16-byte key loads changed nothing. mmh3's INT8/FP8 attention is the candidate that
+   would also cut registers; the decoder's attention needs its stall found first, since neither its loads nor its
+   occupancy explain it.
 3. **The rows outside the blocks**: on the device as of `bd734252`, 0.15 s a picture.
-4. **The decoder's occupancy**: the fma took the products' GPU time from 4.95 s to 4.54 s, only 8%, so they are
-   latency-bound, not rate-bound: 121 registers a thread leave two CTAs an SM, 8 warps. Attention is 1.88 s of the
-   4.54 s with 217 registers at 128 threads, the same two CTAs. A 128 x 128 product tile run by 512 threads at 4 x 8
-   outputs each halves the registers and doubles the warps with the same per-output fma order; the attention block
-   wants the same. Tensor cores stay out: the selftest's 90% block identity (86.952% with them, card 72) fails.
+4. **The decoder's products** are 2.26 s at 121 registers and two CTAs an SM. A 512-thread 4 x 8 tile measured 3.00 s
+   (`cb217aa2`, reverted): the smaller per-thread tile reads 12 shared floats for 32 products where 8 x 8 reads 16 for
+   64, so the shared-memory rate rises faster than the warps help. A tile that keeps 8 x 8's ratio at more warps would
+   need more registers than a 1024-thread SM allows. Tensor cores stay out: the selftest's 90% block identity
+   (86.952% with them, card 72) fails.
 5. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
