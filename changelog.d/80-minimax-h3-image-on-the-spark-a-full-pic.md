@@ -67,3 +67,12 @@
 - `tf-h3-image-cuda` splits those rows over the host's cores, each row's sums in the serial order (the latent is
   byte-identical): the transformer fell from 21.8 s to 13.9 s and a warm 2048² picture to **20.6 s** (prompt 1.07,
   transformer 13.9, decoder 5.6), 3 s above mmh3's 17.6 s.
+
+### MiniMax-H3-Image on CUDA: the decoder's products load 16 bytes and prefetch, a warm 2048² picture at 20.3 s
+
+- `h3d_linear` loads eight K of a row as one 16-byte load and prefetches the next K slice into registers while the
+  current one sums, in the same order: the decoder's GPU time fell from 5.25 s to 4.95 s with its selftest rows
+  unchanged, and a warm 2048² picture to **20.3 s** (prompt 1.1, transformer 13.9, decoder 5.3) in job
+  `top-9d030e00d7aa`, every selftest passing.
+- `bench-script.sh` builds only the sm_121 tools (`H3_BUILD=sm121 cuda-build.sh`); the five release SMs and their
+  limits audit stay `cuda-build.sh`'s, and a bench round now takes ~10 minutes against the Desk's 20.

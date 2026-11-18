@@ -262,6 +262,14 @@ cores, each row's sums in the serial order: the latent is byte-identical to `d6f
 transformer 13.9, decoder 5.6), cold 164.7 s. The job ran 30 min, over its 20 min: the limits audit's fatbin build
 took most of it.
 
+`f3f0291f` (job `top-9d030e00d7aa`, 18 November, ~10 min, exit 0) loads the decoder products' K 16 bytes at a time
+and prefetches the next 16-deep K slice into registers, with the same ordered sums: the decoder selftest's rows are
+unchanged (6 x 10 block 1 97.912%). Every selftest passed and a warm 2048² picture took **20.3 s** mean (20.3, 20.3,
+20.4: prompt 1.1, transformer 13.9, decoder 5.3), cold 159.8 s; `reference` passed at 86.044% identical, 99.917% within
+1, at most 6 apart, 56.60 dB, relative 3.16e-3. The decoder's GPU time only fell from 5.25 s to 4.95 s, so the product
+loads were not its bound; the next decoder round profiles its stages before changing a kernel. The bench now builds
+only the sm_121 tools, so the job fits the Desk's 20 minutes.
+
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
 1. **The int8 products' own rate**: the six projection stages take 1.69 s of a 2.3 s step, ~95 TOPS, a fifth of the
@@ -269,9 +277,9 @@ The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
    the measured candidates; MXFP8 block scaling (cuBLASLt's 32-element `UE8M0` mode, compute capability 10.0+; the
    outer-vector mode is 9.0 only) writes bf16 straight from the product. Then the Mac-render gates on the `--int8`
    picture and the two kernels' limits entries before `--int8` becomes the default.
-2. **The decoder's tiles**, 5.6 s against mmh3's 1.0 s fp16 VAE: 121 tiles of 256 pixels take 43 ms each on the GB10
-   against 13.4 ms on an M3 Ultra. The sequential fp32 sums are its selftest's gate, so the round is the scalar
-   kernel's own tiling (a 128 x 128 tile, a 16-deep K stage, no second buffer), not tensor cores.
+2. **The decoder's tiles**, 5.3 s against mmh3's 1.0 s fp16 VAE. The ordered fp32 sums are its selftest's gate:
+   cuBLASLt's tensor-core products failed its 90% block identity at 86.952% (card 72), so tensor cores are out; a
+   per-stage profile (products, attention, norms, `h3d_finish`'s fp32 round trip) picks the kernel.
 3. **Attention**, 1.76 s a picture: mmh3's INT8/FP8 attention.
 4. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
 
