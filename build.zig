@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) void {
     }
     @import("zig/build/qwen35_cache_host.zig").tests(b);
     @import("zig/build/residency_host.zig").steps(b);
+    @import("zig/build/tokenizer_host.zig").steps(b);
     @import("zig/build/cluster_host.zig").steps(b);
     @import("zig/build/lane_halt_host.zig").steps(b);
     @import("zig/build/cache_replay.zig").steps(b);
@@ -210,6 +211,7 @@ pub fn build(b: *std.Build) void {
     dist_build.targets(b, draft_ids, build_options, release_version, xgrammar);
     @import("zig/build/release_paths_step.zig").tests(b, test_step);
     @import("zig/build/sessions.zig").add(b, test_step);
+    @import("zig/build/device.zig").steps(b, test_step);
     @import("zig/build/sessions_writes.zig").steps(b);
     @import("zig/build/tp.zig").add(b, target, optimize, test_step, tp_options);
     @import("zig/build/tp_check.zig").add(b, target, test_step);
