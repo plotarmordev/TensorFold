@@ -424,7 +424,7 @@ pub const Prm = struct {
             .linear => {
                 for (b[0..3]) |p| a.add(p);
                 for ([_]usize{ s.rows, s.n, s.k }) |v| a.add(ci(v));
-                try self.go(.{ .x = @intCast((s.rows * s.n + 255) / 256) }, &a);
+                try self.go(.{ .x = @intCast((s.n + 7) / 8) }, &a);
             },
             .round => {
                 for (b[0..2]) |p| a.add(p);

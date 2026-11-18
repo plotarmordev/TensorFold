@@ -113,19 +113,23 @@ The 14 November tables below predate this cutover; the
 
 ### Benchmark run
 
-[`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds in the same TOP job, then takes `run-script.sh`'s inputs
-and tools without its gate: it records each selftest's PASS or FAIL and renders anyway. Each size gets one cold picture
+[`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds the sm_121 tools alone in the same TOP job
+(`H3_BUILD=sm121 cuda-build.sh`: the five release SMs and their limits audit stay `cuda-build.sh`'s own job, which put
+a bench past the Desk's 20 minutes), then takes `run-script.sh`'s inputs and tools without its gate: it records each
+selftest's PASS or FAIL and renders anyway. Each size in
+`H3_BENCH_SIZES` (default `2048`) gets one cold picture
 (start to first picture) and three warm repeats, while `nvidia-smi` is sampled twice a second. The transformer stays
 resident: one `tf-h3-image-cuda MODEL --serve` a size loads the model inside the cold run and renders all four cases,
-so warm repeats pay no transformer load. The prompt encoder streams its weights a layer at a time and the decoder loads in
-seconds, so both still run a process a picture. Where unified memory leaves `memory.used` as `[N/A]`, the peak is the
+so warm repeats pay no transformer load. `tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL --serve` and
+`tf-h3-image-decoder-cuda MODEL --serve` likewise load their weights once a size and serve the four cases. Where unified memory leaves `memory.used` as `[N/A]`, the peak is the
 compute processes' memory instead. `/work/out/h3-image-bench/SUMMARY.md` opens with the selftests' verdict. If any
 selftest failed or none ran, it says the timings are not the Spark's result. It then lists the commit, GPU, prompt
 hash and seed. Per run it gives wall, prompt, load (cold run only), case setup, transformer, decoder load and decoder
 (tiles and PNG) seconds, steps, peak MiB, average watts and kJ (average power times wall), plus the warm mean.
-[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails. After the 2048² runs the
-script decodes that latent again with `reference`: the GPU's picture and the host reference decoder's on the same
-latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits non-zero past the bound.
+[`h3_image_bench.py`](../../tools/zig/h3_image_bench.py) writes it, also when a stage fails. After the resident
+servers close, the script decodes the 2048² latent again with `reference`: the GPU's picture and the host reference
+decoder's on the same latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits
+non-zero past the bound. The host decoder needs the memory the servers held, so it runs once their arenas are free.
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
@@ -190,6 +194,115 @@ selftest passed, so these timings are the Spark's result: at 2048² the decoder 
 (5.25 s on the GPU), and 20.4 s at 4096² (20.3 s warm mean). The same job's `reference` check decoded the 2048² latent
 on the GPU and on the host reference decoder: 86.180% of bytes identical, 99.923% within 1, at most 5 apart, 56.65 dB,
 relative error 3.15e-3 against the 3e-2 bound, a pass.
+
+At `96c87a43` a warm 2048² picture took 77.0 s: prompt 16.9 s, case setup 26.6 s, transformer 23.6 s (3.94 s a step),
+decoder 3.2 s load and 5.5 s tiles. mmh3's is 17.6 s. The case setup was the AdaLN tables, built again for every
+picture from ~26 GB of projection weights read back from the shards. Text-to-image's tables depend on the six
+timesteps alone, so `--serve` keeps the last picture's tables and rebuilds them only for a case with other
+timesteps (a reference's keyframe row). [`serve-check.sh`](minimax-h3-cuda/serve-check.sh) proves the reuse: one
+server renders 512² cases a, a, b, a (b adds a 2 x 2 reference, so its table gains the keyframe timestep) and each
+latent must equal its case's fresh run byte for byte; the job exits 1 on a miss. [`check-job.sh`](minimax-h3-cuda/check-job.sh)
+runs it after the int8 kernels' contract gates, one TOP job. Job `top-de7892d85798` at `1c5074d3` (exit 0) ran
+both: the int8 kernels passed gates 1-4 (`h3_quantize`'s eight shapes exact by its own check, `h3_dequantize`'s
+within 0.996 of their bound), the live sm_121 limits passed, and served 1-4 matched fresh a, a, b, a byte for byte.
+
+Desk ran that change (`fd812222`, job `top-d795bf3e6c37`, 18 November, exit 0, `bench-script.sh`). Every selftest
+passed and the `reference` check repeated `96c87a43`'s numbers (PSNR 56.65 dB, relative error 3.15e-3 against the
+3e-2 bound). A warm 2048² picture fell from 77.0 s to **49.7 s**: prompt 16.3 s, case setup 0 s (the tables stay
+resident), transformer 24.4 s (4.07 s a step), decoder 1.7 s load and 5.8 s tiles; cold 136.1 s, peak 39.4 GiB,
+50.3 W and 2.5 kJ a picture. At 4096² warm is 161.6 s (prompt 18.0, transformer 119.2, decoder 2.2 + 20.6).
+
+Desk ran `d1743eb5` (job `top-5ec3983b311d`, 18 November, exit 0), the resident prompt and decoder servers beside the
+transformer's tables. Every selftest passed, but a warm 2048² picture **rose to 68.6 s** (round 1: 49.7 s): prompt
+35.8 s, transformer 24.2 s, decoder 2.4 s load and 5.7 s tiles; cold 206.1 s. At 4096² the warm prompt was 9.5 s
+against 35.8 s at 2048², so the resident prompt did not cost the ~1 s its weights on the device should.
+
+`h3p_linear` gave every output element its own thread walking that element's weight row: with 24 rows each of a
+column's k weights was read 24 times, and neighbouring threads read rows 10 KB apart, so each load used a fraction of
+its 32-byte sector. The text encoder's ~45 GiB of weights became ~1.1 TB of traffic, and the memory system's rate,
+not the arithmetic, set the stage's time. A warp now owns each output column: its lanes load the column in coalesced
+32-element windows into shared memory, and each lane sums one row over them in the reference's k order, so the column
+is read once per 32-row group. The dots keep the sequential fp32 sum and every value's rounding, so the text rows are
+unchanged.
+
+Desk ran `9cf468df` (job `top-225420da214f`, 18 November) with that kernel, the resident prompt, transformer and
+decoder. Every selftest passed, and a warm 2048² picture fell to **35.3 s** (prompt 5.49, transformer 24.13, decoder
+5.60); cold 179.1 s, whose prompt server uploads 48.35 GiB in 51.7 s. The job then hung after the 2048 runs in the
+`reference` compare: with the three servers holding ~87 GiB, the host decoder thrashed, and the 4096² stage never
+started. `bench-script.sh` now runs that compare after the servers close (their arenas freed) and measures 2048² by
+default; `H3_BENCH_SIZES='2048 4096'` runs both sizes, which waits on the 4096² memory round.
+
+The prompt's window widened to 256 weights a warp (eight a lane, one 16-byte load), so 512 bytes stay in flight and
+eight products follow each load; the dots keep the same sequential order.
+
+Desk ran `f825b43c` (job `top-b16eaa3d03bd`, 18 November) with that window: the prompt fell from 5.48 s to **1.1 s**
+warm (45 GiB at 41 GB/s) and a warm 2048² picture from 35.3 s to **31.0 s** (prompt 1.14, transformer 24.21, decoder
+5.60; cold 178.3 s). The same job asked cuBLASLt's heuristic at the picture's own 4,120 rows instead of the canonical
+16,384-row batch, and the transformer measured 23.91–24.54 s against `9cf468df`'s 24.13 s: the canonical policy stays
+and that round is reverted. The job then hung after the 2048 runs, before its `reference` compare and the 4096² stage:
+the script's FIFO fds leaked into the resident servers, so the last server held the others' request write ends and
+`wait` never saw EOF. `9cf468df`'s ~1.5 h hang was the same leak, not the 4096² stage.
+
+Desk ran `cecba1009` (job `top-1166fad2c210`, 18 November) with the script's fds closed in every server. Every
+selftest passed and the job exited 0: a warm 2048² picture took **31.4 s** mean (prompt 1.1, transformer 24.5, decoder
+5.7), cold 170.3 s, peak 86.8 GiB, 64.9 W and 2.0 kJ a picture. Its `reference` compare decoded the latent on the GPU
+(5.58 s) and on the host (215.6 s) and repeated `96c87a43`'s numbers: 86.180% of bytes identical, 99.923% within 1, at
+most 5 apart, PSNR 56.65 dB, relative error 3.15e-3 against the 3e-2 bound, a pass. The host decode is the job's
+longest stage after the build, so a round takes ~25 min.
+
+`df74446f` (job `top-de80ff04ca02`, 18 November) ran the transformer with `--int8`: every projection's weight rows and
+activation rows Hadamard-rotated in 128-wide chunks, int8 at their absmax, exact int32 sums in cuBLASLt and one bf16
+rounding back. Every selftest passed and a warm 2048² picture took **28.9 s** mean (prompt 1.07, transformer 22.2,
+decoder 5.6), cold 170.5 s; the latent's cosine against `f825b43c`'s BF16 latent is 0.9961, the BF16 picture's own
+cosine against the Mac. But a step only fell from 4.07 s to 3.69 s: the projections were not most of the step on the
+GB10, so INT8 alone cannot give mmh3's 1.4 s. The job ran over its 20 min (build and selftests took 20 min of it) and was
+stopped in its host `reference` decode; the limits audit fails on the two new unregistered kernels.
+
+`d6fadca4` (job `top-d6126e31f157`) printed the step's profile (`H3_PROFILE`, on in `bench-script.sh`): of a warm
+21.8 s transformer, **9.2 s was outside the blocks**, the host's serial `rows_in`, final norm and `rows_out` over
+4,096 rows (~1.5 s a step), not attention. In the blocks: mlp in 4.08, q k v gate 2.68, attention 1.76, mlp out 1.72,
+heads 0.96, attention out 0.93, norms 0.52 s. `87168278` (job `top-bca977754b29`) splits those host rows over the
+cores, each row's sums in the serial order: the latent is byte-identical to `d6fadca4`'s, the transformer takes
+13.9 s (1.2 s outside the blocks) and a warm 2048² picture **20.6 s** mean (20.55, 20.55, 20.69: prompt 1.07,
+transformer 13.9, decoder 5.6), cold 164.7 s. The job ran 30 min, over its 20 min: the limits audit's fatbin build
+took most of it.
+
+`f3f0291f` (job `top-9d030e00d7aa`, 18 November, ~10 min, exit 0) loads the decoder products' K 16 bytes at a time
+and prefetches the next 16-deep K slice into registers, with the same ordered sums: the decoder selftest's rows are
+unchanged (6 x 10 block 1 97.912%). Every selftest passed and a warm 2048² picture took **20.3 s** mean (20.3, 20.3,
+20.4: prompt 1.1, transformer 13.9, decoder 5.3), cold 159.8 s; `reference` passed at 86.044% identical, 99.917% within
+1, at most 6 apart, 56.60 dB, relative 3.16e-3. The decoder's GPU time only fell from 5.25 s to 4.95 s, so the product
+loads were not its bound; the next decoder round profiles its stages before changing a kernel. The bench now builds
+only the sm_121 tools, so the job fits the Desk's 20 minutes.
+
+`b4c5c42` (job `top-c3142e924abc`, 19 November, exit 0) fuses `h3d_linear`'s products into one rounded `__fmaf_rn`
+— one rounding a product instead of two, half the instructions — and prints the decoder's per-stage seconds under
+`H3_PROFILE`. Every selftest passed; a warm 2048² picture took **19.9 s** mean (19.9, 19.9, 20.0: prompt 1.1,
+transformer 13.9, decoder 4.9), cold 161.6 s, peak 71,147 MiB. The decoder's 4.54 s of GPU time split into products
+2.26 s, attention 1.88 s, finish 0.25 s, swiglu 0.08 s, heads 0.04 s, norms 0.02 s and embedding 0.00 s: the
+products are half of it, and attention is 1.88 s, so both are latency-bound rather than rate-bound. `reference`
+repeated its pass at 86.044% of bytes identical, 99.917% within 1, at most 6 apart, PSNR 56.60 dB, relative error
+3.16e-3 against the 3e-2 bound. The fma took the decoder's GPU time from 4.95 s to 4.54 s.
+
+The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
+
+1. **The int8 products' own rate**: the six projection stages take 1.69 s of a 2.3 s step, ~100 TOPS, a fifth of the
+   GB10's dense int8. The int32 sums' round trip through `h3_dequantize` and the twice-read `h3_quantize` rows are
+   the measured candidates; MXFP8 block scaling (cuBLASLt's 32-element `UE8M0` mode, compute capability 10.0+; the
+   outer-vector mode is 9.0 only) writes bf16 straight from the product. Then the Mac-render gates on the `--int8`
+   picture before `--int8` becomes the default; the two kernels' records are in the registry as of `cadab6b2`, and
+   `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4 (`contract_h3_int8.zig`);
+   the limits audit (gate 5) is `limits-job.sh`'s own window.
+2. **Attention**, 1.76 s a picture at ~5% of the GB10's bf16 rate: mmh3's INT8/FP8 attention, or a block whose
+   registers leave room for four CTAs an SM instead of two.
+3. **The host rows outside the blocks**, 1.2 s a picture (`rows_in`, the final norm, `rows_out`): mmh3 runs them on
+   the device.
+4. **The decoder's occupancy**: the fma took the products' GPU time from 4.95 s to 4.54 s, only 8%, so they are
+   latency-bound, not rate-bound: 121 registers a thread leave two CTAs an SM, 8 warps. Attention is 1.88 s of the
+   4.54 s with 217 registers at 128 threads, the same two CTAs. A 128 x 128 product tile run by 512 threads at 4 x 8
+   outputs each halves the registers and doubles the warps with the same per-output fma order; the attention block
+   wants the same. Tensor cores stay out: the selftest's 90% block identity (86.952% with them, card 72) fails.
+5. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 

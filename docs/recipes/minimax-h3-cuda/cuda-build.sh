@@ -7,6 +7,11 @@
 # - tensorfold-fatbins-SHA: the sm_121 images and SHA256SUMS, for -Dfatbins (../../receipts/drama3-pruned-main/run-script.sh)
 # - tensorfold-cuda-SHA: tf-cuda-test and the three H3 picture tools, with their images built in, plus fatbin/ for the five release SMs
 # - limits.log: kernel-contract-limits over those images; the job exits with its status
+# H3_BUILD=sm121 stops once the three picture tools are in tensorfold-cuda-SHA: no release SMs, tf-cuda-test or
+# audit, which put bench-script.sh past the Desk's 20 minutes.
+# H3_BUILD=limits builds the five SMs' images and kernel-contract-limits alone, no CLI or tf-cuda-test: the audit
+# as its own job, never inside a timed bench.
+# H3_BUILD=contract builds tf-cuda-test for sm_121 alone and runs the int8 kernels' gates 1-4 (`kernel-contract h3 int8`).
 # Later TOP jobs read either folder from the pilot folder once the Desk returns it there:
 #   ssh top-menu "job fetch ID" | tar -x -C DIR
 #   tar -C DIR/out -c tensorfold-fatbins-SHA | ssh top-menu "put top tensorfold-fatbins-SHA"
@@ -30,6 +35,25 @@ nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
+# H3_BUILD=limits: the five SMs' images and kernel-contract-limits alone, no picture tools, CLI or tf-cuda-test —
+# the audit as its own job, never inside a timed bench
+cuda=$out/tensorfold-cuda-$sha
+mkdir -p "$cuda"
+if [ "${H3_BUILD:-}" = limits ]; then
+    zig build fatbins kernel-contract-fatbins tf-cuda-limits -Dsm=80,86,89,120,121 -Dnvcc=$nvcc -Doptimize=ReleaseFast \
+        --prefix /work/release
+    cp -r /work/release/bin/tf-cuda-limits /work/release/fatbin "$cuda"
+    status=0
+    "$cuda/tf-cuda-limits" "$cuda/fatbin" h3 h3_image_decoder h3_image_prompt h3_image_modulation contract_controls \
+        >"$out/limits.log" 2>&1 || status=$?
+    tail -n 3 "$out/limits.log"
+    echo "kernel-contract-limits exit $status"
+    exit "$status"
+fi
+if [ "${H3_BUILD:-}" = contract ]; then
+    zig build install fatbins kernel-contract-fatbins -Dsm=121 -Dnvcc=$nvcc -Doptimize=ReleaseFast --prefix /work/contract
+    exec /work/contract/bin/tf-cuda-test kernel-contract "h3 int8"
+fi
 # -Dfatbins takes images holding the one SASS profile, so sm_121 is built apart from the audit's five SMs
 zig build fatbins tf-h3-image-prompt-cuda tf-h3-image-cuda tf-h3-image-decoder-cuda \
     -Dsm=121 -Dnvcc=$nvcc -Doptimize=ReleaseFast --prefix /work/sm121
@@ -37,12 +61,11 @@ fatbins=$out/tensorfold-fatbins-$sha
 mkdir -p "$fatbins"
 cp /work/sm121/fatbin/*.fatbin "$fatbins"
 (cd "$fatbins" && sha256sum *.fatbin >SHA256SUMS)
+cp /work/sm121/bin/tf-h3-image-prompt-cuda /work/sm121/bin/tf-h3-image-cuda /work/sm121/bin/tf-h3-image-decoder-cuda "$cuda"
+[ "${H3_BUILD:-}" != sm121 ] || exit 0
 zig build install fatbins kernel-contract-fatbins -Dsm=80,86,89,120,121 -Dnvcc=$nvcc -Doptimize=ReleaseFast \
     --prefix /work/release
-cuda=$out/tensorfold-cuda-$sha
-mkdir -p "$cuda"
-cp -r /work/release/bin/tf-cuda-test /work/sm121/bin/tf-h3-image-prompt-cuda /work/sm121/bin/tf-h3-image-cuda \
-    /work/sm121/bin/tf-h3-image-decoder-cuda /work/release/fatbin "$cuda"
+cp -r /work/release/bin/tf-cuda-test /work/release/fatbin "$cuda"
 status=0
 "$cuda/tf-cuda-test" kernel-contract-limits "$cuda/fatbin" >"$out/limits.log" 2>&1 || status=$?
 tail -n 3 "$out/limits.log"

@@ -228,6 +228,74 @@ __global__ void __launch_bounds__(256) h3_swiglu(const __nv_bfloat16* F, __nv_bf
     }
 }
 
+// A warp's 128 values, four a lane in order, through the orthonormal Walsh-Hadamard transform in place.
+__device__ __forceinline__ void hadamard128(float v[4]) {
+    const float a = v[0] + v[1], b = v[0] - v[1], c = v[2] + v[3], d = v[2] - v[3];
+    v[0] = a + c;
+    v[1] = b + d;
+    v[2] = a - c;
+    v[3] = b - d;
+    const int lane = threadIdx.x & 31;
+#pragma unroll
+    for (int o = 1; o < 32; o <<= 1) {
+        const bool high = lane & o;
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const float p = __shfl_xor_sync(0xffffffffu, v[i], o);
+            v[i] = high ? p - v[i] : v[i] + p;
+        }
+    }
+#pragma unroll
+    for (int i = 0; i < 4; ++i) v[i] *= 0.08838834764831845f; // 1 / sqrt(128)
+}
+
+// Lane's four values of a row's 128-wide chunk `c`, rotated.
+__device__ __forceinline__ void rotated_chunk(const __nv_bfloat16* x, int c, float v[4]) {
+    const __nv_bfloat162* p = reinterpret_cast<const __nv_bfloat162*>(x + c * 128 + (threadIdx.x & 31) * 4);
+    const float2 lo = __bfloat1622float2(p[0]), hi = __bfloat1622float2(p[1]);
+    v[0] = lo.x;
+    v[1] = lo.y;
+    v[2] = hi.x;
+    v[3] = hi.y;
+    hadamard128(v);
+}
+
+// Each bf16 row of X (M, K) Hadamard-rotated in 128-wide chunks, then to int8 Q at the row's absmax / 127 in S.
+// A row and its weights' rows rotate alike, so their products' sums are the unrotated ones. Grid [M], 256 threads.
+__global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_t* Q, float* S, int K) {
+    __shared__ float scratch[32];
+    const size_t row = blockIdx.x;
+    const __nv_bfloat16* x = X + row * K;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = K >> 7;
+    float most = 0.f, v[4];
+    for (int c = warp; c < chunks; c += 8) {
+        rotated_chunk(x, c, v);
+        for (int i = 0; i < 4; ++i) most = fmaxf(most, fabsf(v[i]));
+    }
+    most = tf_common::block_max_tree(most, scratch, 8);
+    const float scale = most > 0.f ? most / 127.f : 1.f;
+    if (threadIdx.x == 0) S[row] = scale;
+    for (int c = warp; c < chunks; c += 8) {
+        rotated_chunk(x, c, v);
+        const char4 q = make_char4(__float2int_rn(v[0] / scale), __float2int_rn(v[1] / scale), __float2int_rn(v[2] / scale), __float2int_rn(v[3] / scale));
+        *reinterpret_cast<char4*>(Q + row * K + c * 128 + lane * 4) = q;
+    }
+}
+
+// Y (M, N) = bf16(ACC SX[row] SW[col]): an int8 product's int32 sums back to bf16 rows. Grid-stride, four a thread.
+__global__ void __launch_bounds__(256) h3_dequantize(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* Y, int M, int N) {
+    const size_t quads = static_cast<size_t>(M) * N / 4;
+    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < quads; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+        const size_t at = i * 4, r = at / N, n = at % N;
+        const int4 a = reinterpret_cast<const int4*>(ACC)[i];
+        const float4 w = *reinterpret_cast<const float4*>(SW + n);
+        const float s = SX[r];
+        __nv_bfloat162* y = reinterpret_cast<__nv_bfloat162*>(Y + at);
+        y[0] = __floats2bfloat162_rn(a.x * s * w.x, a.y * s * w.y);
+        y[1] = __floats2bfloat162_rn(a.z * s * w.z, a.w * s * w.w);
+    }
+}
+
 __global__ void __launch_bounds__(128) h3_attention(
         const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V, const int* LIST, const int* SIZES,
         const int* ROWOF, __nv_bfloat16* Y, int slots, int heads, int queries, int keys, int first_query, int per_query,

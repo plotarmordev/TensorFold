@@ -8,13 +8,14 @@ const schedule = h3image.schedule;
 const rows = h3image.rows;
 
 const usage =
-    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX
-    \\       tf-h3-image-cuda MODEL_DIR --serve
+    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--int8]
+    \\       tf-h3-image-cuda MODEL_DIR --serve [--int8]
     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
     \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
     \\--serve loads the model once, then renders one `picture.safetensors OUT_PREFIX` line of stdin at a time,
     \\answering each on stdout with `done OUT_PREFIX` or `failed OUT_PREFIX`.
+    \\--int8 runs the blocks' projections as mmh3 does: rotated int8 weights and rows, exact int32 sums.
     \\
 ;
 
@@ -37,8 +38,10 @@ const Folder = struct {
     model: *h3.Model,
     heads: h3.checkpoint.Checkpoint,
     pdd: picture.Pdd,
+    modulation: ?h3.modulation.Tables = null,
+    times: []f32 = &.{},
 
-    fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !Folder {
+    fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, int8: bool) !Folder {
         const heads_name = try picture.checkIndex(a, try read(init, a, dir, "model_index.json"));
         const transformer_dir = try std.fs.path.join(a, &.{ dir, "transformer" });
         try picture.checkTransformer(a, try read(init, a, transformer_dir, "config.json"));
@@ -50,28 +53,46 @@ const Folder = struct {
         const model = try h3.Model.loadSharded(init.gpa, &ck);
         errdefer model.deinit();
         if (model.gated) return error.H3NotPictureModel; // a picture's blocks are dense: every tile sees every tile
+        if (int8) try h3.Int8.quantize(model);
         ck.evict(); // the prompt and decoder stages share this memory; each render evicts what it read back
         const heads = try h3.checkpoint.Checkpoint.open(try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, heads_name }, 0));
         return .{ .ck = ck, .model = model, .heads = heads, .pdd = pdd };
     }
 
     fn deinit(f: *Folder, gpa: std.mem.Allocator) void {
+        if (f.modulation) |*m| m.deinit();
+        gpa.free(f.times);
         f.heads.deinit();
         f.model.deinit();
         f.ck.deinit(gpa);
     }
+
+    /// The AdaLN tables for `times`, kept across --serve pictures: they depend on the timesteps alone, and preparing
+    /// them reads ~26 GB of projection weights. A case with other timesteps (a reference's keyframe row) replaces them.
+    fn tables(f: *Folder, gpa: std.mem.Allocator, times: []const f32) !*h3.modulation.Tables {
+        if (f.modulation != null and std.mem.eql(f32, f.times, times)) return &f.modulation.?;
+        if (f.modulation) |*m| m.deinit();
+        f.modulation = null;
+        gpa.free(f.times);
+        f.times = &.{};
+        f.modulation = try h3.modulation.prepare(gpa, &f.model.driver, f.model.stream, &f.ck, times, f.model.blocks.len, f.model.hidden);
+        f.times = try gpa.dupe(f32, times);
+        return &f.modulation.?;
+    }
 };
 
 pub fn main(init: std.process.Init) !void {
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len == 2 and std.mem.eql(u8, args[1], "--self-test")) return h3.modulation_test.run(init.gpa);
+    const all = try init.minimal.args.toSlice(init.arena.allocator());
+    if (all.len == 2 and std.mem.eql(u8, all[1], "--self-test")) return h3.modulation_test.run(init.gpa);
+    const int8 = all.len > 2 and std.mem.eql(u8, all[all.len - 1], "--int8");
+    const args = all[0 .. all.len - @intFromBool(int8)];
     const serving = args.len == 3 and std.mem.eql(u8, args[2], "--serve");
     if (args.len != 4 and !serving) {
         std.debug.print("{s}", .{usage});
         return error.BadArguments;
     }
     const started = h3.seconds();
-    var folder = try Folder.load(init, init.arena.allocator(), args[1]);
+    var folder = try Folder.load(init, init.arena.allocator(), args[1], int8);
     defer folder.deinit(init.gpa);
     std.debug.print("model loaded in {d:.1} s\n", .{h3.seconds() - started});
     if (!serving) return render(init, init.arena.allocator(), &folder, args[2], args[3]);
@@ -147,11 +168,10 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     const plan = try schedule.plan(a, .{ .text = text, .condition = held, .audio = 0, .video = target }, pdd.timesteps, pdd.timesteps);
     const times = plan.table.len;
     const lines = times * schedule.modalities;
-    var modulation = try h3.modulation.prepare(gpa, &model.driver, model.stream, ck, plan.table, model.blocks.len, hidden);
-    defer modulation.deinit();
+    const modulation = try folder.tables(gpa, plan.table);
     const final = modulation.final;
     const final_norm = values(u16, try ck.at("final_layer.norm.weight", .bf16, hidden));
-    ck.evict(); // the AdaLN weights prepare read (~26 GB): a cached copy would crowd the next prompt
+    ck.evict(); // the weights this case read (~26 GB when it prepared the tables): a cached copy would crowd the next prompt
 
     // the step heads: the picture's distilled heads, one a step, in model_index.json's heads file
     const width = picture.row_width;
@@ -194,13 +214,18 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     };
     std.debug.print("{d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, case ready in {d:.1} s\n", .{ canvas.width, canvas.height, count, text, held, target, tiles, model.blocks.len, steps, h3.seconds() - started });
 
+    // H3_PROFILE: wait after every block stage and print where the steps went (the waits cost a few ms a step)
+    const profiling = if (init.environ_map.get("H3_PROFILE")) |v| v.len > 0 else false;
+    model.profile = profiling;
+    model.spent = @splat(0);
+    var host: Host = .{ .x = x, .video = video, .normed = normed, .velocity = velocity, .w_in = w_in, .b_in = b_in, .final_norm = final_norm, .final = final, .first = text + held, .hidden = hidden };
     const transformer = h3.seconds();
     for (0..steps) |s| {
         const step = h3.seconds();
         // the stream: the text's rows, each reference's, then the video's through the float projection
         @memcpy(x[0 .. text * hidden], text_rows);
         if (anchors) |v| rows.rowsIn(v, w_in, b_in, x, text, held, width, hidden);
-        rows.rowsIn(video, w_in, b_in, x, text + held, target, width, hidden);
+        split(target, &host, Host.in);
         in.line = @intFromPtr(adaln[s * count ..].ptr);
         const checked = try model.plan(&in);
         try model.drain();
@@ -212,12 +237,24 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         _ = try model.forward(&device);
         try h3.host.readback(model, &in, checked);
         // the final norm over every row, then this step's head over the target's rows
-        rows.finalNorm(x, final_norm, final, line_of[s * count ..][0..count], normed, hidden, h3.eps);
-        rows.rowsOut(normed, w_out[s * width * hidden ..][0 .. width * hidden], b_out[s * width ..][0..width], velocity, text + held, target, hidden, width);
+        host.line = line_of[s * count ..][0..count];
+        host.w_out = w_out[s * width * hidden ..][0 .. width * hidden];
+        host.b_out = b_out[s * width ..][0..width];
+        split(count, &host, Host.norm);
+        split(target, &host, Host.out);
         picture.euler(video, velocity, pdd.deltas[s]);
         std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - step });
     }
-    std.debug.print("transformer: {d:.2} s\n", .{h3.seconds() - transformer});
+    const spent = h3.seconds() - transformer;
+    std.debug.print("transformer: {d:.2} s\n", .{spent});
+    if (profiling) {
+        var blocks: f64 = 0;
+        for (h3.stages, model.spent) |name, s| {
+            std.debug.print("  {s}: {d:.2} s\n", .{ name, s });
+            blocks += s;
+        }
+        std.debug.print("  outside the blocks: {d:.2} s\n", .{spent - blocks});
+    }
 
     const rows_path = try std.fmt.allocPrintSentinel(a, "{s}.rows.f32", .{prefix}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
@@ -226,4 +263,48 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     const latent_path = try std.fmt.allocPrintSentinel(a, "{s}.latent.f32", .{prefix}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = latent_path, .data = std.mem.sliceAsBytes(latent) });
     std.debug.print("wrote {s}.latent.f32: [{d}, {d}, {d}] normalised float32\n", .{ prefix, picture.channels, target_grid.rows, target_grid.columns });
+}
+
+/// A step's host rows: the video's rows in, the final norm and the step's head out, each over rows lo..hi.
+/// Every row's sums keep rows_reference's order, so a split picture is the serial one bit for bit.
+const Host = struct {
+    x: []u16,
+    video: []const f32,
+    normed: []u16,
+    velocity: []f32,
+    w_in: []align(1) const f32,
+    b_in: []align(1) const f32,
+    final_norm: []align(1) const u16,
+    final: []const u16,
+    first: usize, // the target's first row in the stream
+    hidden: usize,
+    line: []const i32 = &.{},
+    w_out: []align(1) const f32 = &.{},
+    b_out: []align(1) const f32 = &.{},
+
+    fn in(h: *const Host, lo: usize, hi: usize) void {
+        rows.rowsIn(h.video[lo * picture.row_width ..], h.w_in, h.b_in, h.x, h.first + lo, hi - lo, picture.row_width, h.hidden);
+    }
+    fn norm(h: *const Host, lo: usize, hi: usize) void {
+        rows.finalNorm(h.x[lo * h.hidden .. hi * h.hidden], h.final_norm, h.final, h.line[lo..hi], h.normed[lo * h.hidden ..], h.hidden, h3.eps);
+    }
+    fn out(h: *const Host, lo: usize, hi: usize) void {
+        rows.rowsOut(h.normed, h.w_out, h.b_out, h.velocity[lo * picture.row_width ..], h.first + lo, hi - lo, h.hidden, picture.row_width);
+    }
+};
+
+/// f(ctx, lo, hi) over 0..n in contiguous parts, one a host core (at most 16); a part whose thread fails runs here.
+fn split(n: usize, ctx: *const Host, comptime f: fn (*const Host, usize, usize) void) void {
+    var threads: [16]?std.Thread = @splat(null);
+    const parts = @max(1, @min(threads.len, std.Thread.getCpuCount() catch 1, n));
+    for (1..parts) |p| {
+        const lo = n * p / parts;
+        const hi = n * (p + 1) / parts;
+        threads[p] = std.Thread.spawn(.{}, f, .{ ctx, lo, hi }) catch blk: {
+            f(ctx, lo, hi);
+            break :blk null;
+        };
+    }
+    f(ctx, 0, n / parts);
+    for (threads[1..parts]) |t| if (t) |th| th.join();
 }

@@ -125,9 +125,27 @@ __global__ void __launch_bounds__(256) h3d_layer_norm(
 #define H3D_TILE 128
 #define H3D_STEP 16
 
+// One thread's share of a 128 x 16 slice of x or w (rows by K): 8 consecutive K of one row as a 16-byte load,
+// zeros past the matrix. k is a multiple of 8, so a load is wholly inside k or wholly past it.
+static __device__ __forceinline__ uint4 h3d_slice(const bf16* a, unsigned rows, unsigned k, unsigned row0, unsigned k0) {
+    const unsigned r = threadIdx.x / 2;
+    const unsigned kk = k0 + (threadIdx.x % 2) * 8;
+    if (row0 + r >= rows || kk >= k) return make_uint4(0, 0, 0, 0);
+    return *reinterpret_cast<const uint4*>(a + (size_t)(row0 + r) * k + kk);
+}
+
+static __device__ __forceinline__ void h3d_stage(float (*s)[H3D_TILE + 1], uint4 v) {
+    const unsigned r = threadIdx.x / 2;
+    const unsigned kk = (threadIdx.x % 2) * 8;
+    const bf16* e = reinterpret_cast<const bf16*>(&v);
+#pragma unroll
+    for (unsigned i = 0; i < 8; ++i) s[kk + i][r] = f(e[i]);
+}
+
 // y [m, n] = x [m, k] . w [n, k]^T in fp32: a 128 x 128 tile a block, staged 16 K at a time through shared
-// memory. Each thread sums its 8 x 8 outputs in increasing K with unfused, individually rounded multiplies and
-// adds, the sums a sequential fp32 dot gives; zero padding past k adds +0 and leaves them unchanged.
+// memory while the next 16 K load into registers. Each thread sums its 8 x 8 outputs in increasing K, one
+// rounded fma a product (closer to the float64 reference than the unfused multiply and add it replaced, and
+// half their instructions); zeros past k add +0.
 __global__ void __launch_bounds__(256) h3d_linear(
         const bf16* x, const bf16* w, float* y, H3dShape p) {
     // One float of padding a row spreads the K-major stores across banks.
@@ -138,17 +156,14 @@ __global__ void __launch_bounds__(256) h3d_linear(
     const unsigned row0 = blockIdx.y * H3D_TILE;
     const unsigned col0 = blockIdx.x * H3D_TILE;
     float acc[8][8] = {};
+    uint4 xv = h3d_slice(x, p.m, p.k, row0, 0);
+    uint4 wv = h3d_slice(w, p.n, p.k, col0, 0);
     for (unsigned k0 = 0; k0 < p.k; k0 += H3D_STEP) {
-#pragma unroll
-        for (unsigned j = 0; j < 8; ++j) {
-            const unsigned e = threadIdx.x + 256 * j;
-            const unsigned r = e / H3D_STEP;
-            const unsigned kk = e % H3D_STEP;
-            const bool in_k = k0 + kk < p.k;
-            xs[kk][r] = in_k && row0 + r < p.m ? f(x[(size_t)(row0 + r) * p.k + k0 + kk]) : 0.0f;
-            ws[kk][r] = in_k && col0 + r < p.n ? f(w[(size_t)(col0 + r) * p.k + k0 + kk]) : 0.0f;
-        }
+        h3d_stage(xs, xv);
+        h3d_stage(ws, wv);
         __syncthreads();
+        xv = h3d_slice(x, p.m, p.k, row0, k0 + H3D_STEP);
+        wv = h3d_slice(w, p.n, p.k, col0, k0 + H3D_STEP);
 #pragma unroll
         for (unsigned kk = 0; kk < H3D_STEP; ++kk) {
             float a[8], b[8];
@@ -159,7 +174,7 @@ __global__ void __launch_bounds__(256) h3d_linear(
 #pragma unroll
             for (unsigned i = 0; i < 8; ++i)
 #pragma unroll
-                for (unsigned j = 0; j < 8; ++j) acc[i][j] = __fadd_rn(acc[i][j], __fmul_rn(a[i], b[j]));
+                for (unsigned j = 0; j < 8; ++j) acc[i][j] = __fmaf_rn(a[i], b[j], acc[i][j]);
         }
         __syncthreads();
     }

@@ -2,9 +2,8 @@
 //! the refiner, all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products sum K in reference
 //! order; refiner products use cuBLASLt with FP32 sums. Every value the reference stores in bf16 is rounded to bf16
 //! by a kernel before the next step reads it.
-//! The text model's layer weights stream through two alternating pinned windows and fill one set of
-//! device buffers kept for the run, so the released 32B encoder's ~85 GiB never sits on the device:
-//! one layer (~1.7 GiB) at a time.
+//! The text model's layer weights and the refiner's tensors live in one resident device arena, loaded
+//! once by `loadResident`; a warm prompt moves no weights at all.
 const std = @import("std");
 pub const seconds = @import("clock.zig").seconds;
 const cuda = @import("cuda");
@@ -13,7 +12,6 @@ pub const reference = @import("prompt_reference.zig");
 pub const case = @import("prompt_case.zig");
 pub const picture = @import("picture.zig");
 pub const checkpoint = @import("checkpoint.zig");
-pub const read_ahead = @import("read_ahead.zig");
 const report = @import("report.zig");
 const bf16_round = @import("bf16_round");
 
@@ -75,53 +73,117 @@ fn Scratch(comptime Part: type) type {
     };
 }
 
-/// One buffered device tensor: uploaded through the runner's stages, freed by `free`.
-const Dev = struct {
-    buf: cuda.DeviceBuffer,
+/// The bf16 `bytes` as fp32 values, on the allocator's lifetime until the call returns.
+fn asF32(a: std.mem.Allocator, bytes: []const u8) ![]f32 {
+    if (bytes.len % 2 != 0) return error.H3UnexpectedTensor;
+    const bits = std.mem.bytesAsSlice(u16, bytes);
+    const f = try a.alloc(f32, bits.len);
+    for (f, bits) |*o, b| o.* = bf16_round.value(b);
+    return f;
+}
 
-    /// `bytes` into the slot kept for it, allocated on the first layer and reused.
-    fn into(r: *Runner, slot: *?cuda.DeviceBuffer, bytes: []const u8) !void {
-        if (slot.*) |*buf| {
-            if (buf.len < bytes.len) return error.H3UnexpectedTensor;
-            try r.copy(bytes, buf.ptr);
-        } else {
-            var buf = try cuda.DeviceBuffer.alloc(&r.driver, bytes.len);
-            errdefer {
-                // a staged copy can still run: drain before the destination leaves the device
-                cuda.completion.drain(&r.driver, r.stream, "h3 prompt cuda: an upload did not drain");
-                buf.free();
-            }
-            try r.copy(bytes, buf.ptr);
-            slot.* = buf;
-        }
-    }
-    /// The bf16 `bytes` as fp32 values, on the allocator's lifetime until the call returns.
-    fn asF32(a: std.mem.Allocator, bytes: []const u8) ![]f32 {
-        if (bytes.len % 2 != 0) return error.H3UnexpectedTensor;
-        const bits = std.mem.bytesAsSlice(u16, bytes);
-        const f = try a.alloc(f32, bits.len);
-        for (f, bits) |*o, b| o.* = bf16_round.value(b);
-        return f;
-    }
+/// Every weight the prompt stage reads, on the device in one arena: the embedding table, each text
+/// layer's tensors, condition_proj's pair and the final norm, and each refiner block's tensors.
+/// Vectors (norms, cond_b) sit as fp32 values; matrices as their stored bf16 bytes. `deinit` frees
+/// the arena; the layers and blocks slices live on the allocator passed to `loadResident`.
+pub const Resident = struct {
+    arena: cuda.DeviceBuffer,
+    embed: u64,
+    layers: []rules.Layer(u64),
+    cond_w: u64,
+    cond_b: u64,
+    final_norm: u64,
+    blocks: []rules.Block(u64),
 
-    fn upload(r: *Runner, bytes: []const u8) !Dev {
-        var d: Dev = .{ .buf = try cuda.DeviceBuffer.alloc(&r.driver, bytes.len) };
-        errdefer {
-            // a staged copy can still run: drain before the destination leaves the device
-            cuda.completion.drain(&r.driver, r.stream, "h3 prompt cuda: an upload did not drain");
-            d.buf.free();
-        }
-        try r.copy(bytes, d.buf.ptr);
-        return d;
-    }
-
-    /// The bf16 tensor converted once to fp32 on the host, for the fp32 norm-weight inputs.
-    fn uploadF32(r: *Runner, a: std.mem.Allocator, bytes: []const u8) !Dev {
-        const f = try asF32(a, bytes);
-        defer a.free(f);
-        return upload(r, std.mem.sliceAsBytes(f));
+    pub fn deinit(res: *Resident) void {
+        res.arena.free();
     }
 };
+
+/// One 256-byte-aligned slot per tensor: `n` bf16 elements on the device are `n * 2` bytes, `n`
+/// fp32 (a converted vector) `n * 4`. The slot sizes come from the geometry alone, so a stored
+/// tensor of another length is `H3UnexpectedTensor` before any copy.
+fn slotOf(shape: rules.Shape) usize {
+    const n = shape[0] * @max(shape[1], 1);
+    return std.mem.alignForward(usize, n * if (shape[1] == 0) @as(usize, 4) else 2, 256);
+}
+
+/// `bytes` into the next slot of `at` on the runner's stream, vectors converted to fp32; the
+/// stored length must equal the geometry's bf16 length.
+fn fill(r: *Runner, a: std.mem.Allocator, at: *usize, arena: u64, shape: rules.Shape, bytes: Tensor) !u64 {
+    const n = shape[0] * @max(shape[1], 1);
+    if (bytes.len != n * 2) return error.H3UnexpectedTensor;
+    const ptr = arena + at.*;
+    if (shape[1] == 0) {
+        const f = try asF32(a, bytes);
+        defer a.free(f);
+        try r.copy(std.mem.sliceAsBytes(f), ptr);
+    } else try r.copy(bytes, ptr);
+    at.* += slotOf(shape);
+    return ptr;
+}
+
+/// Every tensor of the prompt stage onto the device once: `embed`, each layer's set from `layer`,
+/// condition_proj's weight and bias, the final norm and each block's set from `block`, in one
+/// arena whose slots the returned Resident names. The copies queue on the runner's stream ahead of
+/// any encode or refine; the caller's mapped bytes may be dropped once the call returns.
+pub fn loadResident(
+    r: *Runner,
+    a: std.mem.Allocator,
+    g: rules.Text,
+    front: rules.Refiner,
+    embed: Tensor,
+    layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet,
+    ctx: *anyopaque,
+    block: *const fn (ctx: *anyopaque, bi: usize) anyerror!BlockSet,
+    front_ctx: *anyopaque,
+    cond_w: Tensor,
+    cond_b: Tensor,
+    final_norm: Tensor,
+) !Resident {
+    const layer_specs = rules.layerTensors(g);
+    const front_specs = rules.frontTensors(front);
+    const block_specs = rules.blockTensors(front);
+    var total = slotOf(.{ g.vocab, g.hidden });
+    for (layer_specs) |spec| total += slotOf(spec[2]) * g.layers;
+    for (front_specs) |spec| total += slotOf(spec[2]);
+    for (block_specs) |spec| total += slotOf(spec[2]) * front.blocks;
+    var arena = try cuda.DeviceBuffer.alloc(&r.driver, total);
+    errdefer {
+        cuda.completion.drain(&r.driver, r.stream, "h3 prompt cuda: a resident copy did not drain");
+        arena.free();
+    }
+    var res: Resident = .{
+        .arena = arena,
+        .embed = undefined,
+        .layers = try a.alloc(rules.Layer(u64), g.layers),
+        .cond_w = undefined,
+        .cond_b = undefined,
+        .final_norm = undefined,
+        .blocks = try a.alloc(rules.Block(u64), front.blocks),
+    };
+    var at: usize = 0;
+    res.embed = try fill(r, a, &at, res.arena.ptr, .{ g.vocab, g.hidden }, embed);
+    for (0..g.layers) |li| {
+        const set = try layer(ctx, li);
+        inline for (comptime std.meta.fieldNames(LayerSet), layer_specs) |field, spec| {
+            std.debug.assert(std.mem.eql(u8, field, spec[0]));
+            @field(res.layers[li], field) = try fill(r, a, &at, res.arena.ptr, spec[2], @field(set, field));
+        }
+    }
+    const front_tensors: [3]Tensor = .{ cond_w, cond_b, final_norm };
+    inline for (.{ "cond_w", "cond_b", "final_norm" }, front_specs, front_tensors) |field, spec, t| {
+        @field(res, field) = try fill(r, a, &at, res.arena.ptr, spec[2], t);
+    }
+    for (0..front.blocks) |bi| {
+        const set = try block(front_ctx, bi);
+        inline for (comptime std.meta.fieldNames(BlockSet), block_specs) |field, spec| {
+            std.debug.assert(std.mem.eql(u8, field, spec[0]));
+            @field(res.blocks[bi], field) = try fill(r, a, &at, res.arena.ptr, spec[2], @field(set, field));
+        }
+    }
+    return res;
+}
 
 /// One product's plan: cuBLASLt bf16 in, fp32 sums, fp32 out. The bias variant's plan is separate so a
 /// fused fp32 epilogue is picked only where a bias exists; bf16 bias values convert exactly.
@@ -257,7 +319,7 @@ pub const Runner = struct {
         var args: cuda.Args = .{};
         for ([_]u64{ x, w, y }) |p| args.add(p);
         for ([_]usize{ rows, n, k }) |v| args.add(@as(c_int, @intCast(v)));
-        try r.launch("h3p_linear", .{ .x = @intCast((rows * n + 255) / 256) }, 256, &args);
+        try r.launch("h3p_linear", .{ .x = @intCast((n + 7) / 8) }, 256, &args);
     }
 
     fn norm(r: *const Runner, x: u64, w: u64, y: u64, rows: usize, width: usize, eps: f32, mode: c_int) !void {
@@ -315,26 +377,14 @@ pub const Runner = struct {
     }
 
     /// The text model's rows leaving its last run layer [T, hidden] bf16 for `ids` at M-RoPE positions
-    /// `pos`, vision rows spliced at the pads when given. `layer` gives a layer's 11 bf16 tensors in
-    /// rules.layerTensors field order (its host memory must stay live until the call returns);
-    /// `embed` is the bf16 table [vocab, hidden].
-    pub fn encode(
-        r: *Runner,
-        a: std.mem.Allocator,
-        g: rules.Text,
-        embed: Tensor,
-        ids: []const u32,
-        pos: []const [3]i32,
-        vision: ?Vision,
-        layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet,
-        ctx: *anyopaque,
-        out: []u16,
-    ) !void {
+    /// `pos`, vision rows spliced at the pads when given. `res` holds the weights on the device, so
+    /// a warm call moves none — only the rotary tables, ids and vision rows cross.
+    pub fn encode(r: *Runner, a: std.mem.Allocator, g: rules.Text, res: *const Resident, ids: []const u32, pos: []const [3]i32, vision: ?Vision, out: []u16) !void {
         const T = ids.len;
         const H = g.hidden;
         const qh = g.heads * D;
         const kvh = g.kv_heads * D;
-        if (T == 0 or pos.len != T or out.len != T * H or g.layers == 0 or embed.len != g.vocab * H * 2) return error.H3PromptRows;
+        if (T == 0 or pos.len != T or out.len != T * H or g.layers == 0 or res.layers.len < g.layers) return error.H3PromptRows;
         const n = if (vision) |v| try v.check(T, H) else 0;
         var sizes = std.enums.EnumArray(EncodePart, usize).initFill(T * H * 2);
         // `p` holds one product's fp32 rows at a time; the rest are bf16 buffers at their width
@@ -374,15 +424,9 @@ pub const Runner = struct {
                 for (v.deepstack, 0..) |d, i| try r.copy(std.mem.sliceAsBytes(d), s.at(.deep) + i * n * H * 2);
             }
         }
-        {
-            var table = try Dev.upload(r, embed);
-            defer table.buf.free();
-            errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt embedding did not drain");
-            try r.indexed("h3p_embed", table.buf.ptr, s.at(.idx), s.at(.x), T, H);
-            if (vision) |_| try r.indexed("h3p_splice", s.at(.x), s.at(.vision), s.at(.idx) + T * 4, n, H);
-            // the table leaves the device once the gather and splice have run
-            try r.stream.synchronize();
-        }
+        // the resident table gathers ids' rows; pads' vision rows splice over them
+        try r.indexed("h3p_embed", res.embed, s.at(.idx), s.at(.x), T, H);
+        if (vision) |_| try r.indexed("h3p_splice", s.at(.x), s.at(.vision), s.at(.idx) + T * 4, n, H);
 
         var begun = try cuda.Event.init(&r.driver, true);
         defer begun.deinit();
@@ -390,31 +434,26 @@ pub const Runner = struct {
         defer ended.deinit();
         errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt timing did not drain");
         try begun.record(r.stream);
-        // one set of layer buffers for the run, each layer's tensors copied into it
-        var w: LayerDev = .{ .bufs = @splat(null), .ptrs = undefined };
-        defer w.free();
-        errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt layer did not drain");
         for (0..g.layers) |li| {
-            const set = try layer(ctx, li);
-            try uploadLayer(r, a, &w, set);
-            try r.norm(s.at(.x), w.ptrs.norm1, s.at(.xn), T, H, g.eps, mode_qwen);
-            try r.linear(s.at(.xn), w.ptrs.q, s.at(.p), T, qh, H);
+            const w = res.layers[li];
+            try r.norm(s.at(.x), w.norm1, s.at(.xn), T, H, g.eps, mode_qwen);
+            try r.linear(s.at(.xn), w.q, s.at(.p), T, qh, H);
             try r.round(s.at(.p), s.at(.qb), T * qh);
-            try r.linear(s.at(.xn), w.ptrs.k, s.at(.p), T, kvh, H);
+            try r.linear(s.at(.xn), w.k, s.at(.p), T, kvh, H);
             try r.round(s.at(.p), s.at(.kb), T * kvh);
-            try r.linear(s.at(.xn), w.ptrs.v, s.at(.p), T, kvh, H);
+            try r.linear(s.at(.xn), w.v, s.at(.p), T, kvh, H);
             try r.round(s.at(.p), s.at(.vb), T * kvh);
-            try r.heads(s.at(.qb), s.at(.kb), w.ptrs.q_norm, w.ptrs.k_norm, .{ s.at(.cos), s.at(.sin) }, g.heads, g.kv_heads, qh, kvh, D, T, g.eps, mode_qwen);
+            try r.heads(s.at(.qb), s.at(.kb), w.q_norm, w.k_norm, .{ s.at(.cos), s.at(.sin) }, g.heads, g.kv_heads, qh, kvh, D, T, g.eps, mode_qwen);
             try r.attention(s.at(.qb), s.at(.kb), s.at(.vb), s.at(.att), T, g.heads, g.kv_heads, qh, kvh, kvh, D, true);
-            try r.linear(s.at(.att), w.ptrs.o, s.at(.p), T, H, qh);
+            try r.linear(s.at(.att), w.o, s.at(.p), T, H, qh);
             try r.add(s.at(.x), s.at(.p), T * H);
-            try r.norm(s.at(.x), w.ptrs.norm2, s.at(.xn), T, H, g.eps, mode_qwen);
-            try r.linear(s.at(.xn), w.ptrs.gate, s.at(.p), T, g.ffn, H);
+            try r.norm(s.at(.x), w.norm2, s.at(.xn), T, H, g.eps, mode_qwen);
+            try r.linear(s.at(.xn), w.gate, s.at(.p), T, g.ffn, H);
             try r.round(s.at(.p), s.at(.gb), T * g.ffn);
-            try r.linear(s.at(.xn), w.ptrs.up, s.at(.p), T, g.ffn, H);
+            try r.linear(s.at(.xn), w.up, s.at(.p), T, g.ffn, H);
             try r.round(s.at(.p), s.at(.ub), T * g.ffn);
             try r.glu(s.at(.gb), s.at(.ub), s.at(.act), T, g.ffn, g.ffn, g.ffn, mode_qwen);
-            try r.linear(s.at(.act), w.ptrs.down, s.at(.p), T, H, g.ffn);
+            try r.linear(s.at(.act), w.down, s.at(.p), T, H, g.ffn);
             try r.add(s.at(.x), s.at(.p), T * H);
             if (n > 0 and li < 3) try r.indexed("h3p_scatter_add", s.at(.x), s.at(.deep) + li * n * H * 2, s.at(.idx) + T * 4, n, H);
         }
@@ -425,51 +464,13 @@ pub const Runner = struct {
         try dst.download(0, std.mem.sliceAsBytes(out));
     }
 
-    /// A layer's 11 tensors' device buffers, held for the run: each next layer uploads into them,
-    /// its copies stream-ordered after the previous layer's reads; a field's buffer is the first
-    /// layer's size, a later tensor of another size refused rather than reallocated under queued work.
-    const LayerDev = struct {
-        bufs: [11]?cuda.DeviceBuffer,
-        ptrs: rules.Layer(u64),
-
-        fn free(w: *LayerDev) void {
-            for (&w.bufs) |*b| if (b.*) |*held| held.free();
-        }
-    };
-
-    fn uploadLayer(r: *Runner, a: std.mem.Allocator, w: *LayerDev, set: LayerSet) !void {
-        inline for (comptime std.meta.fieldNames(LayerSet), 0..) |field, i| {
-            const t = @field(set, field);
-            if (t.len % 2 != 0) return error.H3UnexpectedTensor;
-            const is_norm = comptime std.mem.indexOf(u8, field, "norm") != null;
-            if (is_norm) {
-                const f = try Dev.asF32(a, t);
-                defer a.free(f);
-                try Dev.into(r, &w.bufs[i], std.mem.sliceAsBytes(f));
-            } else try Dev.into(r, &w.bufs[i], t);
-            @field(w.ptrs, field) = w.bufs[i].?.ptr;
-        }
-    }
-
     /// condition_proj, the refiner's blocks over every row as one document, its final norm:
-    /// rows [T, text] bf16 to out [T, hidden] bf16. `block` gives a block's 8 bf16 tensors in
-    /// rules.blockTensors field order, live until the call returns.
-    pub fn refine(
-        r: *Runner,
-        a: std.mem.Allocator,
-        g: rules.Refiner,
-        cond_w: Tensor,
-        cond_b: Tensor,
-        final_norm: Tensor,
-        block: *const fn (ctx: *anyopaque, bi: usize) anyerror!BlockSet,
-        ctx: *anyopaque,
-        rows: []const u16,
-        out: []u16,
-    ) !void {
+    /// rows [T, text] bf16 to out [T, hidden] bf16, its weights `res`'s resident ones.
+    pub fn refine(r: *Runner, g: rules.Refiner, res: *const Resident, rows: []const u16, out: []u16) !void {
         const H = g.hidden;
         const inner = g.heads * D;
         const T = rows.len / g.text;
-        if (T == 0 or rows.len != T * g.text or out.len != T * H or g.blocks == 0) return error.H3PromptRows;
+        if (T == 0 or rows.len != T * g.text or out.len != T * H or g.blocks == 0 or res.blocks.len < g.blocks) return error.H3PromptRows;
         var sizes = std.enums.EnumArray(RefinePart, usize).initFill(T * @max(g.text, H) * 2);
         sizes.set(.p, T * @max(H, @max(3 * inner, 2 * g.mlp)) * 4);
         sizes.set(.qkv, T * 3 * inner * 2);
@@ -488,79 +489,33 @@ pub const Runner = struct {
         errdefer cuda.completion.drain(&r.driver, r.stream, "H3 refiner timing did not drain");
         try begun.record(r.stream);
         // condition_proj: its bias fused in fp32 into the product, then the reference's one rounding
-        {
-            var cw = try Dev.upload(r, cond_w);
-            defer cw.buf.free();
-            var cb = try Dev.uploadF32(r, a, cond_b);
-            defer cb.buf.free();
-            errdefer cuda.completion.drain(&r.driver, r.stream, "H3 condition projection did not drain");
-            try r.products.run(r.stream, s.at(.x), cw.buf.ptr, cb.buf.ptr, s.at(.p), T, H, g.text);
-            try r.round(s.at(.p), s.at(.x), T * H);
-            try r.stream.synchronize();
-        }
+        try r.products.run(r.stream, s.at(.x), res.cond_w, res.cond_b, s.at(.p), T, H, g.text);
+        try r.round(s.at(.p), s.at(.x), T * H);
         const fused_row = 3 * inner;
-        // one set of block buffers for the run, each block's tensors copied into it
-        var b: BlockDev = .{ .bufs = @splat(null), .ptrs = undefined };
-        defer b.free();
-        errdefer cuda.completion.drain(&r.driver, r.stream, "H3 refiner block did not drain");
         for (0..g.blocks) |bi| {
-            const set = try block(ctx, bi);
-            try uploadBlock(r, a, &b, set);
-            try r.norm(s.at(.x), b.get("norm1"), s.at(.xn), T, H, g.eps, mode_h3);
-            try r.products.run(r.stream, s.at(.xn), b.get("qkv"), 0, s.at(.p), T, 3 * inner, H);
+            const b = res.blocks[bi];
+            try r.norm(s.at(.x), b.norm1, s.at(.xn), T, H, g.eps, mode_h3);
+            try r.products.run(r.stream, s.at(.xn), b.qkv, 0, s.at(.p), T, 3 * inner, H);
             try r.round(s.at(.p), s.at(.qkv), T * 3 * inner);
             // the fused rows' q and k heads normed in place, no rotary; v sits `head` = 384 apart
-            try r.heads(s.at(.qkv), s.at(.qkv) + D * 2, b.get("q_norm"), b.get("k_norm"), null, g.heads, g.heads, fused_row, fused_row, 3 * D, T, g.qk_eps, mode_h3);
+            try r.heads(s.at(.qkv), s.at(.qkv) + D * 2, b.q_norm, b.k_norm, null, g.heads, g.heads, fused_row, fused_row, 3 * D, T, g.qk_eps, mode_h3);
             try r.attention(s.at(.qkv), s.at(.qkv) + D * 2, s.at(.qkv) + 2 * D * 2, s.at(.att), T, g.heads, g.heads, fused_row, fused_row, fused_row, 3 * D, false);
-            try r.products.run(r.stream, s.at(.att), b.get("out"), 0, s.at(.p), T, H, inner);
+            try r.products.run(r.stream, s.at(.att), b.out, 0, s.at(.p), T, H, inner);
             try r.add(s.at(.x), s.at(.p), T * H);
-            try r.norm(s.at(.x), b.get("norm2"), s.at(.xn), T, H, g.eps, mode_h3);
-            try r.products.run(r.stream, s.at(.xn), b.get("fc1"), 0, s.at(.p), T, 2 * g.mlp, H);
+            try r.norm(s.at(.x), b.norm2, s.at(.xn), T, H, g.eps, mode_h3);
+            try r.products.run(r.stream, s.at(.xn), b.fc1, 0, s.at(.p), T, 2 * g.mlp, H);
             try r.round(s.at(.p), s.at(.wide), T * 2 * g.mlp);
             try r.glu(s.at(.wide), s.at(.wide) + g.mlp * 2, s.at(.act), T, g.mlp, 2 * g.mlp, 2 * g.mlp, mode_h3);
-            try r.products.run(r.stream, s.at(.act), b.get("fc2"), 0, s.at(.p), T, H, g.mlp);
+            try r.products.run(r.stream, s.at(.act), b.fc2, 0, s.at(.p), T, H, g.mlp);
             try r.add(s.at(.x), s.at(.p), T * H);
         }
-        {
-            var fw = try Dev.uploadF32(r, a, final_norm);
-            defer fw.buf.free();
-            errdefer cuda.completion.drain(&r.driver, r.stream, "H3 refiner norm did not drain");
-            try r.norm(s.at(.x), fw.buf.ptr, s.at(.xn), T, H, g.final_eps, mode_h3);
-            try r.stream.synchronize();
-        }
+        try r.norm(s.at(.x), res.final_norm, s.at(.xn), T, H, g.final_eps, mode_h3);
         try ended.record(r.stream);
         try ended.synchronize();
         r.gpu = @as(f64, try cuda.Event.elapsedMs(begun, ended)) / 1000;
         // the final norm wrote bf16 rows straight to `out`'s shape
         var dst: cuda.DeviceBuffer = .{ .d = &r.driver, .ptr = s.at(.xn), .len = out.len * 2 };
         try dst.download(0, std.mem.sliceAsBytes(out));
-    }
-
-    /// A refiner block's 8 tensors' device buffers, held for the run as the encoder's layer buffers are.
-    const BlockDev = struct {
-        bufs: [8]?cuda.DeviceBuffer,
-        ptrs: rules.Block(u64),
-
-        fn free(b: *BlockDev) void {
-            for (&b.bufs) |*d| if (d.*) |*held| held.free();
-        }
-        fn get(b: *const BlockDev, comptime field: []const u8) u64 {
-            return @field(b.ptrs, field);
-        }
-    };
-
-    fn uploadBlock(r: *Runner, a: std.mem.Allocator, b: *BlockDev, set: BlockSet) !void {
-        inline for (comptime std.meta.fieldNames(BlockSet), 0..) |field, i| {
-            const t = @field(set, field);
-            if (t.len % 2 != 0) return error.H3UnexpectedTensor;
-            const is_norm = comptime std.mem.indexOf(u8, field, "norm") != null;
-            if (is_norm) {
-                const f = try Dev.asF32(a, t);
-                defer a.free(f);
-                try Dev.into(r, &b.bufs[i], std.mem.sliceAsBytes(f));
-            } else try Dev.into(r, &b.bufs[i], t);
-            @field(b.ptrs, field) = b.bufs[i].?.ptr;
-        }
     }
 };
 
