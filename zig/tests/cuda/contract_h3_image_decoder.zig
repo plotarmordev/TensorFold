@@ -234,6 +234,10 @@ pub const Dec = struct {
             .rms_norm, .layer_norm => {
                 if (s.n != 1024 or s.k != 1024) return false;
                 const x = try self.values(s.rows * 1024, -2, 2, fill, rng, true, true);
+                // layer norm's stress rows mirror their first half: the mean is 0 and both fp32 passes are exact
+                if (fill == .stress and self.which == .layer_norm) for (0..s.rows) |r| for (0..512) |i| {
+                    x[r * 1024 + 512 + i] = -x[r * 1024 + i];
+                };
                 const gg = try self.values(1024, 0.5, 1.5, .random, rng, true, false);
                 const bb = if (self.which == .layer_norm) try self.values(1024, -1, 1, .random, rng, true, false) else gg;
                 self.in = .{ .a = x, .b = gg, .d = bb, .rows = s.rows, .n = 1024, .k = 1024, .eps = 1e-5 };

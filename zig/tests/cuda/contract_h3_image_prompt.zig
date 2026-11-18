@@ -255,16 +255,16 @@ pub const Prm = struct {
                 self.outs = s.rows * q_row;
             },
             .attention_causal, .attention_fused => {
-                // q [rows, 4*128], k/v [rows, 2*128]; causal for the text model, all rows for the refiner.
-                if (s.k > s.rows) return false;
+                // q [k, 4*128], k/v [k, 2*128]: a sequence of s.k rows; causal for the text model, all rows for the refiner.
+                const n = s.k;
                 const heads = 4;
                 const kv = 2;
                 const causal = self.which == .attention_causal;
-                const q = try self.values(s.rows * heads * 128, -2, 2, fill, rng, true, true);
-                const k = try self.values(s.rows * kv * 128, -2, 2, .random, rng, true, false);
-                const v = try self.values(s.rows * kv * 128, 0, 2, .random, rng, true, false);
-                self.in = .{ .a = q, .b = k, .d = v, .rows = s.rows, .n = s.n, .k = s.k, .heads = heads, .kv_heads = kv, .head = 128, .q_row = heads * 128, .k_row = kv * 128, .scale = 1.0 / @sqrt(128.0), .causal = causal };
-                self.rows = s.rows;
+                const q = try self.values(n * heads * 128, -2, 2, fill, rng, true, true);
+                const k = try self.values(n * kv * 128, -2, 2, .random, rng, true, false);
+                const v = try self.values(n * kv * 128, 0, 2, .random, rng, true, false);
+                self.in = .{ .a = q, .b = k, .d = v, .rows = n, .n = s.n, .k = n, .heads = heads, .kv_heads = kv, .head = 128, .q_row = heads * 128, .k_row = kv * 128, .scale = 1.0 / @sqrt(128.0), .causal = causal };
+                self.rows = n;
                 self.heads = heads;
                 self.kv_heads = kv;
                 self.q_row = heads * 128;
@@ -272,8 +272,8 @@ pub const Prm = struct {
                 _ = try self.upload(q, true);
                 _ = try self.upload(k, true);
                 _ = try self.upload(v, true);
-                _ = try self.output(s.rows * heads * 128 * 2);
-                self.outs = s.rows * heads * 128;
+                _ = try self.output(n * heads * 128 * 2);
+                self.outs = n * heads * 128;
             },
             .glu_qwen, .glu_h3 => {
                 const mode: u32 = if (self.which == .glu_qwen) 0 else 1;

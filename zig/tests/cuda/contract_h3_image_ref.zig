@@ -1,4 +1,5 @@
 //! MiniMax-H3-Image's CUDA kernels (decoder, prompt, modulation) in float64, with their bf16 mid-roundings.
+//! Each output is the value before the store's own rounding, which the contract's bound adds (h3p_round's is its formula).
 const std = @import("std");
 const core = @import("core");
 
@@ -74,7 +75,7 @@ pub fn postQuant(in: In, s: Sum, want: []f64, mag: []f64) void {
         const col = in.ints[2 * tile + 1] + i % in.w;
         for (0..24) |x| {
             for (&terms, 0..) |*t, k| t.* = in.b[x * 24 + k] * bf(in.a[k * plane + r * in.n + col]);
-            want[y * 24 + x] = bf(s.of(&terms) + in.d[x]);
+            want[y * 24 + x] = s.of(&terms) + in.d[x];
             mag[y * 24 + x] = magOf(&terms);
         }
     }
@@ -92,7 +93,7 @@ pub fn embed(in: In, s: Sum, want: []f64, mag: []f64) void {
         if (t < cells) {
             for (out, om, 0..) |*o, *m, j| {
                 for (&terms, 0..) |*v, k| v.* = in.b[j * 24 + k] * in.a[(tile * cells + t) * 24 + k];
-                o.* = bf(s.of(&terms) + in.d[j]);
+                o.* = s.of(&terms) + in.d[j];
                 m.* = magOf(&terms);
             }
         } else if (t < cells + 4) {
@@ -115,7 +116,7 @@ pub fn rmsNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
         for (&terms, xr) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(&terms) / 1024.0 + in.eps);
         for (0..1024) |i| {
-            want[r * 1024 + i] = bf(xr[i] * inv * in.b[i]);
+            want[r * 1024 + i] = xr[i] * inv * in.b[i];
             mag[r * 1024 + i] = xr[i] * xr[i];
         }
     }
@@ -128,11 +129,14 @@ pub fn layerNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
         const xr = in.a[r * 1024 ..][0..1024];
         for (&terms, xr) |*t, v| t.* = v;
         const mean = s.of(&terms) / 1024.0;
+        const abs = magOf(&terms);
         for (&terms, xr) |*t, v| t.* = (v - mean) * (v - mean);
         const rstd = 1.0 / @sqrt(s.of(&terms) / 1024.0 + in.eps);
         for (0..1024) |i| {
-            want[r * 1024 + i] = bf((xr[i] - mean) * rstd * in.b[i] + in.d[i]);
-            mag[r * 1024 + i] = @abs(xr[i] - mean) * @abs(xr[i] - mean);
+            const d = xr[i] - mean;
+            want[r * 1024 + i] = d * rstd * in.b[i] + in.d[i];
+            // the mean's sum moves every d by its error; the variance's moves rstd by half its relative error
+            mag[r * 1024 + i] = @abs(in.b[i]) * rstd * (abs / 1024.0 + @abs(d));
         }
     }
 }
@@ -141,8 +145,8 @@ pub fn layerNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
 pub fn finish(in: In, want: []f64, mag: []f64) void {
     for (0..in.rows * in.n) |i| {
         const cix = i % in.n;
-        const out = bf(in.a[i] + in.b[cix]);
-        want[i] = if (in.mode == 0) out else bf(in.e[i] + bf(out * in.d[cix]));
+        const out = in.a[i] + in.b[cix];
+        want[i] = if (in.mode == 0) out else in.e[i] + bf(bf(out) * in.d[cix]);
         mag[i] = 0;
     }
 }
@@ -164,8 +168,8 @@ pub fn heads(in: In, s: Sum, want: []f64, mag: []f64) void {
             for (&na, x) |*o, v| o.* = bf(v * inv);
             for (0..32) |lane| {
                 const other = if (lane < 16) -na[lane + 16] else na[lane - 16];
-                want[part * block + to + lane] = bf(bf(na[lane] * in.b[t * 32 + lane]) + bf(other * in.d[t * 32 + lane]));
-                want[part * block + to + 32 + lane] = na[32 + lane];
+                want[part * block + to + lane] = bf(na[lane] * in.b[t * 32 + lane]) + bf(other * in.d[t * 32 + lane]);
+                want[part * block + to + 32 + lane] = x[32 + lane] * inv;
                 mag[part * block + to + lane] = @abs(na[lane] * in.b[t * 32 + lane]) + @abs(other * in.d[t * 32 + lane]);
                 mag[part * block + to + 32 + lane] = terms[32 + lane];
             }
@@ -201,7 +205,7 @@ pub fn attention(in: In, s: Sum, want: []f64, mag: []f64) void {
         const at = ((tile * T + query) * 16 + head) * 64;
         for (0..64) |ch| {
             for (vt[0..T], 0..) |*t, key| t.* = sc[key] * in.d[base + key * 64 + ch];
-            want[at + ch] = bf(s.of(vt[0..T]) / total);
+            want[at + ch] = s.of(vt[0..T]) / total;
             mag[at + ch] = magOf(vt[0..T]);
         }
     };
@@ -212,7 +216,7 @@ pub fn swiglu(in: In, want: []f64, mag: []f64) void {
     for (0..in.rows) |r| for (0..4096) |x| {
         const g = in.a[r * 8192 + x];
         const silu = bf(g / (1.0 + @exp(-g)));
-        want[r * 4096 + x] = bf(silu * in.a[r * 8192 + 4096 + x]);
+        want[r * 4096 + x] = silu * in.a[r * 8192 + 4096 + x];
         mag[r * 4096 + x] = 0;
     };
 }
@@ -226,7 +230,7 @@ pub fn norm(in: In, s: Sum, want: []f64, mag: []f64) void {
         for (terms[0..width], xr) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(terms[0..width]) / @as(f64, @floatFromInt(width)) + in.eps);
         for (0..width) |i| {
-            want[r * width + i] = if (in.mode == 0) bf(in.b[i] * bf(xr[i] * inv)) else bf(xr[i] * inv * in.b[i]);
+            want[r * width + i] = if (in.mode == 0) in.b[i] * bf(xr[i] * inv) else xr[i] * inv * in.b[i];
             mag[r * width + i] = xr[i] * xr[i];
         }
     }
@@ -255,12 +259,12 @@ pub fn pheads(in: In, s: Sum, want: []f64, mag: []f64, fused: bool) void {
         for (&terms, src) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(&terms) / @as(f64, @floatFromInt(D)) + in.eps);
         var v: [128]f64 = undefined;
-        for (&v, src, w) |*o, xv, wv| o.* = if (in.mode == 0) bf(wv * bf(xv * inv)) else bf(xv * inv * wv);
+        for (&v, src, w) |*o, xv, wv| o.* = if (in.mode == 0) wv * bf(xv * inv) else xv * inv * wv;
         var o = v;
         if (in.rotary) for (0..D) |ch| {
             const table_at = r * 64 + ch % 64;
-            const other = if (ch < 64) -v[ch + 64] else v[ch - 64];
-            o[ch] = bf(bf(v[ch] * in.f[table_at]) + bf(other * in.g[table_at]));
+            const other = if (ch < 64) -bf(v[ch + 64]) else bf(v[ch - 64]);
+            o[ch] = bf(bf(v[ch]) * in.f[table_at]) + bf(other * in.g[table_at]);
         };
         for (0..D) |i| {
             want[at + i] = o[i];
@@ -294,7 +298,7 @@ pub fn pattention(in: In, s: Sum, want: []f64, mag: []f64) void {
         }
         for (0..D) |ch| {
             for (vt[0..end], 0..) |*t, j| t.* = p[j] * in.d[j * in.k_row + kv * in.head + ch];
-            want[(r * in.heads + h) * D + ch] = bf(s.of(vt[0..end]) / l);
+            want[(r * in.heads + h) * D + ch] = s.of(vt[0..end]) / l;
             mag[(r * in.heads + h) * D + ch] = magOf(vt[0..end]);
         }
     };
@@ -306,7 +310,7 @@ pub fn glu(in: In, want: []f64, mag: []f64) void {
         const x = in.a[i];
         const e = 1.0 + @exp(-x);
         const sv = if (in.mode == 0) bf(x / e) else bf(x * bf(1.0 / e));
-        want[i] = bf(sv * in.b[i]);
+        want[i] = sv * in.b[i];
         mag[i] = 0;
     }
 }
@@ -314,7 +318,7 @@ pub fn glu(in: In, want: []f64, mag: []f64) void {
 /// h3p_add: x = bf16(x + bf16(y)) in place; a x (bf16-valued), b y fp32.
 pub fn add(in: In, want: []f64, mag: []f64) void {
     for (want, mag, in.a, in.b) |*o, *m, x, y| {
-        o.* = bf(x + bf(y));
+        o.* = x + bf(y);
         m.* = 0;
     }
 }
@@ -325,7 +329,7 @@ pub fn scatterAdd(in: In, want: []f64, mag: []f64) void {
     @memset(mag, 0);
     for (0..in.k) |i| for (0..in.n) |ch| {
         const to = @as(usize, in.ints[i]) * in.n + ch;
-        want[to] = bf(want[to] + in.b[i * in.n + ch]);
+        want[to] = want[to] + in.b[i * in.n + ch];
     };
 }
 
