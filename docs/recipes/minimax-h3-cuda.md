@@ -316,6 +316,16 @@ exit 0): every selftest passed, the same-latent check passed at 86.117% of bytes
 measured the same 28.69 dB, 4.01 apart and 0.9952, and a warm 2048² picture took **18.9 s** mean (18.9, 18.9, 18.9:
 prompt 1.1, transformer 12.8, decoder 4.9), cold 157.8 s, peak 76,665 MiB.
 
+Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
+`822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
+the first picture's operands and kept the fastest: q k v gate stayed 2.68 s and mlp in 3.40 s, so the heuristic's
+first offer is already the fastest it has. `58857fe9` (job `top-1e5fff43bc3a`) had `h3_heads` read `qkvc`'s int32 sums
+and scales and round them itself, skipping `h3_dequantize`'s bf16 rows: q k v gate fell 2.68 → 1.98 s, but heads rose
+0.98 → 1.69 s, and the transformer took 12.95–13.05 s against 12.84 s. `h3_heads` already sits at 234 registers and
+reads its rows column-scattered, so twice the bytes and a scale a column cost it more than the separate pass did.
+Every selftest passed in both windows. A warm picture stays 18.9 s; a product that writes bf16 from its own tile
+(a hand-written int8 mma epilogue, not cuBLASLt) is the part of round 1 left.
+
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
 1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
