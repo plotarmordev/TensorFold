@@ -32,3 +32,10 @@
   decoder gets the memory they held: the `9cf468df` job thrashed there and never reached 4096². It measures
   2048² by default (`H3_BENCH_SIZES='2048 4096'` runs both), since the 4096² decoder's buffers pass the
   GB10's memory beside the resident prompt (round 2's OOM) and wait on their own round.
+
+### MiniMax-H3-Image on CUDA: the transformer's algorithm at the picture's own shape
+
+- `cuda_gemm.Gemms` asks cuBLASLt's heuristic at the rows a picture runs (4,120 at 2048²) instead of the
+  canonical 16,384-row batch it used to ask at and reuse for every smaller batch. A warm 2048² step ran an
+  algorithm chosen for four times the work and reached ~67 TFLOPS of the GB10's ~135 TFLOPS BF16 rate.
+- The plans cache one `Linear` a (rows, n, k); the per-(n, k) algorithm map is gone.

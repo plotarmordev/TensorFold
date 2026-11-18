@@ -4,14 +4,11 @@ const cuda = @import("cuda");
 const lt_ = cuda.cublaslt;
 
 pub const workspace_bytes = 32 << 20;
-/// The rows each (n, k)'s algorithm is chosen at: smaller batches retain that algorithm.
-const canonical_rows = 16384;
 
 pub const Gemms = struct {
     gpa: std.mem.Allocator,
     lt: lt_.Library,
     workspace: cuda.DeviceBuffer,
-    algos: std.AutoHashMapUnmanaged([2]u64, lt_.Algo) = .empty,
     plans: std.AutoHashMapUnmanaged([3]u64, lt_.Linear) = .empty,
 
     pub fn init(gpa: std.mem.Allocator, d: *const cuda.Driver) !Gemms {
@@ -24,7 +21,6 @@ pub const Gemms = struct {
         var it = g.plans.valueIterator();
         while (it.next()) |l| l.deinit();
         g.plans.deinit(g.gpa);
-        g.algos.deinit(g.gpa);
         g.workspace.free();
         g.lt.close();
     }
@@ -35,28 +31,16 @@ pub const Gemms = struct {
         try p.run(x, w, y, g.workspace.ptr, workspace_bytes, stream.handle);
     }
 
-    /// The shape's plan, running the algorithm cuBLASLt's heuristic picks for (canonical_rows, n, k).
+    /// The shape's plan: the algorithm cuBLASLt's heuristic picks at the rows this picture runs, not a
+    /// canonical batch. The plans asked at 16,384 rows, so a 4,120-row picture ran an algorithm chosen for
+    /// four times the work and reached ~35 TFLOPS of the GB10's BF16 rate.
     fn plan(g: *Gemms, rows: usize, n: usize, k: usize) !*const lt_.Linear {
         const got = try g.plans.getOrPut(g.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
         errdefer g.plans.removeByPtr(got.key_ptr);
-        const chosen = try g.algoFor(n, k);
         var l = try lt_.Linear.init(&g.lt, rows, n, k, .bf16, workspace_bytes);
         errdefer l.deinit();
-        var checked: lt_.Heuristic = undefined;
-        const s = g.lt.api.cublasLtMatmulAlgoCheck(l.handle, l.desc, l.a, l.b, l.c, l.c, &chosen, &checked);
-        if (s != 0 or checked.state != 0 or checked.workspace_size > workspace_bytes) return error.NoAlgorithm;
-        l.algo = chosen;
-        l.workspace_need = checked.workspace_size;
         got.value_ptr.* = l;
         return got.value_ptr;
-    }
-
-    fn algoFor(g: *Gemms, n: usize, k: usize) !lt_.Algo {
-        if (g.algos.get(.{ n, k })) |a| return a;
-        var l = try lt_.Linear.init(&g.lt, canonical_rows, n, k, .bf16, workspace_bytes);
-        defer l.deinit();
-        try g.algos.put(g.gpa, .{ n, k }, l.algo);
-        return l.algo;
     }
 };
