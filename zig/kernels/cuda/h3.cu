@@ -18,6 +18,47 @@ __device__ __forceinline__ float modulated(float x, float inv, float w, float sc
     return bf(bf(bf(x * inv * w) * bf(1.0f + bf(scale))) + bf(shift));
 }
 
+} // namespace tf_h3
+
+using namespace tf_h3;
+
+extern "C" {
+
+__global__ void __launch_bounds__(256) h3_norm(__nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
+                                               const float* GT, const float* TAB, const int* LINE, __nv_bfloat16* O,
+                                               int C, int gate, int scale, int shift, float eps) {
+    __shared__ float scratch[8];
+    const int row = blockIdx.x, line = LINE[row];
+    __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
+    float sq = 0.0f;
+    if (gate >= 0) {
+        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
+        const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
+        for (int c = threadIdx.x; c < C; c += blockDim.x) {
+            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
+            x[c] = __float2bfloat16(v);
+            sq += v * v;
+        }
+    } else {
+        for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
+    }
+    const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
+    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
+    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
+    __nv_bfloat16* o = O + static_cast<size_t>(row) * C;
+    for (int c = threadIdx.x; c < C; c += blockDim.x) o[c] = __float2bfloat16(modulated(f(x[c]), inv, f(NW[c]), s[c], h[c]));
+}
+
+// X += GT[line, part] * Y in one rounding, as torch's addcmul: the last block's MLP branch. Grid [M], 256 threads.
+__global__ void __launch_bounds__(256) h3_gate_add(__nv_bfloat16* X, const __nv_bfloat16* Y, const float* GT,
+                                                   const int* LINE, int C, int part) {
+    const int row = blockIdx.x;
+    const float* g = GT + (static_cast<size_t>(LINE[row]) * 6 + part) * C;
+    __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
+    const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
+    for (int c = threadIdx.x; c < C; c += blockDim.x) x[c] = __float2bfloat16(f(x[c]) + f(y[c]) * bf(g[c]));
+}
+
 // A row of the q, k, v projection: bf16 values, or an int8 product's int32 sums rounded to bf16 as h3_dequantize
 // rounds them (sum, then the row's and the column's scale).
 struct Bf16Row {
@@ -80,47 +121,6 @@ __device__ __forceinline__ void heads_body(Row qkv, const __nv_bfloat16* NQ, con
             *reinterpret_cast<uint32_t*>(TV + at + j) = pack2(qkv[vc + c0 + j], qkv[vc + c0 + j + 1]);
         }
     }
-}
-
-} // namespace tf_h3
-
-using namespace tf_h3;
-
-extern "C" {
-
-__global__ void __launch_bounds__(256) h3_norm(__nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
-                                               const float* GT, const float* TAB, const int* LINE, __nv_bfloat16* O,
-                                               int C, int gate, int scale, int shift, float eps) {
-    __shared__ float scratch[8];
-    const int row = blockIdx.x, line = LINE[row];
-    __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
-    float sq = 0.0f;
-    if (gate >= 0) {
-        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
-        const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
-        for (int c = threadIdx.x; c < C; c += blockDim.x) {
-            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
-            x[c] = __float2bfloat16(v);
-            sq += v * v;
-        }
-    } else {
-        for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
-    }
-    const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
-    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
-    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
-    __nv_bfloat16* o = O + static_cast<size_t>(row) * C;
-    for (int c = threadIdx.x; c < C; c += blockDim.x) o[c] = __float2bfloat16(modulated(f(x[c]), inv, f(NW[c]), s[c], h[c]));
-}
-
-// X += GT[line, part] * Y in one rounding, as torch's addcmul: the last block's MLP branch. Grid [M], 256 threads.
-__global__ void __launch_bounds__(256) h3_gate_add(__nv_bfloat16* X, const __nv_bfloat16* Y, const float* GT,
-                                                   const int* LINE, int C, int part) {
-    const int row = blockIdx.x;
-    const float* g = GT + (static_cast<size_t>(LINE[row]) * 6 + part) * C;
-    __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
-    const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
-    for (int c = threadIdx.x; c < C; c += blockDim.x) x[c] = __float2bfloat16(f(x[c]) + f(y[c]) * bf(g[c]));
 }
 
 __global__ void __launch_bounds__(256) h3_heads(
