@@ -143,6 +143,7 @@ pub const Projection = enum(c_int) { qkv, gate_compress, out, fc1, fc2 };
 /// One projection of `block` from `w`, bf16 (N, K) on the device (a LoRA merged in by the host), copied in.
 pub fn set(self: *Model, block: usize, which: Projection, w: u64, rows: usize, cols: usize) !void {
     if (block >= self.blocks.len) return error.NoSuchBlock;
+    if (self.int8 != null) return error.Quantized; // its bf16 projections were freed
     if (which == .gate_compress and !self.gated) return error.NoGate;
     try self.ctx.makeCurrent();
     const b = &self.blocks[block];
