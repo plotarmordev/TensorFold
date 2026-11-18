@@ -1,6 +1,10 @@
 //! mmh3's INT8 linear layers on the H3 CUDA blocks: each projection's weight rows and each activation row Hadamard-rotated
 //! in 128-wide chunks (ConvRot's outlier spreading), quantized to int8 at its absmax, summed exactly in int32 by
 //! cuBLASLt, and scaled back to bf16 rows. The bf16 weights are freed once quantized.
+//!
+//! Only the two projections whose products int8 makes faster are quantized: `qkvc` and `fc1`. `out` and `fc2` measured
+//! no faster (they are bound by their weight reads, not their arithmetic) and their quantization was most of the
+//! picture's distance from episode 1's Mac picture, so they keep their bf16 weights.
 const std = @import("std");
 const cuda = @import("cuda");
 const lt_ = cuda.cublaslt;
@@ -19,8 +23,8 @@ pub const Weight = struct {
     }
 };
 
-/// One block's projections in the order the forward runs them.
-pub const Block = struct { qkvc: Weight, out: Weight, fc1: Weight, fc2: Weight };
+/// One block's quantized projections.
+pub const Block = struct { qkvc: Weight, fc1: Weight };
 
 pub const Int8 = struct {
     blocks: []Block,
@@ -41,12 +45,10 @@ pub const Int8 = struct {
         self.int8 = t; // the model's deinit frees what a failed quantize already made
         const none: Weight = .{ .q = .{ .d = &self.driver, .ptr = 0, .len = 0 }, .n = 0, .k = 0 };
         t.blocks = try self.gpa.alloc(Block, self.blocks.len);
-        @memset(t.blocks, .{ .qkvc = none, .out = none, .fc1 = none, .fc2 = none });
+        @memset(t.blocks, .{ .qkvc = none, .fc1 = none });
         for (self.blocks, t.blocks) |*b, *q| {
             q.qkvc = try weight(self, &b.qkvc, 3 * self.inner, self.hidden);
-            q.out = try weight(self, &b.out, self.hidden, self.inner);
             q.fc1 = try weight(self, &b.fc1, 2 * self.mlp, self.hidden);
-            q.fc2 = try weight(self, &b.fc2, self.hidden, self.mlp);
         }
     }
 
@@ -64,7 +66,7 @@ pub const Int8 = struct {
         var it = t.plans.valueIterator();
         while (it.next()) |g| g.deinit();
         t.plans.deinit(self.gpa);
-        for (t.blocks) |*b| for ([_]*Weight{ &b.qkvc, &b.out, &b.fc1, &b.fc2 }) |w| w.q.free();
+        for (t.blocks) |*b| for ([_]*Weight{ &b.qkvc, &b.fc1 }) |w| w.q.free();
         self.gpa.free(t.blocks);
         t.scratch.free();
         _ = self.gemms.lt.api.cublasLtDestroy(t.handle);
