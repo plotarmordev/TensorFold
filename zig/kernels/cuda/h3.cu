@@ -60,55 +60,56 @@ __global__ void __launch_bounds__(256) h3_gate_add(__nv_bfloat16* X, const __nv_
 }
 
 // q, k, v to bf16 in tile order: head RMSNorm, then split-half rotary rounded as the reference's bf16 tables round it.
-// Grid [tiles, H], 256 threads: four a slot.
 __global__ void __launch_bounds__(256) h3_heads(
         const __nv_bfloat16* QKV, const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS, const float* SIN,
         const int* ROWOF, __nv_bfloat16* TQ, __nv_bfloat16* TK, __nv_bfloat16* TV, int H, int stride, int ROT, int slots,
         float eps) {
-    const int tile = blockIdx.x, head = blockIdx.y, s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32, slot = tile * 64 + s;
+    const int tile = blockIdx.x, s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32, slot = tile * 64 + s;
     const int row = ROWOF[slot];
     const bool live = row >= 0;
     const float* cs = COS + static_cast<size_t>(live ? row : 0) * ROT;
     const float* sn = SIN + static_cast<size_t>(live ? row : 0) * ROT;
-    const __nv_bfloat16* qr = QKV + static_cast<size_t>(live ? row : 0) * stride + head * 128;
-    const __nv_bfloat16* kr = qr + H * 128;
-    const __nv_bfloat16* vr = kr + H * 128;
-    float q[32], k[32], sq = 0.0f, sk = 0.0f;
+    for (int head = 0; head < H; ++head) {
+        const __nv_bfloat16* qr = QKV + static_cast<size_t>(live ? row : 0) * stride + head * 128;
+        const __nv_bfloat16* kr = qr + H * 128;
+        const __nv_bfloat16* vr = kr + H * 128;
+        float q[32], k[32], sq = 0.0f, sk = 0.0f;
 #pragma unroll
-    for (int j = 0; j < 32; ++j) {
-        q[j] = live ? f(qr[c0 + j]) : 0.0f;
-        k[j] = live ? f(kr[c0 + j]) : 0.0f;
-        sq += q[j] * q[j];
-        sk += k[j] * k[j];
-    }
-    // a row's four quarters sit in neighbouring lanes
-    sq += __shfl_xor_sync(0xffffffffu, sq, 1);
-    sq += __shfl_xor_sync(0xffffffffu, sq, 2);
-    sk += __shfl_xor_sync(0xffffffffu, sk, 1);
-    sk += __shfl_xor_sync(0xffffffffu, sk, 2);
-    if (!live) return;
-    const float qi = rsqrtf(sq / 128.0f + eps), ki = rsqrtf(sk / 128.0f + eps);
-    const size_t at = (static_cast<size_t>(head) * slots + slot) * 128 + c0;
-#pragma unroll
-    for (int j = 0; j < 32; j += 2) {
-        float a[2], b[2];
-#pragma unroll
-        for (int e = 0; e < 2; ++e) {
-            const int c = c0 + j + e;
-            a[e] = bf(q[j + e] * qi * f(NQ[c]));
-            b[e] = bf(k[j + e] * ki * f(NK[c]));
-            if (c < 2 * ROT) {
-                const bool low = c < ROT;
-                const int p = low ? c + ROT : c - ROT, t = low ? c : c - ROT;
-                const float sign = low ? -1.0f : 1.0f, co = bf(cs[t]), si = bf(sn[t]);
-                const float qp = bf(f(qr[p]) * qi * f(NQ[p])), kp = bf(f(kr[p]) * ki * f(NK[p]));
-                a[e] = bf(a[e] * co) + bf(sign * qp * si);
-                b[e] = bf(b[e] * co) + bf(sign * kp * si);
-            }
+        for (int j = 0; j < 32; ++j) {
+            q[j] = live ? f(qr[c0 + j]) : 0.0f;
+            k[j] = live ? f(kr[c0 + j]) : 0.0f;
+            sq += q[j] * q[j];
+            sk += k[j] * k[j];
         }
-        *reinterpret_cast<uint32_t*>(TQ + at + j) = pack2(a[0], a[1]);
-        *reinterpret_cast<uint32_t*>(TK + at + j) = pack2(b[0], b[1]);
-        *reinterpret_cast<uint32_t*>(TV + at + j) = *reinterpret_cast<const uint32_t*>(vr + c0 + j);
+        // a row's four quarters sit in neighbouring lanes
+        sq += __shfl_xor_sync(0xffffffffu, sq, 1);
+        sq += __shfl_xor_sync(0xffffffffu, sq, 2);
+        sk += __shfl_xor_sync(0xffffffffu, sk, 1);
+        sk += __shfl_xor_sync(0xffffffffu, sk, 2);
+        if (!live) continue;
+        const float qi = rsqrtf(sq / 128.0f + eps), ki = rsqrtf(sk / 128.0f + eps);
+        const size_t at = (static_cast<size_t>(head) * slots + slot) * 128 + c0;
+#pragma unroll
+        for (int j = 0; j < 32; j += 2) {
+            float a[2], b[2];
+#pragma unroll
+            for (int e = 0; e < 2; ++e) {
+                const int c = c0 + j + e;
+                a[e] = bf(q[j + e] * qi * f(NQ[c]));
+                b[e] = bf(k[j + e] * ki * f(NK[c]));
+                if (c < 2 * ROT) {
+                    const bool low = c < ROT;
+                    const int p = low ? c + ROT : c - ROT, t = low ? c : c - ROT;
+                    const float sign = low ? -1.0f : 1.0f, co = bf(cs[t]), si = bf(sn[t]);
+                    const float qp = bf(f(qr[p]) * qi * f(NQ[p])), kp = bf(f(kr[p]) * ki * f(NK[p]));
+                    a[e] = bf(a[e] * co) + bf(sign * qp * si);
+                    b[e] = bf(b[e] * co) + bf(sign * kp * si);
+                }
+            }
+            *reinterpret_cast<uint32_t*>(TQ + at + j) = pack2(a[0], a[1]);
+            *reinterpret_cast<uint32_t*>(TK + at + j) = pack2(b[0], b[1]);
+            *reinterpret_cast<uint32_t*>(TV + at + j) = *reinterpret_cast<const uint32_t*>(vr + c0 + j);
+        }
     }
 }
 
@@ -239,7 +240,7 @@ __global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const floa
     }
 }
 
-// A warp's 128 values, four a lane in order, through the Walsh-Hadamard transform in place, unscaled.
+// A warp's 128 values, four a lane in order, through the orthonormal Walsh-Hadamard transform in place.
 __device__ __forceinline__ void hadamard128(float v[4]) {
     const float a = v[0] + v[1], b = v[0] - v[1], c = v[2] + v[3], d = v[2] - v[3];
     v[0] = a + c;
@@ -256,66 +257,50 @@ __device__ __forceinline__ void hadamard128(float v[4]) {
             v[i] = high ? p - v[i] : v[i] + p;
         }
     }
+#pragma unroll
+    for (int i = 0; i < 4; ++i) v[i] *= 0.08838834764831845f; // 1 / sqrt(128)
 }
 
-// Lane's four values of a 128-wide chunk `c` of a row.
-__device__ __forceinline__ void load_chunk(const __nv_bfloat16* x, int c, float v[4]) {
+// Lane's four values of a row's 128-wide chunk `c`, rotated.
+__device__ __forceinline__ void rotated_chunk(const __nv_bfloat16* x, int c, float v[4]) {
     const __nv_bfloat162* p = reinterpret_cast<const __nv_bfloat162*>(x + c * 128 + (threadIdx.x & 31) * 4);
     const float2 lo = __bfloat1622float2(p[0]), hi = __bfloat1622float2(p[1]);
     v[0] = lo.x;
     v[1] = lo.y;
     v[2] = hi.x;
     v[3] = hi.y;
+    hadamard128(v);
 }
 
-// Lane's four values of each half of a row's 256-wide group `g` through the orthonormal Walsh-Hadamard transform, as
-// mmh3's ConvRot rotates: each 128-wide half, then one butterfly across the halves.
-__device__ __forceinline__ void rotated_group(const __nv_bfloat16* x, int g, float lo[4], float hi[4]) {
-    load_chunk(x, 2 * g, lo);
-    load_chunk(x, 2 * g + 1, hi);
-    hadamard128(lo);
-    hadamard128(hi);
-#pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        const float a = lo[i], b = hi[i];
-        lo[i] = (a + b) * 0.0625f; // 1 / sqrt(256)
-        hi[i] = (a - b) * 0.0625f;
-    }
-}
+// A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336, the widest projection input.
+constexpr int quantize_chunks = 14;
 
-// A warp's most groups of a quantized row: K up to 8 * 7 * 256 = 14,336, the widest projection input.
-constexpr int quantize_groups = 7;
-
-// Each bf16 row of X (M, K) Hadamard-rotated in 256-wide groups, then to int8 Q at the row's absmax / 127 in S.
-// A row and its weights' rows rotate alike, so their products' sums are the unrotated ones. The rotated groups stay in
+// Each bf16 row of X (M, K) Hadamard-rotated in 128-wide chunks, then to int8 Q at the row's absmax / 127 in S.
+// A row and its weights' rows rotate alike, so their products' sums are the unrotated ones. The rotated chunks stay in
 // registers between the absmax and the rounding, so X is read once. Grid [M], 256 threads.
 __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_t* Q, float* S, int K) {
     __shared__ float scratch[32];
     const size_t row = blockIdx.x;
     const __nv_bfloat16* x = X + row * K;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, groups = K >> 8;
-    float most = 0.f, v[quantize_groups][2][4];
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = K >> 7;
+    float most = 0.f, v[quantize_chunks][4];
 #pragma unroll
-    for (int i = 0; i < quantize_groups; ++i) {
-        const int g = warp + 8 * i;
-        if (g < groups) {
-            rotated_group(x, g, v[i][0], v[i][1]);
-            for (int h = 0; h < 2; ++h)
-                for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[i][h][j]));
+    for (int i = 0; i < quantize_chunks; ++i) {
+        const int c = warp + 8 * i;
+        if (c < chunks) {
+            rotated_chunk(x, c, v[i]);
+            for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[i][j]));
         }
     }
     most = tf_common::block_max_tree(most, scratch, 8);
     const float scale = most > 0.f ? most / 127.f : 1.f;
     if (threadIdx.x == 0) S[row] = scale;
 #pragma unroll
-    for (int i = 0; i < quantize_groups; ++i) {
-        const int g = warp + 8 * i;
-        if (g < groups) {
-            for (int h = 0; h < 2; ++h) {
-                const float* u = v[i][h];
-                const char4 q = make_char4(__float2int_rn(u[0] / scale), __float2int_rn(u[1] / scale), __float2int_rn(u[2] / scale), __float2int_rn(u[3] / scale));
-                *reinterpret_cast<char4*>(Q + row * K + (2 * g + h) * 128 + lane * 4) = q;
-            }
+    for (int i = 0; i < quantize_chunks; ++i) {
+        const int c = warp + 8 * i;
+        if (c < chunks) {
+            const char4 q = make_char4(__float2int_rn(v[i][0] / scale), __float2int_rn(v[i][1] / scale), __float2int_rn(v[i][2] / scale), __float2int_rn(v[i][3] / scale));
+            *reinterpret_cast<char4*>(Q + row * K + c * 128 + lane * 4) = q;
         }
     }
 }
