@@ -50,7 +50,10 @@ stage() { # stage NAME TOOL ARGS...: the tool's log, with its times, to $case.NA
 image() { # the resident transformer renders $case; the server's log since the last reply goes to $case.image.log
     [ -n "$server" ] || {
         mkfifo "$out/requests" "$out/replies"
-        "$bin/tf-h3-image-cuda" "$model" --serve <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" &
+        # each server closes this script's FIFO fds: a later server would inherit an earlier one's write end and
+        # the earlier server would never see EOF when the script closes it
+        "$bin/tf-h3-image-cuda" "$model" --serve <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
+            3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         server=$!
         exec 3>"$out/requests" 4<"$out/replies"
         logged=0
@@ -64,7 +67,8 @@ image() { # the resident transformer renders $case; the server's log since the l
 prompt_stage() { # the resident prompt stage writes $case's picture case; its new log bytes go to $case.prompt.log
     [ -n "$prompt_server" ] || {
         mkfifo "$out/prompt-requests" "$out/prompt-replies"
-        "$bin/tf-h3-image-prompt-cuda" "$model/text_encoder" "$model" --serve <"$out/prompt-requests" >"$out/prompt-replies" 2>"$out/$side.prompt-server.log" &
+        "$bin/tf-h3-image-prompt-cuda" "$model/text_encoder" "$model" --serve <"$out/prompt-requests" >"$out/prompt-replies" 2>"$out/$side.prompt-server.log" \
+            3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         prompt_server=$!
         exec 5>"$out/prompt-requests" 6<"$out/prompt-replies"
         prompt_logged=0
@@ -78,7 +82,8 @@ prompt_stage() { # the resident prompt stage writes $case's picture case; its ne
 decoder_stage() { # the resident decoder writes $case.png; its new log bytes go to $case.decoder.log
     [ -n "$decoder_server" ] || {
         mkfifo "$out/decoder-requests" "$out/decoder-replies"
-        "$bin/tf-h3-image-decoder-cuda" "$model" --serve <"$out/decoder-requests" >"$out/decoder-replies" 2>"$out/$side.decoder-server.log" &
+        "$bin/tf-h3-image-decoder-cuda" "$model" --serve <"$out/decoder-requests" >"$out/decoder-replies" 2>"$out/$side.decoder-server.log" \
+            3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         decoder_server=$!
         exec 7>"$out/decoder-requests" 8<"$out/decoder-replies"
         decoder_logged=0
