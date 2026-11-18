@@ -284,19 +284,30 @@ products are half of it, and attention is 1.88 s, so both are latency-bound rath
 repeated its pass at 86.044% of bytes identical, 99.917% within 1, at most 6 apart, PSNR 56.60 dB, relative error
 3.16e-3 against the 3e-2 bound. The fma took the decoder's GPU time from 4.95 s to 4.54 s.
 
+`bd734252` (job `top-9190417372e9`, 19 November, exit 0, `bench-script.sh`, `--int8` as the bench's default) sums
+`fc1`'s int32 products straight into `h3_swiglu_int8`, quantizes each row from registers after one read, and keeps the
+picture's rows on the device (`cuda_rows.zig`: `h3_rows_in`, `h3_rows_out` with the final norm, `h3_euler`, each in
+`rows_reference`'s sum order; `--self-test` checks them against it over two steps). Every selftest passed and the
+picture is byte for byte `b4c5c42`'s. A warm 2048² picture took **18.2 s** mean (18.1, 18.2, 18.2: prompt 1.1,
+transformer 12.1, decoder 4.9), cold 160.7 s; a step is 2.02 s: norms 0.53, q k v gate 2.64, heads 0.96, attention
+1.80, attention out 0.94, mlp in 3.34, mlp out 1.78 and 0.15 s outside the blocks (1.2 s before). Against episode 1's
+Mac picture (`ep1-mac-fast/2048-warm1.png`, `h3-image-runs/34/t2i-2048.latent.f32`) the `--int8` latent's cosine
+is 0.9945, but the picture is 28.15 dB and 4.23 apart on average, past the 28.2 dB and 4.1 gates, so `--int8` stays
+opt-in; `b4c5c42`'s 19.9 s was the same `--int8` picture.
+
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
-1. **The int8 products' own rate**: the six projection stages take 1.69 s of a 2.3 s step, ~100 TOPS, a fifth of the
-   GB10's dense int8. The int32 sums' round trip through `h3_dequantize` and the twice-read `h3_quantize` rows are
-   the measured candidates; MXFP8 block scaling (cuBLASLt's 32-element `UE8M0` mode, compute capability 10.0+; the
-   outer-vector mode is 9.0 only) writes bf16 straight from the product. Then the Mac-render gates on the `--int8`
-   picture before `--int8` becomes the default; the two kernels' records are in the registry as of `cadab6b2`, and
+1. **The int8 products' own rate**: the six projection stages take 1.69 s of a 2.0 s step, ~100 TOPS, a fifth of the
+   GB10's dense int8; `bd734252` removed `fc1`'s dequantize round trip and the second read of each quantized row.
+   MXFP8 block scaling (cuBLASLt's 32-element `UE8M0` mode, compute capability 10.0+; the outer-vector mode is 9.0
+   only) writes bf16 straight from the product. The `--int8` picture fails the Mac-render gates (28.15 dB, 4.23 mean
+   apart), so it is not the default; a finer scale (per 128-chunk instead of per row) is the next candidate. The
+   two kernels' records are in the registry as of `cadab6b2`, and
    `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4 (`contract_h3_int8.zig`);
    the limits audit (gate 5) is `limits-job.sh`'s own window.
 2. **Attention**, 1.76 s a picture at ~5% of the GB10's bf16 rate: mmh3's INT8/FP8 attention, or a block whose
    registers leave room for four CTAs an SM instead of two.
-3. **The host rows outside the blocks**, 1.2 s a picture (`rows_in`, the final norm, `rows_out`): mmh3 runs them on
-   the device.
+3. **The rows outside the blocks**: on the device as of `bd734252`, 0.15 s a picture.
 4. **The decoder's occupancy**: the fma took the products' GPU time from 4.95 s to 4.54 s, only 8%, so they are
    latency-bound, not rate-bound: 121 registers a thread leave two CTAs an SM, 8 warps. Attention is 1.88 s of the
    4.54 s with 217 registers at 128 threads, the same two CTAs. A 128 x 128 product tile run by 512 threads at 4 x 8
