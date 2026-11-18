@@ -101,6 +101,11 @@ pub const Model = struct {
     cr: mtl.Buffer,
     wide: mtl.Buffer,
     act: mtl.Buffer,
+    // a picture's: every block's fc1 rows in int8 with a scale per 256 values of K (private), and xn quantized for it
+    fc1_q: mtl.Buffer,
+    fc1_s: mtl.Buffer,
+    xq: mtl.Buffer,
+    xs: mtl.Buffer,
     // queries, keys and values in tile order, the tiles' means, scores, chosen tiles, pooled branch
     tq: mtl.Buffer,
     tk: mtl.Buffer,
@@ -265,6 +270,7 @@ pub const Model = struct {
             b.norm_k = try ck.ref(try std.fmt.bufPrint(&name, "transformer_blocks.{d}.attn.norm_k.weight", .{i}), head_dim);
             b.tables = try self.held(try std.fmt.bufPrint(&name, "tables.{d}", .{i}), .bf16, 6 * self.lines * hidden);
         }
+        if (self.base) try self.quantizeFc1();
         return self;
     }
 
@@ -282,12 +288,36 @@ pub const Model = struct {
         inline for (.{ "final_table", "final_norm", "w_video_in", "b_video_in", "w_video_out", "b_video_out", "cos", "sin", "slot", "sizes" }) |f| @field(self, f).buffer.deinit();
         if (self.audio > 0) inline for (.{ "w_audio_in", "b_audio_in", "w_audio_out", "b_audio_out" }) |f| @field(self, f).buffer.deinit();
         inline for (.{ "row_of", "all_tiles", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "normed", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
+        if (self.base) inline for (.{ "fc1_q", "fc1_s", "xq", "xs" }) |f| @field(self, f).deinit();
         self.queue.deinit();
         self.gpa.free(self.blocks);
         self.gpa.free(self.prompt);
         self.gpa.free(self.adaln);
         self.gpa.free(self.times);
         self.gpa.destroy(self);
+    }
+
+    /// A picture's fc1: every block's rows to int8 in `fc1_q`, a scale per 256 values of K in `fc1_s`, one pass at
+    /// bind, and room for xn in int8. Private storage: only the GPU reads them, and a step's encode no longer pays for
+    /// 7.7 GiB of shared pages.
+    fn quantizeFc1(self: *Model) !void {
+        const n = 2 * self.mlp;
+        const groups = self.hidden / block.fc1_group;
+        const private = mtl.ResourceOptions.private;
+        self.fc1_q = try self.device.buffer(self.blocks.len * n * self.hidden, private);
+        self.fc1_s = try self.device.buffer(self.blocks.len * n * groups * 4, private);
+        self.xq = try self.device.buffer(self.rows * self.hidden, mtl.ResourceOptions.shared);
+        self.xs = try self.device.buffer(self.rows * 4, mtl.ResourceOptions.shared);
+        // the command buffer is autoreleased: its own pool frees it, and what it held, before the model's release
+        const pool = mtl.objc.Pool.push();
+        defer pool.pop();
+        const cb = self.queue.commandBuffer();
+        const enc = cb.compute(.concurrent);
+        for (self.blocks, 0..) |b, i|
+            block.quantize(self, enc, b.fc1, n, self.hidden, block.fc1_group, .{ .buffer = self.fc1_q, .offset = i * n * self.hidden }, .{ .buffer = self.fc1_s, .offset = i * n * groups * 4 });
+        enc.end();
+        cb.commit();
+        _ = try finish(cb);
     }
 
     /// Block `i` of the released MiniMax-H3 layout.
