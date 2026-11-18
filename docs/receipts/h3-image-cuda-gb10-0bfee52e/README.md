@@ -13,8 +13,17 @@
 
 Both tools build synthetic models and compare against the host's float64 reference; no weights are read.
 
-The same run's kernel contract:
+The same run's kernel contract passes gates 1 to 4 but exits nonzero on its limits:
 
 ```text
 SUMMARY 685 kernels: 685 pass gates 1-4, 0 fail, 8 known findings; 422 controls: 422 red as planted, 0 missed; 188 limit problems; gates 3449547 ms, limits 765095 ms
+FAIL kernel-contract: 0 gate failures, 0 controls missed, 188 limit problems
+FAIL kernel-contract: TestFailed
 ```
+
+Of the 188, 183 are `main` kernels with no compiled usage recorded (`qwen4_*`, `qwen35*`, `nvfp4_experts_tile`,
+`exl3_experts`, `flashnext_mtp`) and 3 are live launches of `main` kernels recorded as 0 (`fn_row_topk`,
+`tf_exl3_prompt_gu`, `tf_exl3_prompt_down`). The other 2 are `h3p_norm` and `h3p_heads` on sm_121, measured
+at 27 and 40 registers against stale records of 25 and 38. `kernel-contract-limits` exits 1 with 28 stale
+records, 10 of them these two kernels'. This branch sets both records to that run's `RECORD` lines; no limits run
+has checked them since.
