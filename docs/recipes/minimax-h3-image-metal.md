@@ -1014,13 +1014,24 @@ A profile stage's seconds cover all 300 block calls of the six steps, so attenti
 ### int8 fc1, measured and not landed
 
 The same 32 x 64-warp loop on `int8_t` fragments with `int32` sums ran the fc1 shape (4,096 x 28,672 x 5,376) at
-215 TOP/s against 96 TFLOP/s for bf16 in one probe; `half` ran at bf16's rate. With fc1 in int8, each weight row at its
-absolute max over 127 (quantized once at bind) and each normed row likewise per request, a warm 2048 picture took
-11.01 s (6 steps 9.36 s). Against episode 1's Mac latent and PNG it scored cosine 0.9948, PSNR 28.34 dB, mean pixel
-diff 4.37 and max 243: the mean misses card 80's 4.1 floor. Scales per 256 values of each normed row did worse (cosine
-0.9934, 27.09 dB, mean 4.64, max 247) and slower (11.50 s), since each 256-deep block folds its sums into fp32. Neither
-holds the same picture, so the products stay bf16; the patch and receipts are kept outside the repo in
-`h3-image-runs/84/` (`int8-fc1-grouped.patch`, `rec/i8*`).
+215 TOP/s against 96 TFLOP/s for bf16 in one probe; `half` ran at bf16's rate. Card 34's prompt, seed 42, one resident
+server, a warm 2048 picture each:
+
+| fc1 quantizer | latent cosine | PSNR | mean pixel diff | max | 6 steps | picture |
+|---|---|---|---|---|---|---|
+| both operands at a row's absolute max | 0.994759 | 28.342 | 4.365 | 243 | 9.24 s | 10.99 s |
+| the same on fc1 and fc2 | 0.942927 | 18.733 | 14.849 | 255 | 9.23 s | 10.92 s |
+| weights per 256 values of K, activations a row | 0.995344 | 28.240 | 4.011 | 245 | 9.63 s | 11.35 s |
+
+A row's absolute max misses card 80's mean floor (4.1) by 0.27. fc2 in int8 does not hold the picture at all: SwiGLU's
+rows have outliers that one row scale cannot cover. fc1's weights grouped per 256 values of K hold the rule (mean
+4.011, PSNR 28.240) but each 256-deep block's int32 sums fold into fp32 at its group scale, which costs 0.10 s a step:
+six steps 9.63 s and the picture 11.35 s, past this card's 11 s. Neither is landed; the products stay bf16.
+
+Two host costs a later int8 round should keep: fc1's int8 copy (7.7 GiB) in private storage instead of shared cut a
+step's encode from 0.42 to 0.19 s, and joining it to the server's residency set cut that to 0.04 s. Quantizing a row
+in one simdgroup, its groups one after another, took the bind's pass from 15.3 to 2.1 s. The patch and receipts are
+kept outside the repo in `h3-image-runs/84/` (`int8-fc1-grouped.patch`, `rec/i8*`, `rec/i8g*`, `rec/i8z*`).
 
 ### Next, ranked
 
