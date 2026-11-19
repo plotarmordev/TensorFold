@@ -105,11 +105,11 @@ __device__ __forceinline__ void gemm(const int8_t* __restrict__ X, const float* 
                 ldmatrix4(a[i], p + r * GS + swz<8>(r, kt * 2 + (lane >> 4)) * 16);
             }
 #pragma unroll
-            for (int jj = 0; jj < NT; jj += 2) {              // one x4 trans feeds two n8 operands
+            for (int jj = 0; jj < NT; jj += 2) {              // an x4 load feeds two n8 operands, as QK^T's K tile
                 const int half = lane >> 4;                    // lanes 16+ take the j+1 weight rows
                 const int c = wn * (BN / WN) + (jj + half) * 8 + (lane & 7);
                 uint32_t b[4];
-                ldmatrix4t(b, p + SX + c * GS + swz<8>(c, kt * 2 + ((lane >> 3) & 1)) * 16);
+                ldmatrix4(b, p + SX + c * GS + swz<8>(c, kt * 2 + ((lane >> 3) & 1)) * 16);
 #pragma unroll
                 for (int i = 0; i < MT; ++i) {
                     mma_s8(iacc[i][jj], a[i], b[0], b[1]);

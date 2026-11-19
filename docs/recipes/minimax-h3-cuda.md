@@ -348,8 +348,10 @@ The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
    bf16, and the `m16n8k32` tile folds a chunk's exact int32 sum into the fp32 accumulator at that chunk's scales and
    writes bf16 from its own tile — no int32 round trip through `h3_dequantize` (removed), and `fc1`'s product feeds a
    bf16 `h3_swiglu` (the fused `h3_swiglu_int8` removed). Its record is in the registry's pending list until gate 5
-   measures it; `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs the quantizer's gates 1-4
-   (`contract_h3_int8.zig`), the product's record pending. The warm time needs a new window.
+   measures it; `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs both int8 kernels' gates 1-4
+   (`contract_h3_int8.zig`: the quantizer and the product's own float64 contract). `h3_gemm_int8` stays opt-in —
+   `tf-h3-image-cuda --int8`, `H3_LINEAR=int8` on the bench — until the 2048² gates pass on a new window; the
+   per-chunk scale changed the whole picture, so card 88's qkvc/fc1 receipt does not cover this head.
 2. **Attention**: 1.74 s a picture in the transformer, 217 registers at 128 threads and two CTAs an SM (8 warps), and
    1.89 s in the decoder, whose 16-byte key loads changed nothing. mmh3's INT8/FP8 attention is the candidate that
    would also cut registers; the decoder's attention needs its stall found first, since neither its loads nor its

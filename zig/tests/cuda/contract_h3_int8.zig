@@ -1,4 +1,6 @@
 //! MiniMax H3's int8 projection kernels (h3_quantize, h3_gemm_int8) under the contract, against float64 formulas.
+//! The product's float64 reference mirrors the kernel: exact int32 sums per 128-chunk folded into fp32 at the
+//! chunk's scales, then a bf16 store — so the gemm's own ldmatrix fragment layout is proven, not restated.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
@@ -188,6 +190,184 @@ pub const Quantize = struct {
             }
         };
         if (at == .nonfinite and planted == 0) return "no planted value reached a launched row: no proof";
+        return null;
+    }
+};
+
+const gemm_rule = "a scale's NaN or infinity reaches its whole row or column of the product; the int8 codes are always finite";
+
+/// h3_gemm_int8's dynamic shared bytes: its 3 stages fill sm_121's 101376-byte per-block cap (cuda_int8's own
+/// `gemm_shared_bytes`; duplicated so the contract needs no family import).
+pub const gemm_shared_bytes = 3 * (128 * 128 + 128 * 128 + (128 + 128) * 4);
+
+/// The product's chains: three fp32 roundings a chunk (the two scale multiplies and the accumulator's add), plus
+/// the bf16 store's own rounding which `out` carries.
+fn gemmDepth(shape: c.Shape) usize {
+    return 3 * (shape.k / 128) + 2;
+}
+
+pub fn gemmSpec() c.Spec {
+    return .{
+        .name = "cuda h3 int8 product h3_gemm_int8",
+        .accum = .f32,
+        .depth = gemmDepth,
+        .ops = 0,
+        .out = .bf16,
+        .nan = .{ .stated = gemm_rule },
+        .tiles = .{ .{}, .{ .size = 128, .step = 8, .min = 8 }, .{ .size = 128, .step = 128, .min = 128 } },
+        .served = &.{
+            .{ .rows = 17, .n = 136, .k = 256 },     // partial M and N tiles, two chunks
+            .{ .rows = 129, .n = 264, .k = 384 },   // a second M tile, n past two n8 tiles
+            .{ .rows = 16, .n = 56, .k = 14336 },   // the widest projection input, n under one tile
+            .{ .rows = 130, .n = 128, .k = 128 },   // one chunk, M just over the tile
+        },
+        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "a chunk's 128 products are an exact int32 tensor-core sum; fp32 carries only the per-chunk scale fold" },
+    };
+}
+
+/// C (rows, N) bf16 = X int8 (rows, K) . W int8 (N, K)^T at fp32 chunk scales XS (rows, K/128), WS (N, K/128).
+/// The int8 inputs here are what h3_quantize would emit: rotated codes, a scale each 128-wide chunk.
+pub const Gemm = struct {
+    rig: rig_.Rig,
+    f: cuda.Function,
+    arena: std.heap.ArenaAllocator,
+    shape: c.Shape = undefined,
+    xq: []i8 = &.{},
+    wq: []i8 = &.{},
+    xs: []f64 = &.{},
+    ws: []f64 = &.{},
+    dev: [5]u64 = @splat(0),
+    msg: [200]u8 = undefined,
+
+    pub fn deinit(t: *Gemm) void {
+        t.rig.deinit();
+        t.arena.deinit();
+    }
+
+    pub fn kernel(t: *Gemm) g.Kernel {
+        return .{ .spec = gemmSpec(), .ctx = t, .vt = &vt };
+    }
+
+    const vt = g.hooks(Gemm);
+
+    pub fn prepare(t: *Gemm, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
+        if (shape.k % 128 != 0 or shape.k == 0 or shape.n % 8 != 0 or shape.n == 0 or shape.rows == 0) return false;
+        t.rig.reset();
+        _ = t.arena.reset(.retain_capacity);
+        t.shape = shape;
+        const a = t.arena.allocator();
+        const chunks = shape.k / 128;
+        var prng = std.Random.DefaultPrng.init(seed);
+        const rng = prng.random();
+        t.xq = try a.alloc(i8, shape.rows * shape.k);
+        t.wq = try a.alloc(i8, shape.n * shape.k);
+        t.xs = try a.alloc(f64, shape.rows * chunks);
+        t.ws = try a.alloc(f64, shape.n * chunks);
+        for (t.xq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        for (t.wq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        // one loud chunk a row: its scale carries it, the rest stay small — the per-chunk claim's proof
+        for (t.xs, 0..) |*v, i| v.* = 0.001 + 0.004 * rng.float(f64) * if (i % chunks == 1) 100 else 1;
+        for (t.ws, 0..) |*v, i| v.* = 0.002 + 0.006 * rng.float(f64) * if (i % chunks == 2 % chunks) 50 else 1;
+        if (fill == .stress) {
+            for (t.xq) |*v| v.* = if (v.* >= 0) 127 else -127;
+        }
+        if (fill == .nonfinite) {
+            if (shape.rows * chunks > 2) t.xs[2] = std.math.nan(f64);
+            if (shape.n * chunks > 3) t.ws[3] = std.math.inf(f64);
+        }
+        const xs32 = try a.alloc(f32, t.xs.len);
+        const ws32 = try a.alloc(f32, t.ws.len);
+        for (xs32, t.xs) |*o, v| o.* = @floatCast(v);
+        for (ws32, t.ws) |*o, v| o.* = @floatCast(v);
+        t.dev[0] = try t.rig.input(std.mem.sliceAsBytes(t.xq));
+        t.dev[1] = try t.rig.input(std.mem.sliceAsBytes(xs32));
+        t.dev[2] = try t.rig.input(std.mem.sliceAsBytes(t.wq));
+        t.dev[3] = try t.rig.input(std.mem.sliceAsBytes(ws32));
+        t.dev[4] = try t.rig.output(shape.rows * shape.n * 2);
+        return true;
+    }
+
+    pub fn run(t: *Gemm) !void {
+        var args: cuda.Args = .{};
+        for (t.dev) |p| args.add(p);
+        for ([_]usize{ t.shape.rows, t.shape.n, t.shape.k }) |v| args.add(@as(c_int, @intCast(v)));
+        args.add(@as(c_int, 8)); // tile bands' L2 swizzle group, as cuda_int8's gemm_group
+        const tiles_m = (t.shape.rows + 127) / 128;
+        const tiles_n = (t.shape.n + 127) / 128;
+        const shared: u32 = @intCast(gemm_shared_bytes);
+        try cuda.launch.launch(t.f, .{ .grid = .{ .x = @intCast(tiles_m * tiles_n) }, .block = .{ .x = 256 }, .shared = shared }, t.rig.s, &args);
+        try t.rig.s.synchronize();
+    }
+
+    pub fn count(t: *Gemm) usize {
+        return t.shape.rows * t.shape.n;
+    }
+
+    /// The kernel's formula in float64: per chunk an exact int32 dot of the codes times xs * ws, summed in fp32
+    /// order `acc`/`order` when set (the fold chain), then rounded to bf16 as the store does. `mag` is each
+    /// output's sum of |chunk dot * xs * ws| — the bound's term magnitude.
+    fn product(t: *Gemm, acc: c.Accum, order: g.Order, out: []f64, mag: ?[]f64) !void {
+        const a = t.arena.allocator();
+        const chunks = t.shape.k / 128;
+        const terms = try a.alloc(f64, chunks);
+        const mags = try a.alloc(f64, chunks);
+        for (0..t.shape.rows) |row| for (0..t.shape.n) |col| {
+            var big: f64 = 0;
+            for (0..chunks) |ch| {
+                var dot: i64 = 0;
+                for (0..128) |j| {
+                    dot += @as(i64, t.xq[row * t.shape.k + ch * 128 + j]) * t.wq[col * t.shape.k + ch * 128 + j];
+                }
+                const xs = t.xs[row * chunks + ch];
+                const ws = t.ws[col * chunks + ch];
+                terms[ch] = @as(f64, @floatFromInt(dot)) * xs * ws;
+                mags[ch] = @abs(@as(f64, @floatFromInt(dot)) * xs * ws);
+            }
+            const v = if (acc == .none) blk: {
+                var s: f64 = 0;
+                for (terms) |x| s += x;
+                break :blk s;
+            } else sumIn(acc, order, terms);
+            for (mags) |m| big += m;
+            const i = row * t.shape.n + col;
+            out[i] = c.fromBf16(c.toBf16(@floatCast(v)));
+            if (mag) |mm| mm[i] = big;
+        };
+    }
+
+    pub fn reference(t: *Gemm, want: []f64, mag: []f64) !void {
+        try t.product(.none, .sequential, want, mag);
+    }
+
+    pub fn simulate(t: *Gemm, acc: c.Accum, order: g.Order, out: []f64) !void {
+        try t.product(acc, order, out, null);
+    }
+
+    /// Beyond the float64 bound: at a nonfinite fill the stated rule must reach the output — a NaN scale's row
+    /// all NaN, an infinite scale's column all infinite or NaN where its codes cancel.
+    pub fn check(t: *Gemm, at: g.Gate) !?[]const u8 {
+        if (at != .nonfinite) return null;
+        const s = t.shape;
+        const chunks = s.k / 128;
+        const got = try t.rig.bytes(t.dev[4], s.rows * s.n * 2);
+        var planted: usize = 0;
+        for (0..s.rows) |row| for (0..chunks) |ch| {
+            if (!std.math.isNan(t.xs[row * chunks + ch]) and !std.math.isInf(t.xs[row * chunks + ch])) continue;
+            planted += 1;
+            for (0..s.n) |col| {
+                const v = c.read(.bf16, got, row * s.n + col);
+                if (std.math.isFinite(v)) return try std.fmt.bufPrint(&t.msg, "row {d} chunk {d}'s nonfinite scale left output {d} finite: {e}", .{ row, ch, col, v });
+            }
+        };
+        for (0..s.n) |col| for (0..chunks) |ch| {
+            if (!std.math.isNan(t.ws[col * chunks + ch]) and !std.math.isInf(t.ws[col * chunks + ch])) continue;
+            planted += 1;
+            for (0..s.rows) |row| {
+                const v = c.read(.bf16, got, row * s.n + col);
+                if (std.math.isFinite(v)) return try std.fmt.bufPrint(&t.msg, "column {d} chunk {d}'s nonfinite scale left output {d} finite: {e}", .{ col, ch, row, v });
+            }
+        };
+        if (planted == 0) return "no planted scale reached a launched row: no proof";
         return null;
     }
 };
