@@ -106,9 +106,9 @@ test "engine voices: the catalog outlives the engine's names, as across an idle 
         @memset(@constCast(name), 'x'); // the unload frees the engine's catalog
         gpa.free(name);
     }
-    try std.testing.expectEqual(@as(usize, 2), srv.voices.len);
-    try std.testing.expectEqualStrings("juno", srv.voices[0].name);
-    try std.testing.expectEqualStrings("mira", srv.voices[1].name);
+    try std.testing.expectEqual(@as(usize, 2), srv.voices.voices.len);
+    try std.testing.expectEqualStrings("juno", srv.voices.voices[0].name);
+    try std.testing.expectEqualStrings("mira", srv.voices.voices[1].name);
 }
 
 test "engine voices: Drama's sampling fields are refused, the seed is kept" {

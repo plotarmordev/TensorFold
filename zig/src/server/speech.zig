@@ -82,9 +82,10 @@ fn listed(names: []const []const u8, key: []const u8) bool {
 }
 
 /// Refuses what this route would drop: unknown fields, set modifiers, non-strings, a bad ``stream``/``stream_format``.
-fn checkFields(cx: *Cx, body: Value) errors.Refused!void {
+fn checkFields(cx: *Cx, body: Value, inline_voices: bool) errors.Refused!void {
     for (body.object.keys(), body.object.values()) |key, value| {
         if (listed(&served_fields, key)) {
+            if (value == .object and inline_voices and std.mem.eql(u8, key, "voice")) continue; // an attested voice object
             if (value != .string) return cx.fail(.request, "{s} must be a string", .{key});
         } else if (std.mem.eql(u8, key, "stream")) {
             if (value != .bool and value != .null) return cx.refuse("stream must be a boolean");
@@ -111,7 +112,7 @@ fn responseFormat(cx: *Cx, value: []const u8) errors.Refused!Format {
 /// Every check that can refuse the request, then its prompt ids, before anything reaches the engine.
 fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused!Plan {
     if (raw != .object) return cx.refuse("speech request body must be a JSON object");
-    try checkFields(cx, raw);
+    try checkFields(cx, raw, srv.config.voice.inline_voices);
     const sampling = try speech_sampling.parse(cx, raw);
     const model = raw.strField("model") orelse return cx.fail(.request, "model is required: send {s}", .{srv.config.served_name});
     if (!listed(srv.config.model_ids, model))
@@ -132,20 +133,15 @@ fn prepare(srv: *Server, cx: *Cx, sp: api.SpeechInfo, raw: Value) errors.Refused
         // the engine draws with its own fixed flow temperature: Drama's sampling would be accepted and ignored
         for ([_][]const u8{ "temperature", "top_p", "top_k" }) |key|
             if (raw.field(key) != null) return cx.fail(.request, "{s} is not supported by this model", .{key});
-        const named = if (voice.len == 0 or std.ascii.eqlIgnoreCase(voice, "default")) srv.config.default_voice else voice;
-        const index = if (std.mem.eql(u8, named, "default")) 0 else indexOf(srv.voices, named) orelse {
+        const named = if (voice.len == 0 or std.ascii.eqlIgnoreCase(voice, "default")) srv.config.voice.default else voice;
+        const index = if (std.mem.eql(u8, named, "default")) 0 else indexOf(srv.engine_voices, named) orelse {
             const name = try pyrepr.repr(cx.a, .{ .string = named });
             return cx.fail(.request, "unknown voice {s}; see /v1/voices", .{name});
         };
         const prompt = try codepoints(cx.a, input);
         return .{ .input = input, .prompt = prompt, .sampling = sampling, .format = format, .stream = stream, .voice = index };
     }
-    const refs = @import("drama_voice.zig").select(srv.voices, srv.config.default_voice, voice) catch {
-        const name = try pyrepr.repr(cx.a, .{ .string = voice });
-        if (srv.config.voices_dir != null)
-            return cx.fail(.request, drama_prompt.error_prefix ++ " unknown voice {s}; see /v1/voices", .{name});
-        return cx.fail(.request, drama_prompt.error_prefix ++ " unknown voice {s}; only the default voice is supported", .{name});
-    };
+    const refs = try voiceRefs(srv, cx, raw);
     if (try @import("drama_voice.zig").requestPrompt(cx, srv.text, sp, input, refs)) |made| return .{ .input = input, .prompt = made.prompt, .frames = made.frames, .refs = refs, .reference_rows = made.reference_rows, .sampling = sampling, .format = format, .stream = stream };
     const prompt = try promptOf(srv, cx, sp, input);
     return .{ .input = input, .prompt = prompt, .sampling = sampling, .format = format, .stream = stream };
@@ -160,10 +156,30 @@ fn indexOf(voices: []const @import("drama_voice.zig").Voice, name: []const u8) ?
 /// The input's Unicode code points: the prompt of an engine that names its voices itself.
 fn codepoints(a: Allocator, input: []const u8) ![]const u32 {
     const out = try a.alloc(u32, std.unicode.utf8CountCodepoints(input) catch unreachable);
-    var it = std.unicode.Utf8Iterator{ .bytes = input, .i = 0 };
+    var it: std.unicode.Utf8Iterator{ .bytes = input, .i = 0 };
     var n: usize = 0;
     while (it.nextCodepoint()) |cp| : (n += 1) out[n] = cp;
     return out;
+}
+
+/// The request's references: an attested inline voice under --request-voices, else the named catalog voice's, copied.
+fn voiceRefs(srv: *Server, cx: *Cx, raw: Value) errors.Refused![]const @import("drama_prompt").Reference {
+    if (raw.get("voice")) |value| if (value == .object) {
+        if (raw.get("speaker") != null) return cx.refuse("an inline voice object takes no speaker");
+        return @import("drama_voice.zig").parseDoc(cx.a, value) catch |e| switch (e) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.MissingAttestation => cx.refuse("an inline voice needs source.kind synthetic, self or consented and a source.note"),
+            else => cx.refuse("an inline voice is a drama3-http-voice/1 object with 1 to 4 references"),
+        };
+    };
+    const voice = raw.strField("voice") orelse raw.strField("speaker") orelse "default";
+    return srv.voices.select(cx.a, srv.config.voice.default, voice) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory;
+        const name = try pyrepr.repr(cx.a, .{ .string = voice });
+        if (srv.config.voice.dir != null or srv.config.voice.manage)
+            return cx.fail(.request, drama_prompt.error_prefix ++ " unknown voice {s}; see /v1/voices", .{name});
+        return cx.fail(.request, drama_prompt.error_prefix ++ " unknown voice {s}; only the default voice is supported", .{name});
+    };
 }
 
 /// The prompt ids of a valid UTF-8 input, refused when it cannot be spoken or is too long.
@@ -491,9 +507,9 @@ test "fields: unknown ones are refused even when null, modifiers when set" {
         var cx: Cx = .{ .a = a };
         const body = (try json.parse(a, case[0])).ok;
         if (case[1].len == 0) {
-            try checkFields(&cx, body);
+            try checkFields(&cx, body, false);
         } else {
-            try std.testing.expectError(error.Refused, checkFields(&cx, body));
+            try std.testing.expectError(error.Refused, checkFields(&cx, body, false));
             try std.testing.expectEqualStrings(case[1], cx.message);
         }
     }

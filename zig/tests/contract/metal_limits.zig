@@ -170,6 +170,7 @@ fn resolve(a: std.mem.Allocator, device: mtl.Device, d: limits.MetalLaunch, comp
         return .{ .decl = d, .function = fun, .here = text, .pre_m5 = text };
     }
     if (try @import("metal_dsv41_limits.zig").launchOf(a, device, d, fun, assemble)) |l| return l;
+    if (try @import("metal_glm_launch.zig").launchOf(a, device, d, fun, assemble)) |l| return l;
     if (std.mem.startsWith(u8, d.name, "flint ") or std.mem.startsWith(u8, d.name, "moe_route ")) {
         if (!assemble) return undefined;
         const t = try @import("metal_flint.zig").limitsText(a, device, d.name);
@@ -187,6 +188,11 @@ fn resolve(a: std.mem.Allocator, device: mtl.Device, d: limits.MetalLaunch, comp
     if (std.mem.startsWith(u8, d.name, "metal ling route ")) {
         if (!assemble) return undefined;
         const body = @import("ling_metal").route;
+        return .{ .decl = d, .function = fun, .here = body, .pre_m5 = body };
+    }
+    if (std.mem.startsWith(u8, d.name, "metal ling mla ")) {
+        if (!assemble) return undefined;
+        const body = @import("ling_metal").mla;
         return .{ .decl = d, .function = fun, .here = body, .pre_m5 = body };
     }
     if (std.mem.startsWith(u8, d.name, "nemotron paged ")) {
@@ -283,6 +289,10 @@ fn resolve(a: std.mem.Allocator, device: mtl.Device, d: limits.MetalLaunch, comp
     } else if (std.mem.startsWith(u8, d.name, "moss image ")) {
         if (!assemble) return undefined;
         text = sources.moss_image;
+        frags = true;
+    } else if (std.mem.startsWith(u8, d.name, "idol ")) {
+        if (!assemble) return undefined;
+        text = sources.idol;
         frags = true;
     } else if (std.mem.startsWith(u8, d.name, "core deltanet ")) {
         if (!assemble) return undefined;
