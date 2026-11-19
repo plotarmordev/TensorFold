@@ -490,6 +490,8 @@ ways, and what each of its tricks would save our warm 15.5 s picture. [`mmh3-ser
 runs `mmh3 server` on TOP's GB10 with the `cuda,server` feature: one cold picture, three warm repeats of the same
 prompt (its states kept, 0 s) and one 1024² request. The second server under the CUPTI preload (`cupti-trace.c`)
 traces every kernel launch for the warm segment's top-kernel table — nsys is absent from the job image.
+[`bench-trace-job.sh`](minimax-h3-cuda/bench-trace-job.sh) runs our own `bench-script.sh` under the same preload
+in the same kind of window, so both engines' kernel budgets sit in one table in the study.
 
 ### GPU qualification and the `64188519` window
 
