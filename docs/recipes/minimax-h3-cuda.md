@@ -365,6 +365,27 @@ is speed, not correctness: the resident query fragments' registers cost more occ
 recovered — most of the transformer's 0.2 s rise is attention, the rest run noise. Attention's bound is not its value
 load's latency.
 
+`acda1e04` (job `top-b76b0efc4246`, 19 November, exit 0, `fp8-attn-bench.sh`) put the dense attention on `mma.sync
+m16n8k32` in e4m3 — `h3_attention_fp8`, opt-in on `H3_ATTN=fp8`, staging the raw QKV rows and running `h3_heads`' q/k
+RMSNorm and rotary in its prologue so the `h3_heads` pass drops out of the step. A warm 2048²
+picture took **39.4 s** mean (transformer 33.3, attention **22.8 s** a picture against `h3_attention` + `h3_heads`' 2.8
+s), against the same job's flag-off 19.2 s, and the fp8 latent's cosine against the bf16 latent was **0.8695** with a
+15.6 dB picture — selftests passed and the decoder's same-latent bound held (85.643% of bytes identical, 99.897%
+within 1, at most 5 apart, PSNR 56.46 dB, relative 3.34e-3) because the selftest does not exercise the flag. The
+uniform corruption (per-chunk cosines 0.80–0.89, no masked or permuted region) was per-tile-absmax e4m3 being too
+coarse on Q·K — four significand bits spread over a whole tile.
+
+`fb5090ae` (job `top-ea3a4d434c59`, 19 November, exit 0, same script) moved q and k to int8 at each row's absmax —
+the mmh3 split, e4m3 kept only on the weighed-score × value product — and prefetched each key tile's stage during
+the previous tile's value product: the warm 2048² picture came to **30.3 s** (attention **14.1 s**) with the latent
+cosine **0.9882** and a 24.5 dB picture against the same job's flag-off 18.9 s. Both gates still fail: 0.988 is
+under the 0.99 cosine and 30.3 s over the 18.9 s. Reverted in full: what is left is not tuning — the serialized
+stage→quantize→mma prologue costs ~11 s a picture against `h3_attention`'s pipelined tile loop, so on the GB10 the
+scale granularity and the bf16↔fp8 conversion cost more than the narrower mma returns at this tile size, and the
+last 0.002 of cosine likely needs the weighed scores in int8 too rather than e4m3. A follow-up that pipelines the
+prologue and finishes the precision split starts from these measurements.
+
+
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:
 
 1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
@@ -376,7 +397,8 @@ The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, ea
 2. **Attention**: 1.80 s a picture in the transformer on main (`368cee6b`'s re-pipelining measured 1.91 s, reverted
    `787f3d3d`), 217 registers at 128 threads and two CTAs an SM (8 warps), and 1.89 s in the decoder, whose
    16-byte key loads changed nothing. Its bound is not the value load's latency — deeper prefetch and query-in-registers
-   both lost to register pressure — so mmh3's INT8/FP8 attention is the candidate that would also cut registers; the
+   both lost to register pressure — so mmh3's INT8/FP8 attention is the candidate that would also cut registers (the
+   `fb5090ae` fp8 round measured 14.1 s a picture and is reverted); the
    decoder's attention needs its stall found first, since neither its loads nor its occupancy explain it.
 3. **The rows outside the blocks**: on the device as of `bd734252`, 0.15 s a picture.
 4. **The decoder's products** are 2.26 s at 121 registers and two CTAs an SM. A 512-thread 4 x 8 tile measured 3.00 s
