@@ -4,7 +4,6 @@
 # contract's gate run if ncu is absent from the image.
 #   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/profile-int8-job.sh"
 set -eu
-cd /work/TensorFold
 export H3_BUILD=contract
 sh docs/recipes/minimax-h3-cuda/cuda-build.sh
 BIN=/work/contract/bin/tf-cuda-test
