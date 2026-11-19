@@ -231,11 +231,15 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     std.debug.print("{d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, case ready in {d:.1} s\n", .{ canvas.width, canvas.height, count, text, held, target, tiles, model.blocks.len, steps, h3.seconds() - started });
 
     const rows_path = try std.fmt.allocPrintSentinel(a, "{s}.rows.f32", .{prefix}, 0);
-    const video = try a.alloc(f32, noise.len);
 
-    // the steps run on their own non-blocking stream so each captures as one CUDA graph
+    // the steps run on their own non-blocking stream so each captures as one CUDA graph; --serve's
+    // next case shares this model, so its stream comes back when render returns
     var work = try @import("cuda").Stream.init(&model.driver, true);
-    defer work.deinit();
+    const kept = model.stream;
+    defer {
+        model.stream = kept;
+        work.deinit();
+    }
     model.stream = work;
 
     // every step's AdaLN lines staged once; each step's graph points `line` at its own slice
@@ -252,6 +256,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     device.tables = modulation.blocks.ptr;
     try h3.geometry.prepare(model, &device, checked);
     try model.warm(count);
+    try model.drain(); // the staging above is pageable host copies: the first launch must wait on them
     const transformer = h3.seconds();
 
     // H3_PROFILE keeps the eager path: its per-stage waits can't be captured
@@ -277,14 +282,11 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
                 try e.launchOn(work);
             } else try stepEager(model, &device, checked, &device_rows, s, pdd.deltas[s]);
         } else try stepEager(model, &device, checked, &device_rows, s, pdd.deltas[s]);
-        if (s + 1 == steps) {
-            // one bulk read of the target rows, then write them: the decode is triggered off the
-            // latent file the same way the free run always did
-            try device_rows.latent(video);
-            try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
-        } else try model.stream.synchronize();
+        try model.stream.synchronize();
         std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - mark });
     }
+    const video = try a.alloc(f32, noise.len);
+    try device_rows.latent(video);
     const spent = h3.seconds() - transformer;
     std.debug.print("transformer: {d:.2} s\n", .{spent});
     if (profiling) {
@@ -296,12 +298,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         std.debug.print("  outside the blocks: {d:.2} s\n", .{spent - blocks});
     }
 
-    // a case with no steps (never in the distilled schedule) streamed nothing: its rows stay zero
-    if (steps == 0) {
-        @memset(video, 0);
-        try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
-    }
-
+    try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
     const latent = try a.alloc(f32, video.len);
     try picture.unpatchify(video, target_grid, latent);
     const latent_path = try std.fmt.allocPrintSentinel(a, "{s}.latent.f32", .{prefix}, 0);

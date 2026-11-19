@@ -395,24 +395,23 @@ grows with tiles² instead of slots, and it sits in the mma pipeline's critical 
 heads pass's own 0.98 s is what a folded variant would have to beat, and inside attention the per-pair rewrite
 costs far more. The once-per-row alternative — norm and rotary in the qkvc product's epilogue instead of per
 tile pair — was not measured; it is the remaining shape for folding the heads pass into attention.
-`ec0aa8c84` (job `top-c0b33c78c637`, 19 November, exit 0 for its after phase, `bench-script.sh`) put each denoising
-step in one CUDA graph — rows in, every block's launches, the step head and the Euler update — replayed on a
-dedicated stream (`H3_PROFILE`, which waits after each stage, keeps the eager path), staged every step's AdaLN
-lines once and pointed each step's graph at its own slice. The `--tc` decoder became the default in the
-same window, `--exact` keeping the fp32-order kernels and their identity selftest. The decoder also
-grew a `.rows.f32` input that reads the video rows progressively — unpatchify, denormalise and upload
-each band, then launch a tile pass once the latent rows its tiles read have landed — so a rows stream
-can overlap the transformer's tail. The bench measured that overlap slower at 2048² (job
-`top-27eefb4ad8de`: banded download + per-band event waits added ~0.9 s to the last step and the
-progressive host decode cost 3.6 s vs 1.3 s for the bulk path, warm 15.7 s), so the script still feeds
-the decoder the finished `.latent.f32`; the `.rows.f32` mode stays as an opt-in input. The keep-if-faster
-gate was A/B'd the same day on the same GPU (the job's clone is too shallow for an in-checkout revert, so
-the baseline ran as its own commit, card 122's nine h3 files at the merge base with the decoder forced
-`--tc`): job `top-7cc7074c454e` measured the baseline's warm mean 15.5 s (transformer 13.0, steps ~2.16,
-decoder 1.3) and this commit's 15.2 s (transformer 12.8, ~2.15 a step from graph replay) — **0.3 s
-faster**, kept. Every selftest passed in both phases, the same-latent `reference` bound held at 56.31 dB
+`ba08e3115` (job `top-c0b33c78c637`, 19 November, exit 0, `bench-script.sh`) put each denoising step in one CUDA
+graph — rows in, every block's launches, the step head and the Euler update — replayed on a dedicated
+stream (`H3_PROFILE`, which waits after each stage, keeps the eager path), staged every step's AdaLN
+lines once and pointed each step's graph at its own slice; `--serve` restores the model's own stream when
+a picture returns. The `--tc` decoder became the default in the same window, `--exact` keeping the
+fp32-order kernels and their identity selftest. A decoder-side rows overlap was also built and measured —
+the last step streaming its video rows out band by band while a progressive `.rows.f32` reader
+unpatchified, denormalised and uploaded each band and launched a tile pass once the rows its tiles read
+had landed — and job `top-27eefb4ad8de` measured it slower at 2048²: the banded download + per-band event
+waits added ~0.9 s to the last step and the progressive host decode cost 3.6 s vs 1.3 s for the bulk
+path (warm 15.7 s), so it was cut and the decoder keeps its `.latent.f32` input. The keep-if-faster gate
+was A/B'd the same day on the same GPU (the job's clone is too shallow for an in-checkout revert, so the
+baseline ran as its own commit, card 122's h3 files at the merge base with the decoder forced `--tc`):
+job `top-7cc7074c454e` measured the baseline's warm mean 15.5 s (transformer 13.0, steps ~2.16, decoder
+1.3) and this commit's 15.2 s (transformer 12.8, ~2.15 a step from graph replay) — **0.3 s faster**,
+kept. Every selftest passed in both phases, the same-latent `reference` bound held at 56.31 dB
 (rel 3.33e-3) on both, and the pictures were byte-identical.
-
 
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:
 
