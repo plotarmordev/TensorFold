@@ -173,47 +173,6 @@ pub fn headSpan(grid: []const f32, schedule: []const f32, s: usize) !HeadSpan {
     return .{ .first = first, .last = last, .weights = weights };
 }
 
-/// The draft's clean-latent rows enlarged to `g`'s rows, mmh3's bilinear `resize_video` on the
-/// channel-major latent and back: taps `(i + 0.5) * source / size - 0.5`, clamped. `rows` are the
-/// draft's (target_d, row_width) rows on `g_d`, `g_d` and `g` the same aspect at half and full size.
-pub fn enlargeDraft(a: std.mem.Allocator, rows: []const f32, g_d: Grid, g: Grid) ![]f32 {
-    const n_d = try gridRows(g_d);
-    const n = try gridRows(g);
-    if (g_d.rows * 2 != g.rows or g_d.columns * 2 != g.columns) return error.H3BadPictureGrid;
-    if (rows.len != n_d * row_width) return error.H3BadLatentLength;
-    const small = try a.alloc(f32, channels * g_d.rows * g_d.columns);
-    try unpatchify(rows, g_d, small);
-    const big = try a.alloc(f32, channels * g.rows * g.columns);
-    // mmh3's taps: (i + 0.5) * source / size - 0.5, clamped to [0, source - 1]
-    const position = struct {
-        fn at(index: usize, size: usize, source_size: usize) struct { low: usize, high: usize, frac: f32 } {
-            const scale = @as(f32, @floatFromInt(source_size)) / @as(f32, @floatFromInt(size));
-            const pos = @max((@as(f32, @floatFromInt(index)) + 0.5) * scale - 0.5, 0);
-            const low = @min(@as(usize, @intFromFloat(pos)), source_size - 1);
-            const high = @min(low + 1, source_size - 1);
-            return .{ .low = low, .high = high, .frac = pos - @as(f32, @floatFromInt(low)) };
-        }
-    }.at;
-    const plane_d = g_d.rows * g_d.columns;
-    const plane = g.rows * g.columns;
-    for (0..channels) |c| {
-        const src = small[c * plane_d ..][0..plane_d];
-        const dst = big[c * plane ..][0..plane];
-        for (0..g.rows) |r| {
-            const row = position(r, g.rows, g_d.rows);
-            for (0..g.columns) |col| {
-                const across = position(col, g.columns, g_d.columns);
-                const upper = src[row.low * g_d.columns + across.low] * (1 - across.frac) + src[row.low * g_d.columns + across.high] * across.frac;
-                const lower = src[row.high * g_d.columns + across.low] * (1 - across.frac) + src[row.high * g_d.columns + across.high] * across.frac;
-                dst[r * g.columns + col] = upper * (1 - row.frac) + lower * row.frac;
-            }
-        }
-    }
-    const out = try a.alloc(f32, n * row_width);
-    try patchify(big, g, out);
-    return out;
-}
-
 /// A picture block's latent grid, in cells (each side even: two cells a row's side).
 pub const Grid = struct { rows: usize, columns: usize };
 

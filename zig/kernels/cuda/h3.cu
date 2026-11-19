@@ -344,9 +344,10 @@ __global__ void __launch_bounds__(256) h3_rows_in(const float* R, const float* W
 
 // The stream's row FIRST + r through the final norm, modulated by its line of the (times, 2 C) table TAB, then the
 // step's head into V (rows, width): rows_reference.finalNorm and rowsOut in their own sum orders (the squares one
-// at a time, the head's 32 lane sums then added in lane order). ACC null or SCALE 1 is the plain head; else
-// V = ACC + SCALE · (row · W + B), the off-grid steps' blend of the distilled heads their span covers (mmh3's
-// step_heads: the run chains one launch a spanned head). Grid [rows], 256 threads, C floats of shared.
+// at a time, the head's 32 lane sums then added in lane order). With ACC null V = row · W + B, the on-grid
+// step's plain head; else V = ACC + SCALE · (row · W + B), the off-grid steps' blend of the distilled
+// heads their span covers (mmh3's step_heads: the run chains one launch a spanned head). Grid [rows],
+// 256 threads, C floats of shared.
 __global__ void __launch_bounds__(256) h3_rows_out(const __nv_bfloat16* X, const __nv_bfloat16* NW, const __nv_bfloat16* TAB,
                                                    const int* LINE, const float* W, const float* B, const float* ACC,
                                                    float* V, int C, int width, int first, float eps, float scale) {

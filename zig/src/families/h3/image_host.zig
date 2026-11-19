@@ -3,4 +3,5 @@
 pub const picture = @import("picture.zig");
 pub const schedule = @import("schedule.zig");
 pub const geometry = @import("geometry.zig");
+pub const cascade = @import("cascade.zig");
 pub const rows = @import("rows_reference.zig");

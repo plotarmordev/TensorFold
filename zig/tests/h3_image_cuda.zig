@@ -5,6 +5,7 @@ const h3 = @import("h3cuda");
 const h3image = h3.image_host;
 const picture = h3image.picture;
 const schedule = h3image.schedule;
+const cascade = h3image.cascade;
 
 const usage =
     \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16] [--draft-steps N] [--renoise-sigma X]
@@ -183,8 +184,9 @@ const Case = struct {
 
 /// Steps `first .. first + run` of `sched` over one stream on the device: the grid's rows in through
 /// the blocks, each step's head and its Euler update, each step captured as one CUDA graph. The
-/// video rows start from `video` (target, row_width) f32: the case's noise for a fresh picture, the
-/// renoised draft for the full-size steps after drafts. Returns the stream's video rows.
+/// video rows start from `video` (target, row_width) f32: the case's pooled noise for a fresh picture,
+/// the lifted draft for the full-size steps after drafts. `lift_last` makes the last step compute only
+/// its velocity, downloaded into `velocity_out` for cascade.lift. Returns the stream's video rows.
 fn streamSteps(
     a: std.mem.Allocator,
     gpa: std.mem.Allocator,
@@ -196,7 +198,8 @@ fn streamSteps(
     spans: []const picture.HeadSpan,
     first: usize,
     run: usize,
-    predict_clean_last: bool,
+    lift_last: bool,
+    velocity_out: ?[]f32,
     graphs: bool,
 ) ![]f32 {
     const model = folder.model;
@@ -302,12 +305,12 @@ fn streamSteps(
     for (first..first + run) |s| {
         const mark = h3.seconds();
         device.line = adaln_dev.ptr + s * count * 4;
-        const clean = predict_clean_last and s == first + run - 1;
+        const last = lift_last and s == first + run - 1;
         // the exec outlives its in-flight launch: graph execs are destroyed only after the stream syncs
         var launched: ?@import("cuda").graph.Exec = null;
         defer if (launched) |*e| e.deinit();
         if (graphs) {
-            const exec = stepGraph(model, &device, checked, &device_rows, s, sched.deltas[s], sched.sigmas[s], spans[s], clean) catch |err| blk: {
+            const exec = stepGraph(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last) catch |err| blk: {
                 std.debug.print("step {d} runs without its graph: {s}\n", .{ s + 1, @errorName(err) });
                 break :blk null;
             };
@@ -315,13 +318,14 @@ fn streamSteps(
                 var exec_mut = e;
                 try exec_mut.launchOn(model.stream);
                 launched = exec_mut;
-            } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], sched.sigmas[s], spans[s], clean);
-        } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], sched.sigmas[s], spans[s], clean);
+            } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last);
+        } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last);
         try model.stream.synchronize();
-        std.debug.print("step {d}/{d}{s}: {d:.2} s\n", .{ s + 1, steps, if (clean) " (draft's clean)" else "", h3.seconds() - mark });
+        std.debug.print("step {d}/{d}{s}: {d:.2} s\n", .{ s + 1, steps, if (last) " (draft's clean)" else "", h3.seconds() - mark });
     }
     const rows = try a.alloc(f32, video.len);
     try device_rows.latent(rows);
+    if (velocity_out) |v| try device_rows.lastVelocity(v);
     return rows;
 }
 
@@ -346,8 +350,9 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     const steps = sched.steps();
     const spans = try a.alloc(picture.HeadSpan, steps);
     for (spans, 0..) |*sp, s| sp.* = try picture.headSpan(pdd.sigmas, sched.sigmas, s);
-    if (draft_steps > 0 and (case.target_grid.rows % 4 != 0 or case.target_grid.columns % 4 != 0))
-        return error.H3BadPictureGrid; // the half canvas still needs an even grid, mmh3's 64-pixel rule
+    // cascade.half enforces the half-canvas grid: both sides multiples of 64 pixels (mmh3's rule)
+    const full_grid = cascade.Grid{ .rows = case.target_grid.rows, .columns = case.target_grid.columns };
+    const draft_grid = if (draft_steps > 0) try cascade.half(full_grid) else undefined;
     if (draft_steps > 0 and case.held > 0) return error.H3DraftWithReferences;
 
     // the steps run on their own non-blocking stream so each captures as one CUDA graph; --serve's
@@ -369,22 +374,35 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
 
     var video: []f32 = undefined;
     if (draft_steps == 0) {
-        video = try streamSteps(a, init.gpa, folder, case, case.target_grid, case.noise, sched, spans, 0, steps, false, graphs);
+        video = try streamSteps(a, init.gpa, folder, case, case.target_grid, case.noise, sched, spans, 0, steps, false, null, graphs);
     } else {
-        const draft_grid = picture.Grid{ .rows = case.target_grid.rows / 2, .columns = case.target_grid.columns / 2 };
-        const draft_target = try picture.gridRows(draft_grid);
-        // the draft's noise is the case stream's own prefix: deterministic, and iid across the
-        // half-size canvas as mmh3's fresh half-size samples are
-        const draft = try streamSteps(a, init.gpa, folder, case, draft_grid, case.noise[0 .. draft_target * width], sched, spans, 0, draft_steps, true, graphs);
-        std.debug.print("{d}x{d} draft done, enlarging\n", .{ case.canvas.width / 2, case.canvas.height / 2 });
-        const enlarged = try picture.enlargeDraft(a, draft, draft_grid, case.target_grid);
-        // mmh3's renoise: fresh noise of the seed at sigma_next; the case's own noise stands in,
-        // which keeps the picture a deterministic function of the case
-        const sigma_next = sched.sigmas[draft_steps];
+        // cascade.pool draws the draft's half-grid noise from the seed's full draw, so both canvases
+        // share one seed's picture; case.noise's mmap'd rows copy to an aligned buffer, then
+        // unpatchify to the [channels, rows, columns] latent pool and lift work on
+        const noise_aligned = try a.alloc(f32, case.noise.len);
+        @memcpy(std.mem.sliceAsBytes(noise_aligned), std.mem.sliceAsBytes(case.noise));
+        const noise_latent = try a.alloc(f32, picture.channels * full_grid.rows * full_grid.columns);
+        try picture.unpatchify(noise_aligned, case.target_grid, noise_latent);
+        const draft_target = try picture.gridRows(.{ .rows = draft_grid.rows, .columns = draft_grid.columns });
+        const draft_latent = try a.alloc(f32, picture.channels * draft_grid.rows * draft_grid.columns);
+        try cascade.pool(noise_latent, full_grid, draft_latent);
+        const draft_noise = try a.alloc(f32, draft_target * width);
+        try picture.patchify(draft_latent, .{ .rows = draft_grid.rows, .columns = draft_grid.columns }, draft_noise);
+
+        // the draft steps leave their video at sigma[draft_steps-1] and their last velocity out for
+        // cascade.lift to predict the clean latent and renoise it to sigma[draft_steps] at full size
+        const draft_vel = try a.alloc(f32, draft_target * width);
+        const draft = try streamSteps(a, init.gpa, folder, case, .{ .rows = draft_grid.rows, .columns = draft_grid.columns }, draft_noise, sched, spans, 0, draft_steps, true, draft_vel, graphs);
+        std.debug.print("{d}x{d} draft done, lifting\n", .{ case.canvas.width / 2, case.canvas.height / 2 });
+        const x_latent = try a.alloc(f32, draft_latent.len);
+        const v_latent = try a.alloc(f32, draft_latent.len);
+        try picture.unpatchify(draft, .{ .rows = draft_grid.rows, .columns = draft_grid.columns }, x_latent);
+        try picture.unpatchify(draft_vel, .{ .rows = draft_grid.rows, .columns = draft_grid.columns }, v_latent);
+        const lifted = try a.alloc(f32, noise_latent.len);
+        try cascade.lift(x_latent, v_latent, sched.sigmas[draft_steps - 1], sched.sigmas[draft_steps], noise_latent, full_grid, lifted);
         video = try a.alloc(f32, case.target * width);
-        for (video, enlarged, case.noise) |*o, e, n| o.* = (1 - sigma_next) * e + sigma_next * n;
-        const full_video = try streamSteps(a, init.gpa, folder, case, case.target_grid, video, sched, spans, draft_steps, steps - draft_steps, false, graphs);
-        video = full_video;
+        try picture.patchify(lifted, case.target_grid, video);
+        video = try streamSteps(a, init.gpa, folder, case, case.target_grid, video, sched, spans, draft_steps, steps - draft_steps, false, null, graphs);
     }
     const spent = h3.seconds() - transformer;
     std.debug.print("transformer: {d:.2} s\n", .{spent});
@@ -408,12 +426,12 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
 
 /// The whole step captured once: rows in, the blocks' launches, the step's head and the Euler update.
 /// `device.line` already points at step `s`'s AdaLN lines; the graph replays those pointers.
-/// `clean` is the draft phase's last step: the head's velocity and the clean prediction
-/// (x − sigma · v), not an Euler advance.
-fn stepGraph(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32, sigma: f32, span: picture.HeadSpan, clean: bool) !?@import("cuda").graph.Exec {
+/// `last_velocity` is the draft phase's last step: the head's velocity alone, no Euler advance, so the
+/// host can lift it with cascade.lift.
+fn stepGraph(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32, span: picture.HeadSpan, last_velocity: bool) !?@import("cuda").graph.Exec {
     const graph_api = @import("cuda").graph;
     try graph_api.beginCapture(model.stream, .thread_local);
-    stepBody(model, device, checked, rows, s, delta, sigma, span, clean) catch |err| {
+    stepBody(model, device, checked, rows, s, delta, span, last_velocity) catch |err| {
         if (graph_api.endCapture(model.stream)) |g| {
             var dropped = g;
             dropped.deinit();
@@ -428,11 +446,12 @@ fn stepGraph(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model
     return exec;
 }
 
-fn stepBody(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32, sigma: f32, span: picture.HeadSpan, clean: bool) !void {
+fn stepBody(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32, span: picture.HeadSpan, last_velocity: bool) !void {
     try rows.in(device.x);
     try model.step(device, checked);
-    if (clean) {
+    if (last_velocity) {
+        // the draft's last step computes the velocity cascade.lift turns into the clean latent:
+        // the video stays at this step's sigma and the host lifts it, so there is no Euler update
         try rows.velocityOf(device.x, s, span.first, span.last, &span.weights);
-        try rows.clean(sigma);
     } else try rows.out(device.x, s, delta, span.first, span.last, &span.weights);
 }

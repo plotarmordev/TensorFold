@@ -103,47 +103,6 @@ test "picture head span: on-grid steps keep their own head, off-grid blends the 
     for (2..6, 0..) |i, w| try testing.expectApproxEqAbs(@as(f32, @floatCast((@as(f64, grid[i]) - @as(f64, grid[i + 1])) / total)), span.weights[w], 1e-6);
 }
 
-test "picture enlarge draft: mmh3's bilinear taps on the channel-major latent" {
-    var a = arena();
-    defer a.deinit();
-    const x = a.allocator();
-    // one channel of a 4x4-cell draft (2x2 patch rows): channel 0's plane is values 0..15 row-major,
-    // each patch row holding that channel's 2x2 cells; the other 23 channels stay zero
-    const g_d = p.Grid{ .rows = 4, .columns = 4 };
-    const g_full = p.Grid{ .rows = 8, .columns = 8 };
-    var rows: [4 * p.row_width]f32 = @splat(0);
-    rows[0] = 0;
-    rows[1] = 1;
-    rows[2] = 4;
-    rows[3] = 5; // patch (0,0): cells (0,0),(0,1),(1,0),(1,1)
-    rows[p.row_width + 0] = 2;
-    rows[p.row_width + 1] = 3;
-    rows[p.row_width + 2] = 6;
-    rows[p.row_width + 3] = 7; // patch (0,1): cells (0,2),(0,3),(1,2),(1,3)
-    rows[2 * p.row_width + 0] = 8;
-    rows[2 * p.row_width + 1] = 9;
-    rows[2 * p.row_width + 2] = 12;
-    rows[2 * p.row_width + 3] = 13; // patch (1,0): cells (2,0),(2,1),(3,0),(3,1)
-    rows[3 * p.row_width + 0] = 10;
-    rows[3 * p.row_width + 1] = 11;
-    rows[3 * p.row_width + 2] = 14;
-    rows[3 * p.row_width + 3] = 15; // patch (1,1): cells (2,2),(2,3),(3,2),(3,3)
-    const big = try p.enlargeDraft(x, &rows, g_d, g_full);
-    try testing.expectEqual(@as(usize, 16 * p.row_width), big.len);
-    // mmh3's taps put source position (i + 0.5) * 4/8 - 0.5 = i/2 - 0.25 under output cell i:
-    // output cell (0,0) clamps to source cell (0,0)
-    try testing.expectApproxEqAbs(@as(f32, 0), big[0], 1e-6);
-    // output cell (1,1) → patch (0,0) slot 3: taps rows 0,1 and columns 0,1 at .25 each:
-    // upper 0*.75+1*.25 = .25, lower 4*.75+5*.25 = 4.25 → .25*.75 + 4.25*.25 = 1.25
-    try testing.expectApproxEqAbs(@as(f32, 1.25), big[3], 1e-6);
-    // output cell (3,3) → patch (1,1) slot 3: taps rows 1,2 and columns 1,2 at .25:
-    // upper 5*.75+6*.25 = 5.25, lower 9*.75+10*.25 = 9.25 → 5.25*.75 + 9.25*.25 = 6.25
-    try testing.expectApproxEqAbs(@as(f32, 6.25), big[5 * p.row_width + 3], 1e-6);
-    // the far corner (7,7) → patch (3,3) slot 3: clamps to source cell (3,3) = 15
-    try testing.expectApproxEqAbs(@as(f32, 15), big[15 * p.row_width + 3], 1e-6);
-    try testing.expectError(error.H3BadPictureGrid, p.enlargeDraft(x, &rows, g_d, p.Grid{ .rows = 12, .columns = 8 }));
-}
-
 const pdd_json =
     \\{"num_inference_steps": 4, "sigmas": [1.0, 0.9675236940383911, 0.3, 0.125, 0.0]}
 ;
