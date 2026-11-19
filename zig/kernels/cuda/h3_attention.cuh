@@ -23,11 +23,14 @@ __device__ __forceinline__ uint32_t pack2(float lo, float hi) {
 }
 
 constexpr int head_dim = 128, tile_rows = 64;
-// Bytes of one head's tile in shared memory, and the attention's dynamic shared bytes: q, k and v (two blocks an SM).
+// Bytes of one head's tile in shared memory; the attention stages a key tile and two value tiles in the same
+// 48 KB the q, k and v tiles used, the queries held in registers instead of a shared tile.
 constexpr int tile_bytes = tile_rows * head_dim * 2;
 constexpr int attention_shared = 3 * tile_bytes;
 
 // softmax(q k^T scale) v over a query tile's key tiles in bf16, fp32 scores and sums; grid [query tiles, H] of 128.
+// The value tile is double buffered: the next tile's v is fetched while this tile's scores and softmax run, so the
+// product no longer waits on a just-in-time load. The queries sit in registers, their smem tile now the second v.
 __device__ __forceinline__ void attention_body(
         const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K, const __nv_bfloat16* __restrict__ V,
         const int* __restrict__ LIST, const int* __restrict__ SIZES, const int* __restrict__ ROWOF,
@@ -35,9 +38,8 @@ __device__ __forceinline__ void attention_body(
         float scale) {
     constexpr int D = head_dim, T = tile_rows, THREADS = 128;
     extern __shared__ __align__(128) unsigned char buf[];
-    unsigned char* const qsm = buf;
-    unsigned char* const ksm = buf + tile_bytes;
-    unsigned char* const vsm = buf + 2 * tile_bytes;
+    unsigned char* const ksm = buf;
+    unsigned char* const vsm[2] = {buf + tile_bytes, buf + 2 * tile_bytes};
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const int head = blockIdx.y, qt = first_query + blockIdx.x;
     const size_t hs = static_cast<size_t>(head) * slots;
@@ -50,46 +52,67 @@ __device__ __forceinline__ void attention_body(
         for (int c = tid; c < T * 16; c += THREADS) cp16(to + at(c >> 4, c & 15), src + c * 8);
     };
 
-    // a key tile's k is fetched while the tile before it is weighed against its values, and its v while its scores form
-    load(qsm, Q, qt);
+    // The query tile's fragments, from global once into registers. A lane's two rows and 16-byte columns are what
+    // ldmatrix of the tile would hand it, so the score product's operands are unchanged.
+    const int r0 = warp * 16 + (lane >> 2), qd = lane & 3;
+    const int qr0 = qt * T + r0, qr1 = qr0 + 8;
+    const bool have0 = ROWOF[qr0] >= 0, have1 = ROWOF[qr1] >= 0;
+    const __nv_bfloat16* q0 = Q + (hs + static_cast<size_t>(have0 ? qr0 : qr1)) * D;
+    const __nv_bfloat16* q1 = Q + (hs + static_cast<size_t>(have1 ? qr1 : qr0)) * D;
+    uint32_t qa[8][4];
+#pragma unroll
+    for (int ks = 0; ks < 8; ++ks) {
+        const uint32_t* p0 = reinterpret_cast<const uint32_t*>(q0 + ks * 16);
+        const uint32_t* p1 = reinterpret_cast<const uint32_t*>(q1 + ks * 16);
+        qa[ks][0] = have0 ? p0[qd] : 0u;
+        qa[ks][1] = have1 ? p1[qd] : 0u;
+        qa[ks][2] = have0 ? p0[qd + 4] : 0u;
+        qa[ks][3] = have1 ? p1[qd + 4] : 0u;
+    }
+
+    // a key tile's k is fetched while the tile before it is weighed against its values, and its v a tile ahead
     load(ksm, K, list[0]);
     commit();
+    load(vsm[0], V, list[0]);
+    commit();
+    if (keys > 1) {
+        load(vsm[1], V, list[1]);
+        commit();
+    }
 
-    const int row_a = (lane & 7) + ((lane >> 3) & 1) * 8, chunk_a = lane >> 4;
     const int row_b = (lane & 7) + ((lane >> 4) & 1) * 8, chunk_b = (lane >> 3) & 1;
-    const int r0 = warp * 16 + (lane >> 2), c0 = (lane & 3) * 2;
+    const int row_v = (lane & 7) + ((lane >> 3) & 1) * 8, chunk_v = lane >> 4;
+    const int c0 = (lane & 3) * 2;
     const float sl = scale * 1.4426950408889634f;
     float out[16][4];
 #pragma unroll
     for (int j = 0; j < 16; ++j) out[j][0] = out[j][1] = out[j][2] = out[j][3] = 0.0f;
     float top0 = -1e30f, top1 = -1e30f, mass0 = 0.0f, mass1 = 0.0f;
-    uint32_t qa[8][4];
 
     for (int sel = 0; sel < keys; ++sel) {
-        const int tile = list[sel];
         wait<0>();
         __syncthreads();
-        load(vsm, V, tile);
-        commit();
-        if (sel == 0) {
-#pragma unroll
-            for (int ks = 0; ks < 8; ++ks) ldmatrix4(qa[ks], qsm + at(warp * 16 + row_a, ks * 2 + chunk_a));
-        }
-        const unsigned char* pk = ksm;
-        const unsigned char* pv = vsm;
-        const int size = SIZES[tile];
+        unsigned char* const pk = ksm;
+        unsigned char* const pv = vsm[sel & 1];
+        const int size = SIZES[list[sel]];
 
+        // the score product, each b fragment fetched while the one before it is still in the tensor pipe
         float s[8][4];
 #pragma unroll
         for (int j = 0; j < 8; ++j) s[j][0] = s[j][1] = s[j][2] = s[j][3] = 0.0f;
+        {
+            uint32_t b[4], bn[4];
+            ldmatrix4(b, pk + at(row_b, chunk_b));
 #pragma unroll
-        for (int ks = 0; ks < 8; ++ks) {
-#pragma unroll
-            for (int j = 0; j < 4; ++j) {
-                uint32_t b[4];
-                ldmatrix4(b, pk + at(j * 16 + row_b, ks * 2 + chunk_b));
+            for (int i = 0; i < 32; ++i) {
+                const int ks = i / 4, j = i % 4;
+                if (i + 1 < 32) {
+                    const int nks = (i + 1) / 4, nj = (i + 1) % 4;
+                    ldmatrix4(bn, pk + at(nj * 16 + row_b, nks * 2 + chunk_b));
+                }
                 mma_bf16(s[2 * j], qa[ks], b[0], b[1]);
                 mma_bf16(s[2 * j + 1], qa[ks], b[2], b[3]);
+                b[0] = bn[0]; b[1] = bn[1]; b[2] = bn[2]; b[3] = bn[3];
             }
         }
         __syncthreads();
@@ -140,18 +163,26 @@ __device__ __forceinline__ void attention_body(
             out[j][2] *= f1;
             out[j][3] *= f1;
         }
-        wait<1>();
-        __syncthreads();
+        // the value tile landed two tiles ago, so the product reads it with no wait past the top of the tile; each v
+        // fragment is fetched while the one before it is still in the tensor pipe, then the slot takes the next v
+        {
+            uint32_t b[4], bn[4];
+            ldmatrix4t(b, pv + at(row_v, chunk_v));
 #pragma unroll
-        for (int kk = 0; kk < 4; ++kk) {
-#pragma unroll
-            for (int jd = 0; jd < 8; ++jd) {
-                uint32_t b[4];
-                ldmatrix4t(b, pv + at(kk * 16 + row_a, jd * 2 + chunk_a));
+            for (int i = 0; i < 32; ++i) {
+                const int kk = i / 8, jd = i % 8;
+                if (i + 1 < 32) {
+                    const int nkk = (i + 1) / 8, njd = (i + 1) % 8;
+                    ldmatrix4t(bn, pv + at(nkk * 16 + row_v, njd * 2 + chunk_v));
+                }
                 mma_bf16(out[2 * jd], pa[kk], b[0], b[1]);
                 mma_bf16(out[2 * jd + 1], pa[kk], b[2], b[3]);
+                b[0] = bn[0]; b[1] = bn[1]; b[2] = bn[2]; b[3] = bn[3];
             }
         }
+        __syncthreads();
+        if (sel + 2 < keys) load(pv, V, list[sel + 2]);
+        commit();
     }
     const int to0 = ROWOF[qt * T + r0], to1 = ROWOF[qt * T + r0 + 8];
     const float i0 = 1.0f / mass0, i1 = 1.0f / mass1;
