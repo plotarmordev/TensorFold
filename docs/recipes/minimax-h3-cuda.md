@@ -323,13 +323,16 @@ The ordered fp32 kernels stay the default; `bench-script.sh` passes `H3_DECODER=
 resident decoder and the `reference` compare.
 
 `2243f9e8` (job `top-2567f9589044`, 19 November, exit 0, `H3_DECODER=tc`) ran the tensor-core decoder beside
-the default `52350e5b` window (job `top-b79ca42af474`, exit 0): a warm 2048² picture took **15.6 s** mean
-(15.6, 15.6, 15.6: prompt 1.1, transformer 13.1, decoder 1.4) against the default's 18.9 s (decoder 4.9),
-cold 153.1 s. The same-latent `reference` passed at 85.210% of bytes identical, 99.874% within 1, at most 6
-apart, PSNR 56.30 dB (the default's is 56.62) and relative error 3.33e-3, and every picture was 56.32 dB /
-0.149 mean diff from the default's, so the episode-1 gates hold. The decoder selftest's staged blocks land
-~81–84% identical inside their ULP and relative bounds — cuBLASLt's fp32 accumulation order, not an error —
-so `selftest --tc` drops only the identity bar (`selftest-tc.sh` gates that alone).
+the default `52350e5b` window (job `top-b79ca42af474`, exit 0), and `9914f752`'s window (job
+`top-764629281bea`, `selftest --tc` PASS) repeated it on the reviewed head: a warm
+2048² picture took **15.3 s** mean (15.3, 15.3, 15.3: prompt 1.1, transformer 12.8, decoder 1.3) against the
+default's 18.9 s (decoder 4.9), cold 158.4 s. The same-latent `reference` passed at 85.213% of bytes
+identical, 99.875% within 1, at most 7 apart, PSNR 56.31 dB (the default's is 56.62) and relative error
+3.33e-3, and `tools/zig/h3_image_compare.py` on the fetched `2048-1.png` and latent against episode 1's Mac
+picture measured **28.69 dB** and **4.01** apart on average, cosine 0.9952 — the same figures as the
+default's. The decoder selftest's staged blocks land ~81–84% identical inside their ULP and relative bounds
+— cuBLASLt's fp32 accumulation order, not an error — so `selftest --tc` drops only the identity bar
+(`selftest-tc.sh` gates that alone).
 
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
