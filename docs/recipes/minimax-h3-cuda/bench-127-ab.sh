@@ -17,9 +17,6 @@ out=/work/out/h3-cache-ab
 commit=$(git -c safe.directory='*' rev-parse HEAD)
 bin=/work/out/tensorfold-cuda-$commit
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-# five prompts the server has not seen: the pilot's prompt with a detail appended, one file each;
-# three of them run per phase (the three unseen runs the card asks for)
-for n in 1 2 3; do { cat "$pilot/prompt.txt"; printf ' — variant %s of the same scene\n' "$n"; } >"$out/prompt-$n.txt"; done
 # the toolchain once, as cuda-build.sh stages it (the job has neither zig nor gcc in PATH)
 staged=/assets/drama3-pilot/cuda-build-toolchain
 zig=zig-aarch64-linux-0.17.0
@@ -36,8 +33,9 @@ export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACH
     NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
 
 mkdir -p "$out" "$bin"
-# five prompts the server has not seen: the pilot's prompt with a detail appended, one file each
-for n in 1 2 3 4 5; do { cat "$pilot/prompt.txt"; printf ' — variant %s of the same scene\n' "$n"; } >"$out/prompt-$n.txt"; done
+# three prompts the server has not seen, same files in both phases: the pilot's prompt with a
+# detail appended, one file each (the three unseen runs the card asks for)
+for n in 1 2 3; do { cat "$pilot/prompt.txt"; printf ' — variant %s of the same scene\n' "$n"; } >"$out/prompt-$n.txt"; done
 
 # phase NAME: build the three picture tools into $bin, selftest them, run 8 pictures through the
 # resident servers, write per-run times to $dir/times
