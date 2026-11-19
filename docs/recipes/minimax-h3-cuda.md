@@ -353,7 +353,19 @@ rotary partners, and `h3_swiglu_int8`'s sums and scales four at a time; the late
 rose 0.98 → 2.01 s and mlp in held at 3.39 s (transformer 13.97 s), so the stage's 2-byte loads were not its bound
 and the shared rows and two barriers a head cost more. Reverted.
 
-The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
+`368cee6b` (job `top-309ccf152319`, 19 November, exit 0, `bench-script.sh`) re-pipelined `h3_attention` — the query
+tile moved to registers, the freed shared memory double-buffered the value tile a tile ahead, and each mma's b fragment
+was fetched ahead of its use — keeping the launch and the softmax's order, so the output was bit-identical. Measured
+and reverted (`787f3d3d`): a warm 2048² picture **rose to 19.0 s** mean (19.0, 19.0, 19.0: prompt 1.1, transformer 13.0,
+decoder 4.9), cold 161.0 s, a step 2.15 s, attention **1.91 s** a picture — against `c30403d9`'s 18.9 s (18.9, 18.9,
+18.9: transformer 12.8), cold 157.8 s, attention **1.80 s**. The decoder's same-latent bound passed (86.117% of bytes
+identical, 99.916% within 1, at most 5 apart, PSNR 56.62 dB, relative error 3.16e-3 under 3e-2) and every selftest
+passed; the Mac-picture gates (28.2 dB, 4.1, 0.99) are `h3_image_compare.py`'s own run, not this bench's. The regression
+is speed, not correctness: the resident query fragments' registers cost more occupancy than the deeper prefetch
+recovered — most of the transformer's 0.2 s rise is attention, the rest run noise. Attention's bound is not its value
+load's latency.
+
+The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:
 
 1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
    int8, a third of the GB10's dense rate, and their int32 sums make a round trip through `h3_dequantize`. A product
@@ -361,10 +373,11 @@ The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
    carry the picture without the bf16 fallbacks. The two kernels' records are in the registry as of `cadab6b2`, and
    `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4 (`contract_h3_int8.zig`);
    the limits audit (gate 5) is `limits-job.sh`'s own window.
-2. **Attention**: 1.74 s a picture in the transformer, 217 registers at 128 threads and two CTAs an SM (8 warps), and
-   1.89 s in the decoder, whose 16-byte key loads changed nothing. mmh3's INT8/FP8 attention is the candidate that
-   would also cut registers; the decoder's attention needs its stall found first, since neither its loads nor its
-   occupancy explain it.
+2. **Attention**: 1.80 s a picture in the transformer on main (`368cee6b`'s re-pipelining measured 1.91 s, reverted
+   `787f3d3d`), 217 registers at 128 threads and two CTAs an SM (8 warps), and 1.89 s in the decoder, whose
+   16-byte key loads changed nothing. Its bound is not the value load's latency — deeper prefetch and query-in-registers
+   both lost to register pressure — so mmh3's INT8/FP8 attention is the candidate that would also cut registers; the
+   decoder's attention needs its stall found first, since neither its loads nor its occupancy explain it.
 3. **The rows outside the blocks**: on the device as of `bd734252`, 0.15 s a picture.
 4. **The decoder's products** are 2.26 s at 121 registers and two CTAs an SM. A 512-thread 4 x 8 tile measured 3.00 s
    (`cb217aa2`, reverted): the smaller per-thread tile reads 12 shared floats for 32 products where 8 x 8 reads 16 for
