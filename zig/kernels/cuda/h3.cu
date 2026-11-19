@@ -59,19 +59,11 @@ __global__ void __launch_bounds__(256) h3_gate_add(__nv_bfloat16* X, const __nv_
     for (int c = threadIdx.x; c < C; c += blockDim.x) x[c] = __float2bfloat16(f(x[c]) + f(y[c]) * bf(g[c]));
 }
 
-// A thread's 32 values of a row from four 16-byte loads: 2-byte loads from four rows a warp touch 32 sectors each.
-__device__ __forceinline__ void load32(const __nv_bfloat16* p, __nv_bfloat16 (&out)[32]) {
-#pragma unroll
-    for (int i = 0; i < 4; ++i) reinterpret_cast<uint4*>(out)[i] = reinterpret_cast<const uint4*>(p)[i];
-}
-
 // q, k, v to bf16 in tile order: head RMSNorm, then split-half rotary rounded as the reference's bf16 tables round it.
-// Each head's q and k rows are staged in shared memory, where a value's rotary partner is read from.
 __global__ void __launch_bounds__(256) h3_heads(
         const __nv_bfloat16* QKV, const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS, const float* SIN,
         const int* ROWOF, __nv_bfloat16* TQ, __nv_bfloat16* TK, __nv_bfloat16* TV, int H, int stride, int ROT, int slots,
         float eps) {
-    __shared__ __align__(16) __nv_bfloat16 sq_rows[64][128], sk_rows[64][128];
     const int tile = blockIdx.x, s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32, slot = tile * 64 + s;
     const int row = ROWOF[slot];
     const bool live = row >= 0;
@@ -81,23 +73,11 @@ __global__ void __launch_bounds__(256) h3_heads(
         const __nv_bfloat16* qr = QKV + static_cast<size_t>(live ? row : 0) * stride + head * 128;
         const __nv_bfloat16* kr = qr + H * 128;
         const __nv_bfloat16* vr = kr + H * 128;
-        __nv_bfloat16 qb[32], kb[32];
-        if (live) {
-            load32(qr + c0, qb);
-            load32(kr + c0, kb);
-        }
-        __syncthreads(); // the previous head's partners are read
-#pragma unroll
-        for (int i = 0; i < 4; ++i) {
-            reinterpret_cast<uint4*>(&sq_rows[s][c0])[i] = reinterpret_cast<const uint4*>(qb)[i];
-            reinterpret_cast<uint4*>(&sk_rows[s][c0])[i] = reinterpret_cast<const uint4*>(kb)[i];
-        }
-        __syncthreads();
         float q[32], k[32], sq = 0.0f, sk = 0.0f;
 #pragma unroll
         for (int j = 0; j < 32; ++j) {
-            q[j] = live ? f(qb[j]) : 0.0f;
-            k[j] = live ? f(kb[j]) : 0.0f;
+            q[j] = live ? f(qr[c0 + j]) : 0.0f;
+            k[j] = live ? f(kr[c0 + j]) : 0.0f;
             sq += q[j] * q[j];
             sk += k[j] * k[j];
         }
@@ -121,16 +101,15 @@ __global__ void __launch_bounds__(256) h3_heads(
                     const bool low = c < ROT;
                     const int p = low ? c + ROT : c - ROT, t = low ? c : c - ROT;
                     const float sign = low ? -1.0f : 1.0f, co = bf(cs[t]), si = bf(sn[t]);
-                    const float qp = bf(f(sq_rows[s][p]) * qi * f(NQ[p])), kp = bf(f(sk_rows[s][p]) * ki * f(NK[p]));
+                    const float qp = bf(f(qr[p]) * qi * f(NQ[p])), kp = bf(f(kr[p]) * ki * f(NK[p]));
                     a[e] = bf(a[e] * co) + bf(sign * qp * si);
                     b[e] = bf(b[e] * co) + bf(sign * kp * si);
                 }
             }
             *reinterpret_cast<uint32_t*>(TQ + at + j) = pack2(a[0], a[1]);
             *reinterpret_cast<uint32_t*>(TK + at + j) = pack2(b[0], b[1]);
+            *reinterpret_cast<uint32_t*>(TV + at + j) = *reinterpret_cast<const uint32_t*>(vr + c0 + j);
         }
-#pragma unroll
-        for (int i = 0; i < 4; ++i) reinterpret_cast<uint4*>(TV + at)[i] = reinterpret_cast<const uint4*>(vr + c0)[i];
     }
 }
 
@@ -250,23 +229,14 @@ __global__ void __launch_bounds__(256) h3_swiglu(const __nv_bfloat16* F, __nv_bf
 }
 
 // h3_swiglu over an int8 product's int32 sums [gate | value]: each sum to bf16 as h3_dequantize rounds it, then the
-// same silu and product, so A matches the two kernels' output without the bf16 rows between them. Grid-stride, four
-// outputs a thread from 16-byte loads; N % 4 == 0.
+// same silu and product, so A matches the two kernels' output without the bf16 rows between them. Grid-stride.
 __global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* A, int M, int N) {
-    const size_t quads = static_cast<size_t>(M) * N / 4;
-    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < quads; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
-        const size_t at = i * 4, r = at / N, n = at % N;
-        const int4 ga = *reinterpret_cast<const int4*>(ACC + r * 2 * N + n), va = *reinterpret_cast<const int4*>(ACC + r * 2 * N + N + n);
-        const float4 gw = *reinterpret_cast<const float4*>(SW + n), vw = *reinterpret_cast<const float4*>(SW + N + n);
+    const size_t total = static_cast<size_t>(M) * N;
+    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < total; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+        const size_t r = i / N, n = i % N;
         const float s = SX[r];
-        const float g[4] = {bf(ga.x * s * gw.x), bf(ga.y * s * gw.y), bf(ga.z * s * gw.z), bf(ga.w * s * gw.w)};
-        const float v[4] = {bf(va.x * s * vw.x), bf(va.y * s * vw.y), bf(va.z * s * vw.z), bf(va.w * s * vw.w)};
-        float o[4];
-#pragma unroll
-        for (int e = 0; e < 4; ++e) o[e] = bf(g[e] / (1.0f + expf(-g[e]))) * v[e];
-        __nv_bfloat162* y = reinterpret_cast<__nv_bfloat162*>(A + at);
-        y[0] = __floats2bfloat162_rn(o[0], o[1]);
-        y[1] = __floats2bfloat162_rn(o[2], o[3]);
+        const float g = bf(ACC[r * 2 * N + n] * s * SW[n]), v = bf(ACC[r * 2 * N + N + n] * s * SW[N + n]);
+        A[i] = __float2bfloat16(bf(g / (1.0f + expf(-g))) * v);
     }
 }
 
