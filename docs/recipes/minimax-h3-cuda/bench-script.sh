@@ -52,8 +52,8 @@ image() { # the resident transformer renders $case; the server's log since the l
         # each server closes this script's FIFO fds: a later server would inherit an earlier one's write end and
         # the earlier server would never see EOF when the script closes it
         # H3_PROFILE (on unless set empty) prints each picture's block stages and the decoder's stages; its waits cost a few ms a step
-        # shellcheck disable=SC2046 # --bf16 or no word at all: int8 (qkvc and fc1) is the default
-        H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = bf16 ] && echo --bf16) <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
+        # shellcheck disable=SC2046 # --bf16, --fp8 or no word at all: int8 (qkvc and fc1) is the default
+        H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-cuda" "$model" --serve $(case "${H3_LINEAR:-int8}" in bf16) echo --bf16 ;; fp8) echo --fp8 ;; esac) <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         server=$!
         exec 3>"$out/requests" 4<"$out/replies"

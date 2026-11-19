@@ -1,5 +1,5 @@
-//! cuBLASLt opened at runtime: descriptors, layouts, heuristics, matmul with fp32 compute (no TF32 or fast modes), or
-//! exact int32 sums of int8 operands.
+//! cuBLASLt opened at runtime: descriptors, layouts, heuristics, matmul with fp32 compute (no TF32 or fast modes),
+//! exact int32 sums of int8 operands, or MXFP8 operands (e4m3 with a UE8M0 scale every 32 values of k).
 
 const std = @import("std");
 const platform = @import("sys");
@@ -21,7 +21,7 @@ pub const Heuristic = extern struct {
     reserved: [4]c_int,
 };
 
-pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14 };
+pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14, e4m3 = 28 };
 pub const compute_32f: c_int = 68;
 pub const compute_32i: c_int = 72;
 pub const Op = enum(c_int) { n = 0, t = 1 };
@@ -31,6 +31,12 @@ pub const desc_transa: c_int = 3;
 pub const desc_transb: c_int = 4;
 pub const desc_epilogue: c_int = 7;
 pub const desc_bias_pointer: c_int = 8;
+pub const desc_a_scale_pointer: c_int = 17;
+pub const desc_b_scale_pointer: c_int = 18;
+pub const desc_a_scale_mode: c_int = 31;
+pub const desc_b_scale_mode: c_int = 32;
+/// cublasLtMatmulMatrixScale_t's CUBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0.
+pub const scale_vec32_ue8m0: c_int = 2;
 pub const layout_order: c_int = 1;
 pub const layout_batch_count: c_int = 5;
 pub const layout_batch_stride: c_int = 6;
@@ -217,7 +223,8 @@ pub const Linear = struct {
 };
 
 /// One column-major product `C = alpha op(A) op(B) + beta C`, C [m, n], batched with element strides; FP32 compute,
-/// or int32 sums when C is `.i32` (A and B `.i8`, see `Gemm.runInt`).
+/// int32 sums when C is `.i32` (A and B `.i8`, see `Gemm.runInt`), or block-scaled when A and B are `.e4m3` (see
+/// `Gemm.runScaled`).
 pub const Spec = struct {
     ta: Op = .n,
     tb: Op = .n,
@@ -260,6 +267,8 @@ pub const Gemm = struct {
         const tb: c_int = @backingInt(s.tb);
         try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transa, &ta, @sizeOf(c_int)), "set transa");
         try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transb, &tb, @sizeOf(c_int)), "set transb");
+        if (s.a == .e4m3) for ([_]c_int{ desc_a_scale_mode, desc_b_scale_mode }) |mode|
+            try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, mode, &scale_vec32_ue8m0, @sizeOf(c_int)), "set scale mode");
         // op(A) is m x k and op(B) k x n: a transposed operand is stored the other way round
         g.a = try layout(lt, s.a, if (s.ta == .n) s.m else s.k, if (s.ta == .n) s.k else s.m, s.lda, s.batch, s.sa);
         errdefer _ = api.cublasLtMatrixLayoutDestroy(g.a);
@@ -301,6 +310,17 @@ pub const Gemm = struct {
         if (workspace_len < g.workspace_need) return error.Invalid;
         const one: i32 = 1;
         const zero: i32 = 0;
+        try g.lt.check(g.lt.api.cublasLtMatmul(g.handle, g.desc, &one, a, g.a, b, g.b, &zero, c, g.c, c, g.c, &g.algo, workspace, workspace_len, stream), "cublasLtMatmul");
+    }
+
+    /// C = op(A) op(B) of MXFP8 operands, on a plan whose A and B are `.e4m3`: `sa` and `sb` are their UE8M0 scales in
+    /// cuBLASLt's 128 x 4 tiled layout, 16-byte aligned.
+    pub fn runScaled(g: *const Gemm, a: abi.DevicePtr, sa: abi.DevicePtr, b: abi.DevicePtr, sb: abi.DevicePtr, c: abi.DevicePtr, workspace: abi.DevicePtr, workspace_len: usize, stream: abi.Stream) Error!void {
+        if (workspace_len < g.workspace_need) return error.Invalid;
+        try g.lt.check(g.lt.api.cublasLtMatmulDescSetAttribute(g.desc, desc_a_scale_pointer, &sa, @sizeOf(abi.DevicePtr)), "set A scales");
+        try g.lt.check(g.lt.api.cublasLtMatmulDescSetAttribute(g.desc, desc_b_scale_pointer, &sb, @sizeOf(abi.DevicePtr)), "set B scales");
+        const one: f32 = 1;
+        const zero: f32 = 0;
         try g.lt.check(g.lt.api.cublasLtMatmul(g.handle, g.desc, &one, a, g.a, b, g.b, &zero, c, g.c, c, g.c, &g.algo, workspace, workspace_len, stream), "cublasLtMatmul");
     }
 
