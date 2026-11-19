@@ -9,6 +9,7 @@ namespace tf_h3 {
 
 using tf_common::smem;
 using tf_common::cp16;
+using tf_common::cp16z;
 __device__ __forceinline__ void commit() { tf_common::cp_commit(); }
 template <int N>
 __device__ __forceinline__ void wait() { tf_common::cp_wait<N>(); }
@@ -22,17 +23,116 @@ __device__ __forceinline__ uint32_t pack2(float lo, float hi) {
     return *reinterpret_cast<const uint32_t*>(&v);
 }
 
+__device__ __forceinline__ float bf(float x) { return __bfloat162float(__float2bfloat16(x)); }
+__device__ __forceinline__ float f(__nv_bfloat16 x) { return __bfloat162float(x); }
+
 constexpr int head_dim = 128, tile_rows = 64;
 // Bytes of one head's tile in shared memory, and the attention's dynamic shared bytes: q, k and v (two blocks an SM).
 constexpr int tile_bytes = tile_rows * head_dim * 2;
 constexpr int attention_shared = 3 * tile_bytes;
 
+// A row is 256 bytes in 16 chunks; eight rows read at one chunk fall in different banks.
+__device__ __forceinline__ int at(int r, int c) { return r * 256 + ((c ^ (r & 7)) << 4); }
+
+// The fused variant's prologue inputs: the block's fused QKV rows, the head norms and the (rows, rot) rotary tables.
+struct HeadsPrologue {
+    const __nv_bfloat16* __restrict__ qkv;
+    const __nv_bfloat16* __restrict__ nq;
+    const __nv_bfloat16* __restrict__ nk;
+    const float* __restrict__ cosine;
+    const float* __restrict__ sine;
+    int width;
+    int rot;
+    float eps;
+};
+
+// A 64-slot tile into `to` in the fragment layout: either the heads pass's tile-order rows `from` at absolute
+// `tile`, or field `f` (0 q, 1 k, 2 v) of the fused QKV rows, gathered by `rowof` with zero fill for its -1 slots.
+template <bool fused>
+__device__ __forceinline__ void load_tile(unsigned char* to, const __nv_bfloat16* from, const HeadsPrologue& pro,
+        const int* rowof, int head, int hs, int tile, int f) {
+    const int tid = threadIdx.x;
+    if (fused) {
+        const __nv_bfloat16* src = pro.qkv + (static_cast<size_t>(f) * pro.heads + head) * head_dim;
+        for (int c = tid; c < tile_rows * 16; c += 128) {
+            const int row = rowof[c >> 4];
+            cp16z(to + at(c >> 4, c & 15), src + static_cast<size_t>(row < 0 ? 0 : row) * pro.width + (c & 15) * 8, row >= 0);
+        }
+        return;
+    }
+    const __nv_bfloat16* src = from + (static_cast<size_t>(hs) + static_cast<size_t>(tile) * tile_rows) * head_dim;
+    for (int c = tid; c < tile_rows * 16; c += 128) cp16(to + at(c >> 4, c & 15), src + c * 8);
+}
+
+// h3_heads' q/k pass over the tile in `sm` in its roundings: the 32-channel share of each lane quad (t & 3), the
+// row's sum of squares by the quad's two shuffles, then every channel's bf16 norm, split-half rotary and bf16
+// store. The rotary's partner channel reads shared memory before any lane writes, so a __syncwarp between the
+// reads and the stores is the whole inter-lane discipline; the caller's __syncthreads guards the mma reads.
+__device__ __forceinline__ void heads_tile(unsigned char* sm, const HeadsPrologue& pro, const __nv_bfloat16* nw,
+        const int* rowof) {
+    const int tid = threadIdx.x, lane = tid & 31, c0 = (lane & 3) * 32;
+#pragma unroll
+    for (int half = 0; half < 2; ++half) {
+        const int s = (tid >> 2) + half * 32, row = rowof[s], at_row = row < 0 ? 0 : row;
+        const float* cs = pro.cosine + static_cast<size_t>(at_row) * pro.rot;
+        const float* sn = pro.sine + static_cast<size_t>(at_row) * pro.rot;
+        float x[32], px[32], sq = 0.0f;
+        // this lane's 32 channels and its rotary partners, all read before the quad's first store
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const uint4 v = *reinterpret_cast<const uint4*>(sm + at(s, (c0 >> 3) + i));
+            const __nv_bfloat162* p = reinterpret_cast<const __nv_bfloat162*>(&v);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const float2 w = __bfloat1622float2(p[j]);
+                x[i * 8 + j * 2] = w.x;
+                x[i * 8 + j * 2 + 1] = w.y;
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < 32; ++j) sq += x[j] * x[j];
+        sq += __shfl_xor_sync(0xffffffffu, sq, 1);
+        sq += __shfl_xor_sync(0xffffffffu, sq, 2);
+#pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            const int c = c0 + j;
+            px[j] = 0.0f;
+            if (c < 2 * pro.rot) {
+                const int p = c < pro.rot ? c + pro.rot : c - pro.rot;
+                px[j] = f(*reinterpret_cast<const __nv_bfloat16*>(sm + at(s, p >> 3) + (p & 7) * 2));
+            }
+        }
+        __syncwarp();
+        const float inv = rsqrtf(sq / 128.0f + pro.eps);
+#pragma unroll
+        for (int j = 0; j < 32; j += 2) {
+            float a[2];
+#pragma unroll
+            for (int e = 0; e < 2; ++e) {
+                const int c = c0 + j + e;
+                a[e] = bf(x[j + e] * inv * f(nw[c]));
+                if (c < 2 * pro.rot) {
+                    const bool low = c < pro.rot;
+                    const int p = low ? c + pro.rot : c - pro.rot, t = low ? c : c - pro.rot;
+                    const float sign = low ? -1.0f : 1.0f, co = bf(cs[t]), si = bf(sn[t]);
+                    const float partner = bf(px[j + e] * inv * f(nw[p]));
+                    a[e] = bf(a[e] * co) + bf(sign * partner * si);
+                }
+            }
+            *reinterpret_cast<uint32_t*>(sm + at(s, (c0 + j) >> 3) + ((c0 + j) & 7) * 2) = pack2(a[0], a[1]);
+        }
+    }
+}
+
 // softmax(q k^T scale) v over a query tile's key tiles in bf16, fp32 scores and sums; grid [query tiles, H] of 128.
+// `fused` gathers the fused QKV rows and folds h3_heads' norm and rotary into the arriving tiles; else Q, K and V
+// are h3_heads' tile-order buffers. The mma pipeline and the softmax are the same either way.
+template <bool fused>
 __device__ __forceinline__ void attention_body(
         const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K, const __nv_bfloat16* __restrict__ V,
-        const int* __restrict__ LIST, const int* __restrict__ SIZES, const int* __restrict__ ROWOF,
-        __nv_bfloat16* __restrict__ Y, int slots, int heads, int queries, int keys, int first_query, int per_query,
-        float scale) {
+        const HeadsPrologue& pro, const int* __restrict__ LIST, const int* __restrict__ SIZES,
+        const int* __restrict__ ROWOF, __nv_bfloat16* __restrict__ Y, int slots, int heads, int queries, int keys,
+        int first_query, int per_query, float scale) {
     constexpr int D = head_dim, T = tile_rows, THREADS = 128;
     extern __shared__ __align__(128) unsigned char buf[];
     unsigned char* const qsm = buf;
@@ -40,19 +140,16 @@ __device__ __forceinline__ void attention_body(
     unsigned char* const vsm = buf + 2 * tile_bytes;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const int head = blockIdx.y, qt = first_query + blockIdx.x;
-    const size_t hs = static_cast<size_t>(head) * slots;
+    const int hs = head * slots;
     const int* list = LIST + (per_query ? (static_cast<size_t>(head) * queries + blockIdx.x) * keys : 0);
 
-    // A row is 256 bytes in 16 chunks; eight rows read at one chunk fall in different banks.
-    auto at = [](int r, int c) { return r * 256 + ((c ^ (r & 7)) << 4); };
-    auto load = [&](unsigned char* to, const __nv_bfloat16* from, int tile) {
-        const __nv_bfloat16* src = from + (hs + static_cast<size_t>(tile) * T) * D;
-        for (int c = tid; c < T * 16; c += THREADS) cp16(to + at(c >> 4, c & 15), src + c * 8);
+    auto load = [&](unsigned char* to, const __nv_bfloat16* from, int tile, int f) {
+        load_tile<fused>(to, from, pro, ROWOF + tile * T, head, hs, tile, f);
     };
 
     // a key tile's k is fetched while the tile before it is weighed against its values, and its v while its scores form
-    load(qsm, Q, qt);
-    load(ksm, K, list[0]);
+    load(qsm, Q, qt, 0);
+    load(ksm, K, list[0], 1);
     commit();
 
     const int row_a = (lane & 7) + ((lane >> 3) & 1) * 8, chunk_a = lane >> 4;
@@ -69,8 +166,13 @@ __device__ __forceinline__ void attention_body(
         const int tile = list[sel];
         wait<0>();
         __syncthreads();
-        load(vsm, V, tile);
+        load(vsm, V, tile, 2);
         commit();
+        if (fused) {
+            if (sel == 0) heads_tile(qsm, pro, pro.nq, ROWOF + qt * T);
+            heads_tile(ksm, pro, pro.nk, ROWOF + tile * T);
+            __syncthreads();
+        }
         if (sel == 0) {
 #pragma unroll
             for (int ks = 0; ks < 8; ++ks) ldmatrix4(qa[ks], qsm + at(warp * 16 + row_a, ks * 2 + chunk_a));
@@ -93,7 +195,7 @@ __device__ __forceinline__ void attention_body(
             }
         }
         __syncthreads();
-        if (sel + 1 < keys) load(ksm, K, list[sel + 1]);
+        if (sel + 1 < keys) load(ksm, K, list[sel + 1], 1);
         commit();
         // each row's 64 scores sit in the four lanes of one group: its maximum needs two shuffles
         float m0 = -1e30f, m1 = -1e30f;

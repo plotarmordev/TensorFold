@@ -2,11 +2,6 @@
 #include "h3_attention.cuh"
 #include "common/reduce.cuh"
 
-namespace tf_h3 {
-
-__device__ __forceinline__ float bf(float x) { return __bfloat162float(__float2bfloat16(x)); }
-__device__ __forceinline__ float f(__nv_bfloat16 x) { return __bfloat162float(x); }
-
 // A value every thread of the block agrees on: the sum of what each holds.
 using tf_common::block_sum_serial;
 
@@ -323,8 +318,20 @@ __global__ void __launch_bounds__(128) h3_attention(
         const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V, const int* LIST, const int* SIZES,
         const int* ROWOF, __nv_bfloat16* Y, int slots, int heads, int queries, int keys, int first_query, int per_query,
         float scale) {
-    attention_body(Q, K, V, LIST, SIZES, ROWOF, Y, slots, heads, queries, keys, first_query, per_query, scale);
+    attention_body<false>(Q, K, V, {}, LIST, SIZES, ROWOF, Y, slots, heads, queries, keys, first_query, per_query, scale);
 }
+
+// h3_attention from the fused QKV rows: the loads gather q, k and v through ROWOF and the arriving q/k tiles take
+// h3_heads' norm and rotary in place of the separate heads pass. The picture transformer's dense attention only.
+__global__ void __launch_bounds__(128) h3_attention_heads(
+        const __nv_bfloat16* QKV, const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS, const float* SIN,
+        const int* LIST, const int* SIZES, const int* ROWOF, __nv_bfloat16* Y, int slots, int heads, int queries,
+        int keys, int first_query, int per_query, int width, int rot, float scale, float eps) {
+    const HeadsPrologue pro = { QKV, NQ, NK, COS, SIN, width, rot, eps };
+    attention_body<true>(QKV, nullptr, nullptr, pro, LIST, SIZES, ROWOF, Y, slots, heads, queries, keys, first_query,
+                         per_query, scale);
+}
+
 
 // The stream's rows FIRST.. from (rows, width) f32 rows R: bf16(sum over k of R[r, k] W[n, k] + B[n]), summed one k at
 // a time as rows_reference.rowsIn sums them. Grid [rows], 256 threads; width at most 128.

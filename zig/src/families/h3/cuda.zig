@@ -26,7 +26,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_attention_heads", "h3_quantize", "h3_dequantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -190,10 +190,20 @@ pub const Model = struct {
     }
 
     /// softmax(q k) v for `count` query tiles from `first`; `queries` is how many a head's lists are laid out for.
-    fn attend(self: *Model, par: usize, list: u64, sizes: u64, count: usize, queries: usize, keys: usize, first: usize, per_query: bool) !void {
+    /// `heads` folds h3_heads into the kernel from the block's raw QKV rows (the dense forward); else it reads
+    /// h3_heads' tile-order q, k and v.
+    fn attend(self: *Model, in: *const Inputs, par: usize, list: u64, sizes: u64, count: usize, queries: usize, keys: usize, first: usize, per_query: bool, fused: bool, width: usize, norms: u64) !void {
         const g = &self.geometry;
         if (count == 0) return;
         var args: cuda.Args = .{};
+        if (fused) {
+            for ([_]u64{ g.qkvc, norms + self.hidden * 4, norms + self.hidden * 4 + head_dim * 2, in.cos, in.sin, list, sizes, g.row_of, g.ya }) |p| args.add(p);
+            for ([_]usize{ g.tiles * slot_tile, self.heads, queries, keys, first, @intFromBool(per_query), width, in.rot }) |n| args.add(@as(c_int, @intCast(n)));
+            args.add(@as(f32, 1.0 / @sqrt(@as(f32, head_dim))));
+            args.add(eps);
+            try self.launch("h3_attention_heads", .{ .x = @intCast(count), .y = @intCast(self.heads) }, 128, attention_shared, &args);
+            return;
+        }
         for ([_]u64{ g.tq, g.tk[par], g.tv[par], list, sizes, g.row_of, g.ya }) |p| args.add(p);
         for ([_]usize{ g.tiles * slot_tile, self.heads, queries, keys, first, @intFromBool(per_query) }) |n| args.add(@as(c_int, @intCast(n)));
         args.add(@as(f32, 1.0 / @sqrt(@as(f32, head_dim))));
@@ -291,7 +301,7 @@ pub const Model = struct {
             try self.lap("norms", &mark);
             try self.project(g.xn, b.qkvc.ptr, if (self.int8) |t| t.blocks[index].qkvc else null, g.qkvc, rows, width, hidden);
             try self.lap("q k v gate", &mark);
-            {
+            if (!dense) {
                 // q, k and v in tile order, beginning at tile zero
                 const at = own0 * slot_tile * head_dim * 2;
                 var args: cuda.Args = .{};
@@ -302,7 +312,8 @@ pub const Model = struct {
             }
             try self.lap("heads", &mark);
             if (dense) {
-                try self.attend(par, g.all, in.sizes, owned, owned, tiles, own0, false);
+                // h3_attention_heads gathers the QKV rows and does the heads' norm and rotary as the tiles land
+                try self.attend(in, par, g.all, in.sizes, owned, owned, tiles, own0, false, true, width, b.norms.ptr);
                 try self.lap("attention", &mark);
             } else {
                 var args: cuda.Args = .{};
@@ -319,8 +330,8 @@ pub const Model = struct {
                 const prefix1 = @min(own1, prefix);
                 const video0 = @max(own0, prefix) - prefix;
                 const video1 = @max(own1, prefix) - prefix;
-                try self.attend(par, g.all, in.sizes, prefix1 - prefix0, prefix1 - prefix0, tiles, prefix0, false);
-                try self.attend(par, g.chosen + video0 * (prefix + keep) * 4, in.sizes, video1 - video0, video_tiles, prefix + keep, prefix + video0, true);
+                try self.attend(in, par, g.all, in.sizes, prefix1 - prefix0, prefix1 - prefix0, tiles, prefix0, false, false, 0, 0);
+                try self.attend(in, par, g.chosen + video0 * (prefix + keep) * 4, in.sizes, video1 - video0, video_tiles, prefix + keep, prefix + video0, true, false, 0, 0);
                 try self.lap("attention", &mark);
             }
             if (in.attention_out != 0 and index == count - 1) try self.driver.check(self.driver.api.cuMemcpyDtoD_v2(in.attention_out, g.ya, rows * inner * 2), "cuMemcpyDtoD");
