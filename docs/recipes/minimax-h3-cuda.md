@@ -316,6 +316,29 @@ exit 0): every selftest passed, the same-latent check passed at 86.117% of bytes
 measured the same 28.69 dB, 4.01 apart and 0.9952, and a warm 2048² picture took **18.9 s** mean (18.9, 18.9, 18.9:
 prompt 1.1, transformer 12.8, decoder 4.9), cold 157.8 s, peak 76,665 MiB.
 
+`--tc` opts the decoder's products and attention onto tensor cores: each projection runs cuBLASLt
+bf16 with fp32 sums into the same `acc` `h3d_finish` reads (the bias and LayerScale keep their
+rounding points), and attention runs as batched q·kᵀ and p·v around `h3d_softmax`/`h3d_unheads`.
+The ordered fp32 kernels stay the default; `bench-script.sh` passes `H3_DECODER=tc` through to the
+resident decoder and the `reference` compare.
+
+`2243f9e8` (job `top-2567f9589044`, 19 November, exit 0, `H3_DECODER=tc`) ran the tensor-core decoder beside
+the default `52350e5b` window (job `top-b79ca42af474`, exit 0), and `9914f752`'s window (job
+`top-764629281bea`, `selftest --tc` PASS) repeated it on the reviewed head: a warm
+2048² picture took **15.3 s** mean (15.3, 15.3, 15.3: prompt 1.1, transformer 12.8, decoder 1.3) against the
+default's 18.9 s (decoder 4.9), cold 158.4 s. The same-latent `reference` passed at 85.213% of bytes
+identical, 99.875% within 1, at most 7 apart, PSNR 56.31 dB (the default's is 56.62) and relative error
+3.33e-3, and `tools/zig/h3_image_compare.py` on the fetched `2048-1.png` and latent against episode 1's Mac
+picture measured **28.69 dB** and **4.01** apart on average, cosine 0.9952 — the same figures as the
+default's. The decoder selftest's staged blocks land ~81–84% identical inside their ULP and relative bounds
+— cuBLASLt's fp32 accumulation order, not an error — so `selftest --tc` drops only the identity bar
+(`selftest-tc.sh` gates that alone).
+
+| Warm 2048² | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
+|---|---:|---:|---:|---:|---:|---:|
+| default (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
+| `--tc` (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
+
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
 the first picture's operands and kept the fastest: q k v gate stayed 2.68 s and mlp in 3.40 s, so the heuristic's
@@ -329,6 +352,38 @@ read `h3_heads`' q, k and v rows 16 bytes at a time with each head's q and k sta
 rotary partners, and `h3_swiglu_int8`'s sums and scales four at a time; the latent stayed byte for byte, but heads
 rose 0.98 → 2.01 s and mlp in held at 3.39 s (transformer 13.97 s), so the stage's 2-byte loads were not its bound
 and the shared rows and two barriers a head cost more. Reverted.
+
+`368cee6b` (job `top-309ccf152319`, 19 November, exit 0, `bench-script.sh`) re-pipelined `h3_attention` — the query
+tile moved to registers, the freed shared memory double-buffered the value tile a tile ahead, and each mma's b fragment
+was fetched ahead of its use — keeping the launch and the softmax's order, so the output was bit-identical. Measured
+and reverted (`787f3d3d`): a warm 2048² picture **rose to 19.0 s** mean (19.0, 19.0, 19.0: prompt 1.1, transformer 13.0,
+decoder 4.9), cold 161.0 s, a step 2.15 s, attention **1.91 s** a picture — against `c30403d9`'s 18.9 s (18.9, 18.9,
+18.9: transformer 12.8), cold 157.8 s, attention **1.80 s**. The decoder's same-latent bound passed (86.117% of bytes
+identical, 99.916% within 1, at most 5 apart, PSNR 56.62 dB, relative error 3.16e-3 under 3e-2) and every selftest
+passed; the Mac-picture gates (28.2 dB, 4.1, 0.99) are `h3_image_compare.py`'s own run, not this bench's. The regression
+is speed, not correctness: the resident query fragments' registers cost more occupancy than the deeper prefetch
+recovered — most of the transformer's 0.2 s rise is attention, the rest run noise. Attention's bound is not its value
+load's latency.
+
+`acda1e04` (job `top-b76b0efc4246`, 19 November, exit 0, `fp8-attn-bench.sh`) put the dense attention on `mma.sync
+m16n8k32` in e4m3 — `h3_attention_fp8`, opt-in on `H3_ATTN=fp8`, staging the raw QKV rows and running `h3_heads`' q/k
+RMSNorm and rotary in its prologue so the `h3_heads` pass drops out of the step. A warm 2048²
+picture took **39.4 s** mean (transformer 33.3, attention **22.8 s** a picture against `h3_attention` + `h3_heads`' 2.8
+s), against the same job's flag-off 19.2 s, and the fp8 latent's cosine against the bf16 latent was **0.8695** with a
+15.6 dB picture — selftests passed and the decoder's same-latent bound held (85.643% of bytes identical, 99.897%
+within 1, at most 5 apart, PSNR 56.46 dB, relative 3.34e-3) because the selftest does not exercise the flag. The
+uniform corruption (per-chunk cosines 0.80–0.89, no masked or permuted region) was per-tile-absmax e4m3 being too
+coarse on Q·K — four significand bits spread over a whole tile.
+
+`fb5090ae` (job `top-ea3a4d434c59`, 19 November, exit 0, same script) moved q and k to int8 at each row's absmax —
+the mmh3 split, e4m3 kept only on the weighed-score × value product — and prefetched each key tile's stage during
+the previous tile's value product: the warm 2048² picture came to **30.3 s** (attention **14.1 s**) with the latent
+cosine **0.9882** and a 24.5 dB picture against the same job's flag-off 18.9 s. Both gates still fail: 0.988 is
+under the 0.99 cosine and 30.3 s over the 18.9 s. Reverted in full: what is left is not tuning — the serialized
+stage→quantize→mma prologue costs ~11 s a picture against `h3_attention`'s pipelined tile loop, so on the GB10 the
+scale granularity and the bf16↔fp8 conversion cost more than the narrower mma returns at this tile size, and the
+last 0.002 of cosine likely needs the weighed scores in int8 too rather than e4m3. A follow-up that pipelines the
+prologue and finishes the precision split starts from these measurements.
 
 GB10's block-scaled FP8 was measured and reverted (card 89). `160c7687` (job `top-ad7ecf144cee`, 19 November) ran
 all four projections as cuBLASLt MXFP8: each 128-wide chunk rotated as the int8 rows are, then e4m3 at one UE8M0
@@ -356,17 +411,23 @@ revert's ground, and the cuBLASLt qkvc/fc1 int8 default stands. `bench-int8.sh` 
 Desk's env-less door at `cdf02b8b4`; the revert removed it with the flag it set. The `bf16` window that job ran
 beside (job `top-c5dfb77a467c`, at `b4c709177`, whose default was bf16) took 21.0 s (transformer 14.7).
 
-The rounds left toward mmh3's warm times — its first picture is 17.6 s (card 80's standing goal) and its warm
-transformer is 9.5 s — in order, each needing its own window:
+The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93; its first picture is 17.6 s, card 80's standing
+goal), in order, each needing its own window:
 
-1. **The int8 products' own rate** is the 1.3 s left: card 89's `h3_gemm_int8` own tile measured 20.5 s warm against
-   `c30403d9`'s 18.9 s (above) and is reverted, so the cuBLASLt products stay. A faster int8 product than
+1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
+   int8, a third of the GB10's dense rate, and their int32 sums make a round trip through `h3_dequantize`. A product
+   that writes bf16 straight from the tile with a per-128-chunk scale was card 89's `h3_gemm_int8`: it measured 20.5 s
+   warm against `c30403d9`'s 18.9 s (above) and is reverted, so the cuBLASLt products stay. A faster int8 product than
    cuBLASLt's heuristic first offer is still the round's open part — `822b217c` found the heuristic's first offer
-   already its fastest, so it needs a tile that beats cuBLASLt's sums, not a selection change.
-2. **Attention**: 1.74 s a picture in the transformer, 217 registers at 128 threads and two CTAs an SM (8 warps), and
-   1.89 s in the decoder, whose 16-byte key loads changed nothing. mmh3's INT8/FP8 attention is the candidate that
-   would also cut registers; the decoder's attention needs its stall found first, since neither its loads nor its
-   occupancy explain it.
+   already its fastest, so it needs a tile that beats cuBLASLt's sums, not a selection change. The two kernels' records
+   are in the registry as of `cadab6b2`, and `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs
+   their gates 1-4 (`contract_h3_int8.zig`); the limits audit (gate 5) is `limits-job.sh`'s own window.
+2. **Attention**: 1.80 s a picture in the transformer on main (`368cee6b`'s re-pipelining measured 1.91 s, reverted
+   `787f3d3d`), 217 registers at 128 threads and two CTAs an SM (8 warps), and 1.89 s in the decoder, whose
+   16-byte key loads changed nothing. Its bound is not the value load's latency — deeper prefetch and query-in-registers
+   both lost to register pressure — so mmh3's INT8/FP8 attention is the candidate that would also cut registers (the
+   `fb5090ae` fp8 round measured 14.1 s a picture and is reverted); the
+   decoder's attention needs its stall found first, since neither its loads nor its occupancy explain it.
 3. **The rows outside the blocks**: on the device as of `bd734252`, 0.15 s a picture.
 4. **The decoder's products** are 2.26 s at 121 registers and two CTAs an SM. A 512-thread 4 x 8 tile measured 3.00 s
    (`cb217aa2`, reverted): the smaller per-thread tile reads 12 shared floats for 32 products where 8 x 8 reads 16 for
