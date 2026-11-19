@@ -463,6 +463,14 @@ it. The fix keeps the m16n8k32 tile but folds only the activation scale in regis
 12582912.0f magic bias), applies the weight scale once in the epilogue and stages only that vector — the rebuilt
 `h3_gemm_int8` below.
 
+Card 129 rebuilt the tile on that diagnosis — one activation scale folded in registers, the weight scale once in the
+epilogue — and its contract gates all pass (`bench-129-contract.sh` at `fd2ecf13e`, job `top-56c1a215a30f`): but on
+the picture's own shapes it still loses to cuBLASLt, so it stops short of a picture run by this card's own rule.
+`h3-int8-bench` on TOP (same job): qkvc 116.0 vs 152.1 TOPS, out 119.2 vs 151.3, fc1 115.1 vs 153.5, fc2 118.5 vs
+149.6 — a steady ~0.75-0.79× of cuBLASLt's int8 rate. The occupancy fix was real (one scale vector staged instead of
+two, ~2 fma an element instead of ~5) and the tile is correct, but a third fewer TOPS than the library it would
+replace is not a win; the cuBLASLt qkvc/fc1 int8 default stands and `out`/`fc2` stay bf16.
+
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93; its first picture is 17.6 s, card 80's standing
 goal), in order, each needing its own window:
 
