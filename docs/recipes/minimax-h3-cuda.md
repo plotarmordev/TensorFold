@@ -349,11 +349,17 @@ picture took **39.4 s** mean (transformer 33.3, attention **22.8 s** a picture a
 s), against the same job's flag-off 19.2 s, and the fp8 latent's cosine against the bf16 latent was **0.8695** with a
 15.6 dB picture — selftests passed and the decoder's same-latent bound held (85.643% of bytes identical, 99.897%
 within 1, at most 5 apart, PSNR 56.46 dB, relative 3.34e-3) because the selftest does not exercise the flag. The
-uniform corruption (per-chunk cosines 0.80–0.89, no masked or permuted region) points at per-tile-absmax e4m3 being
-too coarse on Q·K — mmh3 quantizes Q·K to int8 per (head, 64-block) and keeps e4m3 for P·V — and at the prologue's
-cost: a serialized stage→quantize→mma loop with the norm arithmetic run twice is 20 s a picture of overhead on its
-own. The follow-up needs both: finer Q·K (per-row scales or the s8 mma the card's gate is really asking for) and a
-pipelined prologue.
+uniform corruption (per-chunk cosines 0.80–0.89, no masked or permuted region) was per-tile-absmax e4m3 being too
+coarse on Q·K — four significand bits spread over a whole tile.
+
+`fb5090ae` (job `top-ea3a4d434c59`, 19 November, exit 0, same script) moved q and k to int8 at each row's absmax —
+the mmh3 split, e4m3 kept only on the weighed-score × value product — and prefetched each key tile's stage during
+the previous tile's value product: the warm 2048² picture came to **30.3 s** (attention **14.1 s**) with the latent
+cosine **0.9882** and a 24.5 dB picture against the same job's flag-off 18.9 s. Both gates still fail: 0.988 is
+under the 0.99 cosine and 30.3 s over the 18.9 s. What is left is not tuning: the serialized stage→quantize→mma
+prologue costs ~11 s a picture against `h3_attention`'s pipelined tile loop, and the last 0.002 of cosine likely
+needs the weighed scores in int8 too rather than e4m3. The kernel stays behind `H3_ATTN=fp8` as the measured base
+for the follow-up that pipelines the prologue and finishes the precision split.
 
 
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:
