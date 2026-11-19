@@ -36,7 +36,7 @@ index f0a266d55..8e37ff5f9 100644
  // a time as rows_reference.rowsIn sums them. Grid [rows], 256 threads; width at most 128.
  __global__ void __launch_bounds__(256) h3_rows_in(const float* R, const float* W, const float* B, __nv_bfloat16* X,
 diff --git a/zig/kernels/cuda/h3_attention.cuh b/zig/kernels/cuda/h3_attention.cuh
-index 6a9466917..77cf2317b 100644
+index 6a9466917..c076fae0e 100644
 --- a/zig/kernels/cuda/h3_attention.cuh
 +++ b/zig/kernels/cuda/h3_attention.cuh
 @@ -9,6 +9,7 @@ namespace tf_h3 {
@@ -78,10 +78,10 @@ index 6a9466917..77cf2317b 100644
 +// `tile`, or field `f` (0 q, 1 k, 2 v) of the fused QKV rows, gathered by `rowof` with zero fill for its -1 slots.
 +template <bool fused>
 +__device__ __forceinline__ void load_tile(unsigned char* to, const __nv_bfloat16* from, const HeadsPrologue& pro,
-+        const int* rowof, int head, int hs, int tile, int f) {
++        const int* rowof, int head, int heads, int hs, int tile, int f) {
 +    const int tid = threadIdx.x;
 +    if (fused) {
-+        const __nv_bfloat16* src = pro.qkv + (static_cast<size_t>(f) * pro.heads + head) * head_dim;
++        const __nv_bfloat16* src = pro.qkv + (static_cast<size_t>(f) * heads + head) * head_dim;
 +        for (int c = tid; c < tile_rows * 16; c += 128) {
 +            const int row = rowof[c >> 4];
 +            cp16z(to + at(c >> 4, c & 15), src + static_cast<size_t>(row < 0 ? 0 : row) * pro.width + (c & 15) * 8, row >= 0);
@@ -181,7 +181,7 @@ index 6a9466917..77cf2317b 100644
 -        const __nv_bfloat16* src = from + (hs + static_cast<size_t>(tile) * T) * D;
 -        for (int c = tid; c < T * 16; c += THREADS) cp16(to + at(c >> 4, c & 15), src + c * 8);
 +    auto load = [&](unsigned char* to, const __nv_bfloat16* from, int tile, int f) {
-+        load_tile<fused>(to, from, pro, ROWOF + tile * T, head, hs, tile, f);
++        load_tile<fused>(to, from, pro, ROWOF + tile * T, head, heads, hs, tile, f);
      };
  
      // a key tile's k is fetched while the tile before it is weighed against its values, and its v while its scores form
