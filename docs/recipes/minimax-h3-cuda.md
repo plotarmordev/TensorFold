@@ -330,13 +330,13 @@ rotary partners, and `h3_swiglu_int8`'s sums and scales four at a time; the late
 rose 0.98 → 2.01 s and mlp in held at 3.39 s (transformer 13.97 s), so the stage's 2-byte loads were not its bound
 and the shared rows and two barriers a head cost more. Reverted.
 
-`0c2f142e` re-pipelines `h3_attention` without changing its launch or its arithmetic: the query tile leaves shared
-memory for registers (each lane's A fragments read from global once), the freed 16 KB becoming a second value tile so
-a key tile's v is fetched two tiles ahead instead of just-in-time, and each mma's b fragment is fetched while the
-previous one is in the tensor pipe. The kernel stays bf16 `mma.sync m16n8k16` with an fp32 online softmax, the
-softmax's order unchanged, so its output is element for element `c30403d9`'s and every gate is the same. Its TOP
-timing (attention seconds a step and the warm 2048² wall, against `c30403d9`'s 18.9 s / 1.80 s attention) is this
-card's window; until it runs the stage time is unmeasured.
+`368cee6b` re-pipelined `h3_attention` — the query tile moved to registers, the freed shared memory double-buffered the
+value tile a tile ahead, and each mma's b fragment was fetched ahead of its use — keeping the launch and the softmax's
+order, so the output was bit-identical. Measured and reverted (`787f3d3d`): a warm 2048² picture **rose to 19.0 s**
+(transformer 13.0, attention **1.91**, step 2.16) against `b4c5c42`'s 18.2 s / 12.1 / **1.80** / 2.02 s. Every gate
+held — selftests, the decoder's same-latent bound (PSNR 56.62 dB, relative error 3.16e-3 under 3.00e-2, 86.1% identical)
+— so the regression is speed, not correctness: the 32 A fragments in registers plus the second value tile cost more
+occupancy than the deeper prefetch recovered. Attention's bound is not its value load's latency.
 
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
@@ -346,10 +346,11 @@ The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
    carry the picture without the bf16 fallbacks. The two kernels' records are in the registry as of `cadab6b2`, and
    `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4 (`contract_h3_int8.zig`);
    the limits audit (gate 5) is `limits-job.sh`'s own window.
-2. **Attention**: 1.74 s a picture in the transformer, 217 registers at 128 threads and two CTAs an SM (8 warps), and
-   1.89 s in the decoder, whose 16-byte key loads changed nothing. mmh3's INT8/FP8 attention is the candidate that
-   would also cut registers; the decoder's attention needs its stall found first, since neither its loads nor its
-   occupancy explain it.
+2. **Attention**: 1.91 s a picture in the transformer as of `368cee6b` (reverted `787f3d3d` for costing 0.11 s over
+   `b4c5c42`'s 1.80 s), 217 registers at 128 threads and two CTAs an SM (8 warps), and 1.89 s in the decoder, whose
+   16-byte key loads changed nothing. Its bound is not the value load's latency — deeper prefetch and query-in-registers
+   both lost to register pressure — so mmh3's INT8/FP8 attention is the candidate that would also cut registers; the
+   decoder's attention needs its stall found first, since neither its loads nor its occupancy explain it.
 3. **The rows outside the blocks**: on the device as of `bd734252`, 0.15 s a picture.
 4. **The decoder's products** are 2.26 s at 121 registers and two CTAs an SM. A 512-thread 4 x 8 tile measured 3.00 s
    (`cb217aa2`, reverted): the smaller per-thread tile reads 12 shared floats for 32 products where 8 x 8 reads 16 for
