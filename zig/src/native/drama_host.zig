@@ -13,6 +13,7 @@ const Limit = if (is_cuda) @import("drama_limit.zig").Limit else struct {
     fn deinit(_: *@This()) void {}
 };
 const Warm = if (is_cuda) struct {} else d3.residency.Warm;
+const Voice = @import("drama_host_voice.zig").For(Host);
 const Session = struct {
     e: *d3.Engine,
     t: *d3.tts.Tts,
@@ -67,6 +68,7 @@ const Host = struct {
     closing: bool = false,
     failed: completion.State = .{},
     refs: Refs = .{},
+    voices: @import("drama_host_voice.zig").Queue = .{},
     const vtable: api.Engine.VTable = .{
         .info = info,
         .submit = submitText,
@@ -76,6 +78,7 @@ const Host = struct {
         .memory = memory,
         .keepalive = if (is_cuda) null else keepalive,
         .drain = drain,
+        .encode_voice = Voice.encode,
     };
     fn self(p: *anyopaque) *Host {
         return @ptrCast(@alignCast(p));
@@ -164,6 +167,7 @@ const Host = struct {
         if (is_cuda) h.sessions[0].e.ctx.makeCurrent() catch {
             h.lock();
             h.closing = true;
+            Voice.refuse(h);
             h.unlock();
             while (true) {
                 h.lock();
@@ -175,6 +179,7 @@ const Host = struct {
         };
         while (true) {
             h.lock();
+            if (Voice.step(h)) continue;
             const work = h.queue.next() orelse {
                 if (h.closing or h.failed.closed) {
                     h.unlock();
@@ -317,14 +322,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8, 
     try o.silence.validate();
     const h = try gpa.create(Host);
     errdefer gpa.destroy(h);
-    h.* = .{
-        .gpa = gpa,
-        .io = io,
-        .limit = undefined,
-        .queue = try rounds.Queue.init(o.lanes),
-        .info_ = .{},
-        .silence = o.silence,
-    };
+    h.* = .{ .gpa = gpa, .io = io, .limit = undefined, .queue = try rounds.Queue.init(o.lanes), .info_ = .{}, .silence = o.silence };
     if (is_cuda) h.refs = .{ .gpa = gpa, .capacity = o.reference_entries };
     try h.limit.init(gpa, io, o.device);
     errdefer h.limit.deinit();
