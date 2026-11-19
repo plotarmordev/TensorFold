@@ -7,8 +7,9 @@
   (its per-stage waits can't be captured), and a refused capture falls back to the same launches.
 - The decoder's tensor-core path (`--tc`) is now the default; `--exact` opts back into the
   fp32-order kernels and keeps their 90% block-identity selftest. `selftest` gates the default.
-- The decoder overlaps the transformer's tail: the last step streams the target's video rows
-  out band by band on the same stream as the graph, and `tf-h3-image-decoder-cuda` reads a
-  `.rows.f32` input progressively (the bench hands it a fifo), unpatchifies, denormalises and
-  uploads each band and launches every tile pass as soon as the latent rows its tiles read have
-  landed. `.latent.f32` input and output are unchanged.
+- `tf-h3-image-decoder-cuda` also accepts a `.rows.f32` input: it reads the video rows
+  progressively (unpatchify, denormalise and upload each band, then launch a tile pass once the
+  latent rows its tiles read have landed), so a rows stream can overlap the transformer's tail.
+  The bench measures that overlap slower at 2048² — the banded read serialises the last step and
+  the progressive host work costs more than it saves — so it still feeds the decoder the
+  finished `.latent.f32`. `.latent.f32` input and output are unchanged.

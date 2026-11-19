@@ -385,17 +385,22 @@ scale granularity and the bf16↔fp8 conversion cost more than the narrower mma 
 last 0.002 of cosine likely needs the weighed scores in int8 too rather than e4m3. A follow-up that pipelines the
 prologue and finishes the precision split starts from these measurements.
 
-`<sha>` (job `top-<job>`, 19 November, exit 0, `bench-script.sh`) put each denoising step in one CUDA
+`45ea17643` (job `top-5b1ede67a163`, 19 November, exit 0, `bench-script.sh`) put each denoising step in one CUDA
 graph — rows in, every block's launches, the step head and the Euler update — replayed on a dedicated
 stream (`H3_PROFILE`, which waits after each stage, keeps the eager path), staged every step's AdaLN
-lines once and pointed each step's graph at its own slice, and streamed the last step's video rows out
-band by band so the decoder's first tiles launch while the step's tail finishes (`bench-script.sh`
-hands the decoder a fifo for `OUT.rows.f32`; the decoder reads it progressively, unpatchifying,
-denormalising and uploading each band and launching a pass once the rows its tiles read have landed).
-The `--tc` decoder became the default in the same window, `--exact` keeping the fp32-order kernels and
-their identity selftest. MEASURED: <fill after bench>. Every selftest passed, the same-latent
-`reference` bound held (<fill>), and `h3_image_compare.py` against episode 1's Mac picture measured
-<fill>.
+lines once and pointed each step's graph at its own slice. The `--tc` decoder became the default in the
+same window, `--exact` keeping the fp32-order kernels and their identity selftest. The decoder also
+grew a `.rows.f32` input that reads the video rows progressively — unpatchify, denormalise and upload
+each band, then launch a tile pass once the latent rows its tiles read have landed — so a rows stream
+can overlap the transformer's tail. The bench measured that overlap slower at 2048² (job
+`top-27eefb4ad8de`: banded download + per-band event waits added ~0.9 s to the last step and the
+progressive host decode cost 3.6 s vs 1.3 s for the bulk path, warm 15.7 s), so the script still feeds
+the decoder the finished `.latent.f32`; the `.rows.f32` mode stays as an opt-in input. Measured: warm
+mean 15.4 s (prompt 1.1, transformer 12.9, decoder 1.3, 6 steps), ~2.15 s a step from graph replay —
+the graphs themselves are speed-neutral, the earlier +1.3 s having been the overlap this revert cut.
+Every selftest passed, the same-latent `reference` bound held (56.31 dB, rel 3.33e-3), and
+`h3_image_compare.py` against episode 1's Mac picture held the same-latent bound (85.213% of PNG
+bytes identical, PSNR 56.31 dB).
 
 
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:
