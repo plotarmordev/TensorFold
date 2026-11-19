@@ -109,8 +109,9 @@ pub const Int8 = struct {
     }
 };
 
-/// h3_gemm_int8's dynamic shared bytes: STAGES stages of a 128-deep chunk of BM rows, BN columns and their scales.
-pub const gemm_shared_bytes = 4 * (128 * 128 + 128 * 128 + (128 + 128) * 4);
+/// h3_gemm_int8's dynamic shared bytes: its 3 stages of a 128-deep chunk of BM rows, BN columns and their
+/// scales fill sm_121's 101376-byte per-block cap exactly.
+pub const gemm_shared_bytes = 3 * (128 * 128 + 128 * 128 + (128 + 128) * 4);
 /// The tile bands' L2 swizzle width, as tile_of's `group`.
 const gemm_group = 8;
 

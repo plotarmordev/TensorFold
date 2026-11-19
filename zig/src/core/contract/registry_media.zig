@@ -68,5 +68,5 @@ pub const cuda_pending = [_]CudaRecord{
     .{ .launch = .{ .name = "drama3 d3_router_compact", .symbol = "d3_router_compact", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
     .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
     // H3's block-scaled int8 product, unmeasured: the GB10 check runs its contract and prints its RECORD.
-    .{ .launch = .{ .name = "h3 h3_gemm_int8", .symbol = "h3_gemm_int8", .image = "h3", .threads = 256, .dynamic = 135168, .opt_in = true }, .usage = @import("registry.zig").none },
+    .{ .launch = .{ .name = "h3 h3_gemm_int8", .symbol = "h3_gemm_int8", .image = "h3", .threads = 256, .dynamic = 101376, .opt_in = true }, .usage = @import("registry.zig").none },
 };

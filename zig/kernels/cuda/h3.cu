@@ -425,7 +425,7 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
 extern "C" __global__ void __launch_bounds__(256) h3_gemm_int8(const int8_t* __restrict__ X, const float* __restrict__ XS,
         const int8_t* __restrict__ W, const float* __restrict__ WS, __nv_bfloat16* __restrict__ C,
         int M, int N, int K, int group) {
-    h3_gemm::gemm<128, 128, 2, 4, 4>(X, XS, W, WS, C, M, N, K, group);
+    h3_gemm::gemm<128, 128, 2, 4, 3>(X, XS, W, WS, C, M, N, K, group); // 3 stages fill sm_121's 101376-byte block cap
 }
 
 __global__ void __launch_bounds__(128) h3_attention(
