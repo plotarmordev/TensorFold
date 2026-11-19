@@ -26,7 +26,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_chunks", "h3_gemm_int8", "h3_rows_in", "h3_rows_out", "h3_euler" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -124,6 +124,7 @@ pub const Model = struct {
         errdefer if (ordinary_cleanup) self.module.unload();
         inline for (kernel_names, 0..) |name, i| self.functions[i] = try self.module.function(name);
         try self.function("h3_attention").allowDynamicShared(attention_shared);
+        try self.function("h3_gemm_int8").allowDynamicShared(@import("cuda_int8.zig").gemm_shared_bytes);
         // the legacy default stream: work queued by the caller's framework comes first
         self.stream = .{ .d = d, .handle = null };
         self.gemms = try Gemms.init(gpa, d);
@@ -282,10 +283,9 @@ pub const Model = struct {
         } else {
             _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
             _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
+            _ = try self.gemms.plan(rows, self.hidden, inner);
+            _ = try self.gemms.plan(rows, self.hidden, self.mlp);
         }
-        // `out` and `fc2` keep their bf16 weights in both modes
-        _ = try self.gemms.plan(rows, self.hidden, inner);
-        _ = try self.gemms.plan(rows, self.hidden, self.mlp);
     }
 
     /// The launches of `forward` once `plan` and `geometry.prepare` ran: capturable work only —
@@ -357,11 +357,11 @@ pub const Model = struct {
                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
                 try self.lap("gate mix", &mark);
             }
-            try self.project(g.ya, b.out.ptr, null, g.y, rows, hidden, inner);
+            try self.project(g.ya, b.out.ptr, if (self.int8) |t| t.blocks[index].out else null, g.y, rows, hidden, inner);
             try self.lap("attention out", &mark);
             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m);
             try self.lap("norms", &mark);
-            if (self.int8) |t| try t.mlpIn(self, g.xn, t.blocks[index].fc1, g.act, rows) else {
+            if (self.int8) |t| try t.mlpIn(self, g.xn, t.blocks[index].fc1, g.wide, g.act, rows) else {
                 try self.gemms.run(self.stream, g.xn, b.fc1.ptr, g.wide, rows, 2 * self.mlp, hidden);
                 var args: cuda.Args = .{};
                 args.add(g.wide);
@@ -371,7 +371,7 @@ pub const Model = struct {
                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
             }
             try self.lap("mlp in", &mark);
-            try self.project(g.act, b.fc2.ptr, null, g.y, rows, hidden, self.mlp);
+            try self.project(g.act, b.fc2.ptr, if (self.int8) |t| t.blocks[index].fc2 else null, g.y, rows, hidden, self.mlp);
             try self.lap("mlp out", &mark);
         }
         {

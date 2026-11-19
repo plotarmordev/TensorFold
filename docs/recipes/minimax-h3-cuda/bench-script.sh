@@ -54,7 +54,7 @@ image() { # the resident transformer renders $case; the server's log since the l
         # the earlier server would never see EOF when the script closes it
         # H3_PROFILE (off unless set) waits after every stage for its block-stage lines; the default run
         # captures each step as one CUDA graph, which those waits would keep it from doing
-        # shellcheck disable=SC2046 # --bf16 or no word at all: int8 (qkvc and fc1) is the default
+        # shellcheck disable=SC2046 # --bf16 or no word at all: int8 (all four projections on the own tile) is the default
         H3_PROFILE=${H3_PROFILE-} "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = bf16 ] && echo --bf16) <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         server=$!
