@@ -319,8 +319,8 @@ prompt 1.1, transformer 12.8, decoder 4.9), cold 157.8 s, peak 76,665 MiB.
 `--tc` opts the decoder's products and attention onto tensor cores: each projection runs cuBLASLt
 bf16 with fp32 sums into the same `acc` `h3d_finish` reads (the bias and LayerScale keep their
 rounding points), and attention runs as batched q·kᵀ and p·v around `h3d_softmax`/`h3d_unheads`.
-The ordered fp32 kernels stay the default; `bench-script.sh` passes `H3_DECODER=tc` through to the
-resident decoder and the `reference` compare.
+The tensor-core path is the default from card 122 on; `--exact` opts back into the ordered fp32
+kernels, and `bench-script.sh` maps `H3_DECODER=exact` to it.
 
 `2243f9e8` (job `top-2567f9589044`, 19 November, exit 0, `H3_DECODER=tc`) ran the tensor-core decoder beside
 the default `52350e5b` window (job `top-b79ca42af474`, exit 0), and `9914f752`'s window (job
@@ -334,10 +334,10 @@ default's. The decoder selftest's staged blocks land ~81–84% identical inside 
 — cuBLASLt's fp32 accumulation order, not an error — so `selftest --tc` drops only the identity bar
 (`selftest-tc.sh` gates that alone).
 
-| Warm 2048² | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
+| Warm 2048² (pre-122 window) | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
 |---|---:|---:|---:|---:|---:|---:|
-| default (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
-| `--tc` (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
+| fp32-order decoder (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
+| tensor-core decoder (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
 
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
@@ -404,6 +404,37 @@ build, so that run's stage timings are not cited; the script still rendered, and
 latent cosine 0.9664 (gate 0.99) and 11.53 apart on average from the Mac PNG (gate 4.1), the three warm latents
 byte for byte the same. The failed selftest and the picture gates are the revert's ground. NVFP4 keeps one
 mantissa bit where e4m3 keeps three and is expected to miss the gates further; it has not been measured.
+
+`626fd8ded` put each denoising step in one CUDA graph — rows in, every block's launches, the step head
+and the Euler update — replayed on a dedicated stream (`H3_PROFILE`, which waits after each stage, keeps
+the eager path), staged every step's AdaLN lines once and pointed each step's graph at its own slice;
+`--serve` restores the model's own stream when a picture returns. The `--tc` decoder became the default
+in the same window, `--exact` keeping the fp32-order kernels and their identity selftest. A decoder-side
+rows overlap was also built and measured — the last step streaming its video rows out band by band while
+a progressive `.rows.f32` reader unpatchified, denormalised and uploaded each band and launched a tile
+pass once the rows its tiles read had landed — and job `top-27eefb4ad8de` measured it slower at 2048²:
+the banded download + per-band event waits added ~0.9 s to the last step and the progressive host decode
+cost 3.6 s vs 1.3 s for the bulk path (warm 15.7 s), so it was cut and the decoder keeps its `.latent.f32`
+input. The keep-if-faster A/B first ran as two jobs on the same GPU that day (the job clone is too
+shallow for an in-checkout git revert): `top-c0b33c78c637` (`bench-122-ab.sh` at `ec0aa8c84`, exit 128 —
+its before phase's `git checkout` failed on the shallow clone, but its after phase ran to a finished
+summary) measured the candidate's warm mean 15.2 s (transformer 12.8, ~2.15 a step from graph replay,
+decoder 1.3), and `top-7cc7074c454e` (`bench-script.sh` at `40ab38a8f` on scratch branch
+`scratch/122-baseline`, the card's h3 files reverted to the merge base with the decoder forced `--tc`)
+measured the baseline's 15.5 s (transformer 13.0, steps ~2.16, decoder 1.3) — 0.3 s faster, kept. Every
+selftest passed in both runs, the same-latent `reference` bound held at 56.31 dB (rel 3.33e-3) on both,
+and the pictures were byte-identical between graph and eager output. The same-job re-run on the merged
+head (after main's card-89 merge) is `bench-122-ab.sh` at `2eaf18ad6` — `git apply -R` of
+`bench-122-base.patch` puts
+the card's h3 files back to main's inside the job's shallow clone: job `top-ae939c0b8de7` (exit 0) ran
+the merged head's warm mean **15.3 s** (15.3, 15.4, 15.3: transformer 12.9, steps 2.13-2.15, decoder
+1.3) against the same-job `main + --tc` baseline's **15.5 s** (15.4, 15.8, 15.4: transformer 12.9,
+steps 2.14-2.16) — 0.2 s faster, kept,
+with `latent.f32` and the PNG byte-identical between phases and every selftest passing. Seconds
+outside the steps are ~0.0 s on the graph path — the rows in/out work is captured in each step's
+graph and the transformer total and the sum of the steps
+agree to the printed hundredths (12.79 against 12.80); `H3_PROFILE`'s per-stage waits can't be
+captured, so the graphed run has no finer breakdown than that.
 
 Card 89's own tile, `h3_gemm_int8`, was measured and reverted. `h3_quantize` scaled each 128-wide chunk by its own
 absmax, so `out` and `fc2` left bf16 without the per-row scale's distance from episode 1, and the `m16n8k32` tile

@@ -73,7 +73,7 @@ pub const Rows = struct {
     /// The stream x (rows, hidden) for a step: the text's rows, then the references' and the video's projected.
     pub fn in(self: *const Rows, x: u64) !void {
         const m = self.model;
-        try m.driver.check(m.driver.api.cuMemcpyDtoD_v2(x, self.text.ptr, self.text.len), "cuMemcpyDtoD");
+        try m.driver.check(m.driver.api.cuMemcpyDtoDAsync_v2(x, self.text.ptr, self.text.len, m.stream.handle), "cuMemcpyDtoDAsync");
         if (self.held > 0) try self.project(self.anchors.ptr, x, self.held, self.text_rows);
         try self.project(self.video.ptr, x, self.target, self.text_rows + self.held);
     }
