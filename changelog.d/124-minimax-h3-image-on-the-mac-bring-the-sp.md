@@ -1,4 +1,4 @@
-# 124 — MiniMax-H3 image on the Mac: bring the Spark's wins
+# MiniMax-H3-Image on the Mac: bring the Spark's wins over — measured, bar not met
 
 Each of the card's four techniques tried on the Metal path; warm 2048 picture, seed 42, six steps, against card 84's
 11.14/11.16 s (bar: -10%, ~10.0 s), gates per card 80 (latent cosine >= 0.99, PSNR >= 28.2 dB, mean pixel diff <= 4.1,
@@ -11,7 +11,7 @@ byte-identical where arithmetic is unchanged). Full stage numbers and the tried 
   int8 win on Metal; qkv alone saved ~0.17 s while its quantize+fold cost more. All four projections int8 grouped
   ran 11.74-13.32 s. Only fc1's row-scaled int8 pays on Metal; kept as on main, everything else reverted.
 - **Fused attention**: nothing to port — `h3_attention` is already one fused online-softmax flash kernel; the card's
-  stage profile shows it at 1.52-1.54 s of a 9.5 s step (~96 TFLOP/s, the products' own rate).
+  stage profile shows it at 1.52-1.54 s of the ~9.5 s six-step total (~96 TFLOP/s, the products' own rate).
 - **One command buffer a step**: tried as 4-blocks-per-buffer while the speech lock is free, per block once speech
   takes it. No wall gain — a step's 1.5 s is GPU-saturated, so hiding host encode buys nothing; the change also
   broke the latent's byte-identity because a concurrent encoder doesn't order dispatches across blocks and the
@@ -20,6 +20,8 @@ byte-identical where arithmetic is unchanged). Full stage numbers and the tried 
   offsets — no kernel change, byte-identical latents (`8b9e75b5…` before and after). Measured saving ~0 (the prompt
   is ~0.6% of rows); kept since it is the technique's port at no cost.
 
-Headline: warm 2048 pictures measured 11.57-11.96 s on the shipped tree — not the 10% bar. The remaining host-side
+Headline: three warm runs on the shipped tree — prompt 0.22 s each, 6 steps 10.32/10.03/9.98 s, decoder
+1.41/1.36/1.35 s, totals 11.96/11.62/11.57 s — against card 84's prompt 0.22, 6 steps 9.54/9.47, decoder 1.37/1.43,
+totals 11.14/11.16 s. Not the 10% bar. Selftests pass (`zig build test test-golden`). The remaining host-side
 lever, a GPU-side Euler keeping the latent resident across steps (~0.1 s of the 1.5-1.6 s step wall is wall-GPU gap),
 is recorded in the recipe's next-ranked list.

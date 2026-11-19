@@ -1056,7 +1056,10 @@ card took the same picture at about 11.1-11.4 s over a changed one under 11 s.
 
 Card 124 tried each Spark (CUDA) technique on this path. Same prompt, seed 42, six steps, one resident server; the
 gates are card 80's (cosine >= 0.99, PSNR >= 28.2 dB, mean pixel diff <= 4.1) plus byte-identity where arithmetic is
-unchanged. The stage table below is `tf-h3-image-server profile` on the shipped tree (six steps summed):
+unchanged. The stage table is `tf-h3-image-server profile` (the diagnostic mode: each stage waits, so its sum tracks
+GPU work, not wall): card 84's column is the profile recorded when the switch landed (a warm request on that tree at
+load 12, six steps summed); card 124's is the `runV`/`runW` profile on the shipped tree. Both columns are bf16
+everywhere but fc1's int8 — the stage deltas are run-to-run spread on a loaded machine, not the change's effect.
 
 | Stage | Card 84 (bf16 + int8 fc1) | Card 124 (shipped) |
 |---|---|---|
@@ -1092,12 +1095,16 @@ unchanged. The stage table below is `tf-h3-image-server profile` on the shipped 
    `rows in` each step, and `normed` is read only by `rows out`). Latent sha1 `8b9e75b5…` before and after, warm
    totals 11.57-11.96 s against card 84's 11.14-11.16 — the ~0.6% of rows is below run noise.
 
+The shipped tree's three warm runs, quoted (card 84's lines are `prompt 0.22, 6 steps 9.54/9.47, decoder 1.37/1.43`,
+above): `runU: prompt 0.22 s, case 0.01 s, transformer reused 0.00 s, 6 steps 10.32 s, decoder 1.41 s, total 11.96
+s`; `runV: … 6 steps 10.03 s, decoder 1.36 s, total 11.62 s`; `runW: … 6 steps 9.98 s, decoder 1.35 s, total 11.57
+s`. Selftests pass (`zig build test test-golden`, h3 gemm/prompt/decoder selftests included).
+
 The 10% bar (about 10.0 s) is not met on this silicon: the step is GPU-bound at the products' rate, the remaining
 wall-GPU gap is ~0.1 s a step of host round-trips (latent up, velocity down, host Euler), and every int8 widening
 either fails the picture or costs its win in the fold. The lever worth a next card is a GPU-side Euler with the
 latent resident across steps (`h3_euler` exists on the CUDA path); that also deletes the per-step velocity
 download.
-
 
 ### Next, ranked
 
