@@ -13,7 +13,7 @@ const W = host.width;
 const F = host.ffn;
 
 const image align(16) = @embedFile("fatbin_h3_image_decoder").*;
-const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_softmax", "h3d_heads", "h3d_attention", "h3d_unheads", "h3d_swiglu" };
+const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_res_norm", "h3d_softmax", "h3d_heads", "h3d_attention", "h3d_unheads", "h3d_swiglu" };
 
 /// H3_PROFILE's stages, in the order a pass runs them: where a warm picture's decoder seconds go.
 pub const profile_stages = [_][]const u8{ "embedding", "norms", "products", "finish", "heads", "attention", "swiglu" };
@@ -44,8 +44,9 @@ pub const Timing = struct { wall: f64 = 0, gpu: f64 = 0 };
 /// What one pass runs: the embedding, blocks [from, to), then norm_out and proj_out.
 pub const Stages = struct { embed: bool = true, from: usize = 0, to: usize, final: bool = true };
 
-/// Tiles a pass holds at most; `scratch` is sized at `prepare`.
-pub const most_batch = 64;
+/// Tiles a pass holds at most; `scratch` is sized at `prepare`. 128 covers a 2048² picture's
+/// 121 tiles in one pass, the way mmh3 decodes its whole canvas at once.
+pub const most_batch = 128;
 
 /// The fast path's cuBLASLt plans: each projection fp32 out into `acc`, attention batched over
 /// a pass's (tile, head)s, its scores, softmax probabilities and output in `acc` too (free then).
@@ -352,13 +353,17 @@ pub const Decoder = struct {
             try d.launch("h3d_embed", .{ .x = 4, .y = s.m, .z = 1 }, .{ .x = 256, .y = 1 }, 0, &b);
         }
         try d.lap("embedding");
-        for (stages.from..stages.to) |i| try d.layer(s, i);
+        var pending: ?usize = null;
+        for (stages.from..stages.to) |i| pending = try d.layer(s, i, pending);
+        // The last block's w2 residual ends this pass's blocks: run its res_norm (xn overwritten or
+        // ignored after) so the stream is whole for the next stage or the final norm.
+        if (pending) |scale| try d.resNorm(s, scale, d.plan.tail(.norm_w));
         if (stages.final) {
             var a = d.args(&.{ d.dev(d.view.x), d.param(d.plan.tail(.norm_w)), d.param(d.plan.tail(.norm_b)), d.dev(d.view.xn) });
             a.add(s);
             try d.launch("h3d_layer_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
             try d.lap("norms");
-            try d.gemm(s, d.view.xn, d.plan.tail(.proj_w), d.plan.tail(.proj_b), null, d.view.out, host.patch, W);
+            _ = try d.gemm(s, d.view.xn, d.plan.tail(.proj_w), d.plan.tail(.proj_b), null, d.view.out, host.patch, W);
         }
         try end.record(d.queue);
         try end.synchronize();
@@ -366,9 +371,11 @@ pub const Decoder = struct {
         return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
     }
 
-    /// y = bf16(x w^T + b): an ordered fp32 sum (h3d_linear), or the tensor cores' fp32 sums under `fast`,
-    /// both into `acc` for h3d_finish's bias and LayerScale rounding points.
-    fn gemm(d: *Decoder, s: Shape, x: usize, w: usize, b: usize, scale: ?usize, y: usize, n: usize, k: usize) !void {
+    /// y = bf16(x w^T + b): --tc asks cuBLASLt's bias epilogue for that one rounding straight into `y`
+    /// (no LayerScale) or into `wide`, where it waits for `resNorm` as the residual's u; a shape whose
+    /// algorithm won't fuse, and --exact's h3d_linear, keep the fp32 acc and h3d_finish's roundings.
+    /// Returns the residual's scale offset when the product is pending a `resNorm`.
+    fn gemm(d: *Decoder, s: Shape, x: usize, w: usize, b: usize, scale: ?usize, y: usize, n: usize, k: usize) !?usize {
         // h3d_linear loads K eight at a time
         if (k % 8 != 0) return error.H3BadShape;
         var p = s;
@@ -376,7 +383,15 @@ pub const Decoder = struct {
         p.k = @intCast(k);
         p.mode = @intFromBool(scale != null);
         if (d.fast) {
-            try d.tc.?.gemms.run(d.queue, d.dev(x), d.param(w), d.dev(d.view.acc), s.m, n, k, .f32);
+            const tc = &d.tc.?;
+            const plan = try tc.gemms.plan(s.m, @intCast(n), @intCast(k), .bf16, .bias);
+            if (plan.epilogue == .bias) {
+                try plan.runBias(d.dev(x), d.param(w), d.param(b), d.dev(if (scale == null) y else d.view.wide), tc.gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
+                try d.lap("products");
+                try d.lap("finish");
+                return scale;
+            }
+            try tc.gemms.run(d.queue, d.dev(x), d.param(w), d.dev(d.view.acc), s.m, n, k, .f32);
         } else {
             var product = d.args(&.{ d.dev(x), d.param(w), d.dev(d.view.acc) });
             product.add(p);
@@ -389,16 +404,31 @@ pub const Decoder = struct {
         a.add(p);
         try d.launch("h3d_finish", grid, block, 0, &a);
         try d.lap("finish");
+        return null;
     }
 
-    /// Block `i` on the pass's stream in place.
-    fn layer(d: *Decoder, s: Shape, i: usize) !void {
-        const p = d.plan;
-        var a = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm1)), d.dev(d.view.xn) });
+    /// x = bf16(x + bf16(u * scale)) then xn = RMSNorm(x) g, h3d_finish's mode 1 and h3d_rms_norm's
+    /// roundings fused; `u` is the product's bf16(acc + b) the epilogue wrote into `wide`.
+    fn resNorm(d: *Decoder, s: Shape, scale: usize, g: usize) !void {
+        var a = d.args(&.{ d.dev(d.view.wide), d.param(scale), d.param(g), d.dev(d.view.x), d.dev(d.view.xn) });
         a.add(s);
-        try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
+        try d.launch("h3d_res_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
         try d.lap("norms");
-        try d.gemm(s, d.view.xn, p.block(i, .qkv_w), p.block(i, .qkv_b), null, d.view.wide, 3 * W, W);
+    }
+
+    /// Block `i` on the pass's stream in place; `pending` is the previous block's w2 residual (the
+    /// scale's weight offset), folded into norm1's fused kernel. Returns this block's w2 residual.
+    fn layer(d: *Decoder, s: Shape, i: usize, pending: ?usize) !?usize {
+        const p = d.plan;
+        if (pending) |scale| {
+            try d.resNorm(s, scale, p.block(i, .norm1));
+        } else {
+            var a = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm1)), d.dev(d.view.xn) });
+            a.add(s);
+            try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
+            try d.lap("norms");
+        }
+        _ = try d.gemm(s, d.view.xn, p.block(i, .qkv_w), p.block(i, .qkv_b), null, d.view.wide, 3 * W, W);
         var h = d.args(&.{ d.dev(d.view.wide), d.dev(d.view.cos), d.dev(d.view.sin), d.dev(d.view.q), d.dev(d.view.k), d.dev(d.view.v) });
         h.add(s);
         try d.launch("h3d_heads", .{ .x = s.m, .y = host.heads, .z = 1 }, .{ .x = 32 }, 0, &h);
@@ -411,17 +441,20 @@ pub const Decoder = struct {
             try d.launch("h3d_attention", .{ .x = @intCast((s.tokens + 7) / 8), .y = host.heads, .z = s.tiles }, .{ .x = 256 }, 0, &t);
         }
         try d.lap("attention");
-        try d.gemm(s, d.view.o, p.block(i, .out_w), p.block(i, .out_b), p.block(i, .scale1), d.view.x, W, W);
-        var r = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm2)), d.dev(d.view.xn) });
-        r.add(s);
-        try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &r);
-        try d.lap("norms");
-        try d.gemm(s, d.view.xn, p.block(i, .w1_w), p.block(i, .w1_b), null, d.view.wide, 2 * F, W);
+        if (try d.gemm(s, d.view.o, p.block(i, .out_w), p.block(i, .out_b), p.block(i, .scale1), d.view.x, W, W)) |scale| {
+            try d.resNorm(s, scale, p.block(i, .norm2));
+        } else {
+            var r = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm2)), d.dev(d.view.xn) });
+            r.add(s);
+            try d.launch("h3d_rms_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &r);
+            try d.lap("norms");
+        }
+        _ = try d.gemm(s, d.view.xn, p.block(i, .w1_w), p.block(i, .w1_b), null, d.view.wide, 2 * F, W);
         var u = d.args(&.{ d.dev(d.view.wide), d.dev(d.view.act) });
         u.add(s);
         try d.launch("h3d_swiglu", .{ .x = @intCast(F / 32), .y = @intCast((s.m + 7) / 8), .z = 1 }, .{ .x = 32, .y = 8 }, 0, &u);
         try d.lap("swiglu");
-        try d.gemm(s, d.view.act, p.block(i, .w2_w), p.block(i, .w2_b), p.block(i, .scale2), d.view.x, W, F);
+        return d.gemm(s, d.view.act, p.block(i, .w2_w), p.block(i, .w2_b), p.block(i, .scale2), d.view.x, W, F);
     }
 
     /// Fast attention: packed q, k, v [tiles * heads, T, 64] through the batched products s = q . kᵀ

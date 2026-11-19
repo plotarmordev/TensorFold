@@ -334,6 +334,15 @@ default's. The decoder selftest's staged blocks land ~81–84% identical inside 
 — cuBLASLt's fp32 accumulation order, not an error — so `selftest --tc` drops only the identity bar
 (`selftest-tc.sh` gates that alone).
 
+Card 130 fuses the `--tc` decoder's finish pass: the bias-free-of-LayerScale projections run
+cuBLASLt's bias epilogue — `bf16(acc + b)` in the one rounding `h3d_finish` mode 0 held — and the
+LayerScale projections write that same rounded product into `u`, which `h3d_res_norm` folds into
+the next block norm (`x = bf16(x + bf16(u * s))`, then the RMS norm): every `h3d_finish` launch
+on the fast path goes away, 776 a picture at 341 µs each on the card-125 trace. `most_batch` is
+128 so a 2048² canvas's 121 tiles decode in one pass, the way mmh3 batches its VAE: a decode's
+launches per layer drop to mmh3's own count. Shapes whose algorithm won't fuse the bias keep the
+fp32 `acc` and `h3d_finish`, and `--exact` is unchanged.
+
 | Warm 2048² (pre-122 window) | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
 |---|---:|---:|---:|---:|---:|---:|
 | fp32-order decoder (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
