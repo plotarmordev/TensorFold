@@ -84,10 +84,13 @@ const Stat = struct {
 /// A latent of rows x cols cells: its tiles in one pass for the stage checks, then decoded in passes of `batch`.
 const Case = struct { rows: usize, cols: usize, batch: usize, deep: bool };
 
-pub fn run(gpa: std.mem.Allocator, a: std.mem.Allocator) !bool {
+/// `fast` opts the products and attention into the tensor-core path (the tool's `--tc`): the same
+/// synthetic weights and staged checks then gate it against the float64 host reference.
+pub fn run(gpa: std.mem.Allocator, a: std.mem.Allocator, fast: bool) !bool {
     const started = dec.seconds();
     const d = try dec.Decoder.init(gpa, vae.layers, 100);
     defer d.deinit();
+    d.fast = fast;
     try d.synthetic(a, 0x5eed);
     std.debug.print("CUDA decoder: {d} synthetic blocks made in {d:.1} s\n", .{ vae.layers, dec.seconds() - started });
     const weights = try a.alloc(u16, d.plan.total());

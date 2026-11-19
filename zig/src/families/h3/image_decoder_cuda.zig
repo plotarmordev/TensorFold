@@ -13,10 +13,13 @@ const W = host.width;
 const F = host.ffn;
 
 const image align(16) = @embedFile("fatbin_h3_image_decoder").*;
-const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_heads", "h3d_attention", "h3d_swiglu" };
+const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_softmax", "h3d_heads", "h3d_attention", "h3d_unheads", "h3d_swiglu" };
 
 /// H3_PROFILE's stages, in the order a pass runs them: where a warm picture's decoder seconds go.
 pub const profile_stages = [_][]const u8{ "embedding", "norms", "products", "finish", "heads", "attention", "swiglu" };
+
+/// The fast path's cuBLASLt workspace bound, the same 32 MiB the other H3 products hold.
+const tc_workspace_bytes = 32 << 20;
 
 /// h3_image_decoder.cu's H3dShape.
 const Shape = extern struct {
@@ -43,6 +46,55 @@ pub const Stages = struct { embed: bool = true, from: usize = 0, to: usize, fina
 
 /// Tiles a pass holds at most; `scratch` is sized at `prepare`.
 pub const most_batch = 64;
+
+/// The fast path's cuBLASLt plans: each projection fp32 out into `acc`, attention batched over
+/// a pass's (tile, head)s, its scores, softmax probabilities and output in `acc` too (free then).
+const Tc = struct {
+    lt: cuda.cublaslt.Library,
+    handle: cuda.cublaslt.Handle,
+    gemms: cuda.vit.Gemms,
+    /// scores q . kᵀ and output p . v, a plan a (tokens, batch) shape.
+    scores: std.AutoHashMapUnmanaged([2]u64, cuda.cublaslt.Gemm) = .empty,
+    out: std.AutoHashMapUnmanaged([2]u64, cuda.cublaslt.Gemm) = .empty,
+
+    fn open(gpa: std.mem.Allocator, d: *const cuda.Driver) !Tc {
+        var lt = try cuda.cublaslt.Library.open();
+        errdefer lt.close();
+        const handle = try cuda.cublaslt.createHandle(&lt);
+        errdefer _ = lt.api.cublasLtDestroy(handle);
+        var gemms = try cuda.vit.Gemms.init(gpa, d);
+        errdefer gemms.deinit();
+        return .{ .lt = lt, .handle = handle, .gemms = gemms };
+    }
+
+    fn close(tc: *Tc, gpa: std.mem.Allocator) void {
+        var it = tc.scores.valueIterator();
+        while (it.next()) |g| g.deinit();
+        tc.scores.deinit(gpa);
+        var it2 = tc.out.valueIterator();
+        while (it2.next()) |g| g.deinit();
+        tc.out.deinit(gpa);
+        tc.gemms.deinit();
+        _ = tc.lt.api.cublasLtDestroy(tc.handle);
+        tc.lt.close();
+    }
+
+    /// The batched plan of `which` for `n` tokens over `b` (tile, head)s.
+    fn plan(tc: *Tc, gpa: std.mem.Allocator, which: enum { scores, out }, n: u64, b: u64) !*cuda.cublaslt.Gemm {
+        const map = if (which == .scores) &tc.scores else &tc.out;
+        const got = try map.getOrPut(gpa, .{ n, b });
+        if (got.found_existing) return got.value_ptr;
+        errdefer map.removeByPtr(got.key_ptr);
+        // Row-major packed heads read column-major: k, q and v are each [64, n] with lda/ldb 64,
+        // so sᵀ [n, n] column-major of s row-major is kᵀ . q and oᵀ [64, n] is vᵀ . p.
+        const s: cuda.cublaslt.Spec = switch (which) {
+            .scores => .{ .ta = .t, .tb = .n, .m = n, .n = n, .k = 64, .a = .bf16, .b = .bf16, .c = .f32, .lda = 64, .ldb = 64, .ldc = n, .batch = @intCast(b), .sa = n * 64, .sb = n * 64, .sc = n * n },
+            .out => .{ .ta = .n, .tb = .n, .m = 64, .n = n, .k = n, .a = .bf16, .b = .bf16, .c = .f32, .lda = 64, .ldb = n, .ldc = 64, .batch = @intCast(b), .sa = n * 64, .sb = n * n, .sc = 64 * n },
+        };
+        got.value_ptr.* = try cuda.cublaslt.Gemm.init(&tc.lt, tc.handle, s, tc_workspace_bytes);
+        return got.value_ptr;
+    }
+};
 
 pub const seconds = @import("clock.zig").seconds;
 
@@ -75,6 +127,9 @@ pub const Decoder = struct {
     /// H3_PROFILE: wait after every stage and keep where a picture's decoder seconds went.
     profile: bool = false,
     spent: [profile_stages.len]f64 = @splat(0),
+    /// --tc: products and attention through tensor cores (cuBLASLt, fp32 sums), plans under `tc`.
+    fast: bool = false,
+    tc: ?Tc = null,
     mark: f64 = 0,
 
     /// A scratch view's byte offset inside `scratch`.
@@ -131,6 +186,7 @@ pub const Decoder = struct {
     fn tryDeinit(d: *Decoder) !void {
         try d.drain();
         d.staged.deinit(d.gpa);
+        if (d.tc) |*tc| tc.close(d.gpa);
         if (d.scratch) |*s| s.free();
         if (d.latent) |*l| l.free();
         d.weights.free();
@@ -196,8 +252,12 @@ pub const Decoder = struct {
         if (d.scratch) |*s| s.free();
         d.scratch = null;
         const m = batch * n;
+        if (d.fast and d.tc == null) d.tc = try Tc.open(d.gpa, &d.driver);
         // x, xn, wide, q, k, v, o, act, out (bf16 rows); tok's cells; the rotary tables; origins; acc fp32
-        const sizes = [_]usize{ m * W * 2, m * W * 2, m * 2 * F * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8, m * 2 * F * 4 };
+        // acc fp32, the products' sums; the fast path's attention also packs scores, softmax weights and
+        // output into it: its span is acc's or theirs, whichever is larger.
+        const acc = if (d.fast) @max(m * 2 * F, batch * host.heads * n * (3 * n + 64)) else m * 2 * F;
+        const sizes = [_]usize{ m * W * 2, m * W * 2, m * 2 * F * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8, acc * 4 };
         var total: usize = 0;
         for (sizes) |s| total += std.mem.alignForward(usize, s, 256);
         const buf = try cuda.DeviceBuffer.alloc(&d.driver, total);
@@ -305,7 +365,8 @@ pub const Decoder = struct {
         return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
     }
 
-    /// y = bf16(x w^T + b) via an ordered fp32 sum, or with `scale` the LayerScale residual.
+    /// y = bf16(x w^T + b): an ordered fp32 sum (h3d_linear), or the tensor cores' fp32 sums under `fast`,
+    /// both into `acc` for h3d_finish's bias and LayerScale rounding points.
     fn gemm(d: *Decoder, s: Shape, x: usize, w: usize, b: usize, scale: ?usize, y: usize, n: usize, k: usize) !void {
         // h3d_linear loads K eight at a time
         if (k % 8 != 0) return error.H3BadShape;
@@ -313,9 +374,13 @@ pub const Decoder = struct {
         p.n = @intCast(n);
         p.k = @intCast(k);
         p.mode = @intFromBool(scale != null);
-        var product = d.args(&.{ d.dev(x), d.param(w), d.dev(d.view.acc) });
-        product.add(p);
-        try d.launch("h3d_linear", .{ .x = @intCast((n + 127) / 128), .y = @intCast((s.m + 127) / 128), .z = 1 }, .{ .x = 256 }, 0, &product);
+        if (d.fast) {
+            try d.tc.?.gemms.run(d.queue, d.dev(x), d.param(w), d.dev(d.view.acc), s.m, n, k, .f32);
+        } else {
+            var product = d.args(&.{ d.dev(x), d.param(w), d.dev(d.view.acc) });
+            product.add(p);
+            try d.launch("h3d_linear", .{ .x = @intCast((n + 127) / 128), .y = @intCast((s.m + 127) / 128), .z = 1 }, .{ .x = 256 }, 0, &product);
+        }
         try d.lap("products");
         const grid: cuda.Dim3 = .{ .x = @intCast((n + 31) / 32), .y = @intCast((s.m + 7) / 8), .z = 1 };
         const block: cuda.Dim3 = .{ .x = 32, .y = 8 };
@@ -337,9 +402,13 @@ pub const Decoder = struct {
         h.add(s);
         try d.launch("h3d_heads", .{ .x = s.m, .y = host.heads, .z = 1 }, .{ .x = 32 }, 0, &h);
         try d.lap("heads");
-        var t = d.args(&.{ d.dev(d.view.q), d.dev(d.view.k), d.dev(d.view.v), d.dev(d.view.o) });
-        t.add(s);
-        try d.launch("h3d_attention", .{ .x = @intCast((s.tokens + 7) / 8), .y = host.heads, .z = s.tiles }, .{ .x = 256 }, 0, &t);
+        if (d.fast) {
+            try d.attentionTc(s);
+        } else {
+            var t = d.args(&.{ d.dev(d.view.q), d.dev(d.view.k), d.dev(d.view.v), d.dev(d.view.o) });
+            t.add(s);
+            try d.launch("h3d_attention", .{ .x = @intCast((s.tokens + 7) / 8), .y = host.heads, .z = s.tiles }, .{ .x = 256 }, 0, &t);
+        }
         try d.lap("attention");
         try d.gemm(s, d.view.o, p.block(i, .out_w), p.block(i, .out_b), p.block(i, .scale1), d.view.x, W, W);
         var r = d.args(&.{ d.dev(d.view.x), d.param(p.block(i, .norm2)), d.dev(d.view.xn) });
@@ -352,6 +421,28 @@ pub const Decoder = struct {
         try d.launch("h3d_swiglu", .{ .x = @intCast(F / 32), .y = @intCast((s.m + 7) / 8), .z = 1 }, .{ .x = 32, .y = 8 }, 0, &u);
         try d.lap("swiglu");
         try d.gemm(s, d.view.act, p.block(i, .w2_w), p.block(i, .w2_b), p.block(i, .scale2), d.view.x, W, F);
+    }
+
+    /// Fast attention: packed q, k, v [tiles * heads, T, 64] through the batched products s = q . kᵀ
+    /// (fp32), h3d_softmax's bf16 weights, o = p . v (fp32), then h3d_unheads to the out projection's
+    /// rows. Scores, weights and output share `acc` (the products' sums are free during attention).
+    fn attentionTc(d: *Decoder, s: Shape) !void {
+        const tc = &d.tc.?;
+        const n: u64 = s.tokens;
+        const b: u64 = s.tiles * host.heads;
+        const acc = d.dev(d.view.acc);
+        const scores = try tc.plan(d.gpa, .scores, n, b);
+        const out = try tc.plan(d.gpa, .out, n, b);
+        const p_bf16 = acc + n * n * 4 * b;
+        const o_f32 = p_bf16 + n * n * 2 * b;
+        try scores.run(1, d.dev(d.view.k), d.dev(d.view.q), 0, acc, tc.gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
+        var a = d.args(&.{ acc, p_bf16 });
+        a.add(s);
+        try d.launch("h3d_softmax", .{ .x = @intCast(b), .y = 1, .z = 1 }, .{ .x = 128 }, 0, &a);
+        try out.run(1, d.dev(d.view.v), p_bf16, 0, o_f32, tc.gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
+        var u = d.args(&.{ o_f32, d.dev(d.view.o) });
+        u.add(s);
+        try d.launch("h3d_unheads", .{ .x = s.m, .y = host.heads, .z = 1 }, .{ .x = 64 }, 0, &u);
     }
 
     /// The decoded picture [3, 16 rows, 16 cols] (normalised) of a raw latent: tiles in batches, blended in fp32.
