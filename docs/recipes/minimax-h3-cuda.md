@@ -319,8 +319,8 @@ prompt 1.1, transformer 12.8, decoder 4.9), cold 157.8 s, peak 76,665 MiB.
 `--tc` opts the decoder's products and attention onto tensor cores: each projection runs cuBLASLt
 bf16 with fp32 sums into the same `acc` `h3d_finish` reads (the bias and LayerScale keep their
 rounding points), and attention runs as batched q·kᵀ and p·v around `h3d_softmax`/`h3d_unheads`.
-The ordered fp32 kernels stay the default; `bench-script.sh` passes `H3_DECODER=tc` through to the
-resident decoder and the `reference` compare.
+The tensor-core path is the default from card 122 on; `--exact` opts back into the ordered fp32
+kernels, and `bench-script.sh` maps `H3_DECODER=exact` to it.
 
 `2243f9e8` (job `top-2567f9589044`, 19 November, exit 0, `H3_DECODER=tc`) ran the tensor-core decoder beside
 the default `52350e5b` window (job `top-b79ca42af474`, exit 0), and `9914f752`'s window (job
@@ -384,6 +384,18 @@ stage→quantize→mma prologue costs ~11 s a picture against `h3_attention`'s p
 scale granularity and the bf16↔fp8 conversion cost more than the narrower mma returns at this tile size, and the
 last 0.002 of cosine likely needs the weighed scores in int8 too rather than e4m3. A follow-up that pipelines the
 prologue and finishes the precision split starts from these measurements.
+
+`<sha>` (job `top-<job>`, 19 November, exit 0, `bench-script.sh`) put each denoising step in one CUDA
+graph — rows in, every block's launches, the step head and the Euler update — replayed on a dedicated
+stream (`H3_PROFILE`, which waits after each stage, keeps the eager path), staged every step's AdaLN
+lines once and pointed each step's graph at its own slice, and streamed the last step's video rows out
+band by band so the decoder's first tiles launch while the step's tail finishes (`bench-script.sh`
+hands the decoder a fifo for `OUT.rows.f32`; the decoder reads it progressively, unpatchifying,
+denormalising and uploading each band and launching a pass once the rows its tiles read have landed).
+The `--tc` decoder became the default in the same window, `--exact` keeping the fp32-order kernels and
+their identity selftest. MEASURED: <fill after bench>. Every selftest passed, the same-latent
+`reference` bound held (<fill>), and `h3_image_compare.py` against episode 1's Mac picture measured
+<fill>.
 
 
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:

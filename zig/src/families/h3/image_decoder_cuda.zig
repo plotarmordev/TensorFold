@@ -6,6 +6,7 @@ const report = @import("report.zig");
 const cuda = @import("cuda");
 pub const host = @import("image_decoder.zig");
 pub const vae = @import("picture_vae.zig");
+pub const picture = @import("picture.zig");
 pub const reference = @import("image_decoder_reference.zig");
 pub const host_decoder = @import("image_decoder_host.zig");
 
@@ -229,25 +230,51 @@ pub const Decoder = struct {
         try d.weights.upload(0, std.mem.sliceAsBytes(bits));
     }
 
-    /// The raw latent [24, rows, cols] in, and scratch for passes of up to `batch` tiles of h x w cells.
-    pub fn prepare(d: *Decoder, raw: []const f32, rows: usize, cols: usize, h: usize, w: usize, batch: usize) !void {
-        if (raw.len != try host.latentLength(rows, cols)) return error.H3BadLatentLength;
+    /// The latent's room and scratch for passes of up to `batch` tiles of h x w cells, with the latent
+    /// still empty: `feed` uploads each cell row as the streamer hands it over.
+    pub fn prepareEmpty(d: *Decoder, rows: usize, cols: usize, h: usize, w: usize, batch: usize) !void {
         if (h > rows or w > cols) return error.H3BadTiles;
         const n = try host.tokens(h, w);
         if (batch == 0 or batch > most_batch) return error.H3BadTiles;
         try d.ctx.makeCurrent();
         try d.drain();
         if (d.latent) |*l| l.free();
-        d.latent = null;
-        const lat = try cuda.DeviceBuffer.fromHost(&d.driver, std.mem.sliceAsBytes(raw));
-        d.latent = lat;
+        d.latent = try cuda.DeviceBuffer.alloc(&d.driver, try host.latentLength(rows, cols) * 4);
         errdefer {
             if (d.latent) |*l| l.free();
             d.latent = null;
         }
         if (d.scratch) |*s| s.free();
         d.scratch = null;
+        try d.prepareScratch(rows, cols, h, w, batch, n);
+    }
+
+    /// The raw latent [24, rows, cols] in, and scratch for passes of up to `batch` tiles of h x w cells.
+    pub fn prepare(d: *Decoder, raw: []const f32, rows: usize, cols: usize, h: usize, w: usize, batch: usize) !void {
+        if (raw.len != try host.latentLength(rows, cols)) return error.H3BadLatentLength;
+        try prepareEmpty(d, rows, cols, h, w, batch);
+        try d.feed(raw, 0, rows);
+        try d.queue.synchronize();
+    }
+
+    /// Latent cell rows `[first, first + band_rows)` of a channel-major band copy onto the device, queued
+    /// on the decoder's stream: each channel's slice of the band is its own copy, so a pass launched
+    /// after them on the same stream sees the rows it reads.
+    pub fn feed(d: *Decoder, banded: []const f32, first: usize, band_rows: usize) !void {
+        const l = d.latent orelse return error.H3BadLatentLength;
+        const plane = d.rows * d.cols;
+        if (banded.len != host.channels * band_rows * d.cols or first + band_rows > d.rows) return error.H3BadLatentLength;
+        for (0..host.channels) |ch| {
+            const dst = l.ptr + (ch * plane + first * d.cols) * 4;
+            const src = banded[ch * band_rows * d.cols ..][0 .. band_rows * d.cols];
+            try d.driver.check(d.driver.api.cuMemcpyHtoDAsync_v2(dst, src.ptr, src.len * 4, d.queue.handle), "cuMemcpyHtoDAsync");
+        }
+    }
+
+    /// The scratch's buffers and tables after `latent` exists: shared by `prepare` and `prepareEmpty`.
+    fn prepareScratch(d: *Decoder, rows: usize, cols: usize, h: usize, w: usize, batch: usize, n: usize) !void {
         const m = batch * n;
+
         if (d.fast and d.tc == null) d.tc = try Tc.open(d.gpa, &d.driver);
         // x, xn, wide, q, k, v, o, act, out (bf16 rows); tok's cells; the rotary tables; origins; acc fp32
         // acc fp32, the products' sums; the fast path's attention also packs scores f32, weights bf16

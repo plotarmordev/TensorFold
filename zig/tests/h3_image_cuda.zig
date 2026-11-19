@@ -230,29 +230,86 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     defer device_rows.deinit();
     std.debug.print("{d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, case ready in {d:.1} s\n", .{ canvas.width, canvas.height, count, text, held, target, tiles, model.blocks.len, steps, h3.seconds() - started });
 
-    // H3_PROFILE: wait after every block stage and print where the steps went (the waits cost a few ms a step)
-    const profiling = if (init.environ_map.get("H3_PROFILE")) |v| v.len > 0 else false;
-    model.profile = profiling;
-    model.spent = @splat(0);
-    // stage() treats every address as host memory: the resident table stays out, and x is only room for the stream
+    const rows_path = try std.fmt.allocPrintSentinel(a, "{s}.rows.f32", .{prefix}, 0);
+    const video = try a.alloc(f32, noise.len);
+
+    // the steps run on their own non-blocking stream so each captures as one CUDA graph
+    var work = try @import("cuda").Stream.init(&model.driver, true);
+    defer work.deinit();
+    model.stream = work;
+
+    // every step's AdaLN lines staged once; each step's graph points `line` at its own slice
+    var adaln_dev = try @import("cuda").DeviceBuffer.fromHost(&model.driver, std.mem.sliceAsBytes(adaln));
+    defer adaln_dev.free();
+
+    // stage() treats every address as host memory: the resident table stays out, x is room for the stream,
+    // and `line` carries this step's count only (the validation reads one step's lines)
     const checked = try model.plan(&in);
     try model.drain();
     var upload = checked;
     upload.input[1] = 0;
     var device = try h3.host.stage(model, &in, upload);
     device.tables = modulation.blocks.ptr;
+    try h3.geometry.prepare(model, &device, checked);
+    try model.warm(count);
     const transformer = h3.seconds();
-    for (0..steps) |s| {
-        const step = h3.seconds();
-        try device_rows.in(device.x);
-        try model.inputs[2].?.upload(0, std.mem.sliceAsBytes(adaln[s * count ..][0..count]));
-        _ = try model.forward(&device);
-        try device_rows.out(device.x, s, pdd.deltas[s]);
-        try model.stream.synchronize();
-        std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - step });
+
+    // H3_PROFILE keeps the eager path: its per-stage waits can't be captured
+    const profiling = if (init.environ_map.get("H3_PROFILE")) |v| v.len > 0 else false;
+    model.profile = profiling;
+    model.spent = @splat(0);
+    const graphs = !profiling;
+    var execs = try a.alloc(?@import("cuda").graph.Exec, steps);
+    defer {
+        for (execs) |*e| if (e.*) |*x| x.deinit();
+        a.free(execs);
     }
-    const video = try a.alloc(f32, noise.len);
-    try device_rows.latent(video);
+    for (execs) |*e| e.* = null;
+    for (0..steps) |s| {
+        const mark = h3.seconds();
+        device.line = adaln_dev.ptr + s * count * 4;
+        if (graphs) {
+            if (execs[s] == null) execs[s] = stepGraph(model, &device, checked, &device_rows, s, pdd.deltas[s]) catch |err| blk: {
+                std.debug.print("step {d} runs without its graph: {s}\n", .{ s + 1, @errorName(err) });
+                break :blk null;
+            };
+            if (execs[s]) |e| {
+                try e.launchOn(work);
+            } else try stepEager(model, &device, checked, &device_rows, s, pdd.deltas[s]);
+        } else try stepEager(model, &device, checked, &device_rows, s, pdd.deltas[s]);
+        if (s + 1 == steps) {
+            // the decoder's first tiles need only the first latent rows: stream the video out band by
+            // band on the same stream, each written to rows.f32 as it lands while the step finishes
+            const n_bands = @min(8, @max(1, target));
+            const band = (target + n_bands - 1) / n_bands;
+            var pinned = try @import("cuda").HostBuffer.alloc(&model.driver, video.len * 4);
+            defer pinned.free();
+            var events = try a.alloc(@import("cuda").Event, n_bands);
+            defer {
+                for (events) |*e| e.deinit();
+                a.free(events);
+            }
+            var rows_file = try std.Io.Dir.cwd().createFile(init.io, rows_path, .{});
+            defer rows_file.close(init.io);
+            var row: usize = 0;
+            for (events) |*e| e.* = try @import("cuda").Event.init(&model.driver, false);
+            for (0..n_bands) |b| {
+                const hi = @min(target, row + band);
+                try device_rows.video.downloadAsync(row * width * 4, pinned.bytes[row * width * 4 .. hi * width * 4], work.handle);
+                try events[b].record(work);
+                row = hi;
+            }
+            row = 0;
+            for (0..n_bands) |b| {
+                const hi = @min(target, row + band);
+                try events[b].synchronize();
+                try rows_file.writeStreamingAll(init.io, pinned.bytes[row * width * 4 .. hi * width * 4]);
+                @memcpy(std.mem.sliceAsBytes(video[row * width .. hi * width]), pinned.bytes[row * width * 4 .. hi * width * 4]);
+                row = hi;
+            }
+        } else try model.stream.synchronize();
+        std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - mark });
+    }
     const spent = h3.seconds() - transformer;
     std.debug.print("transformer: {d:.2} s\n", .{spent});
     if (profiling) {
@@ -264,11 +321,45 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         std.debug.print("  outside the blocks: {d:.2} s\n", .{spent - blocks});
     }
 
-    const rows_path = try std.fmt.allocPrintSentinel(a, "{s}.rows.f32", .{prefix}, 0);
-    try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
+    // a case with no steps (never in the distilled schedule) streamed nothing: its rows stay zero
+    if (steps == 0) {
+        @memset(video, 0);
+        try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
+    }
+
     const latent = try a.alloc(f32, video.len);
     try picture.unpatchify(video, target_grid, latent);
     const latent_path = try std.fmt.allocPrintSentinel(a, "{s}.latent.f32", .{prefix}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = latent_path, .data = std.mem.sliceAsBytes(latent) });
     std.debug.print("wrote {s}.latent.f32: [{d}, {d}, {d}] normalised float32\n", .{ prefix, picture.channels, target_grid.rows, target_grid.columns });
+}
+
+/// The whole step captured once: rows in, the blocks' launches, the step's head and the Euler update.
+/// `device.line` already points at step `s`'s AdaLN lines; the graph replays those pointers.
+fn stepGraph(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32) !@import("cuda").graph.Exec {
+    const graph_api = @import("cuda").graph;
+    try graph_api.beginCapture(model.stream, .thread_local);
+    stepBody(model, device, checked, rows, s, delta) catch |err| {
+        if (graph_api.endCapture(model.stream)) |g| {
+            var dropped = g;
+            dropped.deinit();
+        } else |_| {}
+        return err;
+    };
+    var graph = try graph_api.endCapture(model.stream);
+    defer graph.deinit();
+    const exec = try graph.instantiate();
+    try exec.upload(model.stream);
+    return exec;
+}
+
+fn stepBody(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32) !void {
+    try rows.in(device.x);
+    try model.step(device, checked);
+    try rows.out(device.x, s, delta);
+}
+
+/// The eager step: the same body the graph captures, for H3_PROFILE's per-stage waits or a refused capture.
+fn stepEager(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32) !void {
+    try stepBody(model, device, checked, rows, s, delta);
 }

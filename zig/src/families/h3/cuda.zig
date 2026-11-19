@@ -255,7 +255,9 @@ pub const Model = struct {
         attention_out: u64 = 0,
     };
 
-    pub fn plan(self: *const Model, in: *const Inputs) !@import("cuda_validation.zig").Plan {
+    pub const Plan = @import("cuda_validation.zig").Plan;
+
+    pub fn plan(self: *const Model, in: *const Inputs) !Plan {
         return @import("cuda_validation.zig").read(self, in, 0, in.tiles);
     }
 
@@ -264,6 +266,30 @@ pub const Model = struct {
         const started = seconds();
         const checked = try self.plan(in);
         try self.drain();
+        try geometry.prepare(self, in, checked);
+        try self.step(in, checked);
+        try self.stream.synchronize();
+        return seconds() - started;
+    }
+
+    /// Warm the shape's scratch and plans so a `step` launches nothing but kernels and products:
+    /// the int8 reserve and every (rows, n, k) plan the blocks use. Host work only, no stream waits.
+    pub fn warm(self: *Model, rows: usize) !void {
+        const inner = self.inner;
+        if (self.int8) |t| {
+            try t.warm(self, rows);
+        } else {
+            _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
+            _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
+        }
+        // `out` and `fc2` keep their bf16 weights in both modes
+        _ = try self.gemms.plan(rows, self.hidden, inner);
+        _ = try self.gemms.plan(rows, self.hidden, self.mlp);
+    }
+
+    /// The launches of `forward` once `plan` and `geometry.prepare` ran: capturable work only —
+    /// kernels, device-to-device copies and cuBLASLt products on `self.stream`, no host rows or waits.
+    pub fn step(self: *Model, in: *const Inputs, checked: @import("cuda_validation.zig").Plan) !void {
         const rows: usize = in.rows;
         const tiles: usize = in.tiles;
         const dense = checked.keep == 0;
@@ -272,7 +298,6 @@ pub const Model = struct {
         const own0 = checked.own0;
         const own1 = checked.own1;
         const owned = own1 - own0;
-        try geometry.prepare(self, in, checked);
         const g = &self.geometry;
         const hidden = self.hidden;
         const inner = self.inner;
@@ -323,7 +348,7 @@ pub const Model = struct {
                 try self.attend(par, g.chosen + video0 * (prefix + keep) * 4, in.sizes, video1 - video0, video_tiles, prefix + keep, prefix + video0, true);
                 try self.lap("attention", &mark);
             }
-            if (in.attention_out != 0 and index == count - 1) try self.driver.check(self.driver.api.cuMemcpyDtoD_v2(in.attention_out, g.ya, rows * inner * 2), "cuMemcpyDtoD");
+            if (in.attention_out != 0 and index == count - 1) try self.driver.check(self.driver.api.cuMemcpyDtoDAsync_v2(in.attention_out, g.ya, rows * inner * 2, self.stream.handle), "cuMemcpyDtoDAsync");
             if (!dense) {
                 var args: cuda.Args = .{};
                 for ([_]u64{ g.ya, g.qkvc + 3 * inner * 2, g.coarse, in.slot }) |p| args.add(p);
@@ -352,11 +377,9 @@ pub const Model = struct {
             var args: cuda.Args = .{};
             for ([_]u64{ in.x, g.y, in.tables + (count - 1) * table_bytes, in.line }) |p| args.add(p);
             args.add(@as(c_int, @intCast(hidden)));
-            args.add(@as(c_int, gate_m));
+            args.add(@as(c_int, @intCast(gate_m)));
             try self.launch("h3_gate_add", .{ .x = @intCast(rows) }, 256, 0, &args);
         }
-        try self.stream.synchronize();
-        return seconds() - started;
     }
 
     /// y (rows, n) = x (rows, k) . w^T: through the int8 weight `q` when quantized, else the bf16 `w`.

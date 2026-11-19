@@ -198,11 +198,20 @@ pub fn patchify(latent: []const f32, g: Grid, out: []f32) !void {
 
 /// patchify's inverse.
 pub fn unpatchify(rows: []const f32, g: Grid, out: []f32) !void {
+    try unpatchifyRows(rows, g, out);
+}
+
+/// unpatchify of a row band: `rows` holds the band's patches (whole patch rows), `out` the band's
+/// channel-major cells (24 x the band's cell rows). The whole grid's rows give `unpatchify` back.
+pub fn unpatchifyRows(rows: []const f32, g: Grid, out: []f32) !void {
     const n = try gridRows(g);
-    if (rows.len != n * row_width or out.len != rows.len) return error.H3BadLatentLength;
-    const plane = g.rows * g.columns;
-    for (0..g.rows / 2) |pr| for (0..g.columns / 2) |pc| for (0..channels) |c| for (0..2) |dy| for (0..2) |dx| {
-        out[c * plane + (2 * pr + dy) * g.columns + 2 * pc + dx] = rows[(pr * (g.columns / 2) + pc) * row_width + c * 4 + dy * 2 + dx];
+    const prs = g.columns / 2; // patches a row band covers
+    if (prs == 0 or rows.len % (prs * row_width) != 0 or rows.len > n * row_width) return error.H3BadLatentLength;
+    const patch_rows = rows.len / (prs * row_width); // patch rows in this band
+    const cell_rows = patch_rows * 2;
+    if (out.len != channels * cell_rows * g.columns) return error.H3BadLatentLength;
+    for (0..patch_rows) |pr| for (0..prs) |pc| for (0..channels) |c| for (0..2) |dy| for (0..2) |dx| {
+        out[c * cell_rows * g.columns + (2 * pr + dy) * g.columns + 2 * pc + dx] = rows[(pr * prs + pc) * row_width + c * 4 + dy * 2 + dx];
     };
 }
 
