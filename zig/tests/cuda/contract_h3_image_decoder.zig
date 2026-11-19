@@ -456,6 +456,7 @@ pub const Dec = struct {
             .rms_norm => ref.rmsNorm(self.in, s, want, mag),
             .layer_norm => ref.layerNorm(self.in, s, want, mag),
             .linear => ref.linear(self.in, s, want, mag),
+            .finish_bias, .finish_scale => ref.finish(self.in, want, mag),
             .res_norm => ref.resNorm(self.in, s, want, mag),
             .heads => ref.heads(self.in, s, want, mag),
             .attention => ref.attention(self.in, s, want, mag),

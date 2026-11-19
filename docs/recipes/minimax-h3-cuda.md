@@ -86,12 +86,12 @@ Job `top-7ccced985b0a` ran it at `cf2da2d92`: the build passed and `kernel-contr
 |---|---|---|
 | Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CUDA `prompt_cuda.zig`, a layer's weights uploaded at a time; CPU reference `prompt_reference.zig`, the case from `prompt_case.zig` |
 | Weights | `model.safetensors.index.json` and its shards | `Model.loadSharded` reads the shards in place |
-| Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | host, `rows_reference.rowsIn` |
+| Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | `h3_rows_in` (`cuda_rows.zig`, card 122); CPU reference `rows_reference.rowsIn` |
 | AdaLN tables: the time embedder, each block's projection per timestep | `h3_modulation` | CUDA `cuda_modulation.zig`, resident (line, part, c) tables; final-norm table downloaded |
 | Rotary: 48 angles over 96 dims | `picture.rotary`, 96 wide, duplicated | `cos`/`sin` 48 wide, `rot` 48: the first half of each row |
 | Transformer blocks, dense, tiles of 64 | `block.zig` | these blocks, `keep` 0 |
-| Final norm and the step's head, `pdd_fused_heads` | `h3_final_norm`, `h3_rows_out` | host, `rows_reference.finalNorm`, `rowsOut` |
-| Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | the same |
+| Final norm and the step's head, `pdd_fused_heads` | `h3_final_norm`, `h3_rows_out` | `h3_rows_out` on the device (final norm + head), `rows_reference`'s order |
+| Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | `h3_euler` on the device; `picture.unpatchify` on the host |
 | Image decoder | `image_decoder_metal.zig` | CUDA `image_decoder_cuda.zig`, batched tiles; host blending and PNG output |
 
 Gaps between the video and image transformer: the image transformer has no routing gate (dense attention), fuses each
