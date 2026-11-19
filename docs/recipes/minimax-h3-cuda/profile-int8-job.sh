@@ -26,17 +26,22 @@ for c in ncu /usr/local/cuda/bin/ncu /opt/nvidia/nsight-compute/*/ncu; do
     if [ -x "$c" ] || command -v "$c" >/dev/null 2>&1; then NCU="$c"; break; fi
 done
 echo "ncu: ${NCU:-MISSING}"
+# the image's /usr/local/cuda/bin/ncu is a shim without its nsight-compute support dir: probe before profiling
+if [ -n "$NCU" ] && ! "$NCU" --version >/dev/null 2>&1; then
+    echo "ncu found but unusable: $("$NCU" --version 2>&1 | head -1)"
+    NCU=
+fi
 if [ -n "$NCU" ]; then
     # contract run under the profiler, limited to the gemm kernel's launches
     "$NCU" --kernel-name-base demangled -k h3_gemm_int8 \
         --set full --section SchedulerStats --section Occupancy \
         --section SpeedOfLight --section WarpStateStats \
         -o /work/out/h3-gemm-int8-ncu \
-        "$BIN" kernel-contract "h3 int8" || true
-    "$NCU" --import /work/out/h3-gemm-int8-ncu.ncu-rep --page details || true
+        "$BIN" kernel-contract "h3 int8"
+    "$NCU" --import /work/out/h3-gemm-int8-ncu.ncu-rep --page details
 else
     # no profiler in the image: the gates' own timing is the only device evidence
     "$BIN" kernel-contract "h3 int8"
-    # register/smem/readout from the embedded fatbin instead of a profile
-    cuobjdump -res-usage /work/contract/fatbin/h3.fatbin 2>/dev/null | grep -A12 "h3_gemm_int8" || true
 fi
+# register/smem/readout from the embedded fatbin either way
+cuobjdump -res-usage /work/contract/fatbin/h3.fatbin 2>/dev/null | grep -A12 "h3_gemm_int8" || true
