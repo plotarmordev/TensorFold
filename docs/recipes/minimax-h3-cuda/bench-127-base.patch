@@ -1,16 +1,16 @@
 diff --git a/zig/src/families/h3/prompt_cache.zig b/zig/src/families/h3/prompt_cache.zig
 new file mode 100644
-index 000000000..f8f501cf2
+index 000000000..50c7b5de2
 --- /dev/null
 +++ b/zig/src/families/h3/prompt_cache.zig
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,104 @@
 +//! MiniMax-H3-Image's kept prompt states: a prompt's presentation and refined text rows held by the
 +//! resident prompt server across pictures, least recently used inside a byte budget. The key is the
 +//! prompt's exact bytes as tokenised; the geometry, marks and tokenizer are the process's own, checked
 +//! at load, so the bytes alone decide. H3-Image has no negative prompt or CFG, so nothing else varies.
 +const std = @import("std");
 +
-+/// Bytes of kept states without H3_PROMPT_CACHE: a hundred prompts' worth.
++/// Bytes of kept states without H3_PROMPT_CACHE: a few full-length prompts' worth.
 +pub const default_bytes: usize = 256 << 20;
 +
 +/// One prompt's states: its rows' ids and tags and the refiner's text rows for them.
@@ -21,7 +21,6 @@ index 000000000..f8f501cf2
 +    text: []u16,
 +    /// What the entry's slices hold, counted against the budget.
 +    bytes: usize,
-+    used: u64,
 +
 +    fn free(e: *Entry, a: std.mem.Allocator) void {
 +        a.free(e.prompt);
@@ -42,7 +41,6 @@ index 000000000..f8f501cf2
 +    /// `entries`' bytes held against `budget`.
 +    held: usize = 0,
 +    budget: usize,
-+    clock: u64 = 0,
 +    hits: u64 = 0,
 +    misses: u64 = 0,
 +
@@ -68,10 +66,8 @@ index 000000000..f8f501cf2
 +            c.misses += 1;
 +            return null;
 +        };
-+        c.clock += 1;
-+        const e = c.entries.items[i];
-+        e.used = c.clock;
 +        c.hits += 1;
++        const e = c.entries.items[i];
 +        const last = c.entries.items.len - 1;
 +        if (i < last) {
 +            std.mem.copyForwards(*Entry, c.entries.items[i..last], c.entries.items[i + 1 .. last + 1]);
@@ -86,17 +82,19 @@ index 000000000..f8f501cf2
 +    pub fn keep(c: *Cache, prompt: []const u8, ids: []const u32, tags: []const i32, text: []const u16) void {
 +        const bytes = prompt.len + 4 * (ids.len + tags.len) + 2 * text.len;
 +        if (bytes > c.budget or c.indexOf(prompt) != null) return;
-+        while (c.held + bytes > c.budget) c.dropOldest();
 +        const e = c.gpa.create(Entry) catch return;
-+        e.* = .{ .prompt = &.{}, .ids = &.{}, .tags = &.{}, .text = &.{}, .bytes = bytes, .used = 0 };
++        e.* = .{ .prompt = &.{}, .ids = &.{}, .tags = &.{}, .text = &.{}, .bytes = bytes };
 +        e.prompt = c.gpa.dupe(u8, prompt) catch return e.free(c.gpa);
 +        e.ids = c.gpa.dupe(u32, ids) catch return e.free(c.gpa);
 +        e.tags = c.gpa.dupe(i32, tags) catch return e.free(c.gpa);
 +        e.text = c.gpa.dupe(u16, text) catch return e.free(c.gpa);
-+        c.entries.append(c.gpa, e) catch return e.free(c.gpa);
-+        c.clock += 1;
-+        e.used = c.clock;
++        // the copies are owned: only now may older entries leave for the room they need
 +        c.held += bytes;
++        c.entries.append(c.gpa, e) catch return {
++            c.held -= bytes;
++            return e.free(c.gpa);
++        };
++        while (c.held > c.budget) c.dropOldest();
 +    }
 +
 +    fn indexOf(c: *const Cache, prompt: []const u8) ?usize {
@@ -112,10 +110,10 @@ index 000000000..f8f501cf2
 +};
 diff --git a/zig/src/families/h3/prompt_cache_test.zig b/zig/src/families/h3/prompt_cache_test.zig
 new file mode 100644
-index 000000000..abeb1ff5b
+index 000000000..5ebbe1fea
 --- /dev/null
 +++ b/zig/src/families/h3/prompt_cache_test.zig
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,126 @@
 +//! The prompt cache's contract: keyed by the prompt's exact bytes, states returned verbatim,
 +//! least recently used evicted inside the budget, nothing kept or lost past it.
 +const std = @import("std");
@@ -179,6 +177,26 @@ index 000000000..abeb1ff5b
 +    try testing.expectEqual(@as(usize, 2), c.entries.items.len);
 +}
 +
++test "h3 prompt cache: kept states are the cache's own copies, not the caller's slices" {
++    const a = testing.allocator;
++    var c = pc.Cache.init(a, 1 << 20);
++    defer c.deinit();
++    const s = try states(a, 4);
++    defer a.free(s[0]);
++    defer a.free(s[1]);
++    defer a.free(s[2]);
++
++    c.keep("prompt", s[0], s[1], s[2]);
++    // the request arena's slices may be reused or overwritten; the kept states must not follow
++    s[0][0] = 9999;
++    s[1][0] = -7;
++    s[2][0] = 4242;
++    const hit = c.find("prompt").?;
++    try testing.expectEqual(@as(u32, 1000), hit.ids[0]);
++    try testing.expectEqual(@as(i32, 1), hit.tags[0]);
++    try testing.expectEqual(@as(u16, 0), hit.text[0]);
++}
++
 +test "h3 prompt cache: an entry over the budget keeps nothing, a zero budget keeps nothing" {
 +    const a = testing.allocator;
 +    const s = try states(a, 4);
@@ -222,3 +240,115 @@ index 000000000..abeb1ff5b
 +    try testing.expectEqual(@as(usize, 0), pc.Cache.budgetOf("0"));
 +    try testing.expectEqual(@as(usize, 64 << 20), pc.Cache.budgetOf("64"));
 +}
+diff --git a/zig/src/families/h3/prompt_cuda.zig b/zig/src/families/h3/prompt_cuda.zig
+index 4ff19c19c..055e41b4f 100644
+--- a/zig/src/families/h3/prompt_cuda.zig
++++ b/zig/src/families/h3/prompt_cuda.zig
+@@ -12,6 +12,7 @@ pub const reference = @import("prompt_reference.zig");
+ pub const case = @import("prompt_case.zig");
+ pub const picture = @import("picture.zig");
+ pub const checkpoint = @import("checkpoint.zig");
++pub const cache = @import("prompt_cache.zig");
+ const report = @import("report.zig");
+ const bf16_round = @import("bf16_round");
+ 
+@@ -522,3 +523,7 @@ pub const Runner = struct {
+ test "condition projection keeps bias when the actual-row heuristic cannot fuse it" {
+     try @import("prompt_cuda_products_test.zig").check(Products, Products.run);
+ }
++
++test "the prompt cache's states, budget and LRU order" {
++    _ = @import("prompt_cache_test.zig");
++}
+diff --git a/zig/tests/h3_image_prompt_cuda.zig b/zig/tests/h3_image_prompt_cuda.zig
+index 38a68fc84..c811f54b8 100644
+--- a/zig/tests/h3_image_prompt_cuda.zig
++++ b/zig/tests/h3_image_prompt_cuda.zig
+@@ -15,6 +15,7 @@ const picture = hp.picture;
+ const ck = hp.checkpoint;
+ const files = @import("h3_image_files.zig");
+ const match = @import("h3_image_match.zig");
++const prompt_cache = hp.cache;
+ 
+ const usage =
+     \\usage: tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
+@@ -49,7 +50,7 @@ pub fn main(init: std.process.Init) !u8 {
+         std.debug.print("{s}", .{usage});
+         return 2;
+     }
+-    var loaded = try Loaded.open(init.io, a, gpa, args[1], args[2]);
++    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, args[1], args[2]);
+     defer loaded.deinit(gpa);
+     if (serving) return serve(init, gpa, &loaded);
+     try pictureRun(init.io, a, &loaded, args[3], args[4], args[5..]);
+@@ -67,8 +68,9 @@ const Loaded = struct {
+     front_shards: Shards,
+     runner: *hp.Runner,
+     res: hp.Resident,
+-
+-    fn open(io: std.Io, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
++    /// Kept prompt states across `--serve`'s pictures: the prompt's exact bytes to its rows.
++    cache: prompt_cache.Cache,
++    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
+         // the folder and its tokenizer, checked as the host prompt path checks them
+         const enc = try rules.checkEncoder(a, try read(io, a, &.{ encoder_dir, "config.json" }));
+         _ = try picture.checkIndex(a, try read(io, a, &.{ model_dir, "model_index.json" }));
+@@ -96,10 +98,12 @@ const Loaded = struct {
+         std.debug.print("{d:.2} GiB of prompt weights resident in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), seconds() - started });
+         for (shards.folder.files.values()) |*file| file.evict();
+         for (front_shards.folder.files.values()) |*file| file.evict();
+-        return .{ .enc = enc, .front = front, .tok = tok, .shards = shards, .front_shards = front_shards, .runner = runner, .res = res };
++        const cache = prompt_cache.Cache.init(gpa, prompt_cache.Cache.budgetOf(env.get("H3_PROMPT_CACHE")));
++        return .{ .enc = enc, .front = front, .tok = tok, .shards = shards, .front_shards = front_shards, .runner = runner, .res = res, .cache = cache };
+     }
+ 
+     fn deinit(l: *Loaded, gpa: std.mem.Allocator) void {
++        l.cache.deinit();
+         l.res.deinit();
+         l.runner.deinit();
+         l.front_shards.deinit(gpa);
+@@ -158,20 +162,31 @@ fn pictureRun(io: std.Io, a: std.mem.Allocator, loaded: *Loaded, prompt_path: []
+     if (std.mem.endsWith(u8, prompt, "\n")) prompt = prompt[0 .. prompt.len - 1];
+     if (std.mem.endsWith(u8, prompt, "\r")) prompt = prompt[0 .. prompt.len - 1];
+ 
+-    const p = try rules.present(a, &loaded.tok, loaded.enc.marks, &.{}, prompt);
+-    const pos = try rules.positions(a, p, loaded.enc.marks, &.{});
++    var p: rules.Presentation = undefined;
++    var text: []u16 = undefined;
++    if (loaded.cache.find(prompt)) |kept| {
++        // the prompt's states as its last encode left them: the encoder and refiner run no kernels
++        p = .{ .ids = @constCast(kept.ids), .tags = @constCast(kept.tags), .at = &.{} };
++        text = @constCast(kept.text);
++        std.debug.print("{d} tokens; prompt states kept: text encoder and refiner skipped\n", .{p.ids.len});
++    } else {
++        p = try rules.present(a, &loaded.tok, loaded.enc.marks, &.{}, prompt);
++        const pos = try rules.positions(a, p, loaded.enc.marks, &.{});
++        const T = p.ids.len;
++        const runner = loaded.runner;
++
++        const enc_rows = try a.alloc(u16, T * loaded.enc.text.hidden);
++        var gpu_started = seconds();
++        try runner.encode(a, loaded.enc.text, &loaded.res, p.ids, pos, null, enc_rows);
++        std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU\n", .{ T, loaded.enc.text.layers, seconds() - gpu_started, runner.gpu });
++
++        text = try a.alloc(u16, T * loaded.front.hidden);
++        gpu_started = seconds();
++        try runner.refine(loaded.front, &loaded.res, enc_rows, text);
++        std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU\n", .{ seconds() - gpu_started, runner.gpu });
++        loaded.cache.keep(prompt, p.ids, p.tags, text);
++    }
+     const T = p.ids.len;
+-    const runner = loaded.runner;
+-
+-    const enc_rows = try a.alloc(u16, T * loaded.enc.text.hidden);
+-    var gpu_started = seconds();
+-    try runner.encode(a, loaded.enc.text, &loaded.res, p.ids, pos, null, enc_rows);
+-    std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU\n", .{ T, loaded.enc.text.layers, seconds() - gpu_started, runner.gpu });
+-
+-    const text = try a.alloc(u16, T * loaded.front.hidden);
+-    gpu_started = seconds();
+-    try runner.refine(loaded.front, &loaded.res, enc_rows, text);
+-    std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU\n", .{ seconds() - gpu_started, runner.gpu });
+ 
+     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = try stage.write(a, loaded.front.hidden, p, text, request, &noise.randn, &.{}) });
+     std.debug.print("wrote {s}: text [{d}, {d}] bf16, text_tags and ids\n", .{ out_path, T, loaded.front.hidden });

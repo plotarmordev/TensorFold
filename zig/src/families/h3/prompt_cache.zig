@@ -4,7 +4,7 @@
 //! at load, so the bytes alone decide. H3-Image has no negative prompt or CFG, so nothing else varies.
 const std = @import("std");
 
-/// Bytes of kept states without H3_PROMPT_CACHE: a hundred prompts' worth.
+/// Bytes of kept states without H3_PROMPT_CACHE: a few full-length prompts' worth.
 pub const default_bytes: usize = 256 << 20;
 
 /// One prompt's states: its rows' ids and tags and the refiner's text rows for them.
@@ -15,7 +15,6 @@ const Entry = struct {
     text: []u16,
     /// What the entry's slices hold, counted against the budget.
     bytes: usize,
-    used: u64,
 
     fn free(e: *Entry, a: std.mem.Allocator) void {
         a.free(e.prompt);
@@ -36,7 +35,6 @@ pub const Cache = struct {
     /// `entries`' bytes held against `budget`.
     held: usize = 0,
     budget: usize,
-    clock: u64 = 0,
     hits: u64 = 0,
     misses: u64 = 0,
 
@@ -62,10 +60,8 @@ pub const Cache = struct {
             c.misses += 1;
             return null;
         };
-        c.clock += 1;
-        const e = c.entries.items[i];
-        e.used = c.clock;
         c.hits += 1;
+        const e = c.entries.items[i];
         const last = c.entries.items.len - 1;
         if (i < last) {
             std.mem.copyForwards(*Entry, c.entries.items[i..last], c.entries.items[i + 1 .. last + 1]);
@@ -80,17 +76,19 @@ pub const Cache = struct {
     pub fn keep(c: *Cache, prompt: []const u8, ids: []const u32, tags: []const i32, text: []const u16) void {
         const bytes = prompt.len + 4 * (ids.len + tags.len) + 2 * text.len;
         if (bytes > c.budget or c.indexOf(prompt) != null) return;
-        while (c.held + bytes > c.budget) c.dropOldest();
         const e = c.gpa.create(Entry) catch return;
-        e.* = .{ .prompt = &.{}, .ids = &.{}, .tags = &.{}, .text = &.{}, .bytes = bytes, .used = 0 };
+        e.* = .{ .prompt = &.{}, .ids = &.{}, .tags = &.{}, .text = &.{}, .bytes = bytes };
         e.prompt = c.gpa.dupe(u8, prompt) catch return e.free(c.gpa);
         e.ids = c.gpa.dupe(u32, ids) catch return e.free(c.gpa);
         e.tags = c.gpa.dupe(i32, tags) catch return e.free(c.gpa);
         e.text = c.gpa.dupe(u16, text) catch return e.free(c.gpa);
-        c.entries.append(c.gpa, e) catch return e.free(c.gpa);
-        c.clock += 1;
-        e.used = c.clock;
+        // the copies are owned: only now may older entries leave for the room they need
         c.held += bytes;
+        c.entries.append(c.gpa, e) catch return {
+            c.held -= bytes;
+            return e.free(c.gpa);
+        };
+        while (c.held > c.budget) c.dropOldest();
     }
 
     fn indexOf(c: *const Cache, prompt: []const u8) ?usize {

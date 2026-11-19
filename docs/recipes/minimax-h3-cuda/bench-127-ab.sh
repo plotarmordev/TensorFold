@@ -17,7 +17,9 @@ out=/work/out/h3-cache-ab
 commit=$(git -c safe.directory='*' rev-parse HEAD)
 bin=/work/out/tensorfold-cuda-$commit
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-
+# five prompts the server has not seen: the pilot's prompt with a detail appended, one file each;
+# three of them run per phase (the three unseen runs the card asks for)
+for n in 1 2 3; do { cat "$pilot/prompt.txt"; printf ' — variant %s of the same scene\n' "$n"; } >"$out/prompt-$n.txt"; done
 # the toolchain once, as cuda-build.sh stages it (the job has neither zig nor gcc in PATH)
 staged=/assets/drama3-pilot/cuda-build-toolchain
 zig=zig-aarch64-linux-0.17.0
@@ -115,16 +117,17 @@ PY
     run cold "$pilot/prompt.txt"
     run repeat-1 "$pilot/prompt.txt"
     run repeat-2 "$pilot/prompt.txt"
-    for n in 1 2 3 4 5; do run "unseen-$n" "$out/prompt-$n.txt"; done
+    run repeat-3 "$pilot/prompt.txt"
+    for n in 1 2 3; do run "unseen-$n" "$out/prompt-$n.txt"; done
     exec 3>&- 4<&- 5>&- 6<&- 7>&- 8<&-
     wait "$server"
     wait "$prompt_server"
     wait "$decoder_server"
 
     # the repeated prompt's picture must be byte-identical to the cold run's (same prompt, seed, size)
-    cmp "$dir/cold.png" "$dir/repeat-2.png" >/dev/null \
-        && echo "$name: repeat-2.png byte-identical to cold.png" >>"$dir/times" \
-        || { echo "$name: repeat-2.png DIFFERS from cold.png" >>"$dir/times"; exit 1; }
+    cmp "$dir/cold.png" "$dir/repeat-3.png" >/dev/null \
+        && echo "$name: repeat-3.png byte-identical to cold.png" >>"$dir/times" \
+        || { echo "$name: repeat-3.png DIFFERS from cold.png" >>"$dir/times"; exit 1; }
 }
 
 echo "=== this commit: prompt states kept ==="

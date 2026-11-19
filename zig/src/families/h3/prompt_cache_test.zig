@@ -61,6 +61,26 @@ test "h3 prompt cache: a found entry is newest, the least recently used evicted 
     try testing.expectEqual(@as(usize, 2), c.entries.items.len);
 }
 
+test "h3 prompt cache: kept states are the cache's own copies, not the caller's slices" {
+    const a = testing.allocator;
+    var c = pc.Cache.init(a, 1 << 20);
+    defer c.deinit();
+    const s = try states(a, 4);
+    defer a.free(s[0]);
+    defer a.free(s[1]);
+    defer a.free(s[2]);
+
+    c.keep("prompt", s[0], s[1], s[2]);
+    // the request arena's slices may be reused or overwritten; the kept states must not follow
+    s[0][0] = 9999;
+    s[1][0] = -7;
+    s[2][0] = 4242;
+    const hit = c.find("prompt").?;
+    try testing.expectEqual(@as(u32, 1000), hit.ids[0]);
+    try testing.expectEqual(@as(i32, 1), hit.tags[0]);
+    try testing.expectEqual(@as(u16, 0), hit.text[0]);
+}
+
 test "h3 prompt cache: an entry over the budget keeps nothing, a zero budget keeps nothing" {
     const a = testing.allocator;
     const s = try states(a, 4);

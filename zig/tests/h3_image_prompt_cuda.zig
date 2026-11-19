@@ -70,7 +70,7 @@ const Loaded = struct {
     res: hp.Resident,
     /// Kept prompt states across `--serve`'s pictures: the prompt's exact bytes to its rows.
     cache: prompt_cache.Cache,
-    fn open(io: std.Io, env: *std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
+    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
         // the folder and its tokenizer, checked as the host prompt path checks them
         const enc = try rules.checkEncoder(a, try read(io, a, &.{ encoder_dir, "config.json" }));
         _ = try picture.checkIndex(a, try read(io, a, &.{ model_dir, "model_index.json" }));
