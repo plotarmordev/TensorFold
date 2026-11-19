@@ -93,6 +93,13 @@ pub const Int8 = struct {
         try self.launch("h3_swiglu_int8", .{ .x = 1024 }, 256, 0, &args);
     }
 
+    /// Room and plans for `rows` before a step is captured: `run` and `mlpIn` then only launch.
+    pub fn warm(t: *Int8, self: *Model, rows: usize) !void {
+        try t.reserve(self, rows);
+        _ = try t.plan(self, rows, 3 * self.inner, self.hidden);
+        _ = try t.plan(self, rows, 2 * self.mlp, self.hidden);
+    }
+
     /// x's rows quantized and their int32 sums against w in scratch: `acc` (rows, w.n), the rows' scales `xs`.
     fn product(t: *Int8, self: *Model, x: u64, w: Weight, rows: usize) !struct { acc: u64, xs: u64 } {
         try t.reserve(self, rows);

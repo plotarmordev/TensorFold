@@ -36,7 +36,7 @@ pub const Gemms = struct {
     }
 
     /// The shape's plan, running the algorithm cuBLASLt's heuristic picks for (canonical_rows, n, k).
-    fn plan(g: *Gemms, rows: usize, n: usize, k: usize) !*const lt_.Linear {
+    pub fn plan(g: *Gemms, rows: usize, n: usize, k: usize) !*const lt_.Linear {
         const got = try g.plans.getOrPut(g.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
         errdefer g.plans.removeByPtr(got.key_ptr);

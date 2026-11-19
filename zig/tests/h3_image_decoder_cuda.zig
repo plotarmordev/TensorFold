@@ -7,11 +7,12 @@ const selftest = dec.selftest;
 const vae = dec.vae;
 
 const usage =
-    \\usage: tf-h3-image-decoder-cuda MODEL_DIR latent.f32 ROWS COLUMNS out.png [WIDTHxHEIGHT] [--tc]
-    \\       tf-h3-image-decoder-cuda reference MODEL_DIR latent.f32 ROWS COLUMNS gpu.png host.png [WIDTHxHEIGHT] [--tc]
-    \\       tf-h3-image-decoder-cuda MODEL_DIR --serve [--tc]
-    \\       tf-h3-image-decoder-cuda selftest [--tc]
-    \\  --tc          products and attention on tensor cores (cuBLASLt, fp32 sums); default stays ordered fp32
+    \\usage: tf-h3-image-decoder-cuda MODEL_DIR latent.f32 ROWS COLUMNS out.png [WIDTHxHEIGHT] [--exact | --tc]
+    \\       tf-h3-image-decoder-cuda reference MODEL_DIR latent.f32 ROWS COLUMNS gpu.png host.png [WIDTHxHEIGHT] [--exact | --tc]
+    \\       tf-h3-image-decoder-cuda MODEL_DIR --serve [--exact | --tc]
+    \\       tf-h3-image-decoder-cuda selftest [--exact | --tc]
+    \\  --tc          (default) products and attention on tensor cores (cuBLASLt, fp32 sums); selftest's gate
+    \\  --exact       attention and products in ordered fp32; selftest keeps its 90% block-identity bar
     \\  MODEL_DIR     the MiniMax-H3-Image folder: vae/config.json and vae/diffusion_pytorch_model.safetensors
     \\  latent.f32    the normalised latent [24, ROWS, COLUMNS] in float32, as tf-h3-image writes it
     \\  WIDTHxHEIGHT  the requested size: the 16 COLUMNS x 16 ROWS canvas is resized to it (Pillow's LANCZOS)
@@ -134,10 +135,25 @@ fn compare(a: std.mem.Allocator, ours: []const f32, theirs: []const f32, height:
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const all = try init.minimal.args.toSlice(a);
-    const tc = all.len >= 2 and std.mem.eql(u8, all[all.len - 1], "--tc");
-    const args = all[0 .. all.len - @intFromBool(tc)];
+    const kept = try a.alloc([]const u8, all.len);
+    var mode: ?bool = null;
+    var n_kept: usize = 0;
+    for (all) |arg| {
+        if (std.mem.eql(u8, arg, "--tc")) {
+            mode = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--exact")) {
+            mode = false;
+            continue;
+        }
+        kept[n_kept] = arg;
+        n_kept += 1;
+    }
+    const fast = mode orelse true;
+    const args = kept[0..n_kept];
     if (args.len == 2 and (std.mem.eql(u8, args[1], "selftest") or std.mem.eql(u8, args[1], "--self-test"))) {
-        if (!try selftest.run(init.gpa, a, tc)) std.process.exit(1);
+        if (!try selftest.run(init.gpa, a, fast)) std.process.exit(1);
         return;
     }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "reference")) {
@@ -148,7 +164,7 @@ pub fn main(init: std.process.Init) !void {
         const rows = std.fmt.parseInt(usize, args[4], 10) catch return error.H3BadPictureGrid;
         const cols = std.fmt.parseInt(usize, args[5], 10) catch return error.H3BadPictureGrid;
         const latent = try latentOf(init, a, args[3], rows, cols);
-        const ok = try reference(init, a, args[2], latent, rows, cols, args[6], args[7], if (args.len == 9) try dec.host.size(args[8]) else null, tc);
+        const ok = try reference(init, a, args[2], latent, rows, cols, args[6], args[7], if (args.len == 9) try dec.host.size(args[8]) else null, fast);
         if (!ok) std.process.exit(1);
         return;
     }
@@ -157,16 +173,17 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     }
     if (args.len == 3) {
-        var v = try Vae.load(init, a, args[1], tc);
+        var v = try Vae.load(init, a, args[1], fast);
         defer v.d.deinit();
         return serve(init, &v);
     }
     const rows = std.fmt.parseInt(usize, args[3], 10) catch return error.H3BadPictureGrid;
     const cols = std.fmt.parseInt(usize, args[4], 10) catch return error.H3BadPictureGrid;
-    const latent = try latentOf(init, a, args[2], rows, cols);
-    const v = try Vae.load(init, a, args[1], tc);
+    const v = try Vae.load(init, a, args[1], fast);
     defer v.d.deinit();
-    try v.png(init, a, latent, rows, cols, if (args.len == 7) try dec.host.size(args[6]) else null, args[5]);
+    const want: ?dec.host.Size = if (args.len == 7) try dec.host.size(args[6]) else null;
+    const latent = try latentOf(init, a, args[2], rows, cols);
+    try v.png(init, a, latent, rows, cols, want, args[5]);
 }
 
 /// `--serve`'s stdin: one `latent.f32 ROWS COLUMNS out.png [WIDTHxHEIGHT]` line per picture, each answered
