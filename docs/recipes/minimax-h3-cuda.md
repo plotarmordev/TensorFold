@@ -330,14 +330,25 @@ rotary partners, and `h3_swiglu_int8`'s sums and scales four at a time; the late
 rose 0.98 → 2.01 s and mlp in held at 3.39 s (transformer 13.97 s), so the stage's 2-byte loads were not its bound
 and the shared rows and two barriers a head cost more. Reverted.
 
+GB10's block-scaled FP8 was measured and reverted (card 89). `160c7687` (job `top-ad7ecf144cee`, 19 November) ran
+all four projections as cuBLASLt MXFP8: each 128-wide chunk rotated as the int8 rows are, then e4m3 at one UE8M0
+scale every 32 values, the product writing bf16 from its own tile. Its device check of a 200 x 256 x 384 product
+with a 64x outlier column came within 3.85e-2 relative error of float64, e4m3's three mantissa bits on each
+operand. The picture missed every gate: latent cosine 0.9664 (gate 0.99) and 11.53 apart on average from the Mac PNG
+(gate 4.1), the three warm latents byte for byte the same. It was slower too: 19.5 s warm (19.5, 19.5, 19.6;
+transformer 13.5 s), q k v gate 2.62 s, attention out 1.47 s, mlp in 3.00 s and mlp out 2.97 s, so a per-32 scale's
+quantize pass and the block-scaled product cost more than int8's rows. cuBLASLt plans block-scaled FP8 only with
+its scale pointers already on the descriptor; without them its heuristic answers `CUBLAS_STATUS_INVALID_VALUE`.
+NVFP4 keeps one mantissa bit where e4m3 keeps three, so it would miss the gates further.
+
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
 1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
    int8, a third of the GB10's dense rate, and their int32 sums make a round trip through `h3_dequantize`. A product
-   that writes bf16 straight from the tile would remove that trip, and a per-128-chunk scale would let the products
-   carry the picture without the bf16 fallbacks. The two kernels' records are in the registry as of `cadab6b2`, and
-   `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4 (`contract_h3_int8.zig`);
-   the limits audit (gate 5) is `limits-job.sh`'s own window.
+   that writes bf16 straight from the tile would remove that trip, and a per-128-chunk int8 scale (not FP8's, above)
+   would let the products carry the picture without the bf16 fallbacks. The two kernels' records are in the registry
+   as of `cadab6b2`, and `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4
+   (`contract_h3_int8.zig`); the limits audit (gate 5) is `limits-job.sh`'s own window.
 2. **Attention**: 1.74 s a picture in the transformer, 217 registers at 128 threads and two CTAs an SM (8 warps), and
    1.89 s in the decoder, whose 16-byte key loads changed nothing. mmh3's INT8/FP8 attention is the candidate that
    would also cut registers; the decoder's attention needs its stall found first, since neither its loads nor its
