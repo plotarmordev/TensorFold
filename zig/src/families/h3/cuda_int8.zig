@@ -18,13 +18,17 @@ pub const Weight = struct {
     n: usize,
     k: usize,
 
-    fn scales(w: Weight) u64 {
+    pub fn scales(w: Weight) u64 {
         return w.q.ptr + w.n * w.k;
     }
 };
 
 /// One block's quantized projections.
 pub const Block = struct { qkvc: Weight, fc1: Weight };
+
+/// The buffers a product's input rows and int32 sums use: `norm` writes q/s before `gemm` fills acc.
+/// `acc` doubles as the qkvc product's output and fc1's — each block uses it before the next overwrites it.
+pub const Scratch = struct { acc: u64, xq: u64, xs: u64 };
 
 pub const Int8 = struct {
     blocks: []Block,
@@ -73,43 +77,36 @@ pub const Int8 = struct {
         self.gpa.destroy(t);
     }
 
-    /// y (rows, w.n) bf16 = x (rows, w.k) bf16 . w^T through the int8 product.
-    pub fn run(t: *Int8, self: *Model, x: u64, w: Weight, y: u64, rows: usize) !void {
-        const p = try t.product(self, x, w, rows);
-        var args: cuda.Args = .{};
-        for ([_]u64{ p.acc, p.xs, w.scales(), y }) |a| args.add(a);
-        args.add(@as(c_int, @intCast(rows)));
-        args.add(@as(c_int, @intCast(w.n)));
-        try self.launch("h3_dequantize", .{ .x = 1024 }, 256, 0, &args);
+    /// The row and sum buffers the fused launches share, as Scratch.
+    pub fn layout(t: *Int8, self: *Model, rows: usize) !Scratch {
+        try t.reserve(self, rows);
+        const acc = t.scratch.ptr;
+        const xq = acc + rows * t.widest(self) * 4;
+        const xs = xq + rows * t.widest(self);
+        return .{ .acc = acc, .xq = xq, .xs = xs };
+    }
+
+    /// x's rows (already quantized at lay.xq by h3_norm_quant) against w: the int32 sums land at lay.acc.
+    pub fn gemm(t: *Int8, self: *Model, lay: Scratch, w: Weight, rows: usize) !void {
+        const p = try t.plan(self, rows, w.n, w.k);
+        try p.runInt(w.q.ptr, lay.xq, lay.acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
     }
 
     /// act (rows, w.n / 2) = swiglu of x . w^T [gate | value], the int32 sums scaled in h3_swiglu_int8 itself.
-    pub fn mlpIn(t: *Int8, self: *Model, x: u64, w: Weight, act: u64, rows: usize) !void {
-        const p = try t.product(self, x, w, rows);
+    pub fn mlpIn(t: *Int8, self: *Model, lay: Scratch, w: Weight, act: u64, rows: usize) !void {
+        try t.gemm(self, lay, w, rows);
         var args: cuda.Args = .{};
-        for ([_]u64{ p.acc, p.xs, w.scales(), act }) |a| args.add(a);
+        for ([_]u64{ lay.acc, lay.xs, w.scales(), act }) |a| args.add(a);
         args.add(@as(c_int, @intCast(rows)));
         args.add(@as(c_int, @intCast(w.n / 2)));
         try self.launch("h3_swiglu_int8", .{ .x = 1024 }, 256, 0, &args);
     }
 
-    /// Room and plans for `rows` before a step is captured: `run` and `mlpIn` then only launch.
+    /// Room and plans for `rows` before a step is captured: `layout` then only hands out buffers.
     pub fn warm(t: *Int8, self: *Model, rows: usize) !void {
         try t.reserve(self, rows);
         _ = try t.plan(self, rows, 3 * self.inner, self.hidden);
         _ = try t.plan(self, rows, 2 * self.mlp, self.hidden);
-    }
-
-    /// x's rows quantized and their int32 sums against w in scratch: `acc` (rows, w.n), the rows' scales `xs`.
-    fn product(t: *Int8, self: *Model, x: u64, w: Weight, rows: usize) !struct { acc: u64, xs: u64 } {
-        try t.reserve(self, rows);
-        const acc = t.scratch.ptr;
-        const xq = acc + rows * t.widest(self) * 4;
-        const xs = xq + rows * t.widest(self);
-        try launchQuantize(self, x, xq, xs, rows, w.k);
-        const p = try t.plan(self, rows, w.n, w.k);
-        try p.runInt(w.q.ptr, xq, acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
-        return .{ .acc = acc, .xs = xs };
     }
 
     fn widest(_: *const Int8, self: *const Model) usize {

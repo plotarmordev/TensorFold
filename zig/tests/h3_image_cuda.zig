@@ -85,6 +85,7 @@ pub fn main(init: std.process.Init) !void {
     const all = try init.minimal.args.toSlice(init.arena.allocator());
     if (all.len == 2 and std.mem.eql(u8, all[1], "--self-test")) {
         try h3.modulation_test.run(init.gpa);
+        try h3.fused_test.run(init.gpa);
         return h3.rows_test.run(init.gpa);
     }
     const bf16 = all.len > 2 and std.mem.eql(u8, all[all.len - 1], "--bf16");
