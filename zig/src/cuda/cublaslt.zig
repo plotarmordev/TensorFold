@@ -224,7 +224,7 @@ pub const Linear = struct {
 
 /// One column-major product `C = alpha op(A) op(B) + beta C`, C [m, n], batched with element strides; FP32 compute,
 /// int32 sums when C is `.i32` (A and B `.i8`, see `Gemm.runInt`), or block-scaled when A and B are `.e4m3` (see
-/// `Gemm.runScaled`): cuBLASLt's heuristic refuses those without their scales, `scale_a` and `scale_b`.
+/// `Gemm.runScaled`).
 pub const Spec = struct {
     ta: Op = .n,
     tb: Op = .n,
@@ -241,8 +241,6 @@ pub const Spec = struct {
     sa: u64 = 0,
     sb: u64 = 0,
     sc: u64 = 0,
-    scale_a: abi.DevicePtr = 0,
-    scale_b: abi.DevicePtr = 0,
 };
 
 /// A planned `Spec` on a shared handle: the heuristic's first algorithm within the workspace limit.
@@ -269,11 +267,8 @@ pub const Gemm = struct {
         const tb: c_int = @backingInt(s.tb);
         try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transa, &ta, @sizeOf(c_int)), "set transa");
         try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transb, &tb, @sizeOf(c_int)), "set transb");
-        if (s.a == .e4m3) {
-            for ([_]c_int{ desc_a_scale_mode, desc_b_scale_mode }) |mode|
-                try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, mode, &scale_vec32_ue8m0, @sizeOf(c_int)), "set scale mode");
-            try g.setScales(s.scale_a, s.scale_b);
-        }
+        if (s.a == .e4m3) for ([_]c_int{ desc_a_scale_mode, desc_b_scale_mode }) |mode|
+            try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, mode, &scale_vec32_ue8m0, @sizeOf(c_int)), "set scale mode");
         // op(A) is m x k and op(B) k x n: a transposed operand is stored the other way round
         g.a = try layout(lt, s.a, if (s.ta == .n) s.m else s.k, if (s.ta == .n) s.k else s.m, s.lda, s.batch, s.sa);
         errdefer _ = api.cublasLtMatrixLayoutDestroy(g.a);
@@ -322,15 +317,11 @@ pub const Gemm = struct {
     /// cuBLASLt's 128 x 4 tiled layout, 16-byte aligned.
     pub fn runScaled(g: *const Gemm, a: abi.DevicePtr, sa: abi.DevicePtr, b: abi.DevicePtr, sb: abi.DevicePtr, c: abi.DevicePtr, workspace: abi.DevicePtr, workspace_len: usize, stream: abi.Stream) Error!void {
         if (workspace_len < g.workspace_need) return error.Invalid;
-        try g.setScales(sa, sb);
+        try g.lt.check(g.lt.api.cublasLtMatmulDescSetAttribute(g.desc, desc_a_scale_pointer, &sa, @sizeOf(abi.DevicePtr)), "set A scales");
+        try g.lt.check(g.lt.api.cublasLtMatmulDescSetAttribute(g.desc, desc_b_scale_pointer, &sb, @sizeOf(abi.DevicePtr)), "set B scales");
         const one: f32 = 1;
         const zero: f32 = 0;
         try g.lt.check(g.lt.api.cublasLtMatmul(g.handle, g.desc, &one, a, g.a, b, g.b, &zero, c, g.c, c, g.c, &g.algo, workspace, workspace_len, stream), "cublasLtMatmul");
-    }
-
-    fn setScales(g: *const Gemm, sa: abi.DevicePtr, sb: abi.DevicePtr) Error!void {
-        try g.lt.check(g.lt.api.cublasLtMatmulDescSetAttribute(g.desc, desc_a_scale_pointer, &sa, @sizeOf(abi.DevicePtr)), "set A scales");
-        try g.lt.check(g.lt.api.cublasLtMatmulDescSetAttribute(g.desc, desc_b_scale_pointer, &sb, @sizeOf(abi.DevicePtr)), "set B scales");
     }
 
     fn layout(lt: *const Library, t: DataType, rows: u64, cols: u64, ld: u64, batch: u32, stride: u64) Error!Layout {

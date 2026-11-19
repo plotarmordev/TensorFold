@@ -91,7 +91,7 @@ pub const Fp8 = struct {
         const xq = t.scratch.ptr;
         const xs = xq + std.mem.alignForward(usize, rows * t.widest(self), 16);
         try quantizeRows(self, x, xq, xs, rows, w.k);
-        const p = try t.plan(self, rows, w, xs);
+        const p = try t.plan(self, rows, w.n, w.k);
         try p.runScaled(w.q.ptr, w.scales(), xq, xs, y, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
     }
 
@@ -111,13 +111,12 @@ pub const Fp8 = struct {
         t.rows = rows;
     }
 
-    /// Column-major D^T (n, rows) = W (k, n stored)^T . X^T (k, rows) in bf16: cuBLASLt's FP8 TN layout, planned with
-    /// this product's scales.
-    fn plan(t: *Fp8, self: *Model, rows: usize, w: Weight, xs: u64) !*const lt_.Gemm {
-        const got = try t.plans.getOrPut(self.gpa, .{ rows, w.n, w.k });
+    /// Column-major D^T (n, rows) = W (k, n stored)^T . X^T (k, rows) in bf16: cuBLASLt's FP8 TN layout.
+    fn plan(t: *Fp8, self: *Model, rows: usize, n: usize, k: usize) !*const lt_.Gemm {
+        const got = try t.plans.getOrPut(self.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
         errdefer t.plans.removeByPtr(got.key_ptr);
-        got.value_ptr.* = try lt_.Gemm.init(&self.gemms.lt, t.handle, .{ .ta = .t, .m = w.n, .n = rows, .k = w.k, .a = .e4m3, .b = .e4m3, .c = .bf16, .lda = w.k, .ldb = w.k, .ldc = w.n, .scale_a = w.scales(), .scale_b = xs }, workspace_bytes);
+        got.value_ptr.* = try lt_.Gemm.init(&self.gemms.lt, t.handle, .{ .ta = .t, .m = n, .n = rows, .k = k, .a = .e4m3, .b = .e4m3, .c = .bf16, .lda = k, .ldb = k, .ldc = n }, workspace_bytes);
         return got.value_ptr;
     }
 };
