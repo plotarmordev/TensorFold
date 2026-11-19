@@ -62,6 +62,7 @@ __device__ __forceinline__ void attention_body_fp8(
     unsigned char* const psm = stage + fp8_stage_bytes; // the weighed scores, keys minor
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const int head = blockIdx.y, qt = first_query + blockIdx.x;
+    const int* list = LIST + (per_query ? (static_cast<size_t>(head) * queries + blockIdx.x) * keys : 0);
     // swizzled byte address of row r's 16-byte chunk c: eight chunks a row in an fp8 tile, sixteen in the
     // stage, four in the dim-major v and the score tiles' 64-byte rows
     auto at = [](int r, int c) { return r * 128 + ((c ^ (r & 7)) << 4); };
