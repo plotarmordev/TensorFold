@@ -18,6 +18,7 @@ fi
 rm -rf "$out"
 mkdir -p "$out"
 H3_DECODER=tc CUPTI_TRACE_OUT="$out/cupti-trace.csv" LD_PRELOAD=/work/cupti-trace.so \
+    LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
     sh docs/recipes/minimax-h3-cuda/bench-script.sh
 # bench-script.sh's own $out is /work/out/h3-image-bench; fold its logs beside the traces
 cp -r /work/out/h3-image-bench/. "$out/"

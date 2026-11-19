@@ -27,6 +27,12 @@ whose warm 15.5 s picture the table below uses.
 | Sparse attention, `--attention sol` | Whole 64-token key blocks a 64-token query block keeps when its pooled score exceeds `tau` × the pooled scores' deviation (tau 1.3), dense for the first 20% of steps and below 12,288 tokens; skipped blocks still enter a pooled softmax term, so softmax spans the image ([`sparse_attention.cu:202`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/crates/mmh3-cuda/kernels/sparse_attention.cu#L202), [`dit/sparse.rs:39`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/crates/mmh3-core/src/dit/sparse.rs#L39)) | FastH3's VSA routing kernels exist for video (`h3_pool`, `h3_topk`, `h3_coarse`, `h3_gate_mix`); the picture's dense path uses `keep` 0 |
 | Fused layers | One preprocessing launch a block fuses the pending gated residual, the modulated RMSNorm, the AdaLN shift and scale and the ConvRot rotation and quantization; FC1's GEMM writes `silu(gate)·up`; Q/K norm and RoPE fuse the quantize preparation; the GEMM epilogue applies scales, the LoRA adapter, the bias and output maxima ([`dit.rs:1856`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/crates/mmh3-cuda/src/dit.rs#L1856), [`dit.cu:477`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/crates/mmh3-cuda/kernels/dit.cu#L477), [`int8_gemm.cu:511`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/crates/mmh3-cuda/kernels/int8_gemm.cu#L511)) | separate `h3_norm`, `h3_swiglu` and `h3_heads` launches (`zig/src/families/h3/cuda.zig:180`) |
 | Steps and output heads | The six sigmas are read from the checkpoint, one FP32 output head a step, Euler; a step off the grid blends the spanned heads by interval length ([`dit/config.rs:47`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/crates/mmh3-core/src/dit/config.rs#L47), [`dit.rs:2880`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/crates/mmh3-cuda/src/dit.rs#L2880)): the final norm and the head run on the GPU, only the unpatchify on the host | same six sigmas and a head a step; the rows stay on the device since `bd734252` (`h3_rows_in`, `h3_rows_out`, `h3_euler` in `rows_reference`'s order), only the unpatchify on the host |
+| Guidance (CFG) | None: the checkpoint is distilled to six sigmas with an output head a step and **no guidance** — a request runs one conditional pass a step, never a batched cond/uncond pair ([`image.rs:6`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/src/image.rs#L6)) | none: the same distilled checkpoint, same single pass |
+| Step or block caching | None: no TeaCache, First-Block-Cache or residual reuse anywhere in the source or the log; the measured steps are flat 1.4 s across all six sigmas — a reused block would show as a cheaper step | none |
+| Full resolution | Every step runs the full 4,120-token canvas (the log's `sampling 2048×2048 in 6 steps, 0 at half size`); `--draft-steps` is opt-in only | same: all six steps at full resolution |
+| Norms' precision | FP32 accumulations inside the fused `add_norm_quantize`/`rms_norm_modulate` launches (the trace's `PKf...PS2` signatures: f32 states, BF16 weights); the rotate and quantize write int8 on-chip | FP32 states in `h3_norm`, `h3_heads` and `h3_dequantize`'s int32→BF16 pass |
+| Compile | No PyTorch, so no `torch.compile`; the Rust host launches every kernel itself | none (Zig host, same) |
+| Sigmas | `1.0, 0.9675, 0.8875, 0.75, 0.5328, 0.232` read from the checkpoint's `step_sigmas` plus the final, Euler | same six sigmas, same order |
 | Fewer steps | PDMD's 2-NFE LoRA in two or three steps, and `--draft-steps N` on a half canvas enlarged by a learned latent upscaler or bilinearly, renoised to `--renoise-sigma` ([`image.rs:450`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/src/image.rs#L450), [`generation.rs:1090`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/src/generation.rs#L1090)) | six steps only |
 | Resolution | `--min-generation-area` 2048²: a smaller request is generated on a 2048² canvas at its aspect ratio and Lanczos-resized after 8-bit quantization ([`image.rs:97`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/src/image.rs#L97)) | at the requested size |
 | Text encoder | INT8 weights, the 1.56 GB embedding table left on disk with only the prompt's rows read, q/k/v and gate/up read as one layer each ([`text_encoder.rs:377`](https://github.com/mmh3-org/mmh3/blob/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375/crates/mmh3-cuda/src/text_encoder.rs#L377), PR #3) | BF16, resident in one device arena; the prompt server re-reads ~45 GiB every picture |
@@ -64,23 +70,24 @@ pictures is close to our measured 9.33 s for three warm 2048² pictures; the 9.5
 
 ## Ranked: what to copy or beat
 
-Expected savings are against our warm 15.5 s (the `40ab38a8` bench, job `top-7cc7074c454e`), taken from mmh3's
-measured stage times on the same Spark, and marked as estimates otherwise.
+Expected savings are against our warm 15.5 s (the `40ab38a8` bench, job `top-7cc7074c454e`), ranked biggest
+saving first — **the levers that change the work (fewer steps, lower precision) carry their gate risk in the
+last column**; a safe −1.1 s ranks below a risky −4.2 s on purpose.
 
 | # | Change | Saving | Basis and gate |
 |---:|---|---:|---|
 | 1 | **The transformer's int8 products' own rate and coverage**: `qkvc` and `fc1` run at ~110 TOPS of int8 on cuBLASLt and their int32 sums round-trip through `h3_dequantize`; `out` and `fc2` (262 TFLOP a picture) still run in BF16 at ~96 TFLOPS. mmh3's ConvRot tile writes BF16 from its own `m16n8k32` mma at ~167 TOPS with no int32 round trip, on **all** linears | **−4.6 s** if our products match mmh3's rate and coverage | mmh3's 1.4 s a step against our 2.17 s on the same GB10, the transformer's 4.6 s of the 6.2 s wall gap; CUPTI trace: mmh3 `int8_gemm` 5.55 s for all 929 TFLOP vs our int8 6.0 s for 667 TFLOP + bf16 2.7 s for 262 TFLOP. Our own-tile `h3_gemm_int8` measured 20.5 s warm (reverted, `cdf02b8b4`) — slower than the cuBLASLt it replaced — so the product needs a tile that beats cuBLASLt's heuristic first offer, not a selection change. Keeps the same six steps. Gate: the picture's 28.69 dB and 4.01 apart stay, no bound loosened |
-| 2 | **Keep the prompt's states** across pictures, keyed by the prompt | **−1.1 s**, prompt 1.1 → 0 | mmh3's server skips the encoder's load and encode for a repeated prompt (measured: `found the 24 prompt tokens`), ours re-reads the text encoder's ~45 GiB every picture. Keeps the same six steps. Gate: none — the states are identical |
-| 3 | **Decoder attention on tensor cores**: `h3d_attention` is 1.88 s of the decoder's 4.54 s GPU time and neither its loads nor its occupancy explain the bound | **−0.5 s** at 2048² if it matches the products' rate | mmh3's decoder is 0.6 s to our 1.3 s. The `--tc` decoder already puts the projections on cuBLASLt; its attention runs as batched q·kᵀ and p·v. The remaining gap is the attention's own tile. Keeps the same six steps. Gate: the decoder's same-latent bound |
-| 4 | **Fewer steps**: PDMD's 2-NFE LoRA, or three steps with three half-canvas drafts and one full step through the latent upscaler | **−4.2 s** at three steps (8.4 → 4.2 s after #1) | mmh3's 4096² run falls from 63 s to 24 s with the PDMD LoRA and three drafts, its 2048² one from 18 s to 16 s with two drafts. **Changes the work**: fewer steps and different noise means a different picture — it must pass the same picture gates, and it is an option beside the six-step picture, not a drop-in |
-| 5 | **INT8/FP8 attention** | −0.6 s at 2048² (0.1 s a step) | mmh3's 4096² step falls from 8.8 s to 7.3 s, its 2048² one from 1.4 s to 1.3 s. Our `fb5090ae` fp8 round measured 14.1 s a picture (reverted). **Changes the picture**: fine details change, composition holds. Gate: the picture's 28.69 dB and 4.01 |
-| 6 | **The final norm, the step's head and Euler on the GPU**, as mmh3 keeps them | ~0.15 s, estimate | Six host round-trips of 4,120 rows replace six GPU passes; the transfer is ~25 MB a step. Do it with #1, whose head is INT8 or FP32 anyway |
-| 7 | **Save cuBLASLt's picks and the INT8 tilings** to disk | 4–7 s off the first step of a cold run, 0 warm | The first step pays the algorithm search in every process; a resident server pays it once and caches it |
-| 8 | **Threaded in-place checkpoint reads** and two-region streaming | cold start only | mmh3's DiT load is 3.2 s and its loader reads eight threads into place (PR #2). It does nothing for the warm 15.5 s |
-| 9 | **NVFP4 linear layers** | ~−1.2 s at 2048², an estimate | mmh3's 4096² step falls from 7.3 s to 6.2 s with muted colors and coarser textures. **Changes the picture**: one mantissa bit is too coarse for the gates |
+| 2 | **Fewer steps**: PDMD's 2-NFE LoRA, or three steps with three half-canvas drafts and one full step through the latent upscaler | **−4.2 s** at three steps (8.4 → 4.2 s after #1) | mmh3's 4096² run falls from 63 s to 24 s with the PDMD LoRA and three drafts, its 2048² one from 18 s to 16 s with two drafts. **Changes the work and the picture**: fewer steps and different noise means a different picture — it must pass the same picture gates, and it is an option beside the six-step picture, not a drop-in |
+| 3 | **NVFP4 linear layers** | ~−1.2 s at 2048², an estimate | mmh3's 4096² step falls from 7.3 s to 6.2 s with muted colors and coarser textures. **Changes the picture**: one mantissa bit is too coarse for the gates — the picture's 28.69 dB and 4.01-apart bounds would need re-measuring. Keeps the same six steps |
+| 4 | **Keep the prompt's states** across pictures, keyed by the prompt | **−1.1 s**, prompt 1.1 → 0 | mmh3's server skips the encoder's load and encode for a repeated prompt (measured: `found the 24 prompt tokens`), ours re-reads the text encoder's ~45 GiB every picture. Keeps the same six steps. Gate: none — the states are identical |
+| 5 | **INT8/FP8 attention** | −0.6 s at 2048² (0.1 s a step) | mmh3's 4096² step falls from 8.8 s to 7.3 s, its 2048² one from 1.4 s to 1.3 s. Our `fb5090ae` fp8 round measured 14.1 s a picture (reverted). **Changes the picture**: fine details change, composition holds. Gate: the picture's 28.69 dB and 4.01. Keeps the same six steps |
+| 6 | **Decoder attention on tensor cores**: `h3d_attention` is 1.88 s of the decoder's 4.54 s GPU time and neither its loads nor its occupancy explain the bound | **−0.5 s** at 2048² if it matches the products' rate | mmh3's decoder is 0.6 s to our 1.3 s. The `--tc` decoder already puts the projections on cuBLASLt; its attention runs as batched q·kᵀ and p·v. The remaining gap is the attention's own tile. Keeps the same six steps. Gate: the decoder's same-latent bound |
+| 7 | **The final norm, the step's head and Euler on the GPU**, as mmh3 keeps them | ~0.15 s, estimate | Six host round-trips of 4,120 rows replace six GPU passes; the transfer is ~25 MB a step. Keeps the same six steps. Gate: rows bit-identical — the same sums on device. Do it with #1, whose head is INT8 or FP32 anyway |
+| 8 | **Save cuBLASLt's picks and the INT8 tilings** to disk | 4–7 s off the first step of a cold run, 0 warm | The first step pays the algorithm search in every process; a resident server pays it once and caches it. Cold-only, same six steps, no gate |
+| 9 | **Threaded in-place checkpoint reads** and two-region streaming | cold start only | mmh3's DiT load is 3.2 s and its loader reads eight threads into place (PR #2). Cold-only, same six steps, no gate; does nothing for the warm 15.5 s |
 
-Numbers 1, 2 and 3 together put a warm 2048² picture at 8.4 + 0.8 + 0 = **9.2 s**, level with mmh3's warm
-9.3 s; 4 takes it to about **5.0 s** if the picture gates hold.
+Numbers 1, 4 and 6 together put a warm 2048² picture at ~9.2–9.5 s, level with mmh3's warm 9.3 s; 2 takes it
+to about **5.0 s** if the picture gates hold.
 
 ## What not to copy
 
@@ -113,15 +120,15 @@ warm picture's kernel budget as:
 | Other (modulation, residual, heads, fill) | ~320 | 0.02 s | 0.1% |
 
 The VAE decode adds 0.55 s of kernel time across ~274 launches (CUTLASS FP16 GEMMs, SwiGLU, residual, norms), of
-which 0.62 s is wall. Achieved rates beside ours on the same GB10 (the DiT is hidden 5376, 56×128 heads, FFN
-14336, 50 blocks: ~1,075 TFLOP a picture, ~146 TFLOP of it attention):
+which 0.62 s is wall. Achieved rates beside ours on the same GB10 (the DiT is hidden 5376, 56×128 = inner 7168,
+FFN 14336, 50 blocks, 4,120 rows: ~1,099 TFLOP a picture, ~146 TFLOP of it attention):
 
 | Kernel family | mmh3 | ours | Note |
 |---|---:|---:|---|
-| int8 linears | ~167 TOPS (929 TFLOP, all linears, / 5.55 s) | ~110 TOPS (667 TFLOP on `qkvc`+`fc1` / ~6.0 s stage time) | mmh3's own-tile `int8_gemm` is ~1.5× faster per MAC than our cuBLASLt int8, and covers `out` and `fc2` (262 TFLOP) that ours run in BF16 at ~96 TFLOPS (2.7 s) |
+| int8 linears | ~172 TOPS (953 TFLOP, all linears, / 5.55 s) | ~110 TOPS (667 TFLOP on `qkvc`+`fc1` / ~6.0 s stage time) | mmh3's own-tile `int8_gemm` is ~1.5× faster per MAC than our cuBLASLt int8, and covers `out` (inner 7168→hidden 5376) and `fc2` (286 TFLOP) that ours run in BF16 at ~106 TFLOPS (2.7 s) |
 | dense attention | ~82 TFLOPS bf16 (146 TFLOP / 1.78 s) | ~81 TFLOPS bf16 (same arithmetic / 1.80 s) | identical — same mma shape, same online softmax |
 | norm+quant | 1.34 s fused on-chip (`add_norm_quantize`, `rotate_quantize`, `qk_norm_rope`) | ~1.5 s separate `h3_dequantize` + `h3_norm` + `h3_heads` passes | int32→BF16 round trips vs writing BF16 from the mma tile |
 
-mmh3's transformer does ~1,075 TFLOP in 8.7 s — ~124 TOPS-equivalent; our 13.0 s is ~83. The 4.6 s gap is the
-products' rate (167 vs 110 TOPS) on the int8 work both sides share, plus 262 TFLOP of `out`/`fc2` that mmh3 runs
-in int8 while ours stay BF16.
+mmh3's transformer does ~1,099 TFLOP in 8.7 s — ~126 TOPS-equivalent; our 13.0 s is ~85. The 4.6 s gap is the
+products' rate (172 vs 110 TOPS) on the int8 work both sides share, plus the 286 TFLOP of `out`/`fc2` that mmh3
+runs in int8 while ours stay BF16.
