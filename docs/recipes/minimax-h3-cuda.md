@@ -393,7 +393,8 @@ same-latent bound held, but the attention stage **rose 1.76 → 19.94 s** a pict
 12.9 → 29.8 s, warm mean 18.9 → 35.9 s): the transform runs once per query-tile × key-tile pair, so its work
 grows with tiles² instead of slots, and it sits in the mma pipeline's critical path. Reverted (`a560c4eb`); the
 heads pass's own 0.98 s is what a folded variant would have to beat, and inside attention the per-pair rewrite
-costs far more.
+costs far more. The once-per-row alternative — norm and rotary in the qkvc product's epilogue instead of per
+tile pair — was not measured; it is the remaining shape for folding the heads pass into attention.
 
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:
 
