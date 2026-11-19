@@ -316,6 +316,29 @@ exit 0): every selftest passed, the same-latent check passed at 86.117% of bytes
 measured the same 28.69 dB, 4.01 apart and 0.9952, and a warm 2048² picture took **18.9 s** mean (18.9, 18.9, 18.9:
 prompt 1.1, transformer 12.8, decoder 4.9), cold 157.8 s, peak 76,665 MiB.
 
+`--tc` opts the decoder's products and attention onto tensor cores: each projection runs cuBLASLt
+bf16 with fp32 sums into the same `acc` `h3d_finish` reads (the bias and LayerScale keep their
+rounding points), and attention runs as batched q·kᵀ and p·v around `h3d_softmax`/`h3d_unheads`.
+The ordered fp32 kernels stay the default; `bench-script.sh` passes `H3_DECODER=tc` through to the
+resident decoder and the `reference` compare.
+
+`2243f9e8` (job `top-2567f9589044`, 19 November, exit 0, `H3_DECODER=tc`) ran the tensor-core decoder beside
+the default `52350e5b` window (job `top-b79ca42af474`, exit 0), and `9914f752`'s window (job
+`top-764629281bea`, `selftest --tc` PASS) repeated it on the reviewed head: a warm
+2048² picture took **15.3 s** mean (15.3, 15.3, 15.3: prompt 1.1, transformer 12.8, decoder 1.3) against the
+default's 18.9 s (decoder 4.9), cold 158.4 s. The same-latent `reference` passed at 85.213% of bytes
+identical, 99.875% within 1, at most 7 apart, PSNR 56.31 dB (the default's is 56.62) and relative error
+3.33e-3, and `tools/zig/h3_image_compare.py` on the fetched `2048-1.png` and latent against episode 1's Mac
+picture measured **28.69 dB** and **4.01** apart on average, cosine 0.9952 — the same figures as the
+default's. The decoder selftest's staged blocks land ~81–84% identical inside their ULP and relative bounds
+— cuBLASLt's fp32 accumulation order, not an error — so `selftest --tc` drops only the identity bar
+(`selftest-tc.sh` gates that alone).
+
+| Warm 2048² | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
+|---|---:|---:|---:|---:|---:|---:|
+| default (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
+| `--tc` (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
+
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
 the first picture's operands and kept the fastest: q k v gate stayed 2.68 s and mlp in 3.40 s, so the heuristic's

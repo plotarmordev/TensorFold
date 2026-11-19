@@ -7,10 +7,11 @@ const selftest = dec.selftest;
 const vae = dec.vae;
 
 const usage =
-    \\usage: tf-h3-image-decoder-cuda MODEL_DIR latent.f32 ROWS COLUMNS out.png [WIDTHxHEIGHT]
-    \\       tf-h3-image-decoder-cuda reference MODEL_DIR latent.f32 ROWS COLUMNS gpu.png host.png [WIDTHxHEIGHT]
-    \\       tf-h3-image-decoder-cuda MODEL_DIR --serve
-    \\       tf-h3-image-decoder-cuda selftest
+    \\usage: tf-h3-image-decoder-cuda MODEL_DIR latent.f32 ROWS COLUMNS out.png [WIDTHxHEIGHT] [--tc]
+    \\       tf-h3-image-decoder-cuda reference MODEL_DIR latent.f32 ROWS COLUMNS gpu.png host.png [WIDTHxHEIGHT] [--tc]
+    \\       tf-h3-image-decoder-cuda MODEL_DIR --serve [--tc]
+    \\       tf-h3-image-decoder-cuda selftest [--tc]
+    \\  --tc          products and attention on tensor cores (cuBLASLt, fp32 sums); default stays ordered fp32
     \\  MODEL_DIR     the MiniMax-H3-Image folder: vae/config.json and vae/diffusion_pytorch_model.safetensors
     \\  latent.f32    the normalised latent [24, ROWS, COLUMNS] in float32, as tf-h3-image writes it
     \\  WIDTHxHEIGHT  the requested size: the 16 COLUMNS x 16 ROWS canvas is resized to it (Pillow's LANCZOS)
@@ -30,12 +31,13 @@ pub const Vae = struct {
     config: vae.Config,
     d: *dec.Decoder,
 
-    pub fn load(init: std.process.Init, a: std.mem.Allocator, model_dir: []const u8) !Vae {
+    pub fn load(init: std.process.Init, a: std.mem.Allocator, model_dir: []const u8, tc: bool) !Vae {
         const vae_dir = try std.fs.path.join(a, &.{ model_dir, "vae" });
         const config = try vae.config(a, try hostdec.read(init.io, a, try std.fs.path.join(a, &.{ vae_dir, "config.json" }), 1 << 20));
         const loading = dec.seconds();
         const d = try dec.Decoder.init(init.gpa, vae.layers, config.rope_theta);
         errdefer d.deinit();
+        d.fast = tc;
         try d.load(init.io, a, try std.fmt.allocPrint(a, "{s}/diffusion_pytorch_model.safetensors", .{vae_dir}));
         // H3_PROFILE: wait after every stage and print where a picture's decoder seconds went
         d.profile = if (init.environ_map.get("H3_PROFILE")) |v| v.len > 0 else false;
@@ -73,8 +75,8 @@ fn latentOf(init: std.process.Init, a: std.mem.Allocator, path: []const u8, rows
 }
 
 /// `latent` decoded on the GPU and on the host reference decoder, both written as PNGs and the pictures compared.
-fn reference(init: std.process.Init, a: std.mem.Allocator, model_dir: []const u8, latent: []f32, rows: usize, cols: usize, gpu_path: []const u8, host_path: []const u8, want: ?dec.host.Size) !bool {
-    const v = try Vae.load(init, a, model_dir);
+fn reference(init: std.process.Init, a: std.mem.Allocator, model_dir: []const u8, latent: []f32, rows: usize, cols: usize, gpu_path: []const u8, host_path: []const u8, want: ?dec.host.Size, fast: bool) !bool {
+    const v = try Vae.load(init, a, model_dir, fast);
     defer v.d.deinit();
     const width = cols * vae.cell_pixels;
     const height = rows * vae.cell_pixels;
@@ -131,9 +133,11 @@ fn compare(a: std.mem.Allocator, ours: []const f32, theirs: []const f32, height:
 
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
-    const args = try init.minimal.args.toSlice(a);
+    const all = try init.minimal.args.toSlice(a);
+    const tc = all.len >= 2 and std.mem.eql(u8, all[all.len - 1], "--tc");
+    const args = all[0 .. all.len - @intFromBool(tc)];
     if (args.len == 2 and (std.mem.eql(u8, args[1], "selftest") or std.mem.eql(u8, args[1], "--self-test"))) {
-        if (!try selftest.run(init.gpa, a)) std.process.exit(1);
+        if (!try selftest.run(init.gpa, a, tc)) std.process.exit(1);
         return;
     }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "reference")) {
@@ -144,7 +148,7 @@ pub fn main(init: std.process.Init) !void {
         const rows = std.fmt.parseInt(usize, args[4], 10) catch return error.H3BadPictureGrid;
         const cols = std.fmt.parseInt(usize, args[5], 10) catch return error.H3BadPictureGrid;
         const latent = try latentOf(init, a, args[3], rows, cols);
-        const ok = try reference(init, a, args[2], latent, rows, cols, args[6], args[7], if (args.len == 9) try dec.host.size(args[8]) else null);
+        const ok = try reference(init, a, args[2], latent, rows, cols, args[6], args[7], if (args.len == 9) try dec.host.size(args[8]) else null, tc);
         if (!ok) std.process.exit(1);
         return;
     }
@@ -153,14 +157,14 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     }
     if (args.len == 3) {
-        var v = try Vae.load(init, a, args[1]);
+        var v = try Vae.load(init, a, args[1], tc);
         defer v.d.deinit();
         return serve(init, &v);
     }
     const rows = std.fmt.parseInt(usize, args[3], 10) catch return error.H3BadPictureGrid;
     const cols = std.fmt.parseInt(usize, args[4], 10) catch return error.H3BadPictureGrid;
     const latent = try latentOf(init, a, args[2], rows, cols);
-    const v = try Vae.load(init, a, args[1]);
+    const v = try Vae.load(init, a, args[1], tc);
     defer v.d.deinit();
     try v.png(init, a, latent, rows, cols, if (args.len == 7) try dec.host.size(args[6]) else null, args[5]);
 }
