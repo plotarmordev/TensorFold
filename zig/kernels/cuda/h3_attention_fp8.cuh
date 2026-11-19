@@ -9,6 +9,7 @@
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
 #include "mma4.cuh"
+#include "common/reduce.cuh"
 
 namespace tf_h3 {
 
