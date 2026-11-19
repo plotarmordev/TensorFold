@@ -94,13 +94,15 @@ pub const Rows = struct {
         const hidden = m.hidden;
         const head = self.width * hidden * 4;
         const line = self.line_of.ptr + s * self.rows * 4;
+        // h3_rows_out applies scale only against an accumulator, so the first head's share
+        // weights[0] needs the velocity zeroed first: every launch then runs ACC + scale · head.
+        try m.driver.check(m.driver.api.cuMemsetD8Async(self.velocity.ptr, 0, self.velocity.len, m.stream.handle), "cuMemsetD8");
         for (first..last + 1, 0..) |k, w| {
             var args: cuda.Args = .{};
-            const acc: u64 = if (w == 0) 0 else self.velocity.ptr;
-            for ([_]u64{ x, self.final_norm.ptr, self.final.ptr, line, self.w_out.ptr + k * head, self.b_out.ptr + k * self.width * 4, acc, self.velocity.ptr }) |p| args.add(p);
+            for ([_]u64{ x, self.final_norm.ptr, self.final.ptr, line, self.w_out.ptr + k * head, self.b_out.ptr + k * self.width * 4, self.velocity.ptr, self.velocity.ptr }) |p| args.add(p);
             for ([_]usize{ hidden, self.width, self.text_rows + self.held }) |n| args.add(@as(c_int, @intCast(n)));
             args.add(h3.eps);
-            args.add(if (w == 0) @as(f32, 1) else weights[w]);
+            args.add(weights[w]);
             try m.launch("h3_rows_out", .{ .x = @intCast(self.target) }, 256, @intCast(hidden * 4), &args);
         }
     }
