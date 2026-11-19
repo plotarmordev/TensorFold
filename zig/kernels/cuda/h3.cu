@@ -368,16 +368,15 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
     }
 }
 
-// h3_norm and h3_quantize as one launch for the int8 path: the gated add and the modulated norm round exactly as
-// h3_norm rounds them (the same thread/stride and block_sum_serial order), the normed bf16 row stays in shared
-// memory, and h3_quantize's rotation, absmax and rounding run on it unchanged. The row's bf16 copy is never
-// written: the int8 product is its only reader. Grid [M], 256 threads; shared holds one row of bf16 (C * 2 bytes,
-// dynamic) plus the two reduction scratches; C itself is bounded by h3_quantize's chunk registers.
+// h3_norm and h3_quantize as one launch for the int8 path: the gated add and its squares run exactly as h3_norm
+// runs them (the same thread/stride and block_sum_serial order); h3_quantize's rotation, absmax and rounding run
+// unchanged on the normed values, which each lane recomputes as modulated() rounded to bf16 — the same values
+// h3_quantize reads from h3_norm's output row. The normed row is never materialized: the int8 product is its
+// only reader, so the unfused pair's bf16 round trip through a row buffer drops out. Grid [M], 256 threads.
 __global__ void __launch_bounds__(256) h3_norm_quant(
     __nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
     const float* GT, const float* TAB, const int* LINE,
     int8_t* Q, float* S, int C, int gate, int scale, int shift, float eps) {
-    extern __shared__ __nv_bfloat16 normed[];
     __shared__ float scratch[32];
     const int row = blockIdx.x, line = LINE[row];
     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
@@ -396,17 +395,17 @@ __global__ void __launch_bounds__(256) h3_norm_quant(
     const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
     const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
     const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
-    for (int c = threadIdx.x; c < C; c += blockDim.x) {
-        normed[c] = __float2bfloat16(modulated(f(x[c]), inv, f(NW[c]), s[c], h[c]));
-    }
-    __syncthreads();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = C >> 7;
     float most = 0.f, v[quantize_chunks][4];
 #pragma unroll
     for (int i = 0; i < quantize_chunks; ++i) {
         const int c = warp + 8 * i;
         if (c < chunks) {
-            rotated_chunk(normed, c, v[i]);
+            const int base = c * 128 + lane * 4;
+#pragma unroll
+            for (int j = 0; j < 4; ++j)
+                v[i][j] = f(__float2bfloat16(modulated(f(x[base + j]), inv, f(NW[base + j]), s[base + j], h[base + j])));
+            hadamard128(v[i]);
             for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[i][j]));
         }
     }
