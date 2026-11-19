@@ -192,7 +192,7 @@ pub const Model = struct {
         args.add(scale);
         args.add(shift);
         args.add(eps);
-        if (q == 0) try self.launch("h3_norm", .{ .x = @intCast(g.rows) }, 256, 0, &args) else try self.launch("h3_norm_quant", .{ .x = @intCast(g.rows) }, 256, 0, &args);
+        if (q == 0) try self.launch("h3_norm", .{ .x = @intCast(g.rows) }, 256, 0, &args) else try self.launch("h3_norm_quant", .{ .x = @intCast(g.rows) }, 256, @intCast(self.hidden * 2), &args);
     }
 
     /// softmax(q k) v for `count` query tiles from `first`; `queries` is how many a head's lists are laid out for.

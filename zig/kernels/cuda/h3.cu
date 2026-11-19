@@ -371,13 +371,13 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
 // h3_norm and h3_quantize as one launch for the int8 path: the gated add and the modulated norm round exactly as
 // h3_norm rounds them (the same thread/stride and block_sum_serial order), the normed bf16 row stays in shared
 // memory, and h3_quantize's rotation, absmax and rounding run on it unchanged. The row's bf16 copy is never
-// written: the int8 product is its only reader. Grid [M], 256 threads; shared holds one row of bf16 plus the two
-// reduction scratches, so K is bounded by 14 128-wide chunks like h3_quantize's.
+// written: the int8 product is its only reader. Grid [M], 256 threads; shared holds one row of bf16 (C * 2 bytes,
+// dynamic) plus the two reduction scratches; C itself is bounded by h3_quantize's chunk registers.
 __global__ void __launch_bounds__(256) h3_norm_quant(
     __nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
     const float* GT, const float* TAB, const int* LINE,
     int8_t* Q, float* S, int C, int gate, int scale, int shift, float eps) {
-    __shared__ __align__(16) __nv_bfloat16 normed[quantize_chunks * 128];
+    extern __shared__ __nv_bfloat16 normed[];
     __shared__ float scratch[32];
     const int row = blockIdx.x, line = LINE[row];
     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;

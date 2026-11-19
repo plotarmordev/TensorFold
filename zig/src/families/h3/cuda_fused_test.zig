@@ -113,7 +113,7 @@ pub fn run(a: std.mem.Allocator) !void {
         for ([_]u64{ x2_dev.ptr, y_dev.ptr, nw_dev.ptr, tab_dev.ptr, tab_dev.ptr, line_dev.ptr, q2.ptr, s2.ptr }) |p| args.add(p);
         for ([_]c_int{ C, gate_m, scale_a, shift_a }) |v| args.add(v);
         args.add(eps);
-        try cuda.launch.launch(try module.function("h3_norm_quant"), .{ .grid = .{ .x = rows }, .block = .{ .x = 256 } }, stream, &args);
+        try cuda.launch.launch(try module.function("h3_norm_quant"), .{ .grid = .{ .x = rows }, .block = .{ .x = 256 }, .shared = C * 2 }, stream, &args);
     }
     try stream.synchronize();
 
