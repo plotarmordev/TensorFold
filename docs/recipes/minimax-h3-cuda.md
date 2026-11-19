@@ -338,10 +338,12 @@ Card 130 fuses the `--tc` decoder's finish pass: the bias-free-of-LayerScale pro
 cuBLASLt's bias epilogue — `bf16(acc + b)` in the one rounding `h3d_finish` mode 0 held — and the
 LayerScale projections write that same rounded product into `u`, which `h3d_res_norm` folds into
 the next block norm (`x = bf16(x + bf16(u * s))`, then the RMS norm). `h3d_finish` had 776 launches
-a picture at 341 µs each on the card-125 trace; the fused shapes' launches are gone, and a shape
-whose algorithm declines the bias epilogue keeps the fp32 `acc` and `h3d_finish`. `most_batch` is
-128 so a 2048² canvas's 121 tiles decode in one pass, the way mmh3 batches its VAE. `--exact` is
-unchanged.
+a picture at 341 µs each on the card-125 trace; a CUPTI trace of the same bench
+(`top-5a08d40d1ed5`, at `5d2354fa`) shows 48 launches a warm decode — two a block: the qkv (m,3072,1024) and w2
+(m,1024,4096) projections, whose heuristic pick (nvjet `tss_128x208`) declines the bias epilogue,
+while out, w1 and proj_out run cutlass_80 relu algorithms that take it. Those two shapes keep the
+fp32 `acc` and `h3d_finish`; `--exact` is unchanged. `most_batch` is 128 so a 2048² canvas's 121
+tiles decode in one pass, the way mmh3 batches its VAE.
 
 `32279731` (job `top-c328ffe998ad`, 20 November, exit 0) ran the same-job A/B — the bench on this
 commit, then again with the card's seven files put back to merge base `60dd5ac5` inside the job.
@@ -350,8 +352,9 @@ figures exactly (85.213% of bytes identical, 99.875% within 1, at most 7 apart, 
 relative 3.33e-3), and every latent and PNG was byte-identical between phases. A warm 2048² picture
 took **15.2 s** mean (15.2, 15.2, 15.2: prompt 1.1, transformer 12.8, decoder 1.2–1.3) against the
 same job's base phase **15.3 s** (15.3, 15.3, 15.3: decoder 1.3) — kept. The decode's GPU time fell
-0.98 → 0.83 s: the finish stage 0.26 → 0.08 s and res_norm folded into norms at +0.02 s. The
-products' tile rates are the gap left toward mmh3's 0.55 s decode: products plus attention 0.58 s
+0.98 → 0.83 s: the finish stage 0.26 → 0.08 s (the 48 remaining `h3d_finish` launches of 0.091 s on
+the trace — qkv's nvjet pick and w2's decline the epilogue) and res_norm folded into norms at +0.02 s.
+The products' tile rates are the gap left toward mmh3's 0.55 s decode: products plus attention 0.58 s
 (0.34 + 0.24) against the card-125 trace's 0.52 s of nvjet+cutlass GEMM time — the finish pass was
 never the products' rate. Against episode 1's Mac picture the fused path's `2048-2` measures the
 window's own 28.69 dB and 4.01 apart, cosine 0.9952.
