@@ -20,8 +20,9 @@ pub const bounds = struct {
     pub const product_ulps: f64 = 1;
     pub const product_same: f64 = 0.99;
     /// One block on the GPU's own input (host fp32 sums: 95% identical, worst 4 ULPs, relative 7e-4); the CUDA
-    /// norms use the Metal reduction order and correctly rounded reciprocal square roots.
-    pub const block_ulps: f64 = 8;
+    /// norms use the Metal reduction order and correctly rounded reciprocal square roots. `block_same` is the
+    /// ordered kernels' bar: `--tc`'s cuBLASLt sums land ~85% identical and are gated on the ULP and relative
+    /// bounds alone (the picture gates judge the path end to end).
     pub const block_same: f64 = 0.9;
     pub const block_relative: f64 = 2e-3;
     /// The output after two blocks chained (host fp32 sums: relative 2.9e-3, worst 3 ULPs) and after 24 (1.5e-2).
@@ -170,7 +171,9 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
         var block: Stat = .{};
         block.add(embedded, input, W);
         var name: [32]u8 = undefined;
-        ok = block.report(try std.fmt.bufPrint(&name, "block {d}", .{i}), bounds.block_ulps, bounds.block_same, bounds.block_relative) and ok;
+        // The fast path's blocks are judged on their sums, not identity: cuBLASLt's fp32
+        // accumulation order spreads ~15% of bf16 outputs a rounding point off the ordered kernel's.
+        ok = block.report(try std.fmt.bufPrint(&name, "block {d}", .{i}), bounds.block_ulps, if (d.fast) 0 else bounds.block_same, bounds.block_relative) and ok;
     }
 
     // norm_out and proj_out on the GPU's stream, then the reference's chain against the GPU's
