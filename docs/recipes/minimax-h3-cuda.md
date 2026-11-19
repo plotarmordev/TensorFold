@@ -424,10 +424,14 @@ decoder 1.3), and `top-7cc7074c454e` (`bench-script.sh` at `40ab38a8f` on scratc
 measured the baseline's 15.5 s (transformer 13.0, steps ~2.16, decoder 1.3) — 0.3 s faster, kept. Every
 selftest passed in both runs, the same-latent `reference` bound held at 56.31 dB (rel 3.33e-3) on both,
 and the pictures were byte-identical between graph and eager output. The same-job re-run on the merged
-head (after main's card-89 merge) is `bench-122-ab.sh`: <fill>. Seconds outside the blocks are not
-reported on the graph path — `H3_PROFILE`'s per-stage waits can't be captured, so a graphed run has no
-block breakdown; the eager baseline's transformer held the same 12.8-13.0 s with its staging outside the
-blocks unchanged.
+head (after main's card-89 merge) is `bench-122-ab.sh` — `git apply -R` of `bench-122-base.patch` puts
+the card's h3 files back to main's inside the job's shallow clone: job `top-ae939c0b8de7` (exit 0) ran
+the merged head's warm mean **15.3 s** (transformer 12.8, steps 2.13-2.15, decoder 1.3) against the
+same-job `main + --tc` baseline's **15.5 s** (transformer 12.9, steps 2.14-2.16) — 0.2 s faster, kept,
+with `latent.f32` and the PNG byte-identical between phases and every selftest passing. Seconds outside
+the blocks are not reported on the graph path — `H3_PROFILE`'s per-stage waits can't be captured, so a
+graphed run has no block breakdown; the eager baseline's transformer held the same 12.9 s with its
+staging outside the blocks unchanged.
 
 Card 89's own tile, `h3_gemm_int8`, was measured and reverted. `h3_quantize` scaled each 128-wide chunk by its own
 absmax, so `out` and `fc2` left bf16 without the per-row scale's distance from episode 1, and the `m16n8k32` tile

@@ -11,5 +11,5 @@
   streaming video rows out band by band while the decoder read them progressively, and warm 2048² came
   out 15.7 s — the banded read serialised the step's tail and the progressive host decode cost 3.6 s vs
   1.3 s for the bulk path — so the decoder keeps its `.latent.f32` input and output unchanged. The
-  whole-step graphs + tc default measured warm 2048² mean 15.2 s against the same-day baseline's 15.5 s
-  (~0.2 s off the transformer from graph replay) — kept.
+  whole-step graphs + tc default measured warm 2048² mean 15.3 s against the same-job `main + --tc`
+  baseline's 15.5 s on the merged head (`top-ae939c0b8de7`), latent and PNG byte-identical — kept.
