@@ -151,17 +151,23 @@ with open(sys.argv[2], "w") as f:
     for i, seg in enumerate(segments):
         span = (seg[-1][1] - seg[0][0]) / 1e9
         f.write("segment %d: %d launches, %.2f s\n" % (i, len(seg), span))
-        if span > 3.0:
+    # The warm segment is the last one thick enough to be a picture's six steps.
+    for seg in reversed(segments):
+        if len(seg) > 50 and (seg[-1][1] - seg[0][0]) / 1e9 > 5.0:
             warm = seg
-    f.write("\nwarm segment: %d launches, %.2f s\n\n" % (len(warm), (warm[-1][1] - warm[0][0]) / 1e9))
-    f.write("%-10s %8s %10s %10s %s\n" % ("grid", "calls", "total ms", "mean us", "kernel"))
-    totals = {}
-    for start, end, name, grid in warm:
-        key = (name, grid)
-        calls, total = totals.get(key, (0, 0))
-        totals[key] = (calls + 1, total + end - start)
-    for (name, grid), (calls, total) in sorted(totals.items(), key=lambda kv: -kv[1][1])[:40]:
-        f.write("%-10s %8d %10.1f %10.1f %s\n" % (grid, calls, total / 1e6, total / 1e3 / calls, name))
+            break
+    if not warm:
+        f.write("\nno segment thick enough for a warm picture\n")
+    else:
+        f.write("\nwarm segment: %d launches, %.2f s\n\n" % (len(warm), (warm[-1][1] - warm[0][0]) / 1e9))
+        f.write("%-10s %8s %10s %10s %s\n" % ("grid", "calls", "total ms", "mean us", "kernel"))
+        totals = {}
+        for start, end, name, grid in warm:
+            key = (name, grid)
+            calls, total = totals.get(key, (0, 0))
+            totals[key] = (calls + 1, total + end - start)
+        for (name, grid), (calls, total) in sorted(totals.items(), key=lambda kv: -kv[1][1])[:40]:
+            f.write("%-10s %8d %10.1f %10.1f %s\n" % (grid, calls, total / 1e6, total / 1e3 / calls, name))
 PY
 if [ -f "$out/cupti-trace.csv" ]; then
     python3 /work/mmh3_segments.py "$out/cupti-trace.csv" "$out/cupti-warm-segment.txt" \

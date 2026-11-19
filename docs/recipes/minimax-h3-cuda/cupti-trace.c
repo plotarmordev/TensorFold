@@ -1,10 +1,13 @@
 /* cupti-trace.c: LD_PRELOAD shim that records every kernel launch's name, start and end
  * timestamps via CUPTI's activity API, and writes them to CUPTI_TRACE_OUT on process exit.
+ * A SIGTERM handler calls exit() so the destructor flushes CUPTI before _exit() skips it.
  * Compiled in the TOP job with the staged gcc against /usr/local/cuda's CUPTI headers. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <cupti.h>
 
@@ -64,6 +67,12 @@ static void flush(void)
                 kernels[i].start, kernels[i].end);
     fflush(out);
 }
+static void on_sigterm(int sig)
+{
+    (void)sig;
+    exit(0); /* runs atexit handlers and destructors, which flush CUPTI */
+}
+
 
 __attribute__((destructor)) static void teardown(void)
 {
@@ -82,6 +91,8 @@ __attribute__((constructor)) static void setup(void)
     out = fopen(path, "w");
     if (!out)
         return;
+    signal(SIGTERM, on_sigterm);
+    signal(SIGINT, on_sigterm);
     cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     cuptiActivityRegisterCallbacks(buffer_request, buffer_complete);
 }
