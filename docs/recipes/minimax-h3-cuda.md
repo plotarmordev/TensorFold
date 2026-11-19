@@ -385,6 +385,16 @@ scale granularity and the bf16↔fp8 conversion cost more than the narrower mma 
 last 0.002 of cosine likely needs the weighed scores in int8 too rather than e4m3. A follow-up that pipelines the
 prologue and finishes the precision split starts from these measurements.
 
+`19a025fa` (job `top-b9b35bcd7d49`, 19 November, exit 0, same-job A/B against its own checkout reverted to
+`a55829e5`) folded `h3_heads`' q/k norm and rotary into `h3_attention_heads`' tile loads: the loads gathered the
+fused QKV rows through ROWOF, and each arriving q/k smem tile took `h3_heads`'s exact bf16 roundings between the
+pipeline's wait and the ldmatrix reads, so `h3_heads` left the dense forward. Every selftest passed and the
+same-latent bound held, but the attention stage **rose 1.76 → 19.94 s** a picture (heads 0.96 → 0.00, transformer
+12.9 → 29.8 s, warm mean 18.9 → 35.9 s): the transform runs once per query-tile × key-tile pair, so its work
+grows with tiles² instead of slots, and it sits in the mma pipeline's critical path. Reverted (`a560c4eb`); the
+heads pass's own 0.98 s is what a folded variant would have to beat, and inside attention the per-pair rewrite
+costs far more. The once-per-row alternative — norm and rotary in the qkvc product's epilogue instead of per
+tile pair — was not measured; it is the remaining shape for folding the heads pass into attention.
 `45ea17643` (job `top-5b1ede67a163`, 19 November, exit 0, `bench-script.sh`) put each denoising step in one CUDA
 graph — rows in, every block's launches, the step head and the Euler update — replayed on a dedicated
 stream (`H3_PROFILE`, which waits after each stage, keeps the eager path), staged every step's AdaLN
