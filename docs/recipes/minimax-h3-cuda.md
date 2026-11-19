@@ -349,9 +349,11 @@ The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
    writes bf16 from its own tile — no int32 round trip through `h3_dequantize` (removed), and `fc1`'s product feeds a
    bf16 `h3_swiglu` (the fused `h3_swiglu_int8` removed). Its record is in the registry's pending list until gate 5
    measures it; `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs both int8 kernels' gates 1-4
-   (`contract_h3_int8.zig`: the quantizer and the product's own float64 contract). `h3_gemm_int8` stays opt-in —
-   `tf-h3-image-cuda --int8`, `H3_LINEAR=int8` on the bench — until the 2048² gates pass on a new window; the
-   per-chunk scale changed the whole picture, so card 88's qkvc/fc1 receipt does not cover this head.
+   (`contract_h3_int8.zig`: the quantizer and the product's own float64 contract). The 2048² gates passed on a new
+   window — job `top-07d5c772c895` measured cosine 0.9959, 29.51 dB and 3.39 apart from episode 1's Mac PNG — so
+   int8 is `tf-h3-image-cuda`'s default and `--bf16` (`H3_LINEAR=bf16`, `bench-bf16.sh`) opts out. `b4c709177`'s
+   bf16 window (job `top-c5dfb77a467c`) took 21.0 s warm (transformer 14.7: q k v gate 3.14, attention out 1.17,
+   mlp in 4.65, mlp out 2.38) to int8's 20.5 s (transformer 14.4: 3.04, 1.11, 4.52, 2.34).
 2. **Attention**: 1.74 s a picture in the transformer, 217 registers at 128 threads and two CTAs an SM (8 warps), and
    1.89 s in the decoder, whose 16-byte key loads changed nothing. mmh3's INT8/FP8 attention is the candidate that
    would also cut registers; the decoder's attention needs its stall found first, since neither its loads nor its

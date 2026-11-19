@@ -7,3 +7,6 @@
   that chunk's activation and weight scales, then writes bf16 straight from the tile. `h3_quantize` scales each
   128-wide chunk by its own absmax, so `out` and `fc2` leave bf16 without the per-row scale's distance from episode
   1, and there is no int32 round trip through a dequantize pass.
+- int8 is `tf-h3-image-cuda`'s default: the 2048² picture passed episode 1's gates on TOP (cosine 0.9959, 29.51 dB
+  and 3.39 apart from the Mac PNG, job `top-07d5c772c895`), so the tool takes `--bf16` to opt out and the bench's
+  `H3_LINEAR` defaults to int8. A warm 2048² picture is 20.5 s against bf16's 21.0 s (transformer 14.4 against 14.7).

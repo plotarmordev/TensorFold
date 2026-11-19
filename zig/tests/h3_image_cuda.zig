@@ -7,15 +7,15 @@ const picture = h3image.picture;
 const schedule = h3image.schedule;
 
 const usage =
-    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--int8]
-    \\       tf-h3-image-cuda MODEL_DIR --serve [--int8]
+    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16]
+    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16]
     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
     \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
     \\--serve loads the model once, then renders one `picture.safetensors OUT_PREFIX` line of stdin at a time,
     \\answering each on stdout with `done OUT_PREFIX` or `failed OUT_PREFIX`.
-    \\--int8 runs every projection as mmh3's blocks do: rotated int8 weights and rows at a scale each 128-wide
-    \\chunk, exact int32 sums. Opt-in until the 2048² picture passes episode 1's gates; bf16 is the default.
+    \\--bf16 runs every projection in bf16; the default is mmh3's blocks: rotated int8 weights and rows at a scale
+    \\each 128-wide chunk, exact int32 sums, the picture inside episode 1's gates.
     \\
 ;
 
@@ -87,15 +87,15 @@ pub fn main(init: std.process.Init) !void {
         try h3.modulation_test.run(init.gpa);
         return h3.rows_test.run(init.gpa);
     }
-    const int8 = all.len > 2 and std.mem.eql(u8, all[all.len - 1], "--int8");
-    const args = all[0 .. all.len - @intFromBool(int8)];
+    const bf16 = all.len > 2 and std.mem.eql(u8, all[all.len - 1], "--bf16");
+    const args = all[0 .. all.len - @intFromBool(bf16)];
     const serving = args.len == 3 and std.mem.eql(u8, args[2], "--serve");
     if (args.len != 4 and !serving) {
         std.debug.print("{s}", .{usage});
         return error.BadArguments;
     }
     const started = h3.seconds();
-    var folder = try Folder.load(init, init.arena.allocator(), args[1], int8);
+    var folder = try Folder.load(init, init.arena.allocator(), args[1], !bf16);
     defer folder.deinit(init.gpa);
     std.debug.print("model loaded in {d:.1} s\n", .{h3.seconds() - started});
     if (!serving) return render(init, init.arena.allocator(), &folder, args[2], args[3]);
