@@ -5,7 +5,7 @@ model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
 commit=$(git -c safe.directory='*' rev-parse HEAD)
 bin=/work/out/tensorfold-cuda-$commit
-out=${H3_BENCH_OUT:-/work/out/h3-image-bench}
+out=/work/out/h3-image-bench
 # the sm_121 tools only: the five SMs' build and limits audit are cuda-build.sh's own job
 H3_BUILD=sm121 sh docs/recipes/minimax-h3-cuda/cuda-build.sh
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
@@ -128,7 +128,7 @@ for side in ${H3_BENCH_SIZES:-2048}; do
 done
 # the GPU decoder's 2048² picture beside the host reference decoder's on the same latent, after the
 # resident servers freed their arenas: the host decoder needs the memory they held
-if [ -f "$out/2048-1.latent.f32" ] && [ -z "${H3_BENCH_SKIP_COMPARE:-}" ]; then
+if [ -f "$out/2048-1.latent.f32" ]; then
     case=$out/2048-reference
     stage compare "$bin/tf-h3-image-decoder-cuda" reference "$model" "$out/2048-1.latent.f32" 128 128 \
         "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048 $decflag

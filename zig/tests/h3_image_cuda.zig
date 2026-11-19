@@ -230,8 +230,6 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     defer device_rows.deinit();
     std.debug.print("{d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, case ready in {d:.1} s\n", .{ canvas.width, canvas.height, count, text, held, target, tiles, model.blocks.len, steps, h3.seconds() - started });
 
-    const rows_path = try std.fmt.allocPrintSentinel(a, "{s}.rows.f32", .{prefix}, 0);
-
     // the steps run on their own non-blocking stream so each captures as one CUDA graph; --serve's
     // next case shares this model, so its stream comes back when render returns
     var work = try @import("cuda").Stream.init(&model.driver, true);
@@ -280,8 +278,8 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
             };
             if (execs[s]) |e| {
                 try e.launchOn(work);
-            } else try stepEager(model, &device, checked, &device_rows, s, pdd.deltas[s]);
-        } else try stepEager(model, &device, checked, &device_rows, s, pdd.deltas[s]);
+            } else try stepBody(model, &device, checked, &device_rows, s, pdd.deltas[s]);
+        } else try stepBody(model, &device, checked, &device_rows, s, pdd.deltas[s]);
         try model.stream.synchronize();
         std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - mark });
     }
@@ -298,6 +296,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         std.debug.print("  outside the blocks: {d:.2} s\n", .{spent - blocks});
     }
 
+    const rows_path = try std.fmt.allocPrintSentinel(a, "{s}.rows.f32", .{prefix}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
     const latent = try a.alloc(f32, video.len);
     try picture.unpatchify(video, target_grid, latent);
@@ -320,7 +319,8 @@ fn stepGraph(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model
     };
     var graph = try graph_api.endCapture(model.stream);
     defer graph.deinit();
-    const exec = try graph.instantiate();
+    var exec = try graph.instantiate();
+    errdefer exec.deinit();
     try exec.upload(model.stream);
     return exec;
 }
@@ -329,9 +329,4 @@ fn stepBody(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.
     try rows.in(device.x);
     try model.step(device, checked);
     try rows.out(device.x, s, delta);
-}
-
-/// The eager step: the same body the graph captures, for H3_PROFILE's per-stage waits or a refused capture.
-fn stepEager(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32) !void {
-    try stepBody(model, device, checked, rows, s, delta);
 }

@@ -273,7 +273,8 @@ pub const Model = struct {
     }
 
     /// Warm the shape's scratch and plans so a `step` launches nothing but kernels and products:
-    /// the int8 reserve and every (rows, n, k) plan the blocks use. Host work only, no stream waits.
+    /// the int8 reserve and every (rows, n, k) plan the blocks use. Host-side planning; growing
+    /// the int8 reserve may synchronise the stream.
     pub fn warm(self: *Model, rows: usize) !void {
         const inner = self.inner;
         if (self.int8) |t| {
