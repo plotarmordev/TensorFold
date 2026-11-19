@@ -452,6 +452,17 @@ revert's ground, and the cuBLASLt qkvc/fc1 int8 default stands. `bench-int8.sh` 
 Desk's env-less door at `cdf02b8b4`; the revert removed it with the flag it set. The `bf16` window that job ran
 beside (job `top-c5dfb77a467c`, at `b4c709177`, whose default was bf16) took 21.0 s (transformer 14.7).
 
+The loss was named on TOP (`profile-int8-job.sh` at `38422b4b`, job `top-6384892e821f`; the job image's `ncu` is a
+shim without its nsight-compute support dir, so the dynamic readout is the fatbin's `cuobjdump -res-usage` and the
+measured per-stage times above, not a profile). The reverted tile staged both scale vectors in shared and folded each
+chunk's int32 sum into fp32 at about five ops a element; it ran **167 registers** at 256 threads and 3 × (16,384 +
+16,384 + 1,024) = **101,376 shared bytes a block** — exactly sm_121's opt-in cap. On the GB10's 228 KB of shared an SM
+that caps residency at one 128×128 block, eight warps (12.5% of the 64-warp scheduler) to hide each chunk's ldmatrix
+and mma latency; cuBLASLt's heuristic choice pipelines deeper and holds ~154 TOPS where this tile sat near a third of
+it. The fix keeps the m16n8k32 tile but folds only the activation scale in registers (two fma a element against the
+12582912.0f magic bias), applies the weight scale once in the epilogue and stages only that vector — the rebuilt
+`h3_gemm_int8` below.
+
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93; its first picture is 17.6 s, card 80's standing
 goal), in order, each needing its own window:
 
