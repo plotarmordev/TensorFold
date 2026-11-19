@@ -1,21 +1,21 @@
 //! MiniMax-H3-Image's transformer on CUDA from a picture case: the free run of the distilled schedule,
-//! the blocks, timestep embedder and AdaLN tables on CUDA; row projections and Euler updates on the host.
+//! the blocks, timestep embedder, AdaLN tables, row projections and Euler updates on CUDA.
 const std = @import("std");
 const h3 = @import("h3cuda");
 const h3image = h3.image_host;
 const picture = h3image.picture;
 const schedule = h3image.schedule;
-const rows = h3image.rows;
 
 const usage =
-    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--int8]
-    \\       tf-h3-image-cuda MODEL_DIR --serve [--int8]
+    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16]
+    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16]
     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
     \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
     \\--serve loads the model once, then renders one `picture.safetensors OUT_PREFIX` line of stdin at a time,
     \\answering each on stdout with `done OUT_PREFIX` or `failed OUT_PREFIX`.
-    \\--int8 runs the blocks' projections as mmh3 does: rotated int8 weights and rows, exact int32 sums.
+    \\--bf16 runs every projection in bf16; by default qkvc and fc1 run as mmh3 does: rotated int8 weights and
+    \\rows, exact int32 sums, and the picture passes episode 1's gates.
     \\
 ;
 
@@ -83,16 +83,19 @@ const Folder = struct {
 
 pub fn main(init: std.process.Init) !void {
     const all = try init.minimal.args.toSlice(init.arena.allocator());
-    if (all.len == 2 and std.mem.eql(u8, all[1], "--self-test")) return h3.modulation_test.run(init.gpa);
-    const int8 = all.len > 2 and std.mem.eql(u8, all[all.len - 1], "--int8");
-    const args = all[0 .. all.len - @intFromBool(int8)];
+    if (all.len == 2 and std.mem.eql(u8, all[1], "--self-test")) {
+        try h3.modulation_test.run(init.gpa);
+        return h3.rows_test.run(init.gpa);
+    }
+    const bf16 = all.len > 2 and std.mem.eql(u8, all[all.len - 1], "--bf16");
+    const args = all[0 .. all.len - @intFromBool(bf16)];
     const serving = args.len == 3 and std.mem.eql(u8, args[2], "--serve");
     if (args.len != 4 and !serving) {
         std.debug.print("{s}", .{usage});
         return error.BadArguments;
     }
     const started = h3.seconds();
-    var folder = try Folder.load(init, init.arena.allocator(), args[1], int8);
+    var folder = try Folder.load(init, init.arena.allocator(), args[1], !bf16);
     defer folder.deinit(init.gpa);
     std.debug.print("model loaded in {d:.1} s\n", .{h3.seconds() - started});
     if (!serving) return render(init, init.arena.allocator(), &folder, args[2], args[3]);
@@ -191,12 +194,8 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         line_of[s * count + r] = time;
     };
 
-    // the packed stream, the video's own rows, and the final norm's output
+    // the packed stream on the device across every step; the host keeps only the latent's rows
     const x = try a.alloc(u16, count * hidden);
-    const video = try a.alloc(f32, noise.len);
-    @memcpy(video, noise);
-    const velocity = try a.alloc(f32, target * width);
-    const normed = try a.alloc(u16, count * hidden);
     var in: h3.Model.Inputs = .{
         .x = @intFromPtr(x.ptr),
         .tables = modulation.blocks.ptr,
@@ -212,39 +211,48 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         .prefix_tiles = @intCast(map.prefix),
         .keep = 0,
     };
+    var device_rows = try h3.Rows.init(model, .{
+        .text = std.mem.sliceAsBytes(text_rows),
+        .anchors = if (anchors) |v| std.mem.sliceAsBytes(v) else &.{},
+        .noise = std.mem.sliceAsBytes(noise),
+        .w_in = std.mem.sliceAsBytes(w_in),
+        .b_in = std.mem.sliceAsBytes(b_in),
+        .w_out = std.mem.sliceAsBytes(w_out),
+        .b_out = std.mem.sliceAsBytes(b_out),
+        .final_norm = std.mem.sliceAsBytes(final_norm),
+        .final = std.mem.sliceAsBytes(final),
+        .line_of = std.mem.sliceAsBytes(line_of),
+        .text_rows = text,
+        .held = held,
+        .target = target,
+        .width = width,
+    });
+    defer device_rows.deinit();
     std.debug.print("{d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, case ready in {d:.1} s\n", .{ canvas.width, canvas.height, count, text, held, target, tiles, model.blocks.len, steps, h3.seconds() - started });
 
     // H3_PROFILE: wait after every block stage and print where the steps went (the waits cost a few ms a step)
     const profiling = if (init.environ_map.get("H3_PROFILE")) |v| v.len > 0 else false;
     model.profile = profiling;
     model.spent = @splat(0);
-    var host: Host = .{ .x = x, .video = video, .normed = normed, .velocity = velocity, .w_in = w_in, .b_in = b_in, .final_norm = final_norm, .final = final, .first = text + held, .hidden = hidden };
+    // stage() treats every address as host memory: the resident table stays out, and x is only room for the stream
+    const checked = try model.plan(&in);
+    try model.drain();
+    var upload = checked;
+    upload.input[1] = 0;
+    var device = try h3.host.stage(model, &in, upload);
+    device.tables = modulation.blocks.ptr;
     const transformer = h3.seconds();
     for (0..steps) |s| {
         const step = h3.seconds();
-        // the stream: the text's rows, each reference's, then the video's through the float projection
-        @memcpy(x[0 .. text * hidden], text_rows);
-        if (anchors) |v| rows.rowsIn(v, w_in, b_in, x, text, held, width, hidden);
-        split(target, &host, Host.in);
-        in.line = @intFromPtr(adaln[s * count ..].ptr);
-        const checked = try model.plan(&in);
-        try model.drain();
-        // stage() treats every address as host memory; stage the small inputs without the resident table.
-        var upload = checked;
-        upload.input[1] = 0;
-        var device = try h3.host.stage(model, &in, upload);
-        device.tables = modulation.blocks.ptr;
+        try device_rows.in(device.x);
+        try model.inputs[2].?.upload(0, std.mem.sliceAsBytes(adaln[s * count ..][0..count]));
         _ = try model.forward(&device);
-        try h3.host.readback(model, &in, checked);
-        // the final norm over every row, then this step's head over the target's rows
-        host.line = line_of[s * count ..][0..count];
-        host.w_out = w_out[s * width * hidden ..][0 .. width * hidden];
-        host.b_out = b_out[s * width ..][0..width];
-        split(count, &host, Host.norm);
-        split(target, &host, Host.out);
-        picture.euler(video, velocity, pdd.deltas[s]);
+        try device_rows.out(device.x, s, pdd.deltas[s]);
+        try model.stream.synchronize();
         std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - step });
     }
+    const video = try a.alloc(f32, noise.len);
+    try device_rows.latent(video);
     const spent = h3.seconds() - transformer;
     std.debug.print("transformer: {d:.2} s\n", .{spent});
     if (profiling) {
@@ -263,48 +271,4 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     const latent_path = try std.fmt.allocPrintSentinel(a, "{s}.latent.f32", .{prefix}, 0);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = latent_path, .data = std.mem.sliceAsBytes(latent) });
     std.debug.print("wrote {s}.latent.f32: [{d}, {d}, {d}] normalised float32\n", .{ prefix, picture.channels, target_grid.rows, target_grid.columns });
-}
-
-/// A step's host rows: the video's rows in, the final norm and the step's head out, each over rows lo..hi.
-/// Every row's sums keep rows_reference's order, so a split picture is the serial one bit for bit.
-const Host = struct {
-    x: []u16,
-    video: []const f32,
-    normed: []u16,
-    velocity: []f32,
-    w_in: []align(1) const f32,
-    b_in: []align(1) const f32,
-    final_norm: []align(1) const u16,
-    final: []const u16,
-    first: usize, // the target's first row in the stream
-    hidden: usize,
-    line: []const i32 = &.{},
-    w_out: []align(1) const f32 = &.{},
-    b_out: []align(1) const f32 = &.{},
-
-    fn in(h: *const Host, lo: usize, hi: usize) void {
-        rows.rowsIn(h.video[lo * picture.row_width ..], h.w_in, h.b_in, h.x, h.first + lo, hi - lo, picture.row_width, h.hidden);
-    }
-    fn norm(h: *const Host, lo: usize, hi: usize) void {
-        rows.finalNorm(h.x[lo * h.hidden .. hi * h.hidden], h.final_norm, h.final, h.line[lo..hi], h.normed[lo * h.hidden ..], h.hidden, h3.eps);
-    }
-    fn out(h: *const Host, lo: usize, hi: usize) void {
-        rows.rowsOut(h.normed, h.w_out, h.b_out, h.velocity[lo * picture.row_width ..], h.first + lo, hi - lo, h.hidden, picture.row_width);
-    }
-};
-
-/// f(ctx, lo, hi) over 0..n in contiguous parts, one a host core (at most 16); a part whose thread fails runs here.
-fn split(n: usize, ctx: *const Host, comptime f: fn (*const Host, usize, usize) void) void {
-    var threads: [16]?std.Thread = @splat(null);
-    const parts = @max(1, @min(threads.len, std.Thread.getCpuCount() catch 1, n));
-    for (1..parts) |p| {
-        const lo = n * p / parts;
-        const hi = n * (p + 1) / parts;
-        threads[p] = std.Thread.spawn(.{}, f, .{ ctx, lo, hi }) catch blk: {
-            f(ctx, lo, hi);
-            break :blk null;
-        };
-    }
-    f(ctx, 0, n / parts);
-    for (threads[1..parts]) |t| if (t) |th| th.join();
 }

@@ -228,6 +228,18 @@ __global__ void __launch_bounds__(256) h3_swiglu(const __nv_bfloat16* F, __nv_bf
     }
 }
 
+// h3_swiglu over an int8 product's int32 sums [gate | value]: each sum to bf16 as h3_dequantize rounds it, then the
+// same silu and product, so A matches the two kernels' output without the bf16 rows between them. Grid-stride.
+__global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* A, int M, int N) {
+    const size_t total = static_cast<size_t>(M) * N;
+    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < total; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+        const size_t r = i / N, n = i % N;
+        const float s = SX[r];
+        const float g = bf(ACC[r * 2 * N + n] * s * SW[n]), v = bf(ACC[r * 2 * N + N + n] * s * SW[N + n]);
+        A[i] = __float2bfloat16(bf(g / (1.0f + expf(-g))) * v);
+    }
+}
+
 // A warp's 128 values, four a lane in order, through the orthonormal Walsh-Hadamard transform in place.
 __device__ __forceinline__ void hadamard128(float v[4]) {
     const float a = v[0] + v[1], b = v[0] - v[1], c = v[2] + v[3], d = v[2] - v[3];
@@ -260,25 +272,36 @@ __device__ __forceinline__ void rotated_chunk(const __nv_bfloat16* x, int c, flo
     hadamard128(v);
 }
 
+// A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336, the widest projection input.
+constexpr int quantize_chunks = 14;
+
 // Each bf16 row of X (M, K) Hadamard-rotated in 128-wide chunks, then to int8 Q at the row's absmax / 127 in S.
-// A row and its weights' rows rotate alike, so their products' sums are the unrotated ones. Grid [M], 256 threads.
+// A row and its weights' rows rotate alike, so their products' sums are the unrotated ones. The rotated chunks stay in
+// registers between the absmax and the rounding, so X is read once. Grid [M], 256 threads.
 __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_t* Q, float* S, int K) {
     __shared__ float scratch[32];
     const size_t row = blockIdx.x;
     const __nv_bfloat16* x = X + row * K;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = K >> 7;
-    float most = 0.f, v[4];
-    for (int c = warp; c < chunks; c += 8) {
-        rotated_chunk(x, c, v);
-        for (int i = 0; i < 4; ++i) most = fmaxf(most, fabsf(v[i]));
+    float most = 0.f, v[quantize_chunks][4];
+#pragma unroll
+    for (int i = 0; i < quantize_chunks; ++i) {
+        const int c = warp + 8 * i;
+        if (c < chunks) {
+            rotated_chunk(x, c, v[i]);
+            for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[i][j]));
+        }
     }
     most = tf_common::block_max_tree(most, scratch, 8);
     const float scale = most > 0.f ? most / 127.f : 1.f;
     if (threadIdx.x == 0) S[row] = scale;
-    for (int c = warp; c < chunks; c += 8) {
-        rotated_chunk(x, c, v);
-        const char4 q = make_char4(__float2int_rn(v[0] / scale), __float2int_rn(v[1] / scale), __float2int_rn(v[2] / scale), __float2int_rn(v[3] / scale));
-        *reinterpret_cast<char4*>(Q + row * K + c * 128 + lane * 4) = q;
+#pragma unroll
+    for (int i = 0; i < quantize_chunks; ++i) {
+        const int c = warp + 8 * i;
+        if (c < chunks) {
+            const char4 q = make_char4(__float2int_rn(v[i][0] / scale), __float2int_rn(v[i][1] / scale), __float2int_rn(v[i][2] / scale), __float2int_rn(v[i][3] / scale));
+            *reinterpret_cast<char4*>(Q + row * K + c * 128 + lane * 4) = q;
+        }
     }
 }
 
@@ -301,6 +324,58 @@ __global__ void __launch_bounds__(128) h3_attention(
         const int* ROWOF, __nv_bfloat16* Y, int slots, int heads, int queries, int keys, int first_query, int per_query,
         float scale) {
     attention_body(Q, K, V, LIST, SIZES, ROWOF, Y, slots, heads, queries, keys, first_query, per_query, scale);
+}
+
+// The stream's rows FIRST.. from (rows, width) f32 rows R: bf16(sum over k of R[r, k] W[n, k] + B[n]), summed one k at
+// a time as rows_reference.rowsIn sums them. Grid [rows], 256 threads; width at most 128.
+__global__ void __launch_bounds__(256) h3_rows_in(const float* R, const float* W, const float* B, __nv_bfloat16* X,
+                                                  int width, int C, int first) {
+    __shared__ float in[128];
+    const int r = blockIdx.x;
+    for (int k = threadIdx.x; k < width; k += blockDim.x) in[k] = R[static_cast<size_t>(r) * width + k];
+    __syncthreads();
+    for (int n = threadIdx.x; n < C; n += blockDim.x) {
+        const float* w = W + static_cast<size_t>(n) * width;
+        float sum = 0.0f;
+        for (int k = 0; k < width; ++k) sum = __fadd_rn(sum, __fmul_rn(in[k], w[k]));
+        X[static_cast<size_t>(first + r) * C + n] = __float2bfloat16(__fadd_rn(sum, B[n]));
+    }
+}
+
+// The stream's row FIRST + r through the final norm, modulated by its line of the (times, 2 C) table TAB, then the
+// step's head into V (rows, width): rows_reference.finalNorm and rowsOut in their own sum orders (the squares one
+// at a time, the head's 32 lane sums then added in lane order). Grid [rows], 256 threads, C floats of shared.
+__global__ void __launch_bounds__(256) h3_rows_out(const __nv_bfloat16* X, const __nv_bfloat16* NW, const __nv_bfloat16* TAB,
+                                                   const int* LINE, const float* W, const float* B, float* V, int C,
+                                                   int width, int first, float eps) {
+    extern __shared__ float normed[];
+    __shared__ float inv;
+    const int r = blockIdx.x, row = first + r, warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
+    for (int c = threadIdx.x; c < C; c += blockDim.x) normed[c] = f(x[c]);
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float sq = 0.0f;
+        for (int c = 0; c < C; ++c) sq = __fadd_rn(sq, __fmul_rn(normed[c], normed[c]));
+        inv = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(sq, static_cast<float>(C)), eps)));
+    }
+    __syncthreads();
+    const __nv_bfloat16* tab = TAB + static_cast<size_t>(LINE[row]) * 2 * C;
+    for (int c = threadIdx.x; c < C; c += blockDim.x) normed[c] = modulated(normed[c], inv, f(NW[c]), f(tab[C + c]), f(tab[c]));
+    __syncthreads();
+    for (int n = warp; n < width; n += blockDim.x >> 5) {
+        const float* w = W + static_cast<size_t>(n) * C;
+        float part = 0.0f;
+        for (int k = lane; k < C; k += 32) part = __fadd_rn(part, __fmul_rn(normed[k], w[k]));
+        float sum = 0.0f;
+        for (int l = 0; l < 32; ++l) sum = __fadd_rn(sum, __shfl_sync(0xffffffffu, part, l));
+        if (lane == 0) V[static_cast<size_t>(r) * width + n] = __fadd_rn(sum, B[n]);
+    }
+}
+
+// X += delta V, the Euler step, in picture.euler's two roundings. Grid-stride.
+__global__ void __launch_bounds__(256) h3_euler(float* X, const float* V, float delta, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) X[i] = __fadd_rn(X[i], __fmul_rn(delta, V[i]));
 }
 
 } // extern "C"
