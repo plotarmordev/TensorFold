@@ -2,6 +2,8 @@
 #include "h3_attention.cuh"
 #include "common/reduce.cuh"
 
+namespace tf_h3 {
+
 // A value every thread of the block agrees on: the sum of what each holds.
 using tf_common::block_sum_serial;
 
