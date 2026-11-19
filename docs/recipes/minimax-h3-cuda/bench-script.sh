@@ -60,9 +60,6 @@ image() { # the resident transformer renders $case; the server's log since the l
         exec 3>"$out/requests" 4<"$out/replies"
         logged=0
     }
-    # the last step streams the target's rows out band by band: a fifo lets the decoder read them
-    # while the step's tail still runs
-    rm -f "$case.rows.f32" && mkfifo "$case.rows.f32"
     echo "$case.safetensors $case" >&3
 }
 
@@ -97,8 +94,7 @@ decoder_stage() { # the resident decoder writes $case.png; its new log bytes go 
         exec 7>"$out/decoder-requests" 8<"$out/decoder-replies"
         decoder_logged=0
     }
-    # the rows fifo (not the latent): the decoder starts its first tiles while the last step finishes
-    echo "$case.rows.f32 $((side / 16)) $((side / 16)) $case.png ${side}x$side" >&7
+    echo "$case.latent.f32 $((side / 16)) $((side / 16)) $case.png ${side}x$side" >&7
 }
 
 decoder_verdict() { # the decoder's reply for the request decoder_stage() sent
@@ -115,9 +111,9 @@ for side in ${H3_BENCH_SIZES:-2048}; do
         date +%s.%N >"$case.time"
         prompt_stage
         image
+        image_verdict
         decoder_stage
         decoder_verdict
-        image_verdict
         date +%s.%N >>"$case.time"
         kill "$sampler"
         sampler=

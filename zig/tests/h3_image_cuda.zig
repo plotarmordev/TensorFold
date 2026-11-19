@@ -278,35 +278,10 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
             } else try stepEager(model, &device, checked, &device_rows, s, pdd.deltas[s]);
         } else try stepEager(model, &device, checked, &device_rows, s, pdd.deltas[s]);
         if (s + 1 == steps) {
-            // the decoder's first tiles need only the first latent rows: stream the video out band by
-            // band on the same stream, each written to rows.f32 as it lands while the step finishes
-            const n_bands = @min(8, @max(1, target));
-            const band = (target + n_bands - 1) / n_bands;
-            var pinned = try @import("cuda").HostBuffer.alloc(&model.driver, video.len * 4);
-            defer pinned.free();
-            var events = try a.alloc(@import("cuda").Event, n_bands);
-            defer {
-                for (events) |*e| e.deinit();
-                a.free(events);
-            }
-            var rows_file = try std.Io.Dir.cwd().createFile(init.io, rows_path, .{});
-            defer rows_file.close(init.io);
-            var row: usize = 0;
-            for (events) |*e| e.* = try @import("cuda").Event.init(&model.driver, false);
-            for (0..n_bands) |b| {
-                const hi = @min(target, row + band);
-                try device_rows.video.downloadAsync(row * width * 4, pinned.bytes[row * width * 4 .. hi * width * 4], work.handle);
-                try events[b].record(work);
-                row = hi;
-            }
-            row = 0;
-            for (0..n_bands) |b| {
-                const hi = @min(target, row + band);
-                try events[b].synchronize();
-                try rows_file.writeStreamingAll(init.io, pinned.bytes[row * width * 4 .. hi * width * 4]);
-                @memcpy(std.mem.sliceAsBytes(video[row * width .. hi * width]), pinned.bytes[row * width * 4 .. hi * width * 4]);
-                row = hi;
-            }
+            // one bulk read of the target rows, then write them: the decode is triggered off the
+            // latent file the same way the free run always did
+            try device_rows.latent(video);
+            try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = rows_path, .data = std.mem.sliceAsBytes(video) });
         } else try model.stream.synchronize();
         std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - mark });
     }
