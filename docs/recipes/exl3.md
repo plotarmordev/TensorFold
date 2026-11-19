@@ -102,7 +102,7 @@ writing, reloading and the comparison are not timed. `--unweighted` also prints 
 of the same search run without calibration (`H = I`, every value weighted alike): the same-codebook baseline that
 shows what the calibration buys. It doubles the run, so a conversion leaves it off.
 
-The Hessian follows Drama card 32's calibration rows (`drama-exl3-calibration/1`): for expert e, `X_e` is the
+The Drama 3 Hessians below come from calibration rows captured in the engine's MoE layer: for expert e, `X_e` is the
 layer's `x` rows (the MoE input after `addRmsnorm`) whose `picks` contain e, and gate and up both take
 `H_e = X_e^T X_e / n_e`; down takes `A_e^T A_e / n_e`, with `A_e` the SwiGLU of the gate and up projections on
 those rows.
@@ -115,10 +115,10 @@ thread count. An all-zero output column (Drama's gate and up experts have about 
 and decodes to exactly zero: any other scale would spread its codebook noise through the output Hadamard into the
 whole block.
 
-### Drama 3 experts on this Mac
+### Drama 3 experts on an M5 Ultra
 
 Layer 0 experts 152, 217 and 242 (353, 321 and 252 calibration rows, the most of any layer-0 expert; 61 of the 256
-have none), FP8 E4M3 dequantised with their 128x128 block scales, against card 32's prompt-text rows. Each figure is
+have none), FP8 E4M3 dequantised with their 128x128 block scales, against prompt-text calibration rows. Each figure is
 `trace((W-Wq) H (W-Wq)^T)` over NVFP4's (ModelOpt scaling, as above), as (expert 152, 217, 242); NVFP4 is about 4.56
 bits per weight:
 
@@ -144,9 +144,9 @@ The calibration wins on all 36 matrices, but by little: 0.7-10% on gate and up, 
 full H, and the Hadamard rotation evens that diagonal out within each 128-row block (a diagonal H becomes a constant
 one). With only 252-353 rows each Hessian also has rank at most that, against 2048 or 512 inputs.
 
-The earlier 0.82-0.90x NVFP4 figure was K4 EXL3, and at 4.0 bits this encoder reaches 0.34-0.73x on gate and up
-and 0.93-1.11x on down. At 2.0-3.0 bits it misses that bar because it stores 1.5-2.6 fewer bits per weight than
-NVFP4 (0.45-0.66x its bytes), and each bit removed costs roughly 4x the error.
+At 4.0 bits this encoder's error is 0.34-0.73x NVFP4's on gate and up and 0.93-1.11x on down. At 2.0-3.0 bits it
+stores 1.5-2.6 fewer bits per weight than NVFP4 (0.45-0.66x its bytes), and each bit removed costs roughly 4x the
+error.
 
 Encode-only seconds (the mean of the three experts) on an Apple M5 Ultra (12 performance and 24 efficiency cores,
 256 GB, macOS 27.0, Zig 0.17.0 ReleaseFast, all 36 cores), and the projection for 5,900 experts. The Mac was shared:
@@ -161,7 +161,7 @@ seconds per expert, so these are upper bounds:
 | 4.0 | 32.0 | 32.1 | 26.9 | 91.1 | 149.3 h |
 
 All of 2.0, 2.5 and 3.0 together take 101 to 208 hours (4 to 9 days) by that range: slow but within reach on the
-CPU, so a Metal path is left to its own card if the conversion needs it. This is a CPU reference converter, not a
+CPU, so a Metal path is left for later if a conversion needs it. This is a CPU reference converter, not a
 claim of CUDA quantizer quality or throughput.
 
 ### Workers and threads
