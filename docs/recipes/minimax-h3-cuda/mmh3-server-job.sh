@@ -169,10 +169,12 @@ with open(sys.argv[2], "w") as f:
         for (name, grid), (calls, total) in sorted(totals.items(), key=lambda kv: -kv[1][1])[:40]:
             f.write("%-10s %8d %10.1f %10.1f %s\n" % (grid, calls, total / 1e6, total / 1e3 / calls, name))
 PY
-if [ -f "$out/cupti-trace.csv" ]; then
-    python3 /work/mmh3_segments.py "$out/cupti-trace.csv" "$out/cupti-warm-segment.txt" \
+# the preload writes a file a process; the server's is the largest
+trace=$(ls -S "$out"/cupti-trace.csv.* 2>/dev/null | head -1 || :)
+if [ -n "$trace" ]; then
+    python3 /work/mmh3_segments.py "$trace" "$out/cupti-warm-segment.txt" \
         || echo "segment split failed" >"$out/cupti-warm-segment.txt"
 else
-    echo "no cupti-trace.csv" >"$out/cupti-warm-segment.txt"
+    echo "no cupti-trace.csv.*" >"$out/cupti-warm-segment.txt"
 fi
 echo "mmh3-server-job done"

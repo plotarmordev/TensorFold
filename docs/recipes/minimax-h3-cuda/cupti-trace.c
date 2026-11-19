@@ -86,9 +86,11 @@ __attribute__((destructor)) static void teardown(void)
 __attribute__((constructor)) static void setup(void)
 {
     const char *path = getenv("CUPTI_TRACE_OUT");
+    char buf[1024];
     if (!path)
         path = "/tmp/cupti-trace.csv";
-    out = fopen(path, "w");
+    snprintf(buf, sizeof buf, "%s.%d", path, (int)getpid()); /* a file a process: preloaded into every child */
+    out = fopen(buf, "w");
     if (!out)
         return;
     signal(SIGTERM, on_sigterm);
