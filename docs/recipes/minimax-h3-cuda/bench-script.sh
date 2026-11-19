@@ -5,7 +5,7 @@ model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
 commit=$(git -c safe.directory='*' rev-parse HEAD)
 bin=/work/out/tensorfold-cuda-$commit
-out=/work/out/h3-image-bench
+out=${H3_BENCH_OUT:-/work/out/h3-image-bench}
 # the sm_121 tools only: the five SMs' build and limits audit are cuda-build.sh's own job
 H3_BUILD=sm121 sh docs/recipes/minimax-h3-cuda/cuda-build.sh
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
@@ -29,7 +29,8 @@ selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or
     if "$@" >"$out/selftest-$name.log" 2>&1; then echo "$name PASS"; else echo "$name FAIL"; fi >>"$out/selftests"
 }
 selftest transformer "$bin/tf-h3-image-cuda" --self-test
-selftest decoder "$bin/tf-h3-image-decoder-cuda" selftest $([ "${H3_DECODER:-}" = exact ] && echo --exact)
+case ${H3_DECODER:-} in exact) decflag=--exact ;; tc) decflag=--tc ;; *) decflag= ;; esac
+selftest decoder "$bin/tf-h3-image-decoder-cuda" selftest $decflag
 selftest prompt "$bin/tf-h3-image-prompt-cuda" selftest /work/out/h3-prompt-selftest
 sample() { # until killed, twice a second: time, GPU memory used (MiB), power (W), the compute processes' memory (MiB)
     while :; do
@@ -88,7 +89,7 @@ decoder_stage() { # the resident decoder writes $case.png; its new log bytes go 
     [ -n "$decoder_server" ] || {
         mkfifo "$out/decoder-requests" "$out/decoder-replies"
         # the decoder's tensor-core path is the default; H3_DECODER=exact passes --exact for fp32 order
-        H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-decoder-cuda" "$model" --serve $([ "${H3_DECODER:-}" = exact ] && echo --exact) <"$out/decoder-requests" >"$out/decoder-replies" 2>"$out/$side.decoder-server.log" \
+        H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-decoder-cuda" "$model" --serve $decflag <"$out/decoder-requests" >"$out/decoder-replies" 2>"$out/$side.decoder-server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         decoder_server=$!
         exec 7>"$out/decoder-requests" 8<"$out/decoder-replies"
@@ -135,8 +136,8 @@ for side in ${H3_BENCH_SIZES:-2048}; do
 done
 # the GPU decoder's 2048² picture beside the host reference decoder's on the same latent, after the
 # resident servers freed their arenas: the host decoder needs the memory they held
-if [ -f "$out/2048-1.latent.f32" ]; then
+if [ -f "$out/2048-1.latent.f32" ] && [ -z "${H3_BENCH_SKIP_COMPARE:-}" ]; then
     case=$out/2048-reference
     stage compare "$bin/tf-h3-image-decoder-cuda" reference "$model" "$out/2048-1.latent.f32" 128 128 \
-        "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048 $([ "${H3_DECODER:-}" = exact ] && echo --exact)
+        "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048 $decflag
 fi
