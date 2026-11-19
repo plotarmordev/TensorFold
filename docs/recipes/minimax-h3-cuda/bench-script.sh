@@ -21,7 +21,7 @@ mkdir -p "$out"
     echo "seed: 42"
     echo "sizes: ${H3_BENCH_SIZES:-2048}"
     echo "transformer linear layers: ${H3_LINEAR:-int8}"
-    echo "runs per size: 1 cold, 3 warm on one resident prompt, transformer and decoder"
+    echo "draft steps: ${H3_DRAFT_STEPS:-0}${H3_RENOISE_SIGMA:+, renoise sigma $H3_RENOISE_SIGMA}"
 } >"$out/settings"
 selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or FAIL to selftests
     name=$1
@@ -54,8 +54,10 @@ image() { # the resident transformer renders $case; the server's log since the l
         # the earlier server would never see EOF when the script closes it
         # H3_PROFILE (off unless set) waits after every stage for its block-stage lines; the default run
         # captures each step as one CUDA graph, which those waits would keep it from doing
+        # H3_DRAFT_STEPS (+ optional H3_RENOISE_SIGMA) names --draft-steps (and --renoise-sigma): mmh3's
+        # half-canvas drafts, beside bench-drafts.sh like H3_LINEAR sits beside bench-bf16.sh
         # shellcheck disable=SC2046 # --bf16 or no word at all: int8 (qkvc and fc1) is the default
-        H3_PROFILE=${H3_PROFILE-} "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = bf16 ] && echo --bf16) <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
+        H3_PROFILE=${H3_PROFILE-} "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = bf16 ] && echo --bf16) ${H3_DRAFT_STEPS:+--draft-steps "$H3_DRAFT_STEPS"} ${H3_RENOISE_SIGMA:+--renoise-sigma "$H3_RENOISE_SIGMA"} <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         server=$!
         exec 3>"$out/requests" 4<"$out/replies"
