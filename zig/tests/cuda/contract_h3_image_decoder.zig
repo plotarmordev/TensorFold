@@ -68,7 +68,7 @@ pub fn spec(w: Which) c.Spec {
         .linear => .{ .name = "cuda h3 image decoder h3d_linear", .accum = .f32, .depth = dotK, .ops = 0, .out = .f32, .served = &.{ .{ .rows = 4, .n = 128, .k = 256 }, .{ .rows = 8, .n = 256, .k = 1024 }, .{ .rows = 8, .n = 128, .k = 4096 }, .{ .rows = 136, .n = 200, .k = 1000 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "each output sums K in increasing order with individually rounded fp32 multiplies and adds" } },
         .finish_bias => .{ .name = "cuda h3 image decoder h3d_finish bias", .accum = .none, .depth = none, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1 }, .{ .rows = 16, .n = 768, .k = 1 } } },
         .finish_scale => .{ .name = "cuda h3 image decoder h3d_finish layerscale", .accum = .none, .depth = none, .ops = 1, .mids = 2, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1 }, .{ .rows = 16, .n = 768, .k = 1 } } },
-        .res_norm => .{ .name = "cuda h3 image decoder h3d_res_norm", .accum = .f32, .depth = normChain, .ops = 12, .mids = 2, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1024 }, .{ .rows = 261, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
+        .res_norm => .{ .name = "cuda h3 image decoder h3d_res_norm", .accum = .f32, .depth = normChain, .ops = 12, .mids = 2, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1024 }, .{ .rows = 261, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .heads => .{ .name = "cuda h3 image decoder h3d_heads", .accum = .f32, .depth = headChain, .ops = 8, .mids = 4, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 3072 }, .{ .rows = 2, .n = 64, .k = 3072 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .attention => .{ .name = "cuda h3 image decoder h3d_attention", .accum = .f32, .depth = attnChain, .ops = 8, .mids = 0, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 64 }, .{ .rows = 2, .n = 64, .k = 64 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "softmax weights in [0, 1] with fp32 scores: the bf16 output hides a bf16 sum's error" } },
         .softmax => .{ .name = "cuda h3 image decoder h3d_softmax", .accum = .f32, .depth = softChain, .ops = 3, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 1 }, .{ .rows = 2, .n = 64, .k = 1 }, .{ .rows = 1, .n = 512, .k = 1 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "fp32 scores and a fp32 row sum: bf16 output hides a bf16 sum's error" } },
@@ -103,8 +103,9 @@ pub const Dec = struct {
     in: ref.In = .{},
     bufs: [8]u64 = undefined,
     nbufs: usize = 0,
-    /// In-place buffers' starting bytes, re-uploaded before every launch (the same order as `bufs`).
+    /// In-place buffers' starting bytes, re-uploaded before every launch to `bufs[fresh_at]`.
     fresh: []const u8 = &.{},
+    fresh_at: usize = 0,
     outs: usize = 0,
     /// Grid geometry the launch derives from the prepared inputs.
     p: Shape64 = .{},
@@ -178,9 +179,10 @@ pub const Dec = struct {
         const bytes_ = try self.encode(v, half);
         self.bufs[self.nbufs] = try self.rig.output(bytes_.len);
         self.nbufs += 1;
-        const b: cuda.DeviceBuffer = .{ .d = self.rig.gpu.d, .ptr = self.bufs[self.nbufs - 1], .len = bytes_.len };
+        self.fresh_at = self.nbufs - 1;
+        const b: cuda.DeviceBuffer = .{ .d = self.rig.gpu.d, .ptr = self.bufs[self.fresh_at], .len = bytes_.len };
         try b.upload(0, bytes_);
-        return self.bufs[self.nbufs - 1];
+        return self.bufs[self.fresh_at];
     }
 
     /// The latent tile origins: tile i crops at ((i % 3) * 4, (i % 5) * 4) of a 48x48 plane.
@@ -368,7 +370,7 @@ pub const Dec = struct {
 
     pub fn run(self: *Dec) !void {
         if (self.fresh.len > 0) {
-            const b: cuda.DeviceBuffer = .{ .d = self.rig.gpu.d, .ptr = self.bufs[self.nbufs - 1], .len = self.fresh.len };
+            const b: cuda.DeviceBuffer = .{ .d = self.rig.gpu.d, .ptr = self.bufs[self.fresh_at], .len = self.fresh.len };
             try b.upload(0, self.fresh);
         }
         const s = self.shape;

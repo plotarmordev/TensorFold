@@ -1,6 +1,7 @@
 //! MiniMax-H3-Image's image decoder on CUDA: the VAE's 2D ViT decoder in bf16, tiles in batches.
-//! The products sum K sequentially in fp32; h3d_finish adds bias and LayerScale at the Metal kernels'
-//! rounding points, so no fused epilogue can round a sum ahead of its bias.
+//! --exact's products sum K sequentially in fp32 and h3d_finish adds bias and LayerScale at the
+//! Metal kernels' rounding points; --tc gets the same rounding from cuBLASLt's bias epilogue,
+//! with h3d_res_norm folding a LayerScale product into the next block norm.
 const std = @import("std");
 const report = @import("report.zig");
 const cuda = @import("cuda");
@@ -48,8 +49,9 @@ pub const Stages = struct { embed: bool = true, from: usize = 0, to: usize, fina
 /// 121 tiles in one pass, the way mmh3 decodes its whole canvas at once.
 pub const most_batch = 128;
 
-/// The fast path's cuBLASLt plans: each projection fp32 out into `acc`, attention batched over
-/// a pass's (tile, head)s, its scores, softmax probabilities and output in `acc` too (free then).
+/// The fast path's cuBLASLt plans: each projection's bias epilogue writes bf16(acc + b) to y or
+/// (LayerScale) to `wide` for h3d_res_norm, attention batched over a pass's (tile, head)s; `acc`
+/// holds its scores and output, and the fallback's fp32 products.
 const Tc = struct {
     handle: cuda.cublaslt.Handle,
     gemms: cuda.vit.Gemms,
