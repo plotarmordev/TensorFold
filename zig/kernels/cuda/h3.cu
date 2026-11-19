@@ -1,5 +1,6 @@
 // MiniMax H3 / FastH3's transformer blocks on CUDA in the checkpoint's bf16: the row, routing and attention kernels.
 #include "h3_attention.cuh"
+#include "h3_attention_fp8.cuh"
 #include "common/reduce.cuh"
 
 namespace tf_h3 {
@@ -324,6 +325,16 @@ __global__ void __launch_bounds__(128) h3_attention(
         const int* ROWOF, __nv_bfloat16* Y, int slots, int heads, int queries, int keys, int first_query, int per_query,
         float scale) {
     attention_body(Q, K, V, LIST, SIZES, ROWOF, Y, slots, heads, queries, keys, first_query, per_query, scale);
+}
+
+// The dense image attention in e4m3 with h3_heads folded in: q, k and v quantized at their tile's absmax.
+__global__ void __launch_bounds__(128) h3_attention_fp8(
+        const __nv_bfloat16* QKV, const __nv_bfloat16* NQ, const __nv_bfloat16* NK,
+        const float* COS, const float* SIN, const int* LIST, const int* SIZES, const int* ROWOF,
+        __nv_bfloat16* Y, int width, int heads, int rot, int queries, int keys, int first_query, int per_query,
+        float scale) {
+    const Fp8Prologue pro = {QKV, NQ, NK, COS, SIN, ROWOF, width, heads, rot};
+    attention_body_fp8(pro, LIST, SIZES, Y, queries, keys, first_query, per_query, scale);
 }
 
 // The stream's rows FIRST.. from (rows, width) f32 rows R: bf16(sum over k of R[r, k] W[n, k] + B[n]), summed one k at
