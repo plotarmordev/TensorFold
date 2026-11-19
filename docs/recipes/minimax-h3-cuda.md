@@ -343,12 +343,13 @@ NVFP4 keeps one mantissa bit where e4m3 keeps three, so it would miss the gates 
 
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
-1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
-   int8, a third of the GB10's dense rate, and their int32 sums make a round trip through `h3_dequantize`. A product
-   that writes bf16 straight from the tile would remove that trip, and a per-128-chunk int8 scale (not FP8's, above)
-   would let the products carry the picture without the bf16 fallbacks. The two kernels' records are in the registry
-   as of `cadab6b2`, and `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4
-   (`contract_h3_int8.zig`); the limits audit (gate 5) is `limits-job.sh`'s own window.
+1. **The int8 products' own rate** is the 1.3 s left, and card 89's answer landed: `h3_gemm_int8` now runs all four
+   projections. `h3_quantize` scales each 128-wide chunk by its own absmax (not the row's), so `out` and `fc2` leave
+   bf16, and the `m16n8k32` tile folds a chunk's exact int32 sum into the fp32 accumulator at that chunk's scales and
+   writes bf16 from its own tile — no int32 round trip through `h3_dequantize` (removed), and `fc1`'s product feeds a
+   bf16 `h3_swiglu` (the fused `h3_swiglu_int8` removed). Its record is in the registry's pending list until gate 5
+   measures it; `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs the quantizer's gates 1-4
+   (`contract_h3_int8.zig`), the product's record pending. The warm time needs a new window.
 2. **Attention**: 1.74 s a picture in the transformer, 217 registers at 128 threads and two CTAs an SM (8 warps), and
    1.89 s in the decoder, whose 16-byte key loads changed nothing. mmh3's INT8/FP8 attention is the candidate that
    would also cut registers; the decoder's attention needs its stall found first, since neither its loads nor its
