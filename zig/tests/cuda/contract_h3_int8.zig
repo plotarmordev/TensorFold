@@ -384,7 +384,7 @@ pub const Gemm = struct {
         for (t.xq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
         for (t.wq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
         // one loud chunk a row: its scale carries it, the rest stay small — the per-chunk claim's proof
-        for (t.xs, 0..) |*v, i| v.* = 0.001 + 0.004 * rng.float(f64) * if (i % chunks == 1) 100 else 1;
+        for (t.xs, 0..) |*v, i| v.* = 0.001 + 0.004 * rng.float(f64) * @as(f64, if (i % chunks == 1) 100 else 1);
         for (t.ws) |*v| v.* = 0.002 + 0.006 * rng.float(f64);
         if (fill == .stress) {
             for (t.xq) |*v| v.* = if (v.* >= 0) 127 else -127;
