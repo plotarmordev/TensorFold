@@ -130,12 +130,6 @@ pub const Rows = struct {
         try self.model.launch("h3_euler", .{ .x = 512 }, 256, 0, &args);
     }
 
-    /// The stream's velocity rows after `velocityOf`, (target, width) f32.
-    pub fn velocityRows(self: *const Rows, into: []f32) !void {
-        try self.model.stream.synchronize();
-        try self.velocity.download(0, @import("std").mem.sliceAsBytes(into));
-    }
-
     /// The video's rows after the last step, (target, width) f32.
     pub fn latent(self: *const Rows, into: []f32) !void {
         try self.model.stream.synchronize();
