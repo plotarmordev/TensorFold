@@ -24,4 +24,4 @@ Headline: three warm runs on the shipped tree — prompt 0.22 s each, 6 steps 10
 1.41/1.36/1.35 s, totals 11.96/11.62/11.57 s — against card 84's prompt 0.22, 6 steps 9.54/9.47, decoder 1.37/1.43,
 totals 11.14/11.16 s. Not the 10% bar. Selftests pass (`zig build test test-golden`). The remaining host-side
 lever, a GPU-side Euler keeping the latent resident across steps (~0.1 s of the 1.5-1.6 s step wall is wall-GPU gap),
-is recorded in the recipe's next-ranked list.
+is recorded at the end of the recipe's Card 124 section.

@@ -1097,8 +1097,9 @@ everywhere but fc1's int8 — the stage deltas are run-to-run spread on a loaded
 
 The shipped tree's three warm runs, quoted (card 84's lines are `prompt 0.22, 6 steps 9.54/9.47, decoder 1.37/1.43`,
 above): `runU: prompt 0.22 s, case 0.01 s, transformer reused 0.00 s, 6 steps 10.32 s, decoder 1.41 s, total 11.96
-s`; `runV: … 6 steps 10.03 s, decoder 1.36 s, total 11.62 s`; `runW: … 6 steps 9.98 s, decoder 1.35 s, total 11.57
-s`. Selftests pass (`zig build test test-golden`, h3 gemm/prompt/decoder selftests included).
+s`; `runV: prompt 0.22 s, case 0.01 s, transformer reused 0.00 s, 6 steps 10.03 s, decoder 1.36 s, total 11.62 s`;
+`runW: prompt 0.22 s, case 0.01 s, transformer reused 0.00 s, 6 steps 9.98 s, decoder 1.35 s, total 11.57 s`.
+Selftests pass (`zig build test test-golden`, h3 gemm/prompt/decoder selftests included).
 
 The 10% bar (about 10.0 s) is not met on this silicon: the step is GPU-bound at the products' rate, the remaining
 wall-GPU gap is ~0.1 s a step of host round-trips (latent up, velocity down, host Euler), and every int8 widening

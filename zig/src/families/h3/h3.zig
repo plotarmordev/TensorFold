@@ -452,28 +452,25 @@ pub const Model = struct {
         }
         for (queued[0..n]) |cb| gpu += try finish(cb);
         const last = self.blocks[self.blocks.len - 1].tables;
-        // Only the stepped rows are ever read: a prompt row is re-copied into x on the next step, a held frame's row
-        // is re-projected by rows in, and normed is read only by rows out. The gate add and final norm's buffers are
-        // offset so their row grid starts at the first stepped row.
-        const target = media;
-        const skip = target * hidden * 2;
+        // Only the stepped rows are ever read: prompt rows are re-copied into x each step and normed only by rows out.
+        const skip = media * hidden * 2;
         enc.setPipeline(self.pipeline("h3_gate_add"));
         enc.setBuffer(self.x, skip, 0);
         enc.setBuffer(self.y, skip, 1);
         enc.setBuffer(last.buffer, last.offset, 2);
-        enc.setBuffer(self.line, target * 4, 3);
-        enc.setValue([4]i32{ @intCast(rows - target), @intCast(hidden), @intCast(self.lines), gate_m }, 4);
-        enc.dispatchGroups(mtl.Size.of(rows - target, 1, 1), mtl.Size.of(32, 1, 1));
+        enc.setBuffer(self.line, media * 4, 3);
+        enc.setValue([4]i32{ @intCast(rows - media), @intCast(hidden), @intCast(self.lines), gate_m }, 4);
+        enc.dispatchGroups(mtl.Size.of(rows - media, 1, 1), mtl.Size.of(32, 1, 1));
         enc.barrier();
         enc.setPipeline(self.pipeline("h3_final_norm"));
         enc.setBuffer(self.x, skip, 0);
         enc.setBuffer(self.final_norm.buffer, self.final_norm.offset, 1);
         enc.setBuffer(self.final_table.buffer, self.final_table.offset, 2);
-        enc.setBuffer(self.time, target * 4, 3);
-        enc.setValue([2]i32{ @intCast(rows - target), @intCast(hidden) }, 4);
+        enc.setBuffer(self.time, media * 4, 3);
+        enc.setValue([2]i32{ @intCast(rows - media), @intCast(hidden) }, 4);
         enc.setValue([1]f32{eps}, 5);
         enc.setBuffer(self.normed, skip, 6);
-        enc.dispatchGroups(mtl.Size.of(rows - target, 1, 1), mtl.Size.of(32, 1, 1));
+        enc.dispatchGroups(mtl.Size.of(rows - media, 1, 1), mtl.Size.of(32, 1, 1));
         enc.barrier();
         if (self.audio > 0) self.rowsOut(enc.*, self.w_audio_out, self.b_audio_out, self.audio_velocity, self.audio, self.audio_in, media);
         const w_out: Ref = .{ .buffer = self.w_video_out.buffer, .offset = self.w_video_out.offset + at[0] };
