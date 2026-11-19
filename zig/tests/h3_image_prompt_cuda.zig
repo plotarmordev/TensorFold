@@ -15,6 +15,7 @@ const picture = hp.picture;
 const ck = hp.checkpoint;
 const files = @import("h3_image_files.zig");
 const match = @import("h3_image_match.zig");
+const prompt_cache = hp.cache;
 
 const usage =
     \\usage: tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
@@ -49,7 +50,7 @@ pub fn main(init: std.process.Init) !u8 {
         std.debug.print("{s}", .{usage});
         return 2;
     }
-    var loaded = try Loaded.open(init.io, a, gpa, args[1], args[2]);
+    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, args[1], args[2]);
     defer loaded.deinit(gpa);
     if (serving) return serve(init, gpa, &loaded);
     try pictureRun(init.io, a, &loaded, args[3], args[4], args[5..]);
@@ -67,8 +68,9 @@ const Loaded = struct {
     front_shards: Shards,
     runner: *hp.Runner,
     res: hp.Resident,
-
-    fn open(io: std.Io, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
+    /// Kept prompt states across `--serve`'s pictures: the prompt's exact bytes to its rows.
+    cache: prompt_cache.Cache,
+    fn open(io: std.Io, env: *std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
         // the folder and its tokenizer, checked as the host prompt path checks them
         const enc = try rules.checkEncoder(a, try read(io, a, &.{ encoder_dir, "config.json" }));
         _ = try picture.checkIndex(a, try read(io, a, &.{ model_dir, "model_index.json" }));
@@ -96,10 +98,12 @@ const Loaded = struct {
         std.debug.print("{d:.2} GiB of prompt weights resident in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), seconds() - started });
         for (shards.folder.files.values()) |*file| file.evict();
         for (front_shards.folder.files.values()) |*file| file.evict();
-        return .{ .enc = enc, .front = front, .tok = tok, .shards = shards, .front_shards = front_shards, .runner = runner, .res = res };
+        const cache = prompt_cache.Cache.init(gpa, prompt_cache.Cache.budgetOf(env.get("H3_PROMPT_CACHE")));
+        return .{ .enc = enc, .front = front, .tok = tok, .shards = shards, .front_shards = front_shards, .runner = runner, .res = res, .cache = cache };
     }
 
     fn deinit(l: *Loaded, gpa: std.mem.Allocator) void {
+        l.cache.deinit();
         l.res.deinit();
         l.runner.deinit();
         l.front_shards.deinit(gpa);
@@ -158,20 +162,31 @@ fn pictureRun(io: std.Io, a: std.mem.Allocator, loaded: *Loaded, prompt_path: []
     if (std.mem.endsWith(u8, prompt, "\n")) prompt = prompt[0 .. prompt.len - 1];
     if (std.mem.endsWith(u8, prompt, "\r")) prompt = prompt[0 .. prompt.len - 1];
 
-    const p = try rules.present(a, &loaded.tok, loaded.enc.marks, &.{}, prompt);
-    const pos = try rules.positions(a, p, loaded.enc.marks, &.{});
+    var p: rules.Presentation = undefined;
+    var text: []u16 = undefined;
+    if (loaded.cache.find(prompt)) |kept| {
+        // the prompt's states as its last encode left them: the encoder and refiner run no kernels
+        p = .{ .ids = @constCast(kept.ids), .tags = @constCast(kept.tags), .at = &.{} };
+        text = @constCast(kept.text);
+        std.debug.print("{d} tokens; prompt states kept: text encoder and refiner skipped\n", .{p.ids.len});
+    } else {
+        p = try rules.present(a, &loaded.tok, loaded.enc.marks, &.{}, prompt);
+        const pos = try rules.positions(a, p, loaded.enc.marks, &.{});
+        const T = p.ids.len;
+        const runner = loaded.runner;
+
+        const enc_rows = try a.alloc(u16, T * loaded.enc.text.hidden);
+        var gpu_started = seconds();
+        try runner.encode(a, loaded.enc.text, &loaded.res, p.ids, pos, null, enc_rows);
+        std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU\n", .{ T, loaded.enc.text.layers, seconds() - gpu_started, runner.gpu });
+
+        text = try a.alloc(u16, T * loaded.front.hidden);
+        gpu_started = seconds();
+        try runner.refine(loaded.front, &loaded.res, enc_rows, text);
+        std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU\n", .{ seconds() - gpu_started, runner.gpu });
+        loaded.cache.keep(prompt, p.ids, p.tags, text);
+    }
     const T = p.ids.len;
-    const runner = loaded.runner;
-
-    const enc_rows = try a.alloc(u16, T * loaded.enc.text.hidden);
-    var gpu_started = seconds();
-    try runner.encode(a, loaded.enc.text, &loaded.res, p.ids, pos, null, enc_rows);
-    std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU\n", .{ T, loaded.enc.text.layers, seconds() - gpu_started, runner.gpu });
-
-    const text = try a.alloc(u16, T * loaded.front.hidden);
-    gpu_started = seconds();
-    try runner.refine(loaded.front, &loaded.res, enc_rows, text);
-    std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU\n", .{ seconds() - gpu_started, runner.gpu });
 
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = try stage.write(a, loaded.front.hidden, p, text, request, &noise.randn, &.{}) });
     std.debug.print("wrote {s}: text [{d}, {d}] bf16, text_tags and ids\n", .{ out_path, T, loaded.front.hidden });
