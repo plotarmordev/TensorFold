@@ -365,6 +365,16 @@ is speed, not correctness: the resident query fragments' registers cost more occ
 recovered — most of the transformer's 0.2 s rise is attention, the rest run noise. Attention's bound is not its value
 load's latency.
 
+`19a025fa` (job `top-b9b35bcd7d49`, 19 November, exit 0, same-job A/B against its own checkout reverted to
+`a55829e5`) folded `h3_heads`' q/k norm and rotary into `h3_attention_heads`' tile loads: the loads gathered the
+fused QKV rows through ROWOF, and each arriving q/k smem tile took `h3_heads`'s exact bf16 roundings between the
+pipeline's wait and the ldmatrix reads, so `h3_heads` left the dense forward. Every selftest passed and the
+same-latent bound held, but the attention stage **rose 1.76 → 19.94 s** a picture (heads 0.96 → 0.00, transformer
+12.9 → 29.8 s, warm mean 18.9 → 35.9 s): the transform runs once per query-tile × key-tile pair, so its work
+grows with tiles² instead of slots, and it sits in the mma pipeline's critical path. Reverted (`a560c4eb`); the
+heads pass's own 0.98 s is what a folded variant would have to beat, and inside attention the per-pair rewrite
+costs far more.
+
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:
 
 1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
