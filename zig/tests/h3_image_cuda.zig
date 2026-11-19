@@ -264,6 +264,7 @@ fn streamSteps(
         .prefix_tiles = @intCast(map.prefix),
         .keep = 0,
     };
+    std.debug.print("phase rows {d}: rows init\n", .{count});
     var device_rows = try h3.Rows.init(model, .{
         .text = std.mem.sliceAsBytes(case.text_rows),
         .anchors = if (case.anchors) |v| std.mem.sliceAsBytes(v) else &.{},
@@ -288,15 +289,20 @@ fn streamSteps(
 
     // stage() treats every address as host memory: the resident table stays out, x is room for the
     // stream, and `line` carries this step's count only (the validation reads one step's lines)
+    std.debug.print("phase rows {d}: plan\n", .{count});
     const checked = try model.plan(&in);
+    std.debug.print("phase rows {d}: stage\n", .{count});
     try model.drain();
     var upload = checked;
     upload.input[1] = 0;
     var device = try h3.host.stage(model, &in, upload);
     device.tables = modulation.blocks.ptr;
+    std.debug.print("phase rows {d}: prepare\n", .{count});
     try h3.geometry.prepare(model, &device, checked);
+    std.debug.print("phase rows {d}: warm\n", .{count});
     try model.warm(count);
     try model.drain(); // the staging above is pageable host copies: the first launch must wait on them
+    std.debug.print("phase rows {d}: steps\n", .{count});
 
     for (first..first + run) |s| {
         const mark = h3.seconds();
