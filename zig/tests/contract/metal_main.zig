@@ -540,6 +540,8 @@ pub fn main(init: std.process.Init) !u8 {
     defer h3_image_prompt.destroy();
     const h3_image_decoder = try @import("metal_h3_image_decoder.zig").Suite.create(a, device, queue, &kernels, o.only);
     defer h3_image_decoder.destroy();
+    const h3_products = try @import("metal_h3_gemm.zig").Suite.create(a, device, queue, &kernels, o.only);
+    defer h3_products.destroy();
     var dsv41_suites = try @import("metal_dsv41_main.zig").Suites.create(a, device, queue, &kernels, o.only);
     defer dsv41_suites.destroy();
     var t: g.Tally = .{};

@@ -13,12 +13,10 @@ const libs_tests = @import("libs_tests.zig");
 const rank_scatter_tests = @import("rank_scatter_tests.zig");
 const roce_gather_tests = @import("roce_gather_tests.zig");
 const sample_tests = @import("sample_tests.zig");
-const nemotron_draw_tests = @import("nemotron_draw_tests.zig");
 const glue_tests = @import("glue_tests.zig");
 const resume_tests = @import("resume_tests.zig");
 const prompt_cuts = @import("prompt_cuts.zig");
 const shared_fork = @import("shared_fork.zig");
-const chunk_costs = @import("chunk_costs.zig");
 const grouped_tests = @import("grouped_tests.zig");
 const fp8_tests = @import("fp8_tests.zig");
 const mxfp8_tests = @import("mxfp8_tests.zig");
@@ -34,7 +32,6 @@ const w4a8_tests = @import("w4a8_tests.zig");
 const glm_exl3_tests = @import("glm_exl3_tests.zig");
 const glm_kda_pad_check = @import("glm_kda_pad_check.zig");
 const glm_vision_tests = @import("glm_vision_tests.zig");
-const glm_mm_fixed = @import("glm_mm_fixed_tests.zig");
 const glm_mm_bench = @import("glm_mm_bench.zig");
 const glm_index_check = @import("glm_index_check.zig");
 const carveout_tests = @import("carveout_tests.zig");
@@ -57,10 +54,7 @@ const embed_tests = @import("embed_tests.zig");
 const pocket_tests = @import("pocket_tests.zig");
 const recapture_tests = @import("recapture_tests.zig");
 const contract_tests = @import("contract_tests.zig");
-const gb10_many_contract = @import("contract_gb10_many.zig");
 const qmm_prefill_many_contract = @import("contract_qmm_prefill_many.zig");
-const qmm_prefill_tile22_contract = @import("contract_qmm_prefill_tile22.zig");
-const glue_contract = @import("contract_flashnext_glue.zig");
 const lfm2_attention_tests = @import("lfm2_attention_tests.zig");
 const lfm2_kernel_tests = @import("lfm2_kernel_tests.zig");
 const lfm2_vision_tests = @import("lfm2_vision_tests.zig");
@@ -191,6 +185,7 @@ const usage =
     \\  radio-processor REF PICS MODEL  decoded RGB, processor pixels, float resizes and grids against the reference
     \\  radio-kernels             RADIO's float-patch cast and position rows against host references (synthetic rows)
     \\  radio-attention           the head-dim-80 tower attention's time at five sizes, outputs finite (synthetic rows)
+    \\  audio-check MODEL WAV OUT [layers] | audio-contract  Transcribe's audio encoder: a clip's stages to OUT | gates 1-4
     \\  gdn-back                  DeltaNet input gradients against FP64
     \\  q4-back                  Affine input gradients against FP64
     \\  moe-back                  Expert and router input gradients against FP64
@@ -259,6 +254,8 @@ const usage =
     \\  qmmf-prompt-repro        isolate M=65 N=8240 K=2560 SK=4 BF16 without clusters
     \\  qmmf-prompt-bench        rank0 normal-main weighted A-B-A timings, plus separate MTP hidden timings
     \\  qmm-prefill-many-bench    same-process A-B-A screening for the GB10 launch fusion
+    \\  prompt-swiglu-contract    the lean gate/up SwiGLU pair against two products and the act kernel, controls red
+    \\  prompt-swiglu-bench       same-process A-B-A: the lean SwiGLU pair against two products and the act kernel
     \\  mtp-rows                  tf_q36m_attn_rows: gates 1-4 (byte-equal to tf_q36m_attn a segment) and float64 alone
     \\  qwen-pages                qwen35.cu's attention cache through a page table: paged == contiguous, float64, red controls
     \\  qwen-shared-prefix [time] attn_rows's classes across streams on shared pages == each stream alone, red controls; time: A/B
@@ -349,7 +346,7 @@ fn arg(rest: []const [:0]const u8, i: usize) ![]const u8 {
 fn compileContractGlue() !void { // the contract glue's device path, built with the runner: prepare through the vtable
     const cores = std.Thread.getCpuCount() catch 1;
     if (cores != 0) return;
-    var g: glue_contract.Glue = undefined;
+    var g: @import("contract_flashnext_glue.zig").Glue = undefined;
     g.kind = .chain;
     const kernels = [_]@import("core").contract.gates.Kernel{g.kernel()};
     for (kernels) |k| _ = try k.vt.prepare(k.ctx, .{ .rows = 0, .n = 0, .k = 0 }, .random, 0);
@@ -443,7 +440,7 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
     if (std.mem.eql(u8, cmd, "w4a8")) return w4a8_tests.run(gpu);
     if (std.mem.eql(u8, cmd, "glm-exl3")) return glm_exl3_tests.run_(gpu);
     if (std.mem.eql(u8, cmd, "glm-kda-pad-split")) return glm_kda_pad_check.run(gpu);
-    if (std.mem.eql(u8, cmd, "glm-mm-fixed")) return glm_mm_fixed.run(gpu);
+    if (std.mem.eql(u8, cmd, "glm-mm-fixed")) return @import("glm_mm_fixed_tests.zig").run(gpu);
     if (std.mem.eql(u8, cmd, "glm-mm-bench")) return glm_mm_bench.run(gpu);
     if (std.mem.eql(u8, cmd, "glm-index-check")) return glm_index_check.run(gpu);
     if (std.mem.eql(u8, cmd, "glm-kv-host-slots")) return glm_kv_host_slots.run(gpu);
@@ -468,7 +465,7 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
     if (std.mem.eql(u8, cmd, "exl3-contract")) return @import("contract_exl3.zig").run(gpu);
     if (std.mem.eql(u8, cmd, "exl3-tp2")) return exl3_tp2_tests.run(gpu, try arg(rest, 0), try arg(rest, 1), if (rest.len > 2) rest[2] else "none");
     if (std.mem.eql(u8, cmd, "sample")) return sample_tests.draws(gpu);
-    if (std.mem.eql(u8, cmd, "nemotron-draws")) return nemotron_draw_tests.run(gpu);
+    if (std.mem.eql(u8, cmd, "nemotron-draws")) return @import("nemotron_draw_tests.zig").run(gpu);
     if (std.mem.eql(u8, cmd, "topk")) return sample_tests.topk(gpu);
     if (std.mem.eql(u8, cmd, "q35-argmax")) return sample_tests.q35Argmax(gpu);
     if (std.mem.eql(u8, cmd, "norms")) return norms_tests.run(gpu);
@@ -505,9 +502,10 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
     if (std.mem.eql(u8, cmd, "radio-processor")) return radio_tests.processor(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2));
     if (std.mem.eql(u8, cmd, "radio-kernels")) return radio_tests.kernels(gpu);
     if (std.mem.eql(u8, cmd, "radio-attention")) return radio_tests.attention(gpu);
+    if (std.mem.eql(u8, cmd, "audio-contract")) return @import("contract_nemo_audio.zig").run(gpu) else if (std.mem.eql(u8, cmd, "audio-check")) return @import("audio_check.zig").run(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2), rest.len > 3 and std.mem.eql(u8, rest[3], "layers"));
     if (std.mem.eql(u8, cmd, "window-profile")) return @import("window_profile.zig").run(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2));
     if (std.mem.eql(u8, cmd, "tree-accept")) return @import("tree_accept.zig").run(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2), try arg(rest, 3));
-    if (std.mem.eql(u8, cmd, "chunk-costs")) return chunk_costs.run(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2));
+    if (std.mem.eql(u8, cmd, "chunk-costs")) return @import("chunk_costs.zig").run(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2));
     if (std.mem.eql(u8, cmd, "resume")) return resume_tests.run(gpu, try arg(rest, 0), try arg(rest, 1));
     if (std.mem.eql(u8, cmd, "marks")) return resume_tests.insideChunks(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2), try arg(rest, 3));
     if (std.mem.eql(u8, cmd, "prompt-cuts")) return prompt_cuts.run(gpu, try arg(rest, 0), try arg(rest, 1));
@@ -525,10 +523,12 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
     if (std.mem.eql(u8, cmd, "q27-gemm")) return q27_gemm_tests.run(gpu);
     if (std.mem.eql(u8, cmd, "gdn-back-27b")) return gdn_back_tests.runShape(gpu, 5120, 64);
     if (std.mem.eql(u8, cmd, "kernel-contract")) return contract_tests.run(gpu, rest);
-    if (std.mem.eql(u8, cmd, "gb10-grouped-contract")) return gb10_many_contract.runAll(gpu);
+    if (std.mem.eql(u8, cmd, "gb10-grouped-contract")) return @import("contract_gb10_many.zig").runAll(gpu);
     if (std.mem.eql(u8, cmd, "qmm-prefill-many-contract")) return qmm_prefill_many_contract.run(gpu);
-    if (std.mem.eql(u8, cmd, "qmm-prefill-tile22-contract")) return qmm_prefill_tile22_contract.run(gpu);
+    if (std.mem.eql(u8, cmd, "qmm-prefill-tile22-contract")) return @import("contract_qmm_prefill_tile22.zig").run(gpu);
     if (std.mem.eql(u8, cmd, "qmm-prefill-many-bench")) return qmm_prefill_many_contract.bench(gpu);
+    if (std.mem.eql(u8, cmd, "prompt-swiglu-contract")) return @import("contract_prompt_swiglu.zig").run(gpu);
+    if (std.mem.eql(u8, cmd, "prompt-swiglu-bench")) return @import("contract_prompt_swiglu.zig").bench(gpu);
     if (std.mem.eql(u8, cmd, "mtp-rows")) return @import("contract_qwen_mtp_rows.zig").alone(gpu);
     if (std.mem.eql(u8, cmd, "qwen-pages")) return @import("contract_qwen_pages.zig").run(gpu);
     if (std.mem.eql(u8, cmd, "qwen-shared-prefix")) return @import("contract_qwen_shared_prefix.zig").run(gpu, rest);
