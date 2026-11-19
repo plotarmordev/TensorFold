@@ -47,7 +47,7 @@ mmh3=/work/mmh3-target/release/mmh3
 
 cat >/work/mmh3_request.py <<'PY'
 # request.py ready | image <width> <height> <seed> <out.png>
-import json, sys, time, urllib.request
+import json, os, sys, time, urllib.request
 BASE = "http://127.0.0.1:8833"
 
 def get(path):
@@ -66,7 +66,6 @@ if sys.argv[1] == "ready":
 _, _, width, height, seed, out_png = sys.argv
 # draft steps come as the field of the same name (MMH3_DRAFT_STEPS names it for the Desk's env-less
 # door); the server gives a request every option of `mmh3 image`
-import os
 prompt = sys.stdin.read()
 boundary = "mmh3jobboundary"
 body = b""
@@ -119,7 +118,6 @@ if [ -n "${MMH3_DRAFT_STEPS:-}" ]; then
     echo "draft-steps $MMH3_DRAFT_STEPS run done (no cupti phase)"
     exit 0
 fi
-
 
 # Phase 2: the same warm pictures under the CUPTI preload — the trace is the deliverable.
 if [ ! -f /work/cupti-trace.so ]; then

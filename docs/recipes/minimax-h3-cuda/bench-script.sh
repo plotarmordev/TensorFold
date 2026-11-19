@@ -22,6 +22,7 @@ mkdir -p "$out"
     echo "sizes: ${H3_BENCH_SIZES:-2048}"
     echo "transformer linear layers: ${H3_LINEAR:-int8}"
     echo "draft steps: ${H3_DRAFT_STEPS:-0}${H3_RENOISE_SIGMA:+, renoise sigma $H3_RENOISE_SIGMA}"
+    echo "runs per size: 4 (1 cold, 3 warm)"
 } >"$out/settings"
 selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or FAIL to selftests
     name=$1

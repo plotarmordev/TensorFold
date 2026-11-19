@@ -138,12 +138,13 @@ The card's two options were mmh3's PDMD 2-NFE LoRA and its `--draft-steps` half 
 (`yniw/MiniMax-H3-mmh3` on Hugging Face, the step-4000 rank-128 BF16 student) under the
 **minimax-h3-community-license-agreement** — a community agreement, not a standard OSS licence; the
 job has no network, so they would have to be staged into the pilot folder first, and the adapter would
-have to run through the int8 quantized GEMM stack — new surface on top of off-grid head blending. mmh3
-measures the LoRA with drafts cutting its 4096² run 63 s → 24 s and its 2048² one 18 s → 16 s. Draft
-steps need no weights: a host bilinear lift plus a second resident stream is the whole device
-footprint, and the flag is a direct port of mmh3's own code. mmh3's own numbers say drafts barely help
-its 2048² (18 s → 16 s at their step rate); at our ~2.15 s a step, three half-size drafts (~0.6 s each)
-plus three full steps estimate ~9–10 s of transformer against 12.9 s.
+have to run through the int8 quantized GEMM stack — new surface on top of off-grid head blending.
+mmh3 reports the LoRA only at 4096², where its own three-step PDMD runs take about 40 s and its two-step
+ones 29 s against 62 s in six, and with three draft steps and the latent upscaler on top the run reaches
+24 s; it publishes no 2048² LoRA number. For drafts alone (no LoRA) it reports 2048² at 18 s → 16 s with
+two draft steps. Draft steps need no weights: a host bilinear lift plus a second resident stream is the
+whole device footprint, and the flag is a direct port of mmh3's own code. At our ~2.15 s a step, three
+half-size drafts (~0.6 s each) plus three full steps estimate ~9–10 s of transformer against 12.9 s.
 
 `tf-h3-image-cuda --draft-steps N` ports it: `picture.draftSchedule` is `renoised_schedule`
 (first N sigmas at half size, then the renoise — or the next grid sigma — and the undrafted sigmas
@@ -195,8 +196,6 @@ tables' host memory was freed at the first request's end and the second request'
 `std.mem.eql(f32, f.times, times)` guard and `prepare` walked freed pointers — a plain-serve
 regression, not the draft math (the crash hit with no `--draft-steps`). `streamSteps` now takes the
 persistent `init.gpa` for the cached tables as `render` did on main.
-
-
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 

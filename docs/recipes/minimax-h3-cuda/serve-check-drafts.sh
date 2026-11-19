@@ -1,6 +1,6 @@
 #!/bin/sh
 # The warm --serve path past its second picture: two plain serves, then two serves with
-# --draft-steps 3, each pair read back against fresh single-shot renders. Caught the kept-AdaLN
+# --draft-steps 3, each pair checked by counting its `done` replies (two each). Caught the kept-AdaLN
 # crash (the second request walked the first's freed tables) and stands as its regression check.
 #   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/serve-check-drafts.sh"
 set -eu

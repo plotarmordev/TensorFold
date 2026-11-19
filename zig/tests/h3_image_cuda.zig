@@ -315,9 +315,8 @@ fn streamSteps(
                 break :blk null;
             };
             if (exec) |e| {
-                var exec_mut = e;
-                try exec_mut.launchOn(model.stream);
-                launched = exec_mut;
+                try e.launchOn(model.stream);
+                launched = e;
             } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last);
         } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last);
         try model.stream.synchronize();
@@ -428,7 +427,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
 /// `device.line` already points at step `s`'s AdaLN lines; the graph replays those pointers.
 /// `last_velocity` is the draft phase's last step: the head's velocity alone, no Euler advance, so the
 /// host can lift it with cascade.lift.
-fn stepGraph(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32, span: picture.HeadSpan, last_velocity: bool) !?@import("cuda").graph.Exec {
+fn stepGraph(model: *h3.Model, device: *const h3.Model.Inputs, checked: h3.Model.Plan, rows: *const h3.Rows, s: usize, delta: f32, span: picture.HeadSpan, last_velocity: bool) !@import("cuda").graph.Exec {
     const graph_api = @import("cuda").graph;
     try graph_api.beginCapture(model.stream, .thread_local);
     stepBody(model, device, checked, rows, s, delta, span, last_velocity) catch |err| {
