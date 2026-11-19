@@ -395,15 +395,43 @@ grows with tiles² instead of slots, and it sits in the mma pipeline's critical 
 heads pass's own 0.98 s is what a folded variant would have to beat, and inside attention the per-pair rewrite
 costs far more. The once-per-row alternative — norm and rotary in the qkvc product's epilogue instead of per
 tile pair — was not measured; it is the remaining shape for folding the heads pass into attention.
+GB10's block-scaled FP8 was measured and reverted (card 89). `160c7687` (job `top-ad7ecf144cee`, 19 November) ran
+all four projections as cuBLASLt MXFP8: each 128-wide chunk rotated as the int8 rows are, then e4m3 at one UE8M0
+scale every 32 values, the product writing bf16 from its own tile. Its device check of a 200 x 256 x 384 product
+with a 64x outlier column came within 3.85e-2 relative error of float64, e4m3's three mantissa bits on each
+operand. The transformer selftest failed — the run's log ends in a segfault — and its SUMMARY records a failing
+build, so that run's stage timings are not cited; the script still rendered, and the picture missed every gate:
+latent cosine 0.9664 (gate 0.99) and 11.53 apart on average from the Mac PNG (gate 4.1), the three warm latents
+byte for byte the same. The failed selftest and the picture gates are the revert's ground. NVFP4 keeps one
+mantissa bit where e4m3 keeps three and is expected to miss the gates further; it has not been measured.
 
-The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:
+Card 89's own tile, `h3_gemm_int8`, was measured and reverted. `h3_quantize` scaled each 128-wide chunk by its own
+absmax, so `out` and `fc2` left bf16 without the per-row scale's distance from episode 1, and the `m16n8k32` tile
+folded a chunk's exact int32 sum into the fp32 accumulator at that chunk's scales, writing bf16 from its own tile —
+no int32 round trip through `h3_dequantize`, `fc1`'s product feeding a bf16 `h3_swiglu`. All four projections ran it
+behind `--int8`. `cdf02b8b4` (job `top-07d5c772c895`, `bench-int8.sh`, 19 November, exit 0): every selftest passed,
+the decoder's same-latent `reference` repeated `96c87a43`'s bound (86.031% of bytes identical, 99.908% within 1, at
+most 5 apart, PSNR 56.59 dB, relative error 3.20e-3 against 3e-2), and the picture passed every gate — latent cosine
+0.9959, 29.51 dB and 3.39 apart on average from episode 1's Mac PNG, six steps. But a warm 2048² picture took
+**20.5 s** mean (20.4, 20.4, 20.6: prompt 1.1, transformer 14.4, decoder 4.9), the projections running q k v gate
+3.04 s, attention out 1.11 s, mlp in 4.52 s, mlp out 2.34 s against `c30403d9`'s 18.9 s default (job
+`top-85cea73cbb20`, transformer 12.8: 2.68, 1.14, 3.38, 2.27). The own tile is slower on q k v gate (+0.36), mlp
+in (+1.14) and mlp out (+0.07) and a hair faster on attention out (−0.03); the 20.5 s against 18.9 s is the
+revert's ground, and the cuBLASLt qkvc/fc1 int8 default stands. `bench-int8.sh` named the setting through the
+Desk's env-less door at `cdf02b8b4`; the revert removed it with the flag it set. The `bf16` window that job ran
+beside (job `top-c5dfb77a467c`, at `b4c709177`, whose default was bf16) took 21.0 s (transformer 14.7).
+
+The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93; its first picture is 17.6 s, card 80's standing
+goal), in order, each needing its own window:
 
 1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
    int8, a third of the GB10's dense rate, and their int32 sums make a round trip through `h3_dequantize`. A product
-   that writes bf16 straight from the tile would remove that trip, and a per-128-chunk scale would let the products
-   carry the picture without the bf16 fallbacks. The two kernels' records are in the registry as of `cadab6b2`, and
-   `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs their gates 1-4 (`contract_h3_int8.zig`);
-   the limits audit (gate 5) is `limits-job.sh`'s own window.
+   that writes bf16 straight from the tile with a per-128-chunk scale was card 89's `h3_gemm_int8`: it measured 20.5 s
+   warm against `c30403d9`'s 18.9 s (above) and is reverted, so the cuBLASLt products stay. A faster int8 product than
+   cuBLASLt's heuristic first offer is still the round's open part — `822b217c` found the heuristic's first offer
+   already its fastest, so it needs a tile that beats cuBLASLt's sums, not a selection change. The two kernels' records
+   are in the registry as of `cadab6b2`, and `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs
+   their gates 1-4 (`contract_h3_int8.zig`); the limits audit (gate 5) is `limits-job.sh`'s own window.
 2. **Attention**: 1.80 s a picture in the transformer on main (`368cee6b`'s re-pipelining measured 1.91 s, reverted
    `787f3d3d`), 217 registers at 128 threads and two CTAs an SM (8 warps), and 1.89 s in the decoder, whose
    16-byte key loads changed nothing. Its bound is not the value load's latency — deeper prefetch and query-in-registers
