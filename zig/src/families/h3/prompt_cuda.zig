@@ -12,6 +12,7 @@ pub const reference = @import("prompt_reference.zig");
 pub const case = @import("prompt_case.zig");
 pub const picture = @import("picture.zig");
 pub const checkpoint = @import("checkpoint.zig");
+pub const cache = @import("prompt_cache.zig");
 const report = @import("report.zig");
 const bf16_round = @import("bf16_round");
 
@@ -521,4 +522,8 @@ pub const Runner = struct {
 
 test "condition projection keeps bias when the actual-row heuristic cannot fuse it" {
     try @import("prompt_cuda_products_test.zig").check(Products, Products.run);
+}
+
+test "the prompt cache's states, budget and LRU order" {
+    _ = @import("prompt_cache_test.zig");
 }
