@@ -314,9 +314,9 @@ pub const QuantizeChunks = struct {
 
 const gemm_rule = "a scale's NaN or infinity reaches its whole row or column of the product; the int8 codes are always finite";
 
-/// h3_gemm_int8's dynamic shared bytes: its 3 stages fill sm_121's per-block cap (cuda_int8's own
-/// `gemm_shared_bytes`; duplicated so the contract needs no family import).
-pub const gemm_shared_bytes = 3 * (128 * 128 + 128 * 128 + 128 * 4);
+/// h3_gemm_int8's dynamic shared bytes: its 2 stages of a 256x128 tile fit sm_121's per-block cap
+/// (cuda_int8's own `gemm_shared_bytes`; duplicated so the contract needs no family import).
+pub const gemm_shared_bytes = 2 * (256 * 128 + 128 * 128 + 256 * 4);
 
 /// The product's chains: two fp32 roundings a chunk (the activation-scale fold's fma and the accumulator's
 /// add), one more for the row-scale epilogue, plus the bf16 store's own rounding which `out` carries.
@@ -335,9 +335,9 @@ pub fn gemmSpec() c.Spec {
         .tiles = .{ .{}, .{ .size = 128, .step = 8, .min = 8 }, .{ .size = 128, .step = 128, .min = 128 } },
         .served = &.{
             .{ .rows = 17, .n = 136, .k = 256 }, // partial M and N tiles, two chunks
-            .{ .rows = 129, .n = 264, .k = 384 }, // a second M tile, n past two n8 tiles
+            .{ .rows = 257, .n = 264, .k = 384 }, // a second M tile, n past two n8 tiles
             .{ .rows = 16, .n = 56, .k = 14336 }, // the widest projection input, n under one tile
-            .{ .rows = 130, .n = 128, .k = 128 }, // one chunk, M just over the tile
+            .{ .rows = 130, .n = 128, .k = 128 }, // one chunk, M under one tile
         },
         .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "a chunk's 128 products are an exact int32 tensor-core sum; fp32 carries only the per-chunk activation-scale fold and the row-scale epilogue" },
     };
@@ -410,7 +410,7 @@ pub const Gemm = struct {
         for (t.dev) |p| args.add(p);
         for ([_]usize{ t.shape.rows, t.shape.n, t.shape.k }) |v| args.add(@as(c_int, @intCast(v)));
         args.add(@as(c_int, 8)); // tile bands' L2 swizzle group, as cuda_int8's gemm_group
-        const tiles_m = (t.shape.rows + 127) / 128;
+        const tiles_m = (t.shape.rows + 255) / 256;
         const tiles_n = (t.shape.n + 127) / 128;
         const shared: u32 = @intCast(gemm_shared_bytes);
         try cuda.launch.launch(t.f, .{ .grid = .{ .x = @intCast(tiles_m * tiles_n) }, .block = .{ .x = 256 }, .shared = shared }, t.rig.s, &args);
@@ -582,7 +582,7 @@ pub fn bench(gpu: gpu_check.Gpu) !void {
         var args: cuda.Args = .{};
         for ([_]u64{ d_xq.ptr, d_xs.ptr, d_wq.ptr, d_ws.ptr, d_out.ptr }) |p| args.add(p);
         for ([_]usize{ sh.rows, sh.n, sh.k, 8 }) |v| args.add(@as(c_int, @intCast(v)));
-        const grid_x: u32 = @intCast(((sh.rows + 127) / 128) * ((sh.n + 127) / 128));
+        const grid_x: u32 = @intCast(((sh.rows + 255) / 256) * ((sh.n + 127) / 128));
         // warm + throw the first timed sample's cold-start out via one untimed launch
         try cuda.launch.launch(f, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 256 }, .shared = @intCast(gemm_shared_bytes) }, s, &args);
         try s.synchronize();

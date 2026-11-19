@@ -25,9 +25,9 @@ pub const Weight = struct {
 /// One block's quantized projections.
 pub const Block = struct { qkvc: Weight, out: Weight, fc1: Weight, fc2: Weight };
 
-/// h3_gemm_int8's dynamic shared bytes: 3 stages of a 128-deep chunk — BM rows of X, BN rows of W and
-/// the BM activation scales of that chunk (cuda_int8's own; the contract repeats it so it needs no import).
-pub const gemm_shared_bytes = 3 * (128 * 128 + 128 * 128 + 128 * 4);
+/// h3_gemm_int8's dynamic shared bytes: 2 stages of a 128-deep chunk — 256 rows of X, 128 rows of W and
+/// the 256 activation scales of that chunk (cuda_int8's own; the contract repeats it so it needs no import).
+pub const gemm_shared_bytes = 2 * (256 * 128 + 128 * 128 + 256 * 4);
 /// The tile bands' L2 swizzle width, as tile_of's `group`.
 const gemm_group = 8;
 
@@ -126,5 +126,5 @@ pub const Int8 = struct {
 };
 
 fn tiles(rows: usize, n: usize) usize {
-    return ((rows + 127) / 128) * ((n + 127) / 128);
+    return ((rows + 255) / 256) * ((n + 127) / 128); // 256x128 CTAs
 }

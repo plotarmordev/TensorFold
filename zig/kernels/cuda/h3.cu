@@ -69,12 +69,20 @@ __device__ __forceinline__ void gemm(const int8_t* __restrict__ X, const float* 
         qmm_frag::commit();
         const unsigned char* p = buf + (it % STAGES) * STAGE;
         const float* ps = reinterpret_cast<const float*>(p + SX + SW);
-        int iacc[MT][NT][4];
+        // this chunk's activation scales for the warp's rows, and the magic-bias correction once each
+        float ra[MT][2], rc[MT][2];
 #pragma unroll
         for (int i = 0; i < MT; ++i)
 #pragma unroll
-            for (int j = 0; j < NT; ++j) iacc[i][j][0] = iacc[i][j][1] = iacc[i][j][2] = iacc[i][j][3] = 0x4B400000;
-        // a chunk is four 32-deep mma steps; the int32 sums stay exact (each < 2^23) in the 12582912.0f trick's fma
+            for (int h = 0; h < 2; ++h) {
+                const float s = ps[wm * (BM / WM) + i * 16 + (lane >> 2) + h * 8];
+                ra[i][h] = s;
+                rc[i][h] = -12582912.0f * s;
+            }
+        // a chunk is four 32-deep mma steps. kt outer, jj inner: a's fragment is loaded once a step, and
+        // each n pair's int32 sums fold into fp32 right after its two mma — iacc lives across one step of
+        // one pair (32 registers, not NT tiles' worth), so the fold runs four times a chunk at the same
+        // chunk scale. A 32-deep int32 sum stays exact in the 12582912.0f bias.
 #pragma unroll
         for (int kt = 0; kt < 4; ++kt) {
             uint32_t a[MT][4];
@@ -89,33 +97,29 @@ __device__ __forceinline__ void gemm(const int8_t* __restrict__ X, const float* 
                 const int c = wn * (BN / WN) + (jj + half) * 8 + (lane & 7);
                 uint32_t b[4];
                 ldmatrix4(b, p + SX + c * GS + swz<8>(c, kt * 2 + ((lane >> 3) & 1)) * 16);
+                int iacc[MT][2][4];
+#pragma unroll
+                for (int i = 0; i < MT; ++i)
+#pragma unroll
+                    for (int p2 = 0; p2 < 4; ++p2) iacc[i][0][p2] = iacc[i][1][p2] = 0x4B400000;
 #pragma unroll
                 for (int i = 0; i < MT; ++i) {
-                    mma_s8(iacc[i][jj], a[i], b[0], b[1]);
-                    mma_s8(iacc[i][jj + 1], a[i], b[2], b[3]);
+                    mma_s8(iacc[i][0], a[i], b[0], b[1]);
+                    mma_s8(iacc[i][1], a[i], b[2], b[3]);
                 }
+                // drop the bias and fold at the chunk's activation scale: acc += (iacc - magic) * xs
+#pragma unroll
+                for (int i = 0; i < MT; ++i)
+#pragma unroll
+                    for (int h = 0; h < 2; ++h) {
+                        const float s = ra[i][h], cc = rc[i][h];
+                        acc[i][jj][2 * h] = fmaf(fmaf(__int_as_float(iacc[i][0][2 * h]), s, cc), 1.0f, acc[i][jj][2 * h]);
+                        acc[i][jj][2 * h + 1] = fmaf(fmaf(__int_as_float(iacc[i][0][2 * h + 1]), s, cc), 1.0f, acc[i][jj][2 * h + 1]);
+                        acc[i][jj + 1][2 * h] = fmaf(fmaf(__int_as_float(iacc[i][1][2 * h]), s, cc), 1.0f, acc[i][jj + 1][2 * h]);
+                        acc[i][jj + 1][2 * h + 1] = fmaf(fmaf(__int_as_float(iacc[i][1][2 * h + 1]), s, cc), 1.0f, acc[i][jj + 1][2 * h + 1]);
+                    }
             }
         }
-        // drop 12582912.0f and fold the chunk's int32 sums in at the activation scale: acc += (iacc - magic) * xs
-        float ra[MT][2], rc[MT][2];
-#pragma unroll
-        for (int i = 0; i < MT; ++i)
-#pragma unroll
-            for (int h = 0; h < 2; ++h) {
-                const float s = ps[wm * (BM / WM) + i * 16 + (lane >> 2) + h * 8];
-                ra[i][h] = s;
-                rc[i][h] = -12582912.0f * s;
-            }
-#pragma unroll
-        for (int j = 0; j < NT; ++j)
-#pragma unroll
-            for (int i = 0; i < MT; ++i)
-#pragma unroll
-                for (int h = 0; h < 2; ++h) {
-                    const float s = ra[i][h], c = rc[i][h];
-                    acc[i][j][2 * h] = fmaf(fmaf(__int_as_float(iacc[i][j][2 * h]), s, c), 1.0f, acc[i][j][2 * h]);
-                    acc[i][j][2 * h + 1] = fmaf(fmaf(__int_as_float(iacc[i][j][2 * h + 1]), s, c), 1.0f, acc[i][j][2 * h + 1]);
-                }
     }
     qmm_frag::wait<0>();
 #pragma unroll
@@ -453,7 +457,7 @@ __global__ void __launch_bounds__(256) h3_quantize_chunks(const __nv_bfloat16* X
 extern "C" __global__ void __launch_bounds__(256) h3_gemm_int8(const int8_t* __restrict__ X, const float* __restrict__ XS,
         const int8_t* __restrict__ W, const float* __restrict__ WS, __nv_bfloat16* __restrict__ C,
         int M, int N, int K, int group) {
-    h3_gemm::gemm<128, 128, 2, 4, 3>(X, XS, W, WS, C, M, N, K, group); // 3 stages fill sm_121's 99328-byte block cap
+    h3_gemm::gemm<256, 128, 4, 2, 2>(X, XS, W, WS, C, M, N, K, group); // 2 stages of a 256x128 tile under the 101376-byte cap
 }
 
 
