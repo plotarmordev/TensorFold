@@ -35,11 +35,11 @@ const Binding = struct {
         const model = try folder.bind(arena.allocator(), arena.allocator(), case);
         errdefer model.release();
         const own_tags = try arena.allocator().dupe(i32, tags);
-        // the binding's int8 fc1 copy joins the weights' set while it lives: a step's encode drops from 0.19 to 0.04 s
+        // the binding's int8 weights join the weights' set while it lives: a step's encode drops from 0.19 to 0.04 s
         if (weights) |set| {
             model.queue.addResidencySet(set);
-            set.add(model.fc1_q);
-            set.add(model.fc1_s);
+            set.add(model.wq);
+            set.add(model.ws);
             set.commit();
         }
         return .{ .arena = arena, .model = model, .canvas = case.canvas, .rows = case.rows, .references = case.layout.references.len, .tags = own_tags, .weights = weights };
@@ -52,8 +52,8 @@ const Binding = struct {
 
     fn release(b: *Binding) void {
         if (b.weights) |set| {
-            set.remove(b.model.fc1_q);
-            set.remove(b.model.fc1_s);
+            set.remove(b.model.wq);
+            set.remove(b.model.ws);
             set.commit();
         }
         b.model.release();
