@@ -131,6 +131,32 @@ servers close, the script decodes the 2048² latent again with `reference`: the 
 decoder's on the same latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits
 non-zero past the bound. The host decoder needs the memory the servers held, so it runs once their arenas are free.
 
+### Fewer steps: the draft canvas, not the PDMD LoRA
+
+The card's two options were mmh3's PDMD 2-NFE LoRA and its `--draft-steps` half canvas
+([the study](../mmh3-h3-image-study.md), lever 8). The LoRA's weights are published
+(`yniw/MiniMax-H3-mmh3` on Hugging Face, the step-4000 rank-128 BF16 student) but the job has no
+network, so they would have to be staged into the pilot folder first, and the adapter would have to
+run through the int8 quantized GEMM stack — new surface on top of off-grid head blending. Draft
+steps need no weights: host bilinear enlarge plus a second resident stream is the whole device
+footprint, and the flag is a direct port of mmh3's own code. mmh3's own numbers say drafts barely
+help its 2048² (18 s → 16 s at their step rate); at our ~2.15 s a step, three half-size drafts
+(~0.6 s each) plus three full steps estimate ~9–10 s of transformer against 12.9 s.
+
+`tf-h3-image-cuda --draft-steps N` ports it: `picture.draftSchedule` is `renoised_schedule`
+(first N sigmas at half size, then the renoise — or the next grid sigma — and the undrafted sigmas
+below it), `picture.headSpan` is `step_heads` (an off-grid step blends the distilled heads of the
+grid intervals its span covers, weighted by interval length; `h3_rows_out` took an optional
+accumulator row and scale so the blend is chained launches, free when a step sits on the grid),
+and `picture.enlargeDraft` is `resize_video`'s bilinear taps on the channel-major latent. The
+draft's noise is the case stream's own prefix — deterministic, and iid on the half canvas as
+mmh3's fresh samples are. Drafts refuse references and canvases whose half grid is not an even
+cell count (mmh3's 64-pixel rule). `bench-drafts.sh` names `--draft-steps 3` (with the `--tc`
+decoder, matching the standing 15.3 s baseline's settings) for the Desk's env-less door.
+
+MEASUREMENT PENDING THE TOP WINDOW.
+
+
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
 Desk ran `d3ca6199` on TOP's GB10 (driver 580.173.02, job `top-587035ea34ef`, 16 November, 36 minutes, exit 0). The
