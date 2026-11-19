@@ -9,11 +9,9 @@ pub const host = @import("cuda_host.zig");
 pub const modulation = @import("cuda_modulation.zig");
 pub const modulation_test = @import("cuda_modulation_test.zig");
 pub const rows_test = @import("cuda_rows_test.zig");
-pub const fp8_test = @import("cuda_fp8_test.zig");
 pub const image_host = @import("image_host.zig");
 const Gemms = @import("cuda_gemm.zig").Gemms;
 pub const Int8 = @import("cuda_int8.zig").Int8;
-pub const Fp8 = @import("cuda_fp8.zig").Fp8;
 pub const Rows = @import("cuda_rows.zig").Rows;
 
 pub const head_dim = 128;
@@ -28,7 +26,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_quantize_fp8", "h3_rows_in", "h3_rows_out", "h3_euler" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -51,8 +49,6 @@ pub const Model = struct {
     gemms: Gemms,
     /// The projections in int8 after `Int8.quantize`; their bf16 buffers are then empty.
     int8: ?*Int8 = null,
-    /// The projections in block-scaled FP8 after `Fp8.quantize`; their bf16 buffers are then empty.
-    fp8: ?*Fp8 = null,
     hidden: usize,
     inner: usize,
     heads: usize,
@@ -116,7 +112,6 @@ pub const Model = struct {
         self.hosts = .empty;
         self.blocks = &.{};
         self.int8 = null;
-        self.fp8 = null;
         self.load_stages = .{ .{}, .{} };
         self.load_failed = false;
         self.retained_next = null;
@@ -164,7 +159,6 @@ pub const Model = struct {
         host.free(self);
         weights.free(self);
         if (self.int8) |t| t.deinit(self);
-        if (self.fp8) |t| t.deinit(self);
         self.gemms.deinit();
         self.module.unload();
         _ = self.driver.api.cuDevicePrimaryCtxRelease_v2(self.ctx.device);
@@ -295,7 +289,7 @@ pub const Model = struct {
             // the block before left its MLP's rows in y: its gated add runs with this block's first norm
             if (index == 0) try self.norm(in.x, b.norms.ptr, tab, tab, in.line, -1, scale_a, shift_a) else try self.norm(in.x, b.norms.ptr, tab - table_bytes, tab, in.line, gate_m, scale_a, shift_a);
             try self.lap("norms", &mark);
-            try self.project(g.xn, b.qkvc.ptr, index, .qkvc, g.qkvc, rows, width, hidden);
+            try self.project(g.xn, b.qkvc.ptr, if (self.int8) |t| t.blocks[index].qkvc else null, g.qkvc, rows, width, hidden);
             try self.lap("q k v gate", &mark);
             {
                 // q, k and v in tile order, beginning at tile zero
@@ -337,12 +331,12 @@ pub const Model = struct {
                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
                 try self.lap("gate mix", &mark);
             }
-            try self.project(g.ya, b.out.ptr, index, .out, g.y, rows, hidden, inner);
+            try self.project(g.ya, b.out.ptr, null, g.y, rows, hidden, inner);
             try self.lap("attention out", &mark);
             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m);
             try self.lap("norms", &mark);
             if (self.int8) |t| try t.mlpIn(self, g.xn, t.blocks[index].fc1, g.act, rows) else {
-                try self.project(g.xn, b.fc1.ptr, index, .fc1, g.wide, rows, 2 * self.mlp, hidden);
+                try self.gemms.run(self.stream, g.xn, b.fc1.ptr, g.wide, rows, 2 * self.mlp, hidden);
                 var args: cuda.Args = .{};
                 args.add(g.wide);
                 args.add(g.act);
@@ -351,7 +345,7 @@ pub const Model = struct {
                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
             }
             try self.lap("mlp in", &mark);
-            try self.project(g.act, b.fc2.ptr, index, .fc2, g.y, rows, hidden, self.mlp);
+            try self.project(g.act, b.fc2.ptr, null, g.y, rows, hidden, self.mlp);
             try self.lap("mlp out", &mark);
         }
         {
@@ -365,11 +359,9 @@ pub const Model = struct {
         return seconds() - started;
     }
 
-    /// y (rows, n) = x (rows, k) . w^T for block `index`'s projection `which`: in FP8 or int8 when quantized (int8
-    /// holds `qkvc` alone here; its `fc1` sums go straight to swiglu), else through the bf16 `w`.
-    fn project(self: *Model, x: u64, w: u64, index: usize, comptime which: enum { qkvc, out, fc1, fc2 }, y: u64, rows: usize, n: usize, k: usize) !void {
-        if (self.fp8) |t| return t.run(self, x, @field(t.blocks[index], @tagName(which)), y, rows);
-        if (which == .qkvc) if (self.int8) |t| return t.run(self, x, t.blocks[index].qkvc, y, rows);
+    /// y (rows, n) = x (rows, k) . w^T: through the int8 weight `q` when quantized, else the bf16 `w`.
+    fn project(self: *Model, x: u64, w: u64, q: ?@import("cuda_int8.zig").Weight, y: u64, rows: usize, n: usize, k: usize) !void {
+        if (q) |weight| return self.int8.?.run(self, x, weight, y, rows);
         try self.gemms.run(self.stream, x, w, y, rows, n, k);
     }
 };

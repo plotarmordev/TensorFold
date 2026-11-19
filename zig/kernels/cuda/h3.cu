@@ -1,6 +1,5 @@
 // MiniMax H3 / FastH3's transformer blocks on CUDA in the checkpoint's bf16: the row, routing and attention kernels.
 #include "h3_attention.cuh"
-#include <cuda_fp8.h>
 #include "common/reduce.cuh"
 
 namespace tf_h3 {
@@ -317,36 +316,6 @@ __global__ void __launch_bounds__(256) h3_dequantize(const int* ACC, const float
         __nv_bfloat162* y = reinterpret_cast<__nv_bfloat162*>(Y + at);
         y[0] = __floats2bfloat162_rn(a.x * s * w.x, a.y * s * w.y);
         y[1] = __floats2bfloat162_rn(a.z * s * w.z, a.w * s * w.w);
-    }
-}
-
-// h3_quantize's rotated rows as MXFP8 for cuBLASLt's 32-element block scaling: each 32 values of a row to e4m3 Q at
-// one UE8M0 scale, the power of two that brings their absmax to at most 448, stored in S at the 128 x 4 tiled offset
-// cuBLASLt reads (row r, block b: tile (r / 128, b / 4), then (r % 32) * 16 + (r % 128 / 32) * 4 + b % 4). Eight
-// lanes hold a block. Grid [M], 256 threads; S's padding past M and K stays as the caller cleared it.
-__global__ void __launch_bounds__(256) h3_quantize_fp8(const __nv_bfloat16* X, uint8_t* Q, uint8_t* S, int K) {
-    const size_t row = blockIdx.x;
-    const __nv_bfloat16* x = X + row * K;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = K >> 7, tiles_k = (K / 32 + 3) / 4;
-    for (int c = warp; c < chunks; c += 8) {
-        float v[4];
-        rotated_chunk(x, c, v);
-        float most = fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3])));
-#pragma unroll
-        for (int o = 1; o < 8; o <<= 1) most = fmaxf(most, __shfl_xor_sync(0xffffffffu, most, o));
-        int e = -127; // an all-zero block: the smallest scale, zero codes
-        if (most > 0.f) {
-            frexpf(most / 448.f, &e); // most / 448 < 2^e: the block's absmax over 2^e is at most 448
-            e = min(max(e, -127), 127);
-        }
-        const float inv = exp2f(static_cast<float>(-e));
-        const __nv_fp8x4_e4m3 q(make_float4(v[0] * inv, v[1] * inv, v[2] * inv, v[3] * inv));
-        *reinterpret_cast<__nv_fp8x4_e4m3*>(Q + row * K + c * 128 + lane * 4) = q;
-        if ((lane & 7) == 0) {
-            const int b = c * 4 + (lane >> 3);
-            const size_t tile = (row / 128) * tiles_k + b / 4;
-            S[tile * 512 + (row % 32) * 16 + (row % 128 / 32) * 4 + b % 4] = static_cast<uint8_t>(e + 127);
-        }
     }
 }
 
