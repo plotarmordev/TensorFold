@@ -600,14 +600,16 @@ post-fix benchmark needs a new Desk window. Receipt SHA-256 identifiers:
 - `64188519/mmh3/out/mmh3/2048.log`: `54e17e0ada53c14502c6dadf543d4f64b0522537e704a383018f78da11772cfb`
 - `64188519/mmh3/out/mmh3/4096.log`: `a509701c36d026a9ca502fe904bc723ce73e888a8dd8abc868f800bd72cae3e1`
 
-`c69ee1d64` (job `top-8d459fe4d50a`, 20 November, exit 0, `bench-128-ab.sh` — same-job A/B, baseline re-measured by
-reverse-applying the card's patch mid-job; the branch carries cards 124 and 125 merged from main) fuses the int8
-transformer's elementwise passes as `docs/mmh3-h3-image-study.md`'s lever 2 reads mmh3: `h3_norm_quant` runs the
-gated add, modulated RMSNorm, rotate and quantize as one launch (the normed row is recomputed per lane as
-`modulated` rounded to bf16 — never materialized), and `h3_heads_i8` reads the qkvc product's int32 sums and scales
-and runs `h3_heads`' q/k norm and rotary on values dequantized as `h3_dequantize` rounds them — once a row, not per
-tile pair. `fused_test` in `--self-test` checks both against the unfused chain byte for byte, and the four bench
-latents were sha256-identical between phases. A warm 2048² picture took **14.9 s** mean (14.9, 14.9, 15.0:
+`c69ee1d64` (job `top-8d459fe4d50a`, 20 November, exit 0 — a same-job A/B that ran this commit's `bench-script.sh`,
+then reverse-applied the card's diff mid-job and ran it again; the branch carries cards 124 and 125 merged from
+main) fuses the int8 transformer's elementwise passes as `docs/mmh3-h3-image-study.md`'s lever 2 reads mmh3:
+`h3_norm_quant` runs the gated add, modulated RMSNorm, rotate and quantize as one launch (the normed row is
+recomputed per lane as `modulated` rounded to bf16 — never materialized), and `h3_heads_i8` reads the qkvc
+product's int32 sums and scales and runs `h3_heads`' q/k norm and rotary on values dequantized as `h3_dequantize`
+rounds them — once a row, not per tile pair. `h3_swiglu_int8` stays its own launch over fc1's sums: mmh3's swiglu
+sits in its own int8 GEMM's epilogue, and cuBLASLt's i8×i8→i32 descriptors take none. `fused_test` in
+`--self-test` checks both against the unfused chain byte for byte, and the four bench latents were
+sha256-identical between phases. A warm 2048² picture took **14.9 s** mean (14.9, 14.9, 15.0:
 transformer 12.4–12.5, a step 2.06–2.09 s) against the same job's baseline **15.3 s** (15.3, 15.3, 15.4:
 transformer 12.8–12.9, a step 2.13–2.16 s): `q k v gate` 2.68→1.88 s, `heads` 0.96→1.40 s, `mlp in` 3.40→3.31 s —
 the study's 3.20 s of elementwise launches is 2.42 s. Against episode 1's Mac picture the latent's cosine is
