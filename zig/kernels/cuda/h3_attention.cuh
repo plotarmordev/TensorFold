@@ -50,10 +50,10 @@ struct HeadsPrologue {
 // `tile`, or field `f` (0 q, 1 k, 2 v) of the fused QKV rows, gathered by `rowof` with zero fill for its -1 slots.
 template <bool fused>
 __device__ __forceinline__ void load_tile(unsigned char* to, const __nv_bfloat16* from, const HeadsPrologue& pro,
-        const int* rowof, int head, int hs, int tile, int f) {
+        const int* rowof, int head, int heads, int hs, int tile, int f) {
     const int tid = threadIdx.x;
     if (fused) {
-        const __nv_bfloat16* src = pro.qkv + (static_cast<size_t>(f) * pro.heads + head) * head_dim;
+        const __nv_bfloat16* src = pro.qkv + (static_cast<size_t>(f) * heads + head) * head_dim;
         for (int c = tid; c < tile_rows * 16; c += 128) {
             const int row = rowof[c >> 4];
             cp16z(to + at(c >> 4, c & 15), src + static_cast<size_t>(row < 0 ? 0 : row) * pro.width + (c & 15) * 8, row >= 0);
@@ -144,7 +144,7 @@ __device__ __forceinline__ void attention_body(
     const int* list = LIST + (per_query ? (static_cast<size_t>(head) * queries + blockIdx.x) * keys : 0);
 
     auto load = [&](unsigned char* to, const __nv_bfloat16* from, int tile, int f) {
-        load_tile<fused>(to, from, pro, ROWOF + tile * T, head, hs, tile, f);
+        load_tile<fused>(to, from, pro, ROWOF + tile * T, head, heads, hs, tile, f);
     };
 
     // a key tile's k is fetched while the tile before it is weighed against its values, and its v while its scores form
