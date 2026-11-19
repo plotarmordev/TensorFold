@@ -23,6 +23,7 @@ pub const bounds = struct {
     /// norms use the Metal reduction order and correctly rounded reciprocal square roots. `block_same` is the
     /// ordered kernels' bar: `--tc`'s cuBLASLt sums land ~85% identical and are gated on the ULP and relative
     /// bounds alone (the picture gates judge the path end to end).
+    pub const block_ulps: f64 = 8;
     pub const block_same: f64 = 0.9;
     pub const block_relative: f64 = 2e-3;
     /// The output after two blocks chained (host fp32 sums: relative 2.9e-3, worst 3 ULPs) and after 24 (1.5e-2).

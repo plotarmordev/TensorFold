@@ -322,6 +322,15 @@ rounding points), and attention runs as batched q·kᵀ and p·v around `h3d_sof
 The ordered fp32 kernels stay the default; `bench-script.sh` passes `H3_DECODER=tc` through to the
 resident decoder and the `reference` compare.
 
+`2243f9e8` (job `top-2567f9589044`, 19 November, exit 0, `H3_DECODER=tc`) ran the tensor-core decoder beside
+the default `52350e5b` window (job `top-b79ca42af474`, exit 0): a warm 2048² picture took **15.6 s** mean
+(15.6, 15.6, 15.6: prompt 1.1, transformer 13.1, decoder 1.4) against the default's 18.9 s (decoder 4.9),
+cold 153.1 s. The same-latent `reference` passed at 85.210% of bytes identical, 99.874% within 1, at most 6
+apart, PSNR 56.30 dB (the default's is 56.62) and relative error 3.33e-3, and every picture was 56.32 dB /
+0.149 mean diff from the default's, so the episode-1 gates hold. The decoder selftest's staged blocks land
+~81–84% identical inside their ULP and relative bounds — cuBLASLt's fp32 accumulation order, not an error —
+so `selftest --tc` drops only the identity bar (`selftest-tc.sh` gates that alone).
+
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
 the first picture's operands and kept the fastest: q k v gate stayed 2.68 s and mlp in 3.40 s, so the heuristic's
