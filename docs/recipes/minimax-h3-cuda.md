@@ -154,8 +154,28 @@ mmh3's fresh samples are. Drafts refuse references and canvases whose half grid 
 cell count (mmh3's 64-pixel rule). `bench-drafts.sh` names `--draft-steps 3` (with the `--tc`
 decoder, matching the standing 15.3 s baseline's settings) for the Desk's env-less door.
 
-MEASUREMENT PENDING THE TOP WINDOW — the draft bench and mmh3's matching run land their numbers
-and job ids here.
+`515a1167f` (job `top-6d575312fd56`, 20 November, exit 0, `bench-drafts.sh` → `run-script.sh` with
+`H3_DECODER=tc`, `H3_DRAFT_STEPS=3`; every selftest PASS) ran `--draft-steps 3` beside the `--tc` decoder.
+A warm 2048² picture took **10.6 s** mean (10.6, 10.6, 10.7: prompt 1.1, transformer 8.3, decoder 1.3),
+cold 143.7 s, peak 76,701 MiB, ~81 W — against the six-step `--tc` baseline's 15.3 s (transformer 12.8).
+The three draft steps ran ~0.3 s each on the half canvas and the three full-size steps ~1.4 s each, so
+the transformer fell 12.8 → 8.3 s as estimated. mmh3's own `draft-steps 3` server (job
+`top-508071b72154`, `952c9625f`'s `mmh3-drafts-job.sh`, prompt.txt seed 42, 2048²) answered the same
+request in **6.0 s** warm (5.99, 6.04, 6.02) against its six-step 9.3 s — mmh3 stays leaner end to end;
+the gap is its pipeline, not the draft math.
+
+**The draft picture is degraded, not just different — this is the open issue.** The same-picture gate
+does not apply (a draft draws a different composition by construction, so PSNR vs the Mac PNG is not the
+check), but `2048-*.png` is not a clean alternate picture: it is a rainbow moiré of swirls and stripes
+with no recognizable subject, latent cosine −0.11 against `t2i-2048.latent.f32` (the six-step GPU run is
+0.995 and a sharp fox). The schedule and enlarge math verify against mmh3's `renoised_schedule`,
+`step_heads` and `resize_video` and pass `picture_test.zig`, and the renoise is the textbook
+`(1-σ)·x₀ + σ·ε` — yet mmh3's own `--draft-steps 3` bilinear server returns a *clean* fox, so the moiré
+is a defect in this port's half-grid pass (positions/rotary/tiles on the quarter grid, or the draft's
+clean-prediction step), not the draft idea. The side-by-side sits in `h3-image-bench/`: six-step
+`2048-*.png` from `top-6ad5cbe95379`/`baseline` against the draft's `2048-*.png` here. **Keep
+`--draft-steps` opt-in and treat it as not-yet-shippable until the half-grid path is fixed; the lead
+decides whether the card lands the flag as an experiment or holds for the fix.**
 
 **Warm-serve crash, fixed.** The second `--serve` render segfaulted at `case ready`, while its
 `Case.load`/early stream setup ran (job `top-622a63407b13` at `602456336`, exit 139; earlier
