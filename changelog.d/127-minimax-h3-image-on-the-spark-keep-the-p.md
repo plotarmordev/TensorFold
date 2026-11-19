@@ -10,4 +10,7 @@
   verbatim rows, the LRU order inside the budget, the over-budget and zero-budget refusals and the
   already-kept no-op — `zig build test`.
 - Measured on TOP's GB10 in one job (`docs/recipes/minimax-h3-cuda/bench-127-ab.sh`, patch -R for the
-  main baseline): NUMBERS.
+  main baseline), three runs each at 2048 x 2048 with `--tc`: repeated prompt 0.00 s (a kept-states
+  hit, the encoder skipped — main re-encodes it in 1.05 s), unseen prompt 1.24 s (main 1.25 s, no
+  slower); transformer 12.6 s and decoder 1.3 s unchanged, `repeat-3.png` byte-identical to the cold
+  run's. Card 126's headline race uses the unseen-prompt figure.
