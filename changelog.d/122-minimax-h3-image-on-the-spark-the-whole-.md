@@ -5,11 +5,14 @@
   dedicated non-blocking stream and replays it; the AdaLN lines of every step are staged once
   and each graph points `line` at its own slice. `H3_PROFILE` keeps the eager step-by-step path
   (its per-stage waits can't be captured), and a refused capture falls back to the same launches.
-- The decoder's tensor-core path (`--tc`) is now the default; `--exact` opts back into the
+- The decoder's tensor-core path (`--tc`) is now the default: it takes the warm 2048² picture in
+  15.3 s against the ordered kernels' 18.9 s (decoder 4.9 → 1.3 s), with the same picture gates
+  (28.69 dB / 4.01, cosine 0.9952, same-latent 56.31 dB in bound). `--exact` opts back into the
   fp32-order kernels and keeps their 90% block-identity selftest. `selftest` gates the default.
 - The decoder-side rows overlap was built and measured, then cut: `top-27eefb4ad8de` ran the last step
   streaming video rows out band by band while the decoder read them progressively, and warm 2048² came
   out 15.7 s — the banded read serialised the step's tail and the progressive host decode cost 3.6 s vs
   1.3 s for the bulk path — so the decoder keeps its `.latent.f32` input and output unchanged. The
   whole-step graphs + tc default measured warm 2048² mean 15.3 s against the same-job `main + --tc`
-  baseline's 15.5 s on the merged head (`top-ae939c0b8de7`), latent and PNG byte-identical — kept.
+  baseline's 15.5 s on the merged head (`top-ae939c0b8de7` at `2eaf18ad6`), latent and PNG
+  byte-identical — kept.

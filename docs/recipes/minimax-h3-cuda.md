@@ -334,10 +334,10 @@ default's. The decoder selftest's staged blocks land ~81–84% identical inside 
 — cuBLASLt's fp32 accumulation order, not an error — so `selftest --tc` drops only the identity bar
 (`selftest-tc.sh` gates that alone).
 
-| Warm 2048² | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
+| Warm 2048² (pre-122 window) | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
 |---|---:|---:|---:|---:|---:|---:|
-| default (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
-| `--tc` (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
+| fp32-order decoder (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
+| tensor-core decoder (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
 
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
@@ -424,12 +424,15 @@ decoder 1.3), and `top-7cc7074c454e` (`bench-script.sh` at `40ab38a8f` on scratc
 measured the baseline's 15.5 s (transformer 13.0, steps ~2.16, decoder 1.3) — 0.3 s faster, kept. Every
 selftest passed in both runs, the same-latent `reference` bound held at 56.31 dB (rel 3.33e-3) on both,
 and the pictures were byte-identical between graph and eager output. The same-job re-run on the merged
-head (after main's card-89 merge) is `bench-122-ab.sh` — `git apply -R` of `bench-122-base.patch` puts
+head (after main's card-89 merge) is `bench-122-ab.sh` at `2eaf18ad6` — `git apply -R` of
+`bench-122-base.patch` puts
 the card's h3 files back to main's inside the job's shallow clone: job `top-ae939c0b8de7` (exit 0) ran
-the merged head's warm mean **15.3 s** (transformer 12.9, steps 2.13-2.15, decoder 1.3) against the
-same-job `main + --tc` baseline's **15.5 s** (transformer 12.9, steps 2.14-2.16) — 0.2 s faster, kept,
+the merged head's warm mean **15.3 s** (15.3, 15.4, 15.3: transformer 12.9, steps 2.13-2.15, decoder
+1.3) against the same-job `main + --tc` baseline's **15.5 s** (15.4, 15.8, 15.4: transformer 12.9,
+steps 2.14-2.16) — 0.2 s faster, kept,
 with `latent.f32` and the PNG byte-identical between phases and every selftest passing. Seconds
-outside the blocks are ~0.0 s on the graph path — the transformer total and the sum of the steps
+outside the steps are ~0.0 s on the graph path — the rows in/out work is captured in each step's
+graph and the transformer total and the sum of the steps
 agree to the printed hundredths (12.79 against 12.80); `H3_PROFILE`'s per-stage waits can't be
 captured, so the graphed run has no finer breakdown than that.
 
