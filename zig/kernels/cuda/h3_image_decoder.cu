@@ -206,13 +206,13 @@ __global__ void __launch_bounds__(256) h3d_finish(
         y[at] = __float2bfloat16(f(y[at]) + bf(out * f(s[x])));
     }
 }
-// softmax(s / 8) row-wise in fp32 for the tensor-core path's S [tiles * 16 heads, T, T], then bf16 for P . V:
-// 128 threads a row (256 shared floats), the max and sum over four elements a thread as h3d_attention's warp order.
+// softmax(s / 8) row-wise in fp32 for the tensor-core path's S [tiles * 16 heads, T, T]: a flat query
+// row a block (grid b*T), 128 threads over four keys each, the bf16 weights contiguous for P . V.
 __global__ void __launch_bounds__(128) h3d_softmax(const float* s, bf16* pr, H3dShape p) {
     __shared__ float part[128];
     __shared__ float top;
     __shared__ float total;
-    const unsigned row = blockIdx.x;
+    const unsigned row = blockIdx.x; // a flat query row over the batch's [tiles * heads, T, T]
     const unsigned t = threadIdx.x;
     const float* sr = s + (size_t)row * p.tokens;
     float v[4];

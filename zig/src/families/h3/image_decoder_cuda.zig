@@ -438,7 +438,7 @@ pub const Decoder = struct {
         try scores.run(1, d.dev(d.view.k), d.dev(d.view.q), 0, acc, tc.gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
         var a = d.args(&.{ acc, p_bf16 });
         a.add(s);
-        try d.launch("h3d_softmax", .{ .x = @intCast(b), .y = 1, .z = 1 }, .{ .x = 128 }, 0, &a);
+        try d.launch("h3d_softmax", .{ .x = @intCast(b * n), .y = 1, .z = 1 }, .{ .x = 128 }, 0, &a);
         try out.run(1, d.dev(d.view.v), p_bf16, 0, o_f32, tc.gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
         var u = d.args(&.{ o_f32, d.dev(d.view.o) });
         u.add(s);
