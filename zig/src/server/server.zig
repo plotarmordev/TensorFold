@@ -212,10 +212,10 @@ pub const Server = struct {
         if (srv.info.speech == null and (config.voice.dir != null or config.voice.inline_voices or config.voice.manage)) return error.VoicesRequireSpeech;
         const engine_voices = if (srv.info.speech) |sp| sp.voices else &.{};
         if (engine_voices.len > 0) {
-            // the server's own copy: an idle unload frees the engine's names while /v1/voices still lists them
-            srv.engine_voices = try srv.arena.allocator().alloc(@import("drama_voice.zig").Voice, engine_voices.len);
-            for (engine_voices, srv.engine_voices) |name, *voice| voice.* = .{ .name = try srv.arena.allocator().dupe(u8, name), .references = &.{} };
-            try srv.voices.swap(srv.engine_voices);
+            const voices = try srv.arena.allocator().alloc(@import("drama_voice.zig").Voice, engine_voices.len);
+            for (engine_voices, voices) |name, *voice| voice.* = .{ .name = try srv.arena.allocator().dupe(u8, name), .references = &.{} };
+            srv.engine_voices = voices;
+            try srv.voices.swap(voices);
         } else if (config.voice.dir) |dir| try srv.voices.load(dir);
         _ = try srv.voices.select(srv.arena.allocator(), config.voice.default, "default");
         if (!srv.info.capability(.text_generation)) {

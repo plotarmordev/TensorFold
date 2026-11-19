@@ -192,8 +192,7 @@ pub const Served = struct {
         s.* = .{ .srv = undefined, .client = pair[0], .route_fd = pair[1], .route = undefined, .write_ms = write_ms, .probe = probe };
         s.srv = try server.Server.init(gpa, std.testing.io, script.engine(), s.text.text(), config, null);
         if (probe) |p| p.srv = s.srv;
-        try s.srv.voices.swap(script.voices);
-        if (script.output_full) s.srv.speech_inflight.store(s.srv.info.lanes, .release);
+        if (script.voices.len > 0) try s.srv.voices.swap(script.voices);
         var head: [256]u8 = undefined;
         const method_path = if (script.get_voices) "GET /v1/voices" else "POST /v1/audio/speech";
         try writeAll(s.client, try std.fmt.bufPrint(&head, "{s} {s}\r\nHost: t\r\n{s}Content-Length: {d}\r\n\r\n", .{ method_path, version, headers, body.len }));
