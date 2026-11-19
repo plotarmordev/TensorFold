@@ -1,15 +1,13 @@
-// MiniMax H3's dense attention in e4m3 on mma.sync m16n8k32: h3_heads' q/k RMSNorm and rotary run in the
-// tile's prologue from the raw QKV rows; q, k and v quantize to e4m3 at the tile's absmax; the softmax's
-// fp32 sums are kept. mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32's fragments (PTX ISA): a0..a3
-// hold rows lane>>2 and +8 at channel quads lane&3 and +16 elements; b0, b1 hold column lane>>2 at channel
-// quads lane&3 and +16. A lane's quad is the four e4m3 at flat element 16·(e>>4) + e&15.
+// MiniMax H3's dense attention on mma.sync m16n8k32: h3_heads' q/k RMSNorm and rotary run in the tile's
+// prologue from the raw QKV rows; q and k quantize to int8 at each row's absmax (per-tile-absmax e4m3 measured
+// a 0.87 latent cosine — four significand bits is too coarse for Q·K) while the weighed scores and v stay e4m3
+// like mmh3's split. The row scales land in shared qsc/ksc and fold into the score rescale. The fragments of
+// m16n8k32.row.col (PTX ISA): a0..a3 hold rows lane>>2 and +8 at channel quads lane&3 and +16 elements; b0, b1
+// hold column lane>>2 at channel quads lane&3 and +16 — every register one aligned u32 in the swizzled tile.
 #pragma once
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
-#include <stdint.h>
-#include "common/reduce.cuh"
-#include "h3_attention.cuh"
 #include "mma4.cuh"
 
 namespace tf_h3 {
@@ -23,11 +21,19 @@ __device__ __forceinline__ uint32_t fp8_pack4(float a, float b, float c, float d
         | (static_cast<uint32_t>(__nv_cvt_float_to_fp8(c, __NV_SATFINITE, __NV_E4M3)) << 16)
         | (static_cast<uint32_t>(__nv_cvt_float_to_fp8(d, __NV_SATFINITE, __NV_E4M3)) << 24);
 }
+__device__ __forceinline__ uint32_t i8_pack4(float a, float b, float c, float d) {
+    return (__float2int_rn(a) & 0xff) | ((__float2int_rn(b) & 0xff) << 8) | ((__float2int_rn(c) & 0xff) << 16) | ((__float2int_rn(d) & 0xff) << 24);
+}
+__device__ __forceinline__ void mma_s8(int (&d)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};\n"
+        : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
 
-constexpr int fp8_tile_bytes = tile_rows * head_dim;      // 8 KB of e4m3 a tile
+constexpr int fp8_tile_bytes = tile_rows * head_dim;      // 8 KB a tile — int8 for q/k, e4m3 for v
 constexpr int fp8_stage_bytes = tile_rows * head_dim * 2; // a tile's raw bf16 staging
-constexpr int fp8_score_bytes = tile_rows * tile_rows;    // the weighed scores' 4 KB
-// q, k, v and the weighed scores in e4m3 plus the one bf16 stage the arriving tiles share: 44 KB, two CTAs an SM.
+constexpr int fp8_score_bytes = tile_rows * tile_rows;    // the weighed scores' 4 KB (e4m3)
+// q, k, v and the weighed scores' byte tiles plus the one bf16 stage the arriving tiles share: 44 KB, two CTAs an SM.
 constexpr int fp8_attention_shared = 3 * fp8_tile_bytes + fp8_stage_bytes + fp8_score_bytes;
 static_assert(fp8_attention_shared == 45056, "fp8 attention's shared bytes");
 
@@ -55,6 +61,7 @@ __device__ __forceinline__ void attention_body_fp8(
     constexpr float EPS = 1e-5f, PACK = 448.0f;
     extern __shared__ __align__(128) unsigned char buf[];
     __shared__ float red[8];
+    __shared__ float qsc[tile_rows], ksc[tile_rows]; // the rows' amax/127 dequant factors
     unsigned char* const qsm = buf;
     unsigned char* const ksm = buf + fp8_tile_bytes;
     unsigned char* const vsm = buf + 2 * fp8_tile_bytes; // dim-major: row d holds the 64 keys' dim d
@@ -102,45 +109,34 @@ __device__ __forceinline__ void attention_body_fp8(
         return rsqrtf(sq / 128.0f + EPS);
     };
 
-    // The stage's tile to e4m3 in `to` at its absmax, with the q/k norm and rotary. h3_heads' split: thread
-    // t owns the 32-channel chunk (t&3)*32 of rows t>>2 and t>>2+32; the normed values are computed twice
-    // so no second register file holds them. Returns the tile's scale (absmax / 448).
-    auto quantize_qk = [&](unsigned char* to, int field, const int* rowof) {
+    // The stage's tile to int8 in `to` at each row's absmax (the dequant factor amax/127 lands in `sc`), with the
+    // q/k norm and rotary. h3_heads' split: thread t owns the 32-channel chunk (t&3)*32 of rows t>>2 and t>>2+32.
+    auto quantize_qk = [&](unsigned char* to, int field, const int* rowof, float* sc) {
         const __nv_bfloat16* nw = field == 0 ? pro.nq : pro.nk;
         const int c0 = (tid & 3) * 32;
-        float most = 0.0f;
         for (int half = 0; half < 2; ++half) {
             const int s = (tid >> 2) + half * 32, row = rowof[s];
-            // every lane joins row_inv's quad shuffles; a dead row's garbage just never reaches `most`
+            // every lane joins row_inv's quad shuffles; a dead row's garbage never leaves its quad
             const float inv = row_inv(s, c0);
             const int at_row = row < 0 ? 0 : row;
             const float* cs = pro.cosine + static_cast<size_t>(at_row) * pro.rot;
             const float* sn = pro.sine + static_cast<size_t>(at_row) * pro.rot;
+            float vals[32], amax = 0.0f;
 #pragma unroll
             for (int j = 0; j < 32; ++j) {
-                const float v = normed(nw, cs, sn, s, c0 + j, inv);
-                if (row >= 0) most = fmaxf(most, fabsf(v));
+                vals[j] = row < 0 ? 0.0f : normed(nw, cs, sn, s, c0 + j, inv);
+                amax = fmaxf(amax, fabsf(vals[j]));
             }
-        }
-        most = tf_common::block_max_tree(most, red, 4);
-        const float iscale = most > 0.0f ? PACK / most : 1.0f;
-        for (int half = 0; half < 2; ++half) {
-            const int s = (tid >> 2) + half * 32, row = rowof[s];
-            const float inv = row_inv(s, c0);
-            const int at_row = row < 0 ? 0 : row;
-            const float* cs = pro.cosine + static_cast<size_t>(at_row) * pro.rot;
-            const float* sn = pro.sine + static_cast<size_t>(at_row) * pro.rot;
+            amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1));
+            amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 2));
+            if ((tid & 3) == 0) sc[s] = amax * (1.0f / 127.0f); // dequant factor; 0 on a dead or all-zero row
+            const float iscale = amax > 0.0f ? 127.0f / amax : 0.0f;
 #pragma unroll
             for (int j = 0; j < 32; j += 4) {
                 const int e = c0 + j;
-                const float v0 = row < 0 ? 0.0f : normed(nw, cs, sn, s, e + 0, inv);
-                const float v1 = row < 0 ? 0.0f : normed(nw, cs, sn, s, e + 1, inv);
-                const float v2 = row < 0 ? 0.0f : normed(nw, cs, sn, s, e + 2, inv);
-                const float v3 = row < 0 ? 0.0f : normed(nw, cs, sn, s, e + 3, inv);
-                *reinterpret_cast<uint32_t*>(to + at(s, e >> 4) + (e & 15)) = fp8_pack4(v0 * iscale, v1 * iscale, v2 * iscale, v3 * iscale);
+                *reinterpret_cast<uint32_t*>(to + at(s, e >> 4) + (e & 15)) = i8_pack4(vals[j] * iscale, vals[j + 1] * iscale, vals[j + 2] * iscale, vals[j + 3] * iscale);
             }
         }
-        return most > 0.0f ? most * (1.0f / PACK) : 1.0f;
     };
     // The stage's tile to e4m3 in `to` without a norm (v), dim-major for the PV fragment; the tile's absmax
     // `vm` also scales the P codes, so the value product's multiplier is the constant 1 / 448.
@@ -175,7 +171,7 @@ __device__ __forceinline__ void attention_body_fp8(
     load_stage(pro.rowof + qt * T, 0);
     wait<0>();
     __syncthreads();
-    const float sq_scale = quantize_qk(qsm, 0, pro.rowof + qt * T);
+    quantize_qk(qsm, 0, pro.rowof + qt * T, qsc);
     __syncthreads();
 
     // fragment reads: element e of row r sits at byte e&15 of swizzled chunk e>>4; a lane's quads are
@@ -200,41 +196,45 @@ __device__ __forceinline__ void attention_body_fp8(
     for (int j = 0; j < 16; ++j) out[j][0] = out[j][1] = out[j][2] = out[j][3] = 0.0f;
     float top0 = -1e30f, top1 = -1e30f, mass0 = 0.0f, mass1 = 0.0f;
 
+    // the first key tile's stage load runs beside the fragment setup; each later tile's load is issued during
+    // the previous tile's score staging and value product
+    load_stage(pro.rowof + list[0] * T, 1);
     for (int sel = 0; sel < keys; ++sel) {
         const int tile = list[sel];
         const int size = SIZES[tile];
         const int* krow = pro.rowof + tile * T;
-        load_stage(krow, 1);
         wait<0>();
         __syncthreads();
-        const float sk_scale = quantize_qk(ksm, 1, krow);
+        quantize_qk(ksm, 1, krow, ksc);
         __syncthreads();
         // v's rows stage under the score product; the stage is free once k's reads ended above
         load_stage(krow, 2);
-        const float stile = sl * sq_scale * sk_scale;
-        float s[8][4];
+        int si[8][4];
 #pragma unroll
-        for (int j = 0; j < 8; ++j) s[j][0] = s[j][1] = s[j][2] = s[j][3] = 0.0f;
+        for (int j = 0; j < 8; ++j) si[j][0] = si[j][1] = si[j][2] = si[j][3] = 0;
         // QK^T: b regs hold key n = j*8 + lane>>2's channel quads lane&3 (b0) and +16 (b1) of chunk ks
 #pragma unroll
         for (int ks = 0; ks < 4; ++ks) {
 #pragma unroll
             for (int j = 0; j < 8; ++j) {
                 const int n = j * 8 + (lane >> 2);
-                mma4::mma_fp8(s[j], qa[ks], aread(ksm, n, ks * 32 + p), aread(ksm, n, ks * 32 + p + 16));
+                mma_s8(si[j], qa[ks], aread(ksm, n, ks * 32 + p), aread(ksm, n, ks * 32 + p + 16));
             }
         }
         __syncthreads();
 
-        // softmax, h3_attention's order: the row's 64 scores sit in its four lanes
+        // softmax, h3_attention's order: the row's 64 scores sit in its four lanes; the int sums dequantize
+        // by their q and k rows' amax/127 factors on the way in
+        const float q0 = qsc[r0] * sl, q1 = qsc[r0 + 8] * sl;
         float m0 = -1e30f, m1 = -1e30f;
+        float s[8][4];
 #pragma unroll
         for (int j = 0; j < 8; ++j) {
             const int col = j * 8 + c0;
-            s[j][0] = col < size ? s[j][0] * stile : -1e30f;
-            s[j][1] = col + 1 < size ? s[j][1] * stile : -1e30f;
-            s[j][2] = col < size ? s[j][2] * stile : -1e30f;
-            s[j][3] = col + 1 < size ? s[j][3] * stile : -1e30f;
+            s[j][0] = col < size ? float(si[j][0]) * q0 * ksc[col] : -1e30f;
+            s[j][1] = col + 1 < size ? float(si[j][1]) * q0 * ksc[col + 1] : -1e30f;
+            s[j][2] = col < size ? float(si[j][2]) * q1 * ksc[col] : -1e30f;
+            s[j][3] = col + 1 < size ? float(si[j][3]) * q1 * ksc[col + 1] : -1e30f;
             m0 = fmaxf(m0, fmaxf(s[j][0], s[j][1]));
             m1 = fmaxf(m1, fmaxf(s[j][2], s[j][3]));
         }
@@ -273,6 +273,9 @@ __device__ __forceinline__ void attention_body_fp8(
         __syncthreads();
         const float vm = quantize_v(vsm, krow);
         __syncthreads();
+        // the next key tile's stage load overlaps the score staging and the value product
+        if (sel + 1 < keys) load_stage(pro.rowof + list[sel + 1] * T, 1);
+
 
         // P in e4m3, scaled by vm so the value product's multiplier stays the constant 1 / 448: a lane's
         // u16 of keys j*8+c0..+1 stays inside one 16-byte chunk (j*8 mod 16 is 0 or 8, c0 even).
