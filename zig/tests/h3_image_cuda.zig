@@ -261,7 +261,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     const graphs = !profiling;
     var execs = try a.alloc(?@import("cuda").graph.Exec, steps);
     defer {
-        for (execs) |*e| if (e.*) |*x| x.deinit();
+        for (execs) |*e| if (e.*) |*ex| ex.deinit();
         a.free(execs);
     }
     for (execs) |*e| e.* = null;
