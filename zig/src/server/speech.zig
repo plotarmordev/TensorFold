@@ -156,7 +156,7 @@ fn indexOf(voices: []const @import("drama_voice.zig").Voice, name: []const u8) ?
 /// The input's Unicode code points: the prompt of an engine that names its voices itself.
 fn codepoints(a: Allocator, input: []const u8) ![]const u32 {
     const out = try a.alloc(u32, std.unicode.utf8CountCodepoints(input) catch unreachable);
-    var it: std.unicode.Utf8Iterator{ .bytes = input, .i = 0 };
+    var it = std.unicode.Utf8View.initUnchecked(input).iterator();
     var n: usize = 0;
     while (it.nextCodepoint()) |cp| : (n += 1) out[n] = cp;
     return out;
