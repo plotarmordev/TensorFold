@@ -135,7 +135,6 @@ pub fn model() !*h3.Model {
     m.blocks[0] = .{ .qkvc = empty, .out = empty, .fc1 = empty, .fc2 = empty, .norms = empty };
     m.gemms = .{ .gpa = m.gpa, .lt = undefined, .workspace = empty };
     m.int8 = null;
-    m.fp8 = null;
     m.gemms.lt.lib = try @TypeOf(m.gemms.lt.lib).open(if (@import("builtin").os.tag == .macos) "/usr/lib/libSystem.B.dylib" else "libc.so.6");
     m.hidden = 128;
     m.inner = 128;
