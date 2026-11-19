@@ -342,6 +342,20 @@ is speed, not correctness: the resident query fragments' registers cost more occ
 recovered — most of the transformer's 0.2 s rise is attention, the rest run noise. Attention's bound is not its value
 load's latency.
 
+`acda1e04` (job `top-b76b0efc4246`, 19 November, exit 0, `fp8-attn-bench.sh`) put the dense attention on `mma.sync
+m16n8k32` in e4m3 — `h3_attention_fp8`, opt-in on `H3_ATTN=fp8`, staging the raw QKV rows and running `h3_heads`' q/k
+RMSNorm and rotary in its prologue so the `h3_heads` pass drops out of the step — and kept it opt-in: a warm 2048²
+picture took **39.4 s** mean (transformer 33.3, attention **22.8 s** a picture against `h3_attention` + `h3_heads`' 2.8
+s), against the same job's flag-off 19.2 s, and the fp8 latent's cosine against the bf16 latent was **0.8695** with a
+15.6 dB picture — selftests passed and the decoder's same-latent bound held (85.643% of bytes identical, 99.897%
+within 1, at most 5 apart, PSNR 56.46 dB, relative 3.34e-3) because the selftest does not exercise the flag. The
+uniform corruption (per-chunk cosines 0.80–0.89, no masked or permuted region) points at per-tile-absmax e4m3 being
+too coarse on Q·K — mmh3 quantizes Q·K to int8 per (head, 64-block) and keeps e4m3 for P·V — and at the prologue's
+cost: a serialized stage→quantize→mma loop with the norm arithmetic run twice is 20 s a picture of overhead on its
+own. The follow-up needs both: finer Q·K (per-row scales or the s8 mma the card's gate is really asking for) and a
+pipelined prologue.
+
+
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93), in order, each needing its own window:
 
 1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of
