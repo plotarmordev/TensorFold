@@ -95,6 +95,6 @@ __attribute__((constructor)) static void setup(void)
         return;
     signal(SIGTERM, on_sigterm);
     signal(SIGINT, on_sigterm);
-    cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     cuptiActivityRegisterCallbacks(buffer_request, buffer_complete);
+    cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
 }

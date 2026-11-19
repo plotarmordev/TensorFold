@@ -108,10 +108,10 @@ wait "$timing_server" 2>/dev/null || :
 timing_server=
 trap - EXIT
 
-# Phase 2: the same warm pictures under the CUPTI preload.
+# Phase 2: the same warm pictures under the CUPTI preload — the trace is the deliverable.
 if [ ! -f /work/cupti-trace.so ]; then
-    echo "cupti-trace not built: no kernel trace taken" >"$out/cupti-warm-segment.txt"
-    exit 0
+    echo "cupti-trace not built: the kernel trace is the deliverable" >&2
+    exit 1
 fi
 CUPTI_TRACE_OUT="$out/cupti-trace.csv" LD_PRELOAD=/work/cupti-trace.so \
     "$mmh3" server --models "$models" --jobs "$out/jobs-cupti" >"$out/server-cupti.log" 2>&1 &
