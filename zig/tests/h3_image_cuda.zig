@@ -265,7 +265,6 @@ fn streamSteps(
         .prefix_tiles = @intCast(map.prefix),
         .keep = 0,
     };
-    std.debug.print("phase rows {d}: rows init\n", .{count});
     var device_rows = try h3.Rows.init(model, .{
         .text = std.mem.sliceAsBytes(case.text_rows),
         .anchors = if (case.anchors) |v| std.mem.sliceAsBytes(v) else &.{},
