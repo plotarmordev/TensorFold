@@ -12,6 +12,7 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     h3.addAnonymousImport("fatbin_h3_modulation", .{ .root_source_file = modulation });
     const exe = b.addExecutable(.{ .name = "tf-h3-image-cuda", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_cuda.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{
         .{ .name = "h3cuda", .module = h3 },
+        .{ .name = "cuda", .module = cuda },
         .{ .name = "core", .module = core },
     } }) });
     b.step("tf-h3-image-cuda", "MiniMax-H3-Image's free run: a prompt case to a latent on the CUDA transformer blocks").dependOn(&b.addInstallArtifact(exe, .{}).step);
