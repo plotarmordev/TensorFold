@@ -30,7 +30,8 @@ const usage =
     \\                    ratio, sides snapped to 32), its starting rows from SEED (default 0) as torch's CPU randn
     \\                    draws them, and the requested size
     \\  --serve           the weights loaded once, then one `prompt.txt out.safetensors WxH [SEED [MIN_AREA]]` line
-    \\                    of stdin per picture, each answered `done OUT` or `failed OUT` on stdout
+    \\                    of stdin per picture, each answered `done OUT` or `failed OUT` on stdout;
+    \\                    a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256)
     \\  selftest          the GPU kernels on a tiny synthetic checkpoint against the float64 host reference;
     \\                    WORK_DIR (default under TMPDIR) holds a new folder with the checkpoint while it runs
     \\Exit 0: done or every gate passed; 1: a gate failed.
