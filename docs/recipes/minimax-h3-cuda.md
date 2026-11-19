@@ -154,7 +154,18 @@ mmh3's fresh samples are. Drafts refuse references and canvases whose half grid 
 cell count (mmh3's 64-pixel rule). `bench-drafts.sh` names `--draft-steps 3` (with the `--tc`
 decoder, matching the standing 15.3 s baseline's settings) for the Desk's env-less door.
 
-MEASUREMENT PENDING THE TOP WINDOW.
+MEASUREMENT PENDING THE TOP WINDOW — the draft bench and mmh3's matching run land their numbers
+and job ids here.
+
+**Warm-serve crash, scoped out.** The second `--serve` render segfaults at `case ready` — after
+its picture's steps and latent, while the repeat's `Case.load`/early stream setup runs (job
+`top-622a63407b13` at `602456336`, exit 139; earlier `top-85ad023a6cc6`, `top-a09ae34c2ff5`,
+`top-e83950d1d819` the same). The kept AdaLN tables and the per-render stream are what the second
+request reuses, so the crash lives in that reuse path, not the draft math: the single-shot run and
+the bench's first picture of a size are unaffected. The card measured drafts through the bench's
+resident server, whose requests take the same path — where the crash cut a run it is noted beside
+its numbers rather than debugged further, per the card's stop rule.
+
 
 
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
