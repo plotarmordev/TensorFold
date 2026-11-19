@@ -11,3 +11,5 @@
 - Measured and reverted, latents byte for byte unchanged: timing cuBLASLt's eight offered int8 algorithms a shape
   (no stage moved: the heuristic's first is the fastest), and `h3_heads` reading `qkvc`'s int32 sums itself (q k v
   gate 2.68 → 1.98 s, heads 0.98 → 1.69 s, transformer 12.84 → 12.95 s). The warm picture stays 18.9 s.
+- Also measured and reverted: `h3_heads` and `h3_swiglu_int8` reading their rows 16 bytes at a time (heads 0.98 →
+  2.01 s, mlp in unchanged at 3.39 s; latent byte for byte unchanged).

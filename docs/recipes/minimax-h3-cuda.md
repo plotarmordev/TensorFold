@@ -324,7 +324,11 @@ and scales and round them itself, skipping `h3_dequantize`'s bf16 rows: q k v ga
 0.98 → 1.69 s, and the transformer took 12.95–13.05 s against 12.84 s. `h3_heads` already sits at 234 registers and
 reads its rows column-scattered, so twice the bytes and a scale a column cost it more than the separate pass did.
 Every selftest passed in both windows. A warm picture stays 18.9 s; a product that writes bf16 from its own tile
-(a hand-written int8 mma epilogue, not cuBLASLt) is the part of round 1 left.
+(a hand-written int8 mma epilogue, not cuBLASLt) is the part of round 1 left. `bdb41d90` (job `top-6a083506b3a5`)
+read `h3_heads`' q, k and v rows 16 bytes at a time with each head's q and k staged in 32 KB of shared memory for the
+rotary partners, and `h3_swiglu_int8`'s sums and scales four at a time; the latent stayed byte for byte, but heads
+rose 0.98 → 2.01 s and mlp in held at 3.39 s (transformer 13.97 s), so the stage's 2-byte loads were not its bound
+and the shared rows and two barriers a head cost more. Reverted.
 
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
