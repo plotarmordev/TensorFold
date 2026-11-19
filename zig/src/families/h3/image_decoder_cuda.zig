@@ -357,8 +357,9 @@ pub const Decoder = struct {
         try d.lap("embedding");
         var pending: ?usize = null;
         for (stages.from..stages.to) |i| pending = try d.layer(s, i, pending);
-        // The last block's w2 residual ends this pass's blocks: run its res_norm (xn overwritten or
-        // ignored after) so the stream is whole for the next stage or the final norm.
+        // The last block's w2 residual ends this pass's blocks: run its res_norm with the tail
+        // norm's gain so the residual lands in x; xn's norm half is redundant — the real final
+        // norm runs below — and the next stage or final norm overwrites it.
         if (pending) |scale| try d.resNorm(s, scale, d.plan.tail(.norm_w));
         if (stages.final) {
             var a = d.args(&.{ d.dev(d.view.x), d.param(d.plan.tail(.norm_w)), d.param(d.plan.tail(.norm_b)), d.dev(d.view.xn) });

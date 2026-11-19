@@ -342,7 +342,9 @@ a picture at 341 µs each on the card-125 trace; a CUPTI trace of the same bench
 (`top-5a08d40d1ed5`, at `5d2354fa`) shows 48 launches a warm decode — two a block: the qkv (m,3072,1024) and w2
 (m,1024,4096) projections, whose heuristic pick (nvjet `tss_128x208`) declines the bias epilogue,
 while out, w1 and proj_out run cutlass_80 relu algorithms that take it. Those two shapes keep the
-fp32 `acc` and `h3d_finish`; `--exact` is unchanged. `most_batch` is 128 so a 2048² canvas's 121
+fp32 `acc` and `h3d_finish`. That remainder is cuBLASLt's answer, not a structural one:
+`h3d_res_norm` could read w2's fp32 acc and bias directly and `h3d_heads` could add qkv's, a ~0.09 s
+fold left for a later card. `--exact` is unchanged. `most_batch` is 128 so a 2048² canvas's 121
 tiles decode in one pass, the way mmh3 batches its VAE.
 
 `32279731` (job `top-c328ffe998ad`, 20 November, exit 0) ran the same-job A/B — the bench on this
@@ -354,9 +356,10 @@ took **15.2 s** mean (15.2, 15.2, 15.2: prompt 1.1, transformer 12.8, decoder 1.
 same job's base phase **15.3 s** (15.3, 15.3, 15.3: decoder 1.3) — kept. The decode's GPU time fell
 0.98 → 0.83 s: the finish stage 0.26 → 0.08 s (the 48 remaining `h3d_finish` launches of 0.091 s on
 the trace — qkv's nvjet pick and w2's decline the epilogue) and res_norm folded into norms at +0.02 s.
-The products' tile rates are the gap left toward mmh3's 0.55 s decode: products plus attention 0.58 s
+The products' rates are the gap left toward mmh3's 0.55 s decode: products plus attention 0.58 s
 (0.34 + 0.24) against the card-125 trace's 0.52 s of nvjet+cutlass GEMM time — the finish pass was
-never the products' rate. Against episode 1's Mac picture the fused path's `2048-2` measures the
+never the products' rate. The trace's per-shape rates: w2 94, w1 81, out 78 TFLOP/s, qkv's nvjet
+pick 56, proj_out 42. Against episode 1's Mac picture the fused path's `2048-2` measures the
 window's own 28.69 dB and 4.01 apart, cosine 0.9952.
 
 | Warm 2048² | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
