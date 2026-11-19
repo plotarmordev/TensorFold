@@ -316,6 +316,12 @@ exit 0): every selftest passed, the same-latent check passed at 86.117% of bytes
 measured the same 28.69 dB, 4.01 apart and 0.9952, and a warm 2048² picture took **18.9 s** mean (18.9, 18.9, 18.9:
 prompt 1.1, transformer 12.8, decoder 4.9), cold 157.8 s, peak 76,665 MiB.
 
+`--tc` opts the decoder's products and attention onto tensor cores: each projection runs cuBLASLt
+bf16 with fp32 sums into the same `acc` `h3d_finish` reads (the bias and LayerScale keep their
+rounding points), and attention runs as batched q·kᵀ and p·v around `h3d_softmax`/`h3d_unheads`.
+The ordered fp32 kernels stay the default; `bench-script.sh` passes `H3_DECODER=tc` through to the
+resident decoder and the `reference` compare.
+
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
 the first picture's operands and kept the fastest: q k v gate stayed 2.68 s and mlp in 3.40 s, so the heuristic's
