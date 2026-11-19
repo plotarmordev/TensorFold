@@ -335,25 +335,28 @@ all four projections as cuBLASLt MXFP8: each 128-wide chunk rotated as the int8 
 scale every 32 values, the product writing bf16 from its own tile. Its device check of a 200 x 256 x 384 product
 with a 64x outlier column came within 3.85e-2 relative error of float64, e4m3's three mantissa bits on each
 operand. The picture missed every gate: latent cosine 0.9664 (gate 0.99) and 11.53 apart on average from the Mac PNG
-(gate 4.1), the three warm latents byte for byte the same. It was slower too: 19.5 s warm (19.5, 19.5, 19.6;
-transformer 13.5 s), q k v gate 2.62 s, attention out 1.47 s, mlp in 3.00 s and mlp out 2.97 s, so a per-32 scale's
-quantize pass and the block-scaled product cost more than int8's rows. cuBLASLt plans block-scaled FP8 only with
-its scale pointers already on the descriptor; without them its heuristic answers `CUBLAS_STATUS_INVALID_VALUE`.
-NVFP4 keeps one mantissa bit where e4m3 keeps three, so it would miss the gates further.
+(gate 4.1), the three warm latents byte for byte the same. The gates are the revert's ground: the picture misses
+cosine 0.99 and 4.1. NVFP4 keeps one mantissa bit where e4m3 keeps three, so it would miss the gates further.
+
+Card 89's own tile, `h3_gemm_int8`, was measured and reverted. `h3_quantize` scaled each 128-wide chunk by its own
+absmax, so `out` and `fc2` left bf16 without the per-row scale's distance from episode 1, and the `m16n8k32` tile
+folded a chunk's exact int32 sum into the fp32 accumulator at that chunk's scales, writing bf16 from its own tile —
+no int32 round trip through `h3_dequantize`, `fc1`'s product feeding a bf16 `h3_swiglu`. All four projections ran it
+behind `--int8`. `b4c709177` (job `top-07d5c772c895`, `bench-int8.sh`, 19 November, exit 0): every selftest passed,
+the decoder's same-latent `reference` repeated `96c87a43`'s bound (86.031% of bytes identical, 99.908% within 1, at
+most 5 apart, PSNR 56.59 dB, relative error 3.20e-3 against 3e-2), and the picture passed every gate — latent cosine
+0.9959, 29.51 dB and 3.39 apart on average from episode 1's Mac PNG, six steps. But a warm 2048² picture took
+**20.5 s** mean (20.4, 20.4, 20.6: prompt 1.1, transformer 14.4, decoder 4.9), the projections running q k v gate
+3.04 s, attention out 1.11 s, mlp in 4.52 s, mlp out 2.34 s — slower on every projection than `c30403d9`'s 18.9 s
+default (transformer 12.8: 2.68, 1.14, 3.40, 1.78), so it is reverted and the cuBLASLt qkvc/fc1 int8 default stands.
+The `bf16` window that window ran beside (job `top-c5dfb77a467c`) took 21.0 s (transformer 14.7).
 
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
-1. **The int8 products' own rate** is the 1.3 s left, and card 89's answer landed: `h3_gemm_int8` now runs all four
-   projections. `h3_quantize` scales each 128-wide chunk by its own absmax (not the row's), so `out` and `fc2` leave
-   bf16, and the `m16n8k32` tile folds a chunk's exact int32 sum into the fp32 accumulator at that chunk's scales and
-   writes bf16 from its own tile — no int32 round trip through `h3_dequantize` (removed), and `fc1`'s product feeds a
-   bf16 `h3_swiglu` (the fused `h3_swiglu_int8` removed). Its record is in the registry's pending list until gate 5
-   measures it; `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs both int8 kernels' gates 1-4
-   (`contract_h3_int8.zig`: the quantizer and the product's own float64 contract). The 2048² gates passed on a new
-   window — job `top-07d5c772c895` measured cosine 0.9959, 29.51 dB and 3.39 apart from episode 1's Mac PNG — so
-   int8 is `tf-h3-image-cuda`'s default and `--bf16` (`H3_LINEAR=bf16`, `bench-bf16.sh`) opts out. `b4c709177`'s
-   bf16 window (job `top-c5dfb77a467c`) took 21.0 s warm (transformer 14.7: q k v gate 3.14, attention out 1.17,
-   mlp in 4.65, mlp out 2.38) to int8's 20.5 s (transformer 14.4: 3.04, 1.11, 4.52, 2.34).
+1. **The int8 products' own rate** is the 1.3 s left: card 89's `h3_gemm_int8` own tile measured 20.5 s warm against
+   `c30403d9`'s 18.9 s (above) and is reverted, so the cuBLASLt products stay. A faster int8 product than
+   cuBLASLt's heuristic first offer is still the round's open part — `822b217c` found the heuristic's first offer
+   already its fastest, so it needs a tile that beats cuBLASLt's sums, not a selection change.
 2. **Attention**: 1.74 s a picture in the transformer, 217 registers at 128 threads and two CTAs an SM (8 warps), and
    1.89 s in the decoder, whose 16-byte key loads changed nothing. mmh3's INT8/FP8 attention is the candidate that
    would also cut registers; the decoder's attention needs its stall found first, since neither its loads nor its

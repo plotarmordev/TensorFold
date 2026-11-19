@@ -325,11 +325,9 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     var h3_quantize = h3_int8_k.Quantize{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_quantize"), .arena = std.heap.ArenaAllocator.init(a) };
     defer h3_quantize.deinit();
     try kernels.append(a, h3_quantize.kernel());
-    var h3_gemm_f = try h3_mod.function("h3_gemm_int8");
-    try h3_gemm_f.allowDynamicShared(@import("contract_h3_int8.zig").gemm_shared_bytes);
-    var h3_gemm = h3_int8_k.Gemm{ .rig = .{ .gpu = gpu, .s = s }, .f = h3_gemm_f, .arena = std.heap.ArenaAllocator.init(a) };
-    defer h3_gemm.deinit();
-    try kernels.append(a, h3_gemm.kernel());
+    var h3_dequantize = h3_int8_k.Dequantize{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_dequantize"), .arena = std.heap.ArenaAllocator.init(a) };
+    defer h3_dequantize.deinit();
+    try kernels.append(a, h3_dequantize.kernel());
     var h3d_mod = try cuda.Module.load(gpu.d, &images.h3_image_decoder);
     defer h3d_mod.unload();
     const h3d_which = comptime std.enums.values(h3d_k.Which);

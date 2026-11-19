@@ -29,7 +29,7 @@ selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or
     if "$@" >"$out/selftest-$name.log" 2>&1; then echo "$name PASS"; else echo "$name FAIL"; fi >>"$out/selftests"
 }
 selftest transformer "$bin/tf-h3-image-cuda" --self-test
-selftest decoder "$bin/tf-h3-image-decoder-cuda" selftest
+selftest decoder "$bin/tf-h3-image-decoder-cuda" selftest $([ "${H3_DECODER:-}" = tc ] && echo --tc)
 selftest prompt "$bin/tf-h3-image-prompt-cuda" selftest /work/out/h3-prompt-selftest
 sample() { # until killed, twice a second: time, GPU memory used (MiB), power (W), the compute processes' memory (MiB)
     while :; do
@@ -52,7 +52,7 @@ image() { # the resident transformer renders $case; the server's log since the l
         # each server closes this script's FIFO fds: a later server would inherit an earlier one's write end and
         # the earlier server would never see EOF when the script closes it
         # H3_PROFILE (on unless set empty) prints each picture's block stages and the decoder's stages; its waits cost a few ms a step
-        # shellcheck disable=SC2046 # --bf16 or no word at all: int8 is the default since its picture passed the gates
+        # shellcheck disable=SC2046 # --bf16 or no word at all: int8 (qkvc and fc1) is the default
         H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = bf16 ] && echo --bf16) <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         server=$!
@@ -83,7 +83,8 @@ prompt_stage() { # the resident prompt stage writes $case's picture case; its ne
 decoder_stage() { # the resident decoder writes $case.png; its new log bytes go to $case.decoder.log
     [ -n "$decoder_server" ] || {
         mkfifo "$out/decoder-requests" "$out/decoder-replies"
-        H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-decoder-cuda" "$model" --serve <"$out/decoder-requests" >"$out/decoder-replies" 2>"$out/$side.decoder-server.log" \
+        # H3_DECODER=tc opts the decoder into the tensor-core path (cuBLASLt products/attention): --tc
+        H3_PROFILE=${H3_PROFILE-1} "$bin/tf-h3-image-decoder-cuda" "$model" --serve $([ "${H3_DECODER:-}" = tc ] && echo --tc) <"$out/decoder-requests" >"$out/decoder-replies" 2>"$out/$side.decoder-server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         decoder_server=$!
         exec 7>"$out/decoder-requests" 8<"$out/decoder-replies"
@@ -128,5 +129,5 @@ done
 if [ -f "$out/2048-1.latent.f32" ]; then
     case=$out/2048-reference
     stage compare "$bin/tf-h3-image-decoder-cuda" reference "$model" "$out/2048-1.latent.f32" 128 128 \
-        "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048
+        "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048 $([ "${H3_DECODER:-}" = tc ] && echo --tc)
 fi
