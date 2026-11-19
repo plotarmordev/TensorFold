@@ -1,0 +1,338 @@
+diff --git a/zig/kernels/cuda/h3.cu b/zig/kernels/cuda/h3.cu
+index f0a266d55..1d47f50bd 100644
+--- a/zig/kernels/cuda/h3.cu
++++ b/zig/kernels/cuda/h3.cu
+@@ -113,6 +113,69 @@ __global__ void __launch_bounds__(256) h3_heads(
+     }
+ }
+ 
++// h3_heads over an int8 product's int32 sums: each value is dequantized as h3_dequantize rounds it
++// (ACC SX[row] SW[col] to bf16), then the same head RMSNorm and split-half rotary run, so TQ/TK/TV match
++// h3_dequantize + h3_heads without the bf16 qkvc rows between them. Once per row, like h3_heads — card 120
++// measured folding this into attention's tile loop 11x slower. Grid [tiles], 256 threads.
++__global__ void __launch_bounds__(256) h3_heads_i8(
++        const int* ACC, const float* SX, const float* SW,
++        const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS, const float* SIN,
++        const int* ROWOF, __nv_bfloat16* TQ, __nv_bfloat16* TK, __nv_bfloat16* TV, int H, int stride, int ROT, int slots,
++        float eps) {
++    const int tile = blockIdx.x, s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32, slot = tile * 64 + s;
++    const int row = ROWOF[slot];
++    const bool live = row >= 0;
++    const float sx = SX[live ? row : 0];
++    const float* cs = COS + static_cast<size_t>(live ? row : 0) * ROT;
++    const float* sn = SIN + static_cast<size_t>(live ? row : 0) * ROT;
++    for (int head = 0; head < H; ++head) {
++        const int* qr = ACC + static_cast<size_t>(live ? row : 0) * stride + head * 128;
++        const int* kr = qr + H * 128;
++        const int* vr = kr + H * 128;
++        const float* wq = SW + head * 128;
++        const float* wk = wq + H * 128;
++        const float* wv = wk + H * 128;
++        float q[32], k[32], sq = 0.0f, sk = 0.0f;
++#pragma unroll
++        for (int j = 0; j < 32; ++j) {
++            q[j] = live ? bf(qr[c0 + j] * sx * wq[c0 + j]) : 0.0f;
++            k[j] = live ? bf(kr[c0 + j] * sx * wk[c0 + j]) : 0.0f;
++            sq += q[j] * q[j];
++            sk += k[j] * k[j];
++        }
++        // a row's four quarters sit in neighbouring lanes
++        sq += __shfl_xor_sync(0xffffffffu, sq, 1);
++        sq += __shfl_xor_sync(0xffffffffu, sq, 2);
++        sk += __shfl_xor_sync(0xffffffffu, sk, 1);
++        sk += __shfl_xor_sync(0xffffffffu, sk, 2);
++        if (!live) continue;
++        const float qi = rsqrtf(sq / 128.0f + eps), ki = rsqrtf(sk / 128.0f + eps);
++        const size_t at = (static_cast<size_t>(head) * slots + slot) * 128 + c0;
++#pragma unroll
++        for (int j = 0; j < 32; j += 2) {
++            float a[2], b[2], vc[2];
++#pragma unroll
++            for (int e = 0; e < 2; ++e) {
++                const int c = c0 + j + e;
++                a[e] = bf(q[j + e] * qi * f(NQ[c]));
++                b[e] = bf(k[j + e] * ki * f(NK[c]));
++                vc[e] = bf(vr[c0 + j + e] * sx * wv[c0 + j + e]);
++                if (c < 2 * ROT) {
++                    const bool low = c < ROT;
++                    const int p = low ? c + ROT : c - ROT, t = low ? c : c - ROT;
++                    const float sign = low ? -1.0f : 1.0f, co = bf(cs[t]), si = bf(sn[t]);
++                    const float qp = bf(bf(qr[p] * sx * wq[p]) * qi * f(NQ[p])), kp = bf(bf(kr[p] * sx * wk[p]) * ki * f(NK[p]));
++                    a[e] = bf(a[e] * co) + bf(sign * qp * si);
++                    b[e] = bf(b[e] * co) + bf(sign * kp * si);
++                }
++            }
++            *reinterpret_cast<uint32_t*>(TQ + at + j) = pack2(a[0], a[1]);
++            *reinterpret_cast<uint32_t*>(TK + at + j) = pack2(b[0], b[1]);
++            *reinterpret_cast<uint32_t*>(TV + at + j) = pack2(vc[0], vc[1]);
++        }
++    }
++}
++
+ // Each tile's mean q, k and v over its real rows, in fp32. QP, KP, VP: (H, tiles, 128). Grid [tiles, H], 32 threads.
+ __global__ void h3_pool(const __nv_bfloat16* TQ, const __nv_bfloat16* TK, const __nv_bfloat16* TV, const int* SIZES,
+                         float* QP, float* KP, float* VP, int slots, int tiles) {
+@@ -305,6 +368,61 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
+     }
+ }
+ 
++// h3_norm and h3_quantize as one launch for the int8 path: the gated add and the modulated norm round exactly as
++// h3_norm rounds them (the same thread/stride and block_sum_serial order), the normed bf16 row stays in shared
++// memory, and h3_quantize's rotation, absmax and rounding run on it unchanged. The row's bf16 copy is never
++// written: the int8 product is its only reader. Grid [M], 256 threads; shared holds one row of bf16 plus the two
++// reduction scratches, so K is bounded by 14 128-wide chunks like h3_quantize's.
++__global__ void __launch_bounds__(256) h3_norm_quant(
++    __nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
++    const float* GT, const float* TAB, const int* LINE,
++    int8_t* Q, float* S, int C, int gate, int scale, int shift, float eps) {
++    __shared__ __align__(16) __nv_bfloat16 normed[quantize_chunks * 128];
++    __shared__ float scratch[32];
++    const int row = blockIdx.x, line = LINE[row];
++    __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
++    float sq = 0.0f;
++    if (gate >= 0) {
++        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
++        const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
++        for (int c = threadIdx.x; c < C; c += blockDim.x) {
++            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
++            x[c] = __float2bfloat16(v);
++            sq += v * v;
++        }
++    } else {
++        for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
++    }
++    const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
++    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
++    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
++    for (int c = threadIdx.x; c < C; c += blockDim.x) {
++        normed[c] = __float2bfloat16(modulated(f(x[c]), inv, f(NW[c]), s[c], h[c]));
++    }
++    __syncthreads();
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = C >> 7;
++    float most = 0.f, v[quantize_chunks][4];
++#pragma unroll
++    for (int i = 0; i < quantize_chunks; ++i) {
++        const int c = warp + 8 * i;
++        if (c < chunks) {
++            rotated_chunk(normed, c, v[i]);
++            for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[i][j]));
++        }
++    }
++    most = tf_common::block_max_tree(most, scratch, 8);
++    const float row_scale = most > 0.f ? most / 127.f : 1.f;
++    if (threadIdx.x == 0) S[row] = row_scale;
++#pragma unroll
++    for (int i = 0; i < quantize_chunks; ++i) {
++        const int c = warp + 8 * i;
++        if (c < chunks) {
++            const char4 q = make_char4(__float2int_rn(v[i][0] / row_scale), __float2int_rn(v[i][1] / row_scale), __float2int_rn(v[i][2] / row_scale), __float2int_rn(v[i][3] / row_scale));
++            *reinterpret_cast<char4*>(Q + row * C + c * 128 + lane * 4) = q;
++        }
++    }
++}
++
+ // Y (M, N) = bf16(ACC SX[row] SW[col]): an int8 product's int32 sums back to bf16 rows. Grid-stride, four a thread.
+ __global__ void __launch_bounds__(256) h3_dequantize(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* Y, int M, int N) {
+     const size_t quads = static_cast<size_t>(M) * N / 4;
+diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
+index 4ea8a0e92..c83df642d 100644
+--- a/zig/src/families/h3/cuda.zig
++++ b/zig/src/families/h3/cuda.zig
+@@ -26,7 +26,7 @@ const scale_m = 4;
+ const gate_m = 5;
+ 
+ const image align(16) = @embedFile("fatbin_h3").*;
+-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
++const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_heads_i8", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
+ 
+ pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
+ 
+@@ -176,17 +176,22 @@ pub const Model = struct {
+         mark.* = now;
+     }
+ 
+-    /// The modulated norm of the stream into xn, after the gated add of y when `gate` names a part of `gates`.
+-    fn norm(self: *Model, x: u64, weight: u64, gates: u64, tab: u64, line: u64, gate: c_int, scale: c_int, shift: c_int) !void {
++    /// The modulated norm of the stream: bf16 rows into xn for the bf16 projections, or straight into int8 at
++    /// `q`/`s` (h3_norm_quant, one launch) for the int8 ones. `gate` names the gated add of y's branch first.
++    fn norm(self: *Model, x: u64, weight: u64, gates: u64, tab: u64, line: u64, gate: c_int, scale: c_int, shift: c_int, q: u64, s: u64) !void {
+         const g = &self.geometry;
+         var args: cuda.Args = .{};
+-        for ([_]u64{ x, g.y, weight, gates, tab, line, g.xn }) |p| args.add(p);
++        if (q == 0) {
++            for ([_]u64{ x, g.y, weight, gates, tab, line, g.xn }) |p| args.add(p);
++        } else {
++            for ([_]u64{ x, g.y, weight, gates, tab, line, q, s }) |p| args.add(p);
++        }
+         args.add(@as(c_int, @intCast(self.hidden)));
+         args.add(gate);
+         args.add(scale);
+         args.add(shift);
+         args.add(eps);
+-        try self.launch("h3_norm", .{ .x = @intCast(g.rows) }, 256, 0, &args);
++        if (q == 0) try self.launch("h3_norm", .{ .x = @intCast(g.rows) }, 256, 0, &args) else try self.launch("h3_norm_quant", .{ .x = @intCast(g.rows) }, 256, 0, &args);
+     }
+ 
+     /// softmax(q k) v for `count` query tiles from `first`; `queries` is how many a head's lists are laid out for.
+@@ -309,22 +314,35 @@ pub const Model = struct {
+         const video_tiles = tiles - prefix;
+         const count = checked.count;
+         var mark = seconds();
++        // the int8 scratch the fused launches share: norm_quant fills xq/xs, the product fills acc
++        const lay = if (self.int8) |t| try t.layout(self, rows) else null;
++        const iq: u64 = if (lay) |l| l.xq else 0;
++        const is: u64 = if (lay) |l| l.xs else 0;
+         for (self.blocks[0..count], 0..) |*b, index| {
+             const tab = in.tables + index * table_bytes;
+             const par = index & 1;
+             // the block before left its MLP's rows in y: its gated add runs with this block's first norm
+-            if (index == 0) try self.norm(in.x, b.norms.ptr, tab, tab, in.line, -1, scale_a, shift_a) else try self.norm(in.x, b.norms.ptr, tab - table_bytes, tab, in.line, gate_m, scale_a, shift_a);
++            if (index == 0) try self.norm(in.x, b.norms.ptr, tab, tab, in.line, -1, scale_a, shift_a, iq, is) else try self.norm(in.x, b.norms.ptr, tab - table_bytes, tab, in.line, gate_m, scale_a, shift_a, iq, is);
+             try self.lap("norms", &mark);
+-            try self.project(g.xn, b.qkvc.ptr, if (self.int8) |t| t.blocks[index].qkvc else null, g.qkvc, rows, width, hidden);
++            if (self.int8) |t| {
++                try t.gemm(self, lay.?, t.blocks[index].qkvc, rows);
++            } else {
++                try self.gemms.run(self.stream, g.xn, b.qkvc.ptr, g.qkvc, rows, width, hidden);
++            }
+             try self.lap("q k v gate", &mark);
+             {
+-                // q, k and v in tile order, beginning at tile zero
++                // q, k and v in tile order, beginning at tile zero; the int8 product's int32 sums feed
++                // h3_heads_i8, which dequantizes each value as h3_dequantize rounds it — once per row
+                 const at = own0 * slot_tile * head_dim * 2;
+                 var args: cuda.Args = .{};
+-                for ([_]u64{ g.qkvc, b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
++                if (lay) |l| {
++                    for ([_]u64{ l.acc, l.xs, self.int8.?.blocks[index].qkvc.scales(), b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
++                } else {
++                    for ([_]u64{ g.qkvc, b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
++                }
+                 for ([_]usize{ heads, width, in.rot, tiles * slot_tile }) |n| args.add(@as(c_int, @intCast(n)));
+                 args.add(eps);
+-                try self.launch("h3_heads", .{ .x = @intCast(owned) }, 256, 0, &args);
++                if (lay == null) try self.launch("h3_heads", .{ .x = @intCast(owned) }, 256, 0, &args) else try self.launch("h3_heads_i8", .{ .x = @intCast(owned) }, 256, 0, &args);
+             }
+             try self.lap("heads", &mark);
+             if (dense) {
+@@ -357,11 +375,11 @@ pub const Model = struct {
+                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
+                 try self.lap("gate mix", &mark);
+             }
+-            try self.project(g.ya, b.out.ptr, null, g.y, rows, hidden, inner);
++            try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
+             try self.lap("attention out", &mark);
+-            try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m);
++            try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m, iq, is);
+             try self.lap("norms", &mark);
+-            if (self.int8) |t| try t.mlpIn(self, g.xn, t.blocks[index].fc1, g.act, rows) else {
++            if (self.int8) |t| try t.mlpIn(self, lay.?, t.blocks[index].fc1, g.act, rows) else {
+                 try self.gemms.run(self.stream, g.xn, b.fc1.ptr, g.wide, rows, 2 * self.mlp, hidden);
+                 var args: cuda.Args = .{};
+                 args.add(g.wide);
+@@ -371,7 +389,7 @@ pub const Model = struct {
+                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
+             }
+             try self.lap("mlp in", &mark);
+-            try self.project(g.act, b.fc2.ptr, null, g.y, rows, hidden, self.mlp);
++            try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
+             try self.lap("mlp out", &mark);
+         }
+         {
+@@ -383,9 +401,4 @@ pub const Model = struct {
+         }
+     }
+ 
+-    /// y (rows, n) = x (rows, k) . w^T: through the int8 weight `q` when quantized, else the bf16 `w`.
+-    fn project(self: *Model, x: u64, w: u64, q: ?@import("cuda_int8.zig").Weight, y: u64, rows: usize, n: usize, k: usize) !void {
+-        if (q) |weight| return self.int8.?.run(self, x, weight, y, rows);
+-        try self.gemms.run(self.stream, x, w, y, rows, n, k);
+-    }
+ };
+diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
+index fbf9e78e9..067cdd816 100644
+--- a/zig/src/families/h3/cuda_int8.zig
++++ b/zig/src/families/h3/cuda_int8.zig
+@@ -18,7 +18,7 @@ pub const Weight = struct {
+     n: usize,
+     k: usize,
+ 
+-    fn scales(w: Weight) u64 {
++    pub fn scales(w: Weight) u64 {
+         return w.q.ptr + w.n * w.k;
+     }
+ };
+@@ -26,6 +26,10 @@ pub const Weight = struct {
+ /// One block's quantized projections.
+ pub const Block = struct { qkvc: Weight, fc1: Weight };
+ 
++/// The buffers a product's input rows and int32 sums use: `norm` writes q/s before `gemm` fills acc.
++/// `acc` doubles as the qkvc product's output and fc1's — each block uses it before the next overwrites it.
++pub const Scratch = struct { acc: u64, xq: u64, xs: u64 };
++
+ pub const Int8 = struct {
+     blocks: []Block,
+     handle: lt_.Handle,
+@@ -73,45 +77,38 @@ pub const Int8 = struct {
+         self.gpa.destroy(t);
+     }
+ 
+-    /// y (rows, w.n) bf16 = x (rows, w.k) bf16 . w^T through the int8 product.
+-    pub fn run(t: *Int8, self: *Model, x: u64, w: Weight, y: u64, rows: usize) !void {
+-        const p = try t.product(self, x, w, rows);
+-        var args: cuda.Args = .{};
+-        for ([_]u64{ p.acc, p.xs, w.scales(), y }) |a| args.add(a);
+-        args.add(@as(c_int, @intCast(rows)));
+-        args.add(@as(c_int, @intCast(w.n)));
+-        try self.launch("h3_dequantize", .{ .x = 1024 }, 256, 0, &args);
++    /// The row and sum buffers the fused launches share, as Scratch.
++    pub fn layout(t: *Int8, self: *Model, rows: usize) !Scratch {
++        try t.reserve(self, rows);
++        const acc = t.scratch.ptr;
++        const xq = acc + rows * t.widest(self) * 4;
++        const xs = xq + rows * t.widest(self);
++        return .{ .acc = acc, .xq = xq, .xs = xs };
++    }
++
++    /// x's rows (already quantized at lay.xq by h3_norm_quant) against w: the int32 sums land at lay.acc.
++    pub fn gemm(t: *Int8, self: *Model, lay: Scratch, w: Weight, rows: usize) !void {
++        const p = try t.plan(self, rows, w.n, w.k);
++        try p.runInt(w.q.ptr, lay.xq, lay.acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
+     }
+ 
+     /// act (rows, w.n / 2) = swiglu of x . w^T [gate | value], the int32 sums scaled in h3_swiglu_int8 itself.
+-    pub fn mlpIn(t: *Int8, self: *Model, x: u64, w: Weight, act: u64, rows: usize) !void {
+-        const p = try t.product(self, x, w, rows);
++    pub fn mlpIn(t: *Int8, self: *Model, lay: Scratch, w: Weight, act: u64, rows: usize) !void {
++        try t.gemm(self, lay, w, rows);
+         var args: cuda.Args = .{};
+-        for ([_]u64{ p.acc, p.xs, w.scales(), act }) |a| args.add(a);
++        for ([_]u64{ lay.acc, lay.xs, w.scales(), act }) |a| args.add(a);
+         args.add(@as(c_int, @intCast(rows)));
+         args.add(@as(c_int, @intCast(w.n / 2)));
+         try self.launch("h3_swiglu_int8", .{ .x = 1024 }, 256, 0, &args);
+     }
+ 
+-    /// Room and plans for `rows` before a step is captured: `run` and `mlpIn` then only launch.
++    /// Room and plans for `rows` before a step is captured: `layout` then only hands out buffers.
+     pub fn warm(t: *Int8, self: *Model, rows: usize) !void {
+         try t.reserve(self, rows);
+         _ = try t.plan(self, rows, 3 * self.inner, self.hidden);
+         _ = try t.plan(self, rows, 2 * self.mlp, self.hidden);
+     }
+ 
+-    /// x's rows quantized and their int32 sums against w in scratch: `acc` (rows, w.n), the rows' scales `xs`.
+-    fn product(t: *Int8, self: *Model, x: u64, w: Weight, rows: usize) !struct { acc: u64, xs: u64 } {
+-        try t.reserve(self, rows);
+-        const acc = t.scratch.ptr;
+-        const xq = acc + rows * t.widest(self) * 4;
+-        const xs = xq + rows * t.widest(self);
+-        try launchQuantize(self, x, xq, xs, rows, w.k);
+-        const p = try t.plan(self, rows, w.n, w.k);
+-        try p.runInt(w.q.ptr, xq, acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
+-        return .{ .acc = acc, .xs = xs };
+-    }
+-
+     fn widest(_: *const Int8, self: *const Model) usize {
+         return @max(3 * self.inner, 2 * self.mlp, self.hidden);
+     }
