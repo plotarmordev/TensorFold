@@ -330,6 +330,14 @@ rotary partners, and `h3_swiglu_int8`'s sums and scales four at a time; the late
 rose 0.98 → 2.01 s and mlp in held at 3.39 s (transformer 13.97 s), so the stage's 2-byte loads were not its bound
 and the shared rows and two barriers a head cost more. Reverted.
 
+`0c2f142e` re-pipelines `h3_attention` without changing its launch or its arithmetic: the query tile leaves shared
+memory for registers (each lane's A fragments read from global once), the freed 16 KB becoming a second value tile so
+a key tile's v is fetched two tiles ahead instead of just-in-time, and each mma's b fragment is fetched while the
+previous one is in the tensor pipe. The kernel stays bf16 `mma.sync m16n8k16` with an fp32 online softmax, the
+softmax's order unchanged, so its output is element for element `c30403d9`'s and every gate is the same. Its TOP
+timing (attention seconds a step and the warm 2048² wall, against `c30403d9`'s 18.9 s / 1.80 s attention) is this
+card's window; until it runs the stage time is unmeasured.
+
 The rounds left toward mmh3's 17.6 s, in order, each needing its own window:
 
 1. **The int8 products' own rate** is the 1.3 s left: `qkvc` and `fc1` take 2.68 and 3.39 s a picture at ~94 TFLOPS of

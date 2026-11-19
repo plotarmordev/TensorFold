@@ -1,0 +1,7 @@
+# MiniMax-H3-Image: a deeper-pipelined fused attention on the Spark
+
+- `h3_attention` still runs the transformer's dense attention as one fused kernel — bf16 scores on `mma.sync m16n8k16`, an fp32 online softmax and the value product on-chip — but its shared-memory tiles are re-cut and its loads pipelined so it spends less of each key tile stalled.
+- The query tile leaves shared memory for registers: each lane's A fragments are read from global once, the freed 16 KB becoming a second value tile. V for a key tile is now fetched two tiles ahead instead of just-in-time, so the value product no longer waits on its own load; the key tile keeps its mid-tile prefetch.
+- Each mma's B fragment is fetched while the previous one is still in the tensor pipe, in both the score and the value loops. The softmax's max, exponentials, mass and output rescale keep their exact order, so the output is unchanged element for element.
+- Launch contract unchanged: grid [query tiles, heads], 128 threads, 49,152 bytes of dynamic shared, the same argument list. The routed (non-dense) path shares `attention_body` and keeps its per-tile key list, `SIZES` masking and `ROWOF` scatter.
+- Numerical gates are the ones episode 1 fixed — latent cosine 0.99, PSNR 28.2 dB, mean pixel difference 4.1, the decoder's same-latent bound and selftests — none loosened. The Spark timing (attention seconds a step and warm 2048 wall, before and after) is measured on TOP in this card's window.
