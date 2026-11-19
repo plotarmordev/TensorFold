@@ -486,7 +486,10 @@ On the GPU stage both share, INT8 linear makes mmh3's step 2.7× faster at 2048�
 gap is TensorFold's CPU prompt, host load and CPU decoder, which mmh3 runs on the GPU. mmh3's quoted ~24 s at 4096²
 is three PDMD-LoRA steps as half-size drafts plus one full step with INT8/FP8 attention, a different composition.
 [The mmh3 study](../mmh3-h3-image-study.md) lists what mmh3 does differently at its own code, the same picture both
-ways, and what each of its tricks would save our warm 31.4 s picture.
+ways, and what each of its tricks would save our warm 15.5 s picture. [`mmh3-server-job.sh`](minimax-h3-cuda/mmh3-server-job.sh)
+runs `mmh3 server` on TOP's GB10 with the `cuda,server` feature: one cold picture, three warm repeats of the same
+prompt (its states kept, 0 s) and one 1024² request. The second server under the CUPTI preload (`cupti-trace.c`)
+traces every kernel launch for the warm segment's top-kernel table — nsys is absent from the job image.
 
 ### GPU qualification and the `64188519` window
 

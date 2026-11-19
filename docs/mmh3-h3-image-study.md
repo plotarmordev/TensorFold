@@ -98,8 +98,24 @@ Numbers 1, 2 and 3 together put a warm 2048² picture at 8.4 + 0.8 + 0 = **9.2 s
 mmh3's warm server on TOP's GB10 renders the same prompt at 2048², seed 42, six steps, in **9.33 s** mean
 (9.31, 9.33, 9.37), confirming the 9.5 s its docs quote for a 1024² request (which renders on a 2048² canvas).
 Our warm 2048² picture is **15.5 s** at `40ab38a8` (prompt 1.1, transformer 13.0, decoder 1.3). The 6.2 s gap
-breaks down as: prompt 1.1 s (kept states), decoder 0.7 s, transformer 4.6 s. The transformer is the product
-rate — mmh3's ConvRot INT8 tile writes BF16 from its own `m16n8k32` mma with no int32 round trip, while our
-cuBLASLt int8 products return int32 sums through `h3_dequantize`. The decoder's attention is its own open
-question. A CUPTI preload (`cupti-trace.c`, compiled in the job) replaces nsys, which is absent from the job
-image, and records every kernel launch's name, grid and duration for the warm segment's top-kernel table.
+breaks down as: prompt 1.1 s (kept states), decoder 0.7 s, transformer 4.6 s.
+
+The CUPTI trace ([`cupti-trace.c`](recipes/minimax-h3-cuda/cupti-trace.c), LD_PRELOAD, 11,693 launches) puts the
+warm picture's kernel budget as:
+
+| Function | Calls | Kernel time | Share |
+|---|---:|---:|---:|
+| `int8_gemm` (INT8 ConvRot products) | 1,200 | 5.55 s | 63.9% |
+| `attention` (dense BF16, 128-row tiles) | 300 | 1.78 s | 20.5% |
+| `add_norm_quantize` (fused add+RMS+rotate+quant) | 599 | 0.67 s | 7.7% |
+| `qk_norm_rope` | 300 | 0.34 s | 3.9% |
+| `rotate_quantize` | 600 | 0.33 s | 3.8% |
+| Other (modulation, residual, heads, fill) | ~320 | 0.02 s | 0.1% |
+
+The VAE decode adds 0.55 s of kernel time across ~274 launches (CUTLASS FP16 GEMMs, SwiGLU, residual, norms), of
+which 0.62 s is wall. mmh3's transformer is ~380 TFLOP of arithmetic (2×4120×4096² per block, 24 blocks, 6 steps)
+against the GB10's ~280 TFLOPS dense peak — an effective ~44 TFLOPS, or 16%. Our 13.0 s on the same arithmetic
+is ~29 TFLOPS, 10%. mmh3's own-tile `int8_gemm` writes BF16 directly from `m16n8k32` mma with no int32
+round trip; the 94 TFLOPS our `qkvc`+`fc1` achieve on cuBLASLt is a third of the GB10's int8 ceiling. The fused
+`add_norm_quantize` and `rotate_quantize` kernels (1.0 s combined) handle the quantization overhead on-chip;
+our equivalent is the separate `h3_dequantize` pass on int32 sums.
