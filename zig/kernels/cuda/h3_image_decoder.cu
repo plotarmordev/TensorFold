@@ -206,6 +206,65 @@ __global__ void __launch_bounds__(256) h3d_finish(
         y[at] = __float2bfloat16(f(y[at]) + bf(out * f(s[x])));
     }
 }
+// softmax(s / 8) row-wise in fp32 for the tensor-core path's S [tiles * 16 heads, T, T], then bf16 for P . V:
+// 128 threads a row (256 shared floats), the max and sum over four elements a thread as h3d_attention's warp order.
+__global__ void __launch_bounds__(128) h3d_softmax(const float* s, bf16* pr, H3dShape p) {
+    __shared__ float part[128];
+    __shared__ float top;
+    __shared__ float total;
+    const unsigned row = blockIdx.x;
+    const unsigned t = threadIdx.x;
+    const float* sr = s + (size_t)row * p.tokens;
+    float v[4];
+    float hi = -INFINITY;
+#pragma unroll
+    for (unsigned i = 0; i < 4; ++i) {
+        const unsigned key = t + 128 * i;
+        v[i] = key < p.tokens ? sr[key] * p.scale : -INFINITY;
+        hi = fmaxf(hi, v[i]);
+    }
+    part[t] = hi;
+    __syncthreads();
+    if (t == 0) {
+        float m = -INFINITY;
+        for (unsigned i = 0; i < 128; ++i) m = fmaxf(m, part[i]);
+        top = m;
+        total = 0.0f;
+    }
+    __syncthreads();
+    float e[4];
+    float sum = 0.0f;
+#pragma unroll
+    for (unsigned i = 0; i < 4; ++i) {
+        e[i] = v[i] == -INFINITY ? 0.0f : expf(v[i] - top);
+        sum += e[i];
+    }
+    part[t] = sum;
+    __syncthreads();
+    if (t == 0) {
+        float m = 0.0f;
+        for (unsigned i = 0; i < 128; ++i) m += part[i];
+        total = m;
+    }
+    __syncthreads();
+    bf16* out = pr + (size_t)row * p.tokens;
+#pragma unroll
+    for (unsigned i = 0; i < 4; ++i) {
+        const unsigned key = t + 128 * i;
+        if (key < p.tokens) out[key] = __float2bfloat16(e[i] / total);
+    }
+}
+
+// The fast path's o [tiles * 16 heads, T, 64] fp32 to the out projection's rows [m, 1,024] bf16:
+// h3d_attention's own layout, a thread a channel. Grid [tiles * T, 16].
+__global__ void __launch_bounds__(64) h3d_unheads(const float* o, bf16* y, H3dShape p) {
+    const unsigned row = blockIdx.x;
+    const unsigned head = blockIdx.y;
+    const unsigned d = threadIdx.x;
+    const unsigned tile = row / p.tokens;
+    const unsigned t = row % p.tokens;
+    y[(size_t)row * 1024 + head * 64 + d] = __float2bfloat16(o[((size_t)tile * 16 + head) * p.tokens * 64 + t * 64 + d]);
+}
 
 // Per row and head: q and k RMS-normed (no weight) to bf16, their first 32 dims turned half-style in bf16; v copied.
 __global__ void __launch_bounds__(32) h3d_heads(
