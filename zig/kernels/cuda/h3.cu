@@ -461,10 +461,13 @@ __global__ void __launch_bounds__(256) h3_rows_in(const float* R, const float* W
 
 // The stream's row FIRST + r through the final norm, modulated by its line of the (times, 2 C) table TAB, then the
 // step's head into V (rows, width): rows_reference.finalNorm and rowsOut in their own sum orders (the squares one
-// at a time, the head's 32 lane sums then added in lane order). Grid [rows], 256 threads, C floats of shared.
+// at a time, the head's 32 lane sums then added in lane order). With ACC null V = row · W + B, the on-grid
+// step's plain head; else V = ACC + SCALE · (row · W + B), the off-grid steps' blend of the distilled
+// heads their span covers (mmh3's step_heads: the run chains one launch a spanned head). Grid [rows],
+// 256 threads, C floats of shared.
 __global__ void __launch_bounds__(256) h3_rows_out(const __nv_bfloat16* X, const __nv_bfloat16* NW, const __nv_bfloat16* TAB,
-                                                   const int* LINE, const float* W, const float* B, float* V, int C,
-                                                   int width, int first, float eps) {
+                                                   const int* LINE, const float* W, const float* B, const float* ACC,
+                                                   float* V, int C, int width, int first, float eps, float scale) {
     extern __shared__ float normed[];
     __shared__ float inv;
     const int r = blockIdx.x, row = first + r, warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
@@ -486,7 +489,10 @@ __global__ void __launch_bounds__(256) h3_rows_out(const __nv_bfloat16* X, const
         for (int k = lane; k < C; k += 32) part = __fadd_rn(part, __fmul_rn(normed[k], w[k]));
         float sum = 0.0f;
         for (int l = 0; l < 32; ++l) sum = __fadd_rn(sum, __shfl_sync(0xffffffffu, part, l));
-        if (lane == 0) V[static_cast<size_t>(r) * width + n] = __fadd_rn(sum, B[n]);
+        if (lane == 0) {
+            const float head = __fadd_rn(sum, B[n]);
+            V[static_cast<size_t>(r) * width + n] = ACC == nullptr ? head : __fadd_rn(ACC[static_cast<size_t>(r) * width + n], __fmul_rn(scale, head));
+        }
     }
 }
 

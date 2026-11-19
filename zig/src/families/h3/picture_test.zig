@@ -43,6 +43,66 @@ test "picture canvas: sides round half to even, as Python's round" {
     try expectCanvas(1040, 1072, p.min_area_floor, 1024, 1088);
 }
 
+test "picture draft schedule: mmh3's renoised grid, drafts then the renoise or the next sigma" {
+    var a = arena();
+    defer a.deinit();
+    const x = a.allocator();
+    const base = try p.pdd(x, "{\"num_inference_steps\": 6, \"sigmas\": [1.0, 0.9675, 0.8875, 0.75, 0.5328, 0.232, 0.0]}");
+    // two drafts, no renoise: the draft sigmas, then the rest of the grid from sigma 3
+    const two = try p.draftSchedule(x, base, 2, null);
+    try testing.expectEqualSlices(f32, base.sigmas, two.sigmas);
+    try testing.expectEqual(@as(usize, 6), two.steps());
+    // three drafts renoised to 0.5: [1, .9675, .8875] at half size, [.5, .232] and 0 at full size
+    const ren = try p.draftSchedule(x, base, 3, 0.5);
+    try testing.expectEqualSlices(f32, &.{ 1.0, 0.9675, 0.8875, 0.5, 0.232, 0.0 }, ren.sigmas);
+    try testing.expectEqual(@as(usize, 5), ren.steps());
+    for (ren.timesteps, ren.sigmas[0..5]) |t, sg| try testing.expectEqual(@as(f32, 1), t + sg);
+    for (ren.deltas, 0..) |d, k| try testing.expectEqual(ren.sigmas[k] - ren.sigmas[k + 1], d);
+    // every step drafted is allowed only with a renoise below the last draft sigma (.232):
+    // the six drafts, then [.12, 0] at full size
+    const all = try p.draftSchedule(x, base, 6, 0.12);
+    const all_want = [_]f32{ 1.0, 0.9675, 0.8875, 0.75, 0.5328, 0.232, 0.12, 0.0 };
+    try testing.expectEqual(all_want.len, all.sigmas.len);
+    for (all_want, all.sigmas) |want, got| try testing.expectApproxEqAbs(want, got, 1e-6);
+    try testing.expectError(error.H3BadRenoiseSigma, p.draftSchedule(x, base, 6, 0.5));
+    try testing.expectError(error.H3DraftLeavesNoStep, p.draftSchedule(x, base, 6, null));
+    try testing.expectError(error.H3BadDraftSteps, p.draftSchedule(x, base, 0, null));
+    try testing.expectError(error.H3BadDraftSteps, p.draftSchedule(x, base, 7, null));
+    try testing.expectError(error.H3BadRenoiseSigma, p.draftSchedule(x, base, 3, 0.9)); // above the last draft sigma
+    try testing.expectError(error.H3BadRenoiseSigma, p.draftSchedule(x, base, 3, 0));
+    try testing.expectError(error.H3BadRenoiseSigma, p.draftSchedule(x, base, 3, -0.5));
+}
+
+test "picture head span: on-grid steps keep their own head, off-grid blends the spanned intervals" {
+    const grid = [_]f32{ 1.0, 0.9675, 0.8875, 0.75, 0.5328, 0.232, 0.0 };
+    // the six-step run: every step's span is its own head at weight 1
+    for (0..6) |s| {
+        const sp = try p.headSpan(&grid, &grid, s);
+        try testing.expectEqual(s, sp.first);
+        try testing.expectEqual(s, sp.last);
+        try testing.expectEqual(@as(f32, 1), sp.weights[0]);
+    }
+    // the renoised run [1, .9675, .8875, .5, .232, 0]: the .5 step spans [.5328, .232] → head 4 alone,
+    // and the .232 → 0 step keeps head 5
+    const sched = [_]f32{ 1.0, 0.9675, 0.8875, 0.5, 0.232, 0.0 };
+    const mid = try p.headSpan(&grid, &sched, 3);
+    try testing.expectEqual(@as(usize, 4), mid.first);
+    try testing.expectEqual(@as(usize, 4), mid.last);
+    try testing.expectEqual(@as(f32, 1), mid.weights[0]);
+    const last = try p.headSpan(&grid, &sched, 4);
+    try testing.expectEqual(@as(usize, 5), last.first);
+    try testing.expectEqual(@as(usize, 5), last.last);
+    // a step from .9 to 0 starts at the head nearest .9 on the grid (index 2, at .8875) and covers
+    // heads 2..5, weighted by each interval's length
+    const wide = [_]f32{ 0.9, 0.0 };
+    const span = try p.headSpan(&grid, &wide, 0);
+    try testing.expectEqual(@as(usize, 2), span.first);
+    try testing.expectEqual(@as(usize, 5), span.last);
+    var total: f64 = 0;
+    for (2..6) |i| total += @as(f64, grid[i]) - @as(f64, grid[i + 1]);
+    for (2..6, 0..) |i, w| try testing.expectApproxEqAbs(@as(f32, @floatCast((@as(f64, grid[i]) - @as(f64, grid[i + 1])) / total)), span.weights[w], 1e-6);
+}
+
 const pdd_json =
     \\{"num_inference_steps": 4, "sigmas": [1.0, 0.9675236940383911, 0.3, 0.125, 0.0]}
 ;

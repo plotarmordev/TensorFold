@@ -83,10 +83,31 @@ pub fn run(a: std.mem.Allocator) !void {
         rows.finalNorm(&stream, &final_norm, &final, line, &normed, hidden, h3.eps);
         rows.rowsOut(&normed, w_out[s * width * hidden ..][0 .. width * hidden], b_out[s * width ..][0..width], &velocity, text + held, target, hidden, width);
         picture.euler(&video, &velocity, deltas[s]);
-        try device.out(x.ptr, s, deltas[s]);
+        try device.out(x.ptr, s, deltas[s], s, s, &.{1});
     }
     var latent: [target * width]f32 = undefined;
     try device.latent(&latent);
     if (!std.mem.eql(u8, std.mem.sliceAsBytes(&latent), std.mem.sliceAsBytes(&video))) return error.H3RowsOutMismatch;
-    std.debug.print("H3 CUDA rows: rows in, final norm, head and Euler over two steps match the ordered host sums\n", .{});
+
+    // a step that spans two distilled heads (an off-grid --renoise-sigma step reaches one): the
+    // device zeroes the velocity then adds scale · head each launch; the host sums the same weights.
+    // `x` and `normed` are the last step's stream, so the blend reads `line` of step steps - 1.
+    const span_first = 0; // the only two heads this fixture carries
+    const weights = [2]f32{ 0.375, 0.625 };
+    var host_vel: [target * width]f32 = @splat(0);
+    var head: [target * width]f32 = undefined;
+    for (span_first..span_first + weights.len, 0..) |k, w| {
+        rows.rowsOut(&normed, w_out[k * width * hidden ..][0 .. width * hidden], b_out[k * width ..][0..width], &head, text + held, target, hidden, width);
+        for (&host_vel, head) |*hv, hd| hv.* += weights[w] * hd;
+    }
+    try device.velocityOf(x.ptr, steps - 1, span_first, span_first + 1, &weights);
+    var dev_vel: [target * width]f32 = undefined;
+    try device.lastVelocity(&dev_vel);
+    for (dev_vel, host_vel, 0..) |dv, hv, i| {
+        if (@abs(dv - hv) > 2e-3) {
+            std.debug.print("blend head mismatch at {d}: device {d} host {d}\n", .{ i, dv, hv });
+            return error.H3RowsOutMismatch;
+        }
+    }
+    std.debug.print("H3 CUDA rows: rows in, final norm, head and Euler over two steps, and a two-head blend, match the ordered host sums\n", .{});
 }
