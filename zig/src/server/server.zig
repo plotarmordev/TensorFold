@@ -212,6 +212,9 @@ pub const Server = struct {
         if (srv.info.speech == null and (config.voice.dir != null or config.voice.inline_voices or config.voice.manage)) return error.VoicesRequireSpeech;
         const engine_voices = if (srv.info.speech) |sp| sp.voices else &.{};
         if (engine_voices.len > 0) {
+            // the engine's own catalog answers by index: inline objects and admin edits the store never reaches it
+            if (config.voice.inline_voices or config.voice.manage) return error.EngineOwnedVoices;
+            // the server's own copy: an idle unload frees the engine's names while /v1/voices still lists them
             const voices = try srv.arena.allocator().alloc(@import("drama_voice.zig").Voice, engine_voices.len);
             for (engine_voices, voices) |name, *voice| voice.* = .{ .name = try srv.arena.allocator().dupe(u8, name), .references = &.{} };
             srv.engine_voices = voices;
