@@ -50,7 +50,6 @@ pub const most_batch = 64;
 /// The fast path's cuBLASLt plans: each projection fp32 out into `acc`, attention batched over
 /// a pass's (tile, head)s, its scores, softmax probabilities and output in `acc` too (free then).
 const Tc = struct {
-    lt: cuda.cublaslt.Library,
     handle: cuda.cublaslt.Handle,
     gemms: cuda.vit.Gemms,
     /// scores q . kᵀ and output p . v, a plan a (tokens, batch) shape.
@@ -58,13 +57,11 @@ const Tc = struct {
     out: std.AutoHashMapUnmanaged([2]u64, cuda.cublaslt.Gemm) = .empty,
 
     fn open(gpa: std.mem.Allocator, d: *const cuda.Driver) !Tc {
-        var lt = try cuda.cublaslt.Library.open();
-        errdefer lt.close();
-        const handle = try cuda.cublaslt.createHandle(&lt);
-        errdefer _ = lt.api.cublasLtDestroy(handle);
         var gemms = try cuda.vit.Gemms.init(gpa, d);
         errdefer gemms.deinit();
-        return .{ .lt = lt, .handle = handle, .gemms = gemms };
+        const handle = try cuda.cublaslt.createHandle(&gemms.lt);
+        errdefer _ = gemms.lt.api.cublasLtDestroy(handle);
+        return .{ .handle = handle, .gemms = gemms };
     }
 
     fn close(tc: *Tc, gpa: std.mem.Allocator) void {
@@ -74,9 +71,8 @@ const Tc = struct {
         var it2 = tc.out.valueIterator();
         while (it2.next()) |g| g.deinit();
         tc.out.deinit(gpa);
+        _ = tc.gemms.lt.api.cublasLtDestroy(tc.handle);
         tc.gemms.deinit();
-        _ = tc.lt.api.cublasLtDestroy(tc.handle);
-        tc.lt.close();
     }
 
     /// The batched plan of `which` for `n` tokens over `b` (tile, head)s.
@@ -91,7 +87,7 @@ const Tc = struct {
             .scores => .{ .ta = .t, .tb = .n, .m = n, .n = n, .k = 64, .a = .bf16, .b = .bf16, .c = .f32, .lda = 64, .ldb = 64, .ldc = n, .batch = @intCast(b), .sa = n * 64, .sb = n * 64, .sc = n * n },
             .out => .{ .ta = .n, .tb = .n, .m = 64, .n = n, .k = n, .a = .bf16, .b = .bf16, .c = .f32, .lda = 64, .ldb = n, .ldc = 64, .batch = @intCast(b), .sa = n * 64, .sb = n * n, .sc = 64 * n },
         };
-        got.value_ptr.* = try cuda.cublaslt.Gemm.init(&tc.lt, tc.handle, s, tc_workspace_bytes);
+        got.value_ptr.* = try cuda.cublaslt.Gemm.init(&tc.gemms.lt, tc.handle, s, tc_workspace_bytes);
         return got.value_ptr;
     }
 };
@@ -254,9 +250,14 @@ pub const Decoder = struct {
         const m = batch * n;
         if (d.fast and d.tc == null) d.tc = try Tc.open(d.gpa, &d.driver);
         // x, xn, wide, q, k, v, o, act, out (bf16 rows); tok's cells; the rotary tables; origins; acc fp32
-        // acc fp32, the products' sums; the fast path's attention also packs scores, softmax weights and
-        // output into it: its span is acc's or theirs, whichever is larger.
-        const acc = if (d.fast) @max(m * 2 * F, batch * host.heads * n * (3 * n + 64)) else m * 2 * F;
+        // acc fp32, the products' sums; the fast path's attention also packs scores f32, weights bf16
+        // and output f32 into it, 256-aligned for cuBLASLt's default pointer preference.
+        const s_n: usize = if (d.fast) blk: {
+            const p_off = std.mem.alignForward(usize, batch * host.heads * n * n * 4, 256);
+            const o_off = p_off + std.mem.alignForward(usize, batch * host.heads * n * n * 2, 256);
+            break :blk (o_off + batch * host.heads * n * 64 * 4) / 4;
+        } else 0;
+        const acc = if (d.fast) @max(m * 2 * F, s_n) else m * 2 * F;
         const sizes = [_]usize{ m * W * 2, m * W * 2, m * 2 * F * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8, acc * 4 };
         var total: usize = 0;
         for (sizes) |s| total += std.mem.alignForward(usize, s, 256);
@@ -430,11 +431,13 @@ pub const Decoder = struct {
         const tc = &d.tc.?;
         const n: u64 = s.tokens;
         const b: u64 = s.tiles * host.heads;
+        // h3d_softmax reads a row in 128-key strides; a tile over 4 * 128 tokens needs it wider.
+        if (n > 4 * 128) return error.H3BadTiles;
         const acc = d.dev(d.view.acc);
         const scores = try tc.plan(d.gpa, .scores, n, b);
         const out = try tc.plan(d.gpa, .out, n, b);
-        const p_bf16 = acc + n * n * 4 * b;
-        const o_f32 = p_bf16 + n * n * 2 * b;
+        const p_bf16 = acc + std.mem.alignForward(u64, n * n * 4 * b, 256);
+        const o_f32 = p_bf16 + std.mem.alignForward(u64, n * n * 2 * b, 256);
         try scores.run(1, d.dev(d.view.k), d.dev(d.view.q), 0, acc, tc.gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
         var a = d.args(&.{ acc, p_bf16 });
         a.add(s);

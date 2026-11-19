@@ -209,9 +209,7 @@ __global__ void __launch_bounds__(256) h3d_finish(
 // softmax(s / 8) row-wise in fp32 for the tensor-core path's S [tiles * 16 heads, T, T]: a flat query
 // row a block (grid b*T), 128 threads over four keys each, the bf16 weights contiguous for P . V.
 __global__ void __launch_bounds__(128) h3d_softmax(const float* s, bf16* pr, H3dShape p) {
-    __shared__ float part[128];
-    __shared__ float top;
-    __shared__ float total;
+    __shared__ float part[4];
     const unsigned row = blockIdx.x; // a flat query row over the batch's [tiles * heads, T, T]
     const unsigned t = threadIdx.x;
     const float* sr = s + (size_t)row * p.tokens;
@@ -223,15 +221,7 @@ __global__ void __launch_bounds__(128) h3d_softmax(const float* s, bf16* pr, H3d
         v[i] = key < p.tokens ? sr[key] * p.scale : -INFINITY;
         hi = fmaxf(hi, v[i]);
     }
-    part[t] = hi;
-    __syncthreads();
-    if (t == 0) {
-        float m = -INFINITY;
-        for (unsigned i = 0; i < 128; ++i) m = fmaxf(m, part[i]);
-        top = m;
-        total = 0.0f;
-    }
-    __syncthreads();
+    const float top = tf_common::block_max_tree(hi, part, 4);
     float e[4];
     float sum = 0.0f;
 #pragma unroll
@@ -239,14 +229,7 @@ __global__ void __launch_bounds__(128) h3d_softmax(const float* s, bf16* pr, H3d
         e[i] = v[i] == -INFINITY ? 0.0f : expf(v[i] - top);
         sum += e[i];
     }
-    part[t] = sum;
-    __syncthreads();
-    if (t == 0) {
-        float m = 0.0f;
-        for (unsigned i = 0; i < 128; ++i) m += part[i];
-        total = m;
-    }
-    __syncthreads();
+    const float total = tf_common::block_sum_tree(sum, part, 4);
     bf16* out = pr + (size_t)row * p.tokens;
 #pragma unroll
     for (unsigned i = 0; i < 4; ++i) {
