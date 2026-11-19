@@ -157,14 +157,14 @@ decoder, matching the standing 15.3 s baseline's settings) for the Desk's env-le
 MEASUREMENT PENDING THE TOP WINDOW — the draft bench and mmh3's matching run land their numbers
 and job ids here.
 
-**Warm-serve crash, scoped out.** The second `--serve` render segfaults at `case ready` — after
-its picture's steps and latent, while the repeat's `Case.load`/early stream setup runs (job
-`top-622a63407b13` at `602456336`, exit 139; earlier `top-85ad023a6cc6`, `top-a09ae34c2ff5`,
-`top-e83950d1d819` the same). The kept AdaLN tables and the per-render stream are what the second
-request reuses, so the crash lives in that reuse path, not the draft math: the single-shot run and
-the bench's first picture of a size are unaffected. The card measured drafts through the bench's
-resident server, whose requests take the same path — where the crash cut a run it is noted beside
-its numbers rather than debugged further, per the card's stop rule.
+**Warm-serve crash, fixed.** The second `--serve` render segfaulted at `case ready`, while its
+`Case.load`/early stream setup ran (job `top-622a63407b13` at `602456336`, exit 139; earlier
+`top-85ad023a6cc6`, `top-a09ae34c2ff5`, `top-e83950d1d819` the same). The split of `render` into
+`streamSteps` had moved the `folder.tables` call onto the per-request arena, so the kept AdaLN
+tables' host memory was freed at the first request's end and the second request's
+`std.mem.eql(f32, f.times, times)` guard and `prepare` walked freed pointers — a plain-serve
+regression, not the draft math (the crash hit with no `--draft-steps`). `streamSteps` now takes the
+persistent `init.gpa` for the cached tables as `render` did on main.
 
 
 

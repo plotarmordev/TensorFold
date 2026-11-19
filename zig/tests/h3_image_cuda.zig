@@ -187,6 +187,7 @@ const Case = struct {
 /// renoised draft for the full-size steps after drafts. Returns the stream's video rows.
 fn streamSteps(
     a: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     folder: *Folder,
     case: Case,
     grid: picture.Grid,
@@ -223,7 +224,7 @@ fn streamSteps(
     const plan = try schedule.plan(a, .{ .text = case.text, .condition = case.held, .audio = 0, .video = target }, sched.timesteps, sched.timesteps);
     const times = plan.table.len;
     const lines = times * schedule.modalities;
-    const modulation = try folder.tables(a, plan.table);
+    const modulation = try folder.tables(gpa, plan.table);
     const final = modulation.final;
     const final_norm = values(u16, try ck.at("final_layer.norm.weight", .bf16, hidden));
     ck.evict(); // the weights this case read (~26 GB when it prepared the tables): a cached copy would crowd the next prompt
@@ -369,13 +370,13 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
 
     var video: []f32 = undefined;
     if (draft_steps == 0) {
-        video = try streamSteps(a, folder, case, case.target_grid, case.noise, sched, spans, 0, steps, false, graphs);
+        video = try streamSteps(a, init.gpa, folder, case, case.target_grid, case.noise, sched, spans, 0, steps, false, graphs);
     } else {
         const draft_grid = picture.Grid{ .rows = case.target_grid.rows / 2, .columns = case.target_grid.columns / 2 };
         const draft_target = try picture.gridRows(draft_grid);
         // the draft's noise is the case stream's own prefix: deterministic, and iid across the
         // half-size canvas as mmh3's fresh half-size samples are
-        const draft = try streamSteps(a, folder, case, draft_grid, case.noise[0 .. draft_target * width], sched, spans, 0, draft_steps, true, graphs);
+        const draft = try streamSteps(a, init.gpa, folder, case, draft_grid, case.noise[0 .. draft_target * width], sched, spans, 0, draft_steps, true, graphs);
         std.debug.print("{d}x{d} draft done, enlarging\n", .{ case.canvas.width / 2, case.canvas.height / 2 });
         const enlarged = try picture.enlargeDraft(a, draft, draft_grid, case.target_grid);
         // mmh3's renoise: fresh noise of the seed at sigma_next; the case's own noise stands in,
@@ -383,7 +384,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         const sigma_next = sched.sigmas[draft_steps];
         video = try a.alloc(f32, case.target * width);
         for (video, enlarged, case.noise) |*o, e, n| o.* = (1 - sigma_next) * e + sigma_next * n;
-        const full_video = try streamSteps(a, folder, case, case.target_grid, video, sched, spans, draft_steps, steps - draft_steps, false, graphs);
+        const full_video = try streamSteps(a, init.gpa, folder, case, case.target_grid, video, sched, spans, draft_steps, steps - draft_steps, false, graphs);
         video = full_video;
     }
     const spent = h3.seconds() - transformer;
