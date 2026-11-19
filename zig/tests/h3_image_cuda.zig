@@ -302,6 +302,9 @@ fn streamSteps(
         const mark = h3.seconds();
         device.line = adaln_dev.ptr + s * count * 4;
         const clean = predict_clean_last and s == first + run - 1;
+        // the exec outlives its in-flight launch: graph execs are destroyed only after the stream syncs
+        var launched: ?@import("cuda").graph.Exec = null;
+        defer if (launched) |*e| e.deinit();
         if (graphs) {
             const exec = stepGraph(model, &device, checked, &device_rows, s, sched.deltas[s], sched.sigmas[s], spans[s], clean) catch |err| blk: {
                 std.debug.print("step {d} runs without its graph: {s}\n", .{ s + 1, @errorName(err) });
@@ -310,7 +313,7 @@ fn streamSteps(
             if (exec) |e| {
                 var exec_mut = e;
                 try exec_mut.launchOn(model.stream);
-                exec_mut.deinit();
+                launched = exec_mut;
             } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], sched.sigmas[s], spans[s], clean);
         } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], sched.sigmas[s], spans[s], clean);
         try model.stream.synchronize();
