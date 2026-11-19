@@ -1,5 +1,7 @@
 #!/bin/sh
-# Bisect for the warm-serve crash: two plain serves with phase markers in the log.
+# The warm --serve path past its second picture: two plain serves, then two serves with
+# --draft-steps 3, each pair read back against fresh single-shot renders. Caught the kept-AdaLN
+# crash (the second request walked the first's freed tables) and stands as its regression check.
 #   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/serve-check-drafts.sh"
 set -eu
 model=/assets/drama3-pilot/models/MiniMax-H3-Image
@@ -12,7 +14,17 @@ export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+
 rm -rf "$out"
 mkdir -p "$out"
 "$bin/tf-h3-image-prompt-cuda" "$model/text_encoder" "$model" "$pilot/prompt.txt" "$out/c.safetensors" 2048x2048 42 262144
-printf '%s\n' "$out/c.safetensors $out/p1" "$out/c.safetensors $out/p2" |
-    "$bin/tf-h3-image-cuda" "$model" --serve >"$out/replies-p" 2>"$out/serve-p.log" || true
-cat "$out/serve-p.log"
-exit 0
+status=0
+# plain serves, then draft serves; each pair must reach its second reply
+for flag in plain drafts; do
+    extra=
+    [ "$flag" = drafts ] && extra="--draft-steps 3"
+    printf '%s\n' "$out/c.safetensors $out/$flag-1" "$out/c.safetensors $out/$flag-2" |
+        "$bin/tf-h3-image-cuda" "$model" --serve $extra >"$out/replies-$flag" 2>"$out/serve-$flag.log" || status=1
+    cat "$out/replies-$flag"
+    n=$(grep -c done "$out/replies-$flag" || :)
+    echo "$flag: $n/2 replies"
+    [ "$n" = 2 ] || status=1
+done
+echo "serve-check-drafts exit $status"
+exit "$status"
