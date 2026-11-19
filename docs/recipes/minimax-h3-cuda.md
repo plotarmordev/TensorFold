@@ -337,26 +337,26 @@ default's. The decoder selftest's staged blocks land ~81–84% identical inside 
 Card 130 fuses the `--tc` decoder's finish pass: the bias-free-of-LayerScale projections run
 cuBLASLt's bias epilogue — `bf16(acc + b)` in the one rounding `h3d_finish` mode 0 held — and the
 LayerScale projections write that same rounded product into `u`, which `h3d_res_norm` folds into
-the next block norm (`x = bf16(x + bf16(u * s))`, then the RMS norm): every `h3d_finish` launch
-on the fast path goes away, 776 a picture at 341 µs each on the card-125 trace. `most_batch` is
-128 so a 2048² canvas's 121 tiles decode in one pass, the way mmh3 batches its VAE: a decode's
-launches per layer drop to mmh3's own count. Shapes whose algorithm won't fuse the bias keep the
-fp32 `acc` and `h3d_finish`, and `--exact` is unchanged.
+the next block norm (`x = bf16(x + bf16(u * s))`, then the RMS norm). `h3d_finish` had 776 launches
+a picture at 341 µs each on the card-125 trace; the fused shapes' launches are gone, and a shape
+whose algorithm declines the bias epilogue keeps the fp32 `acc` and `h3d_finish`. `most_batch` is
+128 so a 2048² canvas's 121 tiles decode in one pass, the way mmh3 batches its VAE. `--exact` is
+unchanged.
 
-`32279731` (job `top-c328ffe998ad`, 20 November, exit 0, `bench-130-ab.sh`) ran the same-job A/B —
-the card's seven files against their merge-base selves restored by `bench-130-base.patch` in the
-shallow clone. Every selftest passed in both phases; the same-latent `reference` repeated `9914f752`'s
+`32279731` (job `top-c328ffe998ad`, 20 November, exit 0) ran the same-job A/B — the bench on this
+commit, then again with the card's seven files put back to merge base `60dd5ac5` inside the job.
+Every selftest passed in both phases; the same-latent `reference` repeated `9914f752`'s
 figures exactly (85.213% of bytes identical, 99.875% within 1, at most 7 apart, PSNR 56.31 dB,
 relative 3.33e-3), and every latent and PNG was byte-identical between phases. A warm 2048² picture
 took **15.2 s** mean (15.2, 15.2, 15.2: prompt 1.1, transformer 12.8, decoder 1.2–1.3) against the
 same job's base phase **15.3 s** (15.3, 15.3, 15.3: decoder 1.3) — kept. The decode's GPU time fell
-0.98 → 0.83 s: the finish stage 0.26 → 0.08 s (the GEMMs whose algorithms fused the bias; the rest
-keep `h3d_finish`) and res_norm folded into norms at +0.02 s. The products' tile rates are the gap
-left toward mmh3's 0.55 s decode: products 0.34 s and attention 0.24 s against the card-125 trace's
-0.52 s of nvjet+cutlass GEMM time — the finish pass was never the products' rate. Against episode 1's
-Mac picture the fused path's `2048-2` measures the window's own 28.69 dB and 4.01 apart, cosine 0.9952.
+0.98 → 0.83 s: the finish stage 0.26 → 0.08 s and res_norm folded into norms at +0.02 s. The
+products' tile rates are the gap left toward mmh3's 0.55 s decode: products plus attention 0.58 s
+(0.34 + 0.24) against the card-125 trace's 0.52 s of nvjet+cutlass GEMM time — the finish pass was
+never the products' rate. Against episode 1's Mac picture the fused path's `2048-2` measures the
+window's own 28.69 dB and 4.01 apart, cosine 0.9952.
 
-| Warm 2048² (pre-122 window) | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
+| Warm 2048² | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
 |---|---:|---:|---:|---:|---:|---:|
 | fp32-order decoder (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
 | tensor-core decoder (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
