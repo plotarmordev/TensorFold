@@ -43,5 +43,12 @@ else
     # no profiler in the image: the gates' own timing is the only device evidence
     "$BIN" kernel-contract "h3 int8"
 fi
-# register/smem/readout from the embedded fatbin either way
-cuobjdump -res-usage /work/contract/fatbin/h3.fatbin 2>/dev/null | grep -A12 "h3_gemm_int8" || true
+# register/smem/readout from the embedded fatbin either way (find the toolchain's cuobjdump, no PATH assumption)
+CUOBJ=""
+for c in cuobjdump /usr/local/cuda/bin/cuobjdump /work/$gcc/bin/cuobjdump; do
+    if [ -x "$c" ] || command -v "$c" >/dev/null 2>&1; then CUOBJ="$c"; break; fi
+done
+FB=/work/contract/fatbin/h3.fatbin
+[ -f "$FB" ] || FB=$(ls /work/contract/fatbin/*h3*.fatbin /work/*/fatbin/*h3*.fatbin 2>/dev/null | head -1)
+echo "cuobjdump: ${CUOBJ:-MISSING}, fatbin: ${FB:-MISSING}"
+[ -n "$CUOBJ" ] && [ -n "$FB" ] && "$CUOBJ" -res-usage "$FB" | grep -A12 "h3_gemm_int8" || true
