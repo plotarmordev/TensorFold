@@ -405,23 +405,29 @@ latent cosine 0.9664 (gate 0.99) and 11.53 apart on average from the Mac PNG (ga
 byte for byte the same. The failed selftest and the picture gates are the revert's ground. NVFP4 keeps one
 mantissa bit where e4m3 keeps three and is expected to miss the gates further; it has not been measured.
 
-`ba08e3115` (job `top-c0b33c78c637`, 19 November, exit 0, `bench-script.sh`) put each denoising step in one CUDA
-graph — rows in, every block's launches, the step head and the Euler update — replayed on a dedicated
-stream (`H3_PROFILE`, which waits after each stage, keeps the eager path), staged every step's AdaLN
-lines once and pointed each step's graph at its own slice; `--serve` restores the model's own stream when
-a picture returns. The `--tc` decoder became the default in the same window, `--exact` keeping the
-fp32-order kernels and their identity selftest. A decoder-side rows overlap was also built and measured —
-the last step streaming its video rows out band by band while a progressive `.rows.f32` reader
-unpatchified, denormalised and uploaded each band and launched a tile pass once the rows its tiles read
-had landed — and job `top-27eefb4ad8de` measured it slower at 2048²: the banded download + per-band event
-waits added ~0.9 s to the last step and the progressive host decode cost 3.6 s vs 1.3 s for the bulk
-path (warm 15.7 s), so it was cut and the decoder keeps its `.latent.f32` input. The keep-if-faster gate
-was A/B'd the same day on the same GPU (the job's clone is too shallow for an in-checkout revert, so the
-baseline ran as its own commit, card 122's h3 files at the merge base with the decoder forced `--tc`):
-job `top-7cc7074c454e` measured the baseline's warm mean 15.5 s (transformer 13.0, steps ~2.16, decoder
-1.3) and this commit's 15.2 s (transformer 12.8, ~2.15 a step from graph replay) — **0.3 s faster**,
-kept. Every selftest passed in both phases, the same-latent `reference` bound held at 56.31 dB
-(rel 3.33e-3) on both, and the pictures were byte-identical.
+`626fd8ded` put each denoising step in one CUDA graph — rows in, every block's launches, the step head
+and the Euler update — replayed on a dedicated stream (`H3_PROFILE`, which waits after each stage, keeps
+the eager path), staged every step's AdaLN lines once and pointed each step's graph at its own slice;
+`--serve` restores the model's own stream when a picture returns. The `--tc` decoder became the default
+in the same window, `--exact` keeping the fp32-order kernels and their identity selftest. A decoder-side
+rows overlap was also built and measured — the last step streaming its video rows out band by band while
+a progressive `.rows.f32` reader unpatchified, denormalised and uploaded each band and launched a tile
+pass once the rows its tiles read had landed — and job `top-27eefb4ad8de` measured it slower at 2048²:
+the banded download + per-band event waits added ~0.9 s to the last step and the progressive host decode
+cost 3.6 s vs 1.3 s for the bulk path (warm 15.7 s), so it was cut and the decoder keeps its `.latent.f32`
+input. The keep-if-faster A/B first ran as two jobs on the same GPU that day (the job clone is too
+shallow for an in-checkout git revert): `top-c0b33c78c637` (`bench-122-ab.sh` at `ec0aa8c84`, exit 128 —
+its before phase's `git checkout` failed on the shallow clone, but its after phase ran to a finished
+summary) measured the candidate's warm mean 15.2 s (transformer 12.8, ~2.15 a step from graph replay,
+decoder 1.3), and `top-7cc7074c454e` (`bench-script.sh` at `40ab38a8f` on scratch branch
+`scratch/122-baseline`, the card's h3 files reverted to the merge base with the decoder forced `--tc`)
+measured the baseline's 15.5 s (transformer 13.0, steps ~2.16, decoder 1.3) — 0.3 s faster, kept. Every
+selftest passed in both runs, the same-latent `reference` bound held at 56.31 dB (rel 3.33e-3) on both,
+and the pictures were byte-identical between graph and eager output. The same-job re-run on the merged
+head (after main's card-89 merge) is `bench-122-ab.sh`: <fill>. Seconds outside the blocks are not
+reported on the graph path — `H3_PROFILE`'s per-stage waits can't be captured, so a graphed run has no
+block breakdown; the eager baseline's transformer held the same 12.8-13.0 s with its staging outside the
+blocks unchanged.
 
 Card 89's own tile, `h3_gemm_int8`, was measured and reverted. `h3_quantize` scaled each 128-wide chunk by its own
 absmax, so `out` and `fc2` left bf16 without the per-row scale's distance from episode 1, and the `m16n8k32` tile

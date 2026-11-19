@@ -62,9 +62,6 @@ image() { # the resident transformer renders $case; the server's log since the l
         logged=0
     }
     echo "$case.safetensors $case" >&3
-}
-
-image_verdict() { # the transformer's reply for the request image() sent
     read -r verdict _ <&4 || verdict=
     tail -c +$((logged + 1)) "$out/$side.server.log" >"$case.image.log"
     logged=$(wc -c <"$out/$side.server.log")
@@ -96,9 +93,6 @@ decoder_stage() { # the resident decoder writes $case.png; its new log bytes go 
         decoder_logged=0
     }
     echo "$case.latent.f32 $((side / 16)) $((side / 16)) $case.png ${side}x$side" >&7
-}
-
-decoder_verdict() { # the decoder's reply for the request decoder_stage() sent
     read -r verdict _ <&8 || verdict=
     tail -c +$((decoder_logged + 1)) "$out/$side.decoder-server.log" >"$case.decoder.log"
     decoder_logged=$(wc -c <"$out/$side.decoder-server.log")
@@ -112,9 +106,7 @@ for side in ${H3_BENCH_SIZES:-2048}; do
         date +%s.%N >"$case.time"
         prompt_stage
         image
-        image_verdict
         decoder_stage
-        decoder_verdict
         date +%s.%N >>"$case.time"
         kill "$sampler"
         sampler=

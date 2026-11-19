@@ -6,7 +6,6 @@ const report = @import("report.zig");
 const cuda = @import("cuda");
 pub const host = @import("image_decoder.zig");
 pub const vae = @import("picture_vae.zig");
-pub const picture = @import("picture.zig");
 pub const reference = @import("image_decoder_reference.zig");
 pub const host_decoder = @import("image_decoder_host.zig");
 

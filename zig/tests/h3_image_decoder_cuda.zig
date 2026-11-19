@@ -62,7 +62,6 @@ pub const Vae = struct {
     }
 };
 
-
 /// The latent file's [24, rows, cols] float32 values.
 fn latentOf(init: std.process.Init, a: std.mem.Allocator, path: []const u8, rows: usize, cols: usize) ![]f32 {
     const n = try dec.host.latentLength(rows, cols);
