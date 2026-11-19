@@ -15,3 +15,9 @@
 - The step's final norm, output head and Euler update already ran on the GPU since card 122's
   `bd734252` (`h3_rows_in`/`h3_rows_out`/`h3_euler`): this card's share of that lever was the
   decoder-side `res_norm` fusion above; the rows' 0.15 s of kernel time is unchanged.
+
+Measured on TOP's GB10 (`top-c328ffe998ad`, same-job A/B over `bench-130-base.patch`): a warm 2048²
+picture 15.2 s against the base phase's 15.3 s, decode GPU time 0.98 → 0.83 s (finish 0.26 → 0.08 s;
+the projections cuBLASLt fused keep their epilogue, the rest still run `h3d_finish`), every latent
+and PNG byte-identical between phases, selftests, the same-latent bound and the Mac-picture gates
+all passing.

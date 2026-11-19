@@ -343,10 +343,24 @@ on the fast path goes away, 776 a picture at 341 µs each on the card-125 trace.
 launches per layer drop to mmh3's own count. Shapes whose algorithm won't fuse the bias keep the
 fp32 `acc` and `h3d_finish`, and `--exact` is unchanged.
 
+`32279731` (job `top-c328ffe998ad`, 20 November, exit 0, `bench-130-ab.sh`) ran the same-job A/B —
+the card's seven files against their merge-base selves restored by `bench-130-base.patch` in the
+shallow clone. Every selftest passed in both phases; the same-latent `reference` repeated `9914f752`'s
+figures exactly (85.213% of bytes identical, 99.875% within 1, at most 7 apart, PSNR 56.31 dB,
+relative 3.33e-3), and every latent and PNG was byte-identical between phases. A warm 2048² picture
+took **15.2 s** mean (15.2, 15.2, 15.2: prompt 1.1, transformer 12.8, decoder 1.2–1.3) against the
+same job's base phase **15.3 s** (15.3, 15.3, 15.3: decoder 1.3) — kept. The decode's GPU time fell
+0.98 → 0.83 s: the finish stage 0.26 → 0.08 s (the GEMMs whose algorithms fused the bias; the rest
+keep `h3d_finish`) and res_norm folded into norms at +0.02 s. The products' tile rates are the gap
+left toward mmh3's 0.55 s decode: products 0.34 s and attention 0.24 s against the card-125 trace's
+0.52 s of nvjet+cutlass GEMM time — the finish pass was never the products' rate. Against episode 1's
+Mac picture the fused path's `2048-2` measures the window's own 28.69 dB and 4.01 apart, cosine 0.9952.
+
 | Warm 2048² (pre-122 window) | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
 |---|---:|---:|---:|---:|---:|---:|
 | fp32-order decoder (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
 | tensor-core decoder (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
+| fused finish pass (`32279731`, `top-c328ffe998ad`) | 15.2 s | 1.1 s | 12.8 s | 1.2 s | 56.31 dB | 28.69 dB, 4.01 |
 
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
