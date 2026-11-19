@@ -83,7 +83,7 @@ pub fn run(a: std.mem.Allocator) !void {
         rows.finalNorm(&stream, &final_norm, &final, line, &normed, hidden, h3.eps);
         rows.rowsOut(&normed, w_out[s * width * hidden ..][0 .. width * hidden], b_out[s * width ..][0..width], &velocity, text + held, target, hidden, width);
         picture.euler(&video, &velocity, deltas[s]);
-        try device.out(x.ptr, s, deltas[s]);
+        try device.out(x.ptr, s, deltas[s], s, s, &.{1});
     }
     var latent: [target * width]f32 = undefined;
     try device.latent(&latent);

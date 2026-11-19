@@ -108,6 +108,111 @@ pub fn roundTrip(a: std.mem.Allocator, raw: []const f64) !Pdd {
 pub fn euler(x: []f32, velocity: []const f32, delta: f32) void {
     for (x, velocity) |*o, v| o.* += delta * v;
 }
+/// The schedule mmh3's `--draft-steps` runs (its `renoised_schedule` in src/image.rs): the first
+/// `drafts` steps of `pdd` on the half-size canvas, the enlarged draft noised to `renoise` (or to the
+/// next step's sigma when `renoise` is null), and the rest of the steps at full size. `drafts` may
+/// cover every step only with `renoise`, which leaves one full-size step from it to 0. Sigmas keep
+/// pdd's float32 round trip: each renoised sigma is itself a distilled head's sigma or a mid-sigma,
+/// and timesteps are `1 - sigma` exactly.
+pub fn draftSchedule(a: std.mem.Allocator, p: Pdd, drafts: usize, renoise: ?f32) !Pdd {
+    const steps = p.steps();
+    if (drafts == 0 or drafts > steps) return error.H3BadDraftSteps;
+    if (drafts == steps and renoise == null) return error.H3DraftLeavesNoStep;
+    // mmh3's bounds: the renoise sits strictly below the last draft step's sigma; the full-size
+    // sigmas resume from the first undrafted entry under it (sigmas[draft_steps..], filtered)
+    if (renoise) |r| if (!std.math.isFinite(r) or r <= 0 or r >= p.sigmas[drafts - 1]) return error.H3BadRenoiseSigma;
+    var sigmas: std.ArrayList(f32) = .empty;
+    try sigmas.appendSlice(a, p.sigmas[0..drafts]);
+    try sigmas.append(a, renoise orelse p.sigmas[drafts]);
+    const base = sigmas.items[drafts];
+    for (p.sigmas[drafts..]) |s| if (s < base) try sigmas.append(a, s);
+    const out = try sigmas.toOwnedSlice(a);
+    const timesteps = try a.alloc(f32, out.len - 1);
+    const deltas = try a.alloc(f32, out.len - 1);
+    for (timesteps, out[0 .. out.len - 1]) |*t, s| t.* = 1.0 - s;
+    for (deltas, 0..) |*d, k| d.* = out[k] - out[k + 1];
+    return .{ .sigmas = out, .timesteps = timesteps, .deltas = deltas };
+}
+
+/// One step's video output head mix, mmh3's `step_heads` (crates/mmh3-core/src/dit/config.rs): the
+/// heads of the distilled grid intervals the step's [next, sigma] span covers, weighted by interval
+/// length. An on-grid step gets its own head alone; an off-grid one blends the spanned heads, as
+/// ComfyUI takes them. `first`..`last` are the contiguous distilled heads, `weights` their shares
+/// (sum 1); the leading `last - first + 1` entries hold them.
+pub const HeadSpan = struct { first: usize, last: usize, weights: [8]f32 };
+
+/// `grid` is the checkpoint's distilled sigmas with the 0, `schedule` the run's sigmas.
+pub fn headSpan(grid: []const f32, schedule: []const f32, s: usize) !HeadSpan {
+    const nearest = struct {
+        fn of(points: []const f32, value: f32) usize {
+            var best: usize = 0;
+            var gap: f32 = std.math.floatMax(f32);
+            for (points, 0..) |p, i| {
+                const g = @abs(p - value);
+                if (g < gap) {
+                    gap = g;
+                    best = i;
+                }
+            }
+            return best;
+        }
+    }.of;
+    const heads = grid.len - 1; // the last grid entry is the 0, not a head
+    if (heads < 2 or schedule.len < 2 or s >= schedule.len - 1) return error.H3BadSchedule;
+    const sigma = schedule[s];
+    const next = schedule[@min(nearest(schedule, sigma) + 1, schedule.len - 1)];
+    const first = @min(nearest(grid, sigma), heads - 1);
+    // mmh3's stop: the first grid index past the step's end, at least one past the span's start
+    const last = @max(nearest(grid, next), first + 1) - 1;
+    if (last < first or last - first + 1 > 8) return error.H3BadHeadSpan;
+    var weights: [8]f32 = @splat(0);
+    var total: f64 = 0;
+    for (first..last + 1) |i| total += @as(f64, grid[i]) - @as(f64, grid[i + 1]);
+    if (total <= 0) return error.H3BadHeadSpan;
+    for (first..last + 1, 0..) |i, w| weights[w] = @floatCast((@as(f64, grid[i]) - @as(f64, grid[i + 1])) / total);
+    return .{ .first = first, .last = last, .weights = weights };
+}
+
+/// The draft's clean-latent rows enlarged to `g`'s rows, mmh3's bilinear `resize_video` on the
+/// channel-major latent and back: taps `(i + 0.5) * source / size - 0.5`, clamped. `rows` are the
+/// draft's (target_d, row_width) rows on `g_d`, `g_d` and `g` the same aspect at half and full size.
+pub fn enlargeDraft(a: std.mem.Allocator, rows: []const f32, g_d: Grid, g: Grid) ![]f32 {
+    const n_d = try gridRows(g_d);
+    const n = try gridRows(g);
+    if (g_d.rows * 2 != g.rows or g_d.columns * 2 != g.columns) return error.H3BadPictureGrid;
+    if (rows.len != n_d * row_width) return error.H3BadLatentLength;
+    const small = try a.alloc(f32, channels * g_d.rows * g_d.columns);
+    try unpatchify(rows, g_d, small);
+    const big = try a.alloc(f32, channels * g.rows * g.columns);
+    // mmh3's taps: (i + 0.5) * source / size - 0.5, clamped to [0, source - 1]
+    const position = struct {
+        fn at(index: usize, size: usize, source_size: usize) struct { low: usize, high: usize, frac: f32 } {
+            const scale = @as(f32, @floatFromInt(source_size)) / @as(f32, @floatFromInt(size));
+            const pos = @max((@as(f32, @floatFromInt(index)) + 0.5) * scale - 0.5, 0);
+            const low = @min(@as(usize, @intFromFloat(pos)), source_size - 1);
+            const high = @min(low + 1, source_size - 1);
+            return .{ .low = low, .high = high, .frac = pos - @as(f32, @floatFromInt(low)) };
+        }
+    }.at;
+    const plane_d = g_d.rows * g_d.columns;
+    const plane = g.rows * g.columns;
+    for (0..channels) |c| {
+        const src = small[c * plane_d ..][0..plane_d];
+        const dst = big[c * plane ..][0..plane];
+        for (0..g.rows) |r| {
+            const row = position(r, g.rows, g_d.rows);
+            for (0..g.columns) |col| {
+                const across = position(col, g.columns, g_d.columns);
+                const upper = src[row.low * g_d.columns + across.low] * (1 - across.frac) + src[row.low * g_d.columns + across.high] * across.frac;
+                const lower = src[row.high * g_d.columns + across.low] * (1 - across.frac) + src[row.high * g_d.columns + across.high] * across.frac;
+                dst[r * g.columns + col] = upper * (1 - row.frac) + lower * row.frac;
+            }
+        }
+    }
+    const out = try a.alloc(f32, n * row_width);
+    try patchify(big, g, out);
+    return out;
+}
 
 /// A picture block's latent grid, in cells (each side even: two cells a row's side).
 pub const Grid = struct { rows: usize, columns: usize };

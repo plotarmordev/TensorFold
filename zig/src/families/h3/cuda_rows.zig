@@ -85,22 +85,55 @@ pub const Rows = struct {
         try self.model.launch("h3_rows_in", .{ .x = @intCast(count) }, 256, 0, &args);
     }
 
-    /// Step `s` after the blocks: the target's rows of x through the final norm and the step's head, then the update.
-    pub fn out(self: *const Rows, x: u64, s: usize, delta: f32) !void {
+    /// Step `s` after the blocks: the target's rows of x through the final norm and the step's head.
+    /// An on-grid step reads head `s` (`first` = `last` = `s`, weight 1); an off-grid one blends the
+    /// spanned distilled heads as mmh3's `step_heads` does (`picture.headSpan`): the run chains one
+    /// launch a spanned head, `weights[0]` applied bare and each later one accumulate-and-scaled.
+    pub fn velocityOf(self: *const Rows, x: u64, s: usize, first: usize, last: usize, weights: []const f32) !void {
         const m = self.model;
         const hidden = m.hidden;
-        var args: cuda.Args = .{};
         const head = self.width * hidden * 4;
-        for ([_]u64{ x, self.final_norm.ptr, self.final.ptr, self.line_of.ptr + s * self.rows * 4, self.w_out.ptr + s * head, self.b_out.ptr + s * self.width * 4, self.velocity.ptr }) |p| args.add(p);
-        for ([_]usize{ hidden, self.width, self.text_rows + self.held }) |n| args.add(@as(c_int, @intCast(n)));
-        args.add(h3.eps);
-        try m.launch("h3_rows_out", .{ .x = @intCast(self.target) }, 256, @intCast(hidden * 4), &args);
-        args = .{};
+        const line = self.line_of.ptr + s * self.rows * 4;
+        for (first..last + 1, 0..) |k, w| {
+            var args: cuda.Args = .{};
+            const acc: u64 = if (w == 0) 0 else self.velocity.ptr;
+            for ([_]u64{ x, self.final_norm.ptr, self.final.ptr, line, self.w_out.ptr + k * head, self.b_out.ptr + k * self.width * 4, acc, self.velocity.ptr }) |p| args.add(p);
+            for ([_]usize{ hidden, self.width, self.text_rows + self.held }) |n| args.add(@as(c_int, @intCast(n)));
+            args.add(h3.eps);
+            args.add(if (w == 0) @as(f32, 1) else weights[w]);
+            try m.launch("h3_rows_out", .{ .x = @intCast(self.target) }, 256, @intCast(hidden * 4), &args);
+        }
+    }
+
+    /// `out` for a step whose head span was resolved on the host: `first` head through `last` at
+    /// `weights`, the velocity written, then the Euler update of `delta`.
+    pub fn out(self: *const Rows, x: u64, s: usize, delta: f32, first: usize, last: usize, weights: []const f32) !void {
+        try self.velocityOf(x, s, first, last, weights);
+        var args: cuda.Args = .{};
         args.add(self.video.ptr);
         args.add(self.velocity.ptr);
         args.add(delta);
         args.add(@as(c_int, @intCast(self.target * self.width)));
-        try m.launch("h3_euler", .{ .x = 512 }, 256, 0, &args);
+        try self.model.launch("h3_euler", .{ .x = 512 }, 256, 0, &args);
+    }
+
+
+    /// video − sigma · velocity in place on the device: the draft's predicted clean latent at the end
+    /// of the draft steps (`x − sigma · v` is `h3_euler`'s `video + delta · velocity` at delta −sigma),
+    /// kept resident so the host enlargement downloads it once.
+    pub fn clean(self: *const Rows, sigma: f32) !void {
+        var args: cuda.Args = .{};
+        args.add(self.video.ptr);
+        args.add(self.velocity.ptr);
+        args.add(-sigma);
+        args.add(@as(c_int, @intCast(self.target * self.width)));
+        try self.model.launch("h3_euler", .{ .x = 512 }, 256, 0, &args);
+    }
+
+    /// The stream's velocity rows after `velocityOf`, (target, width) f32.
+    pub fn velocityRows(self: *const Rows, into: []f32) !void {
+        try self.model.stream.synchronize();
+        try self.velocity.download(0, @import("std").mem.sliceAsBytes(into));
     }
 
     /// The video's rows after the last step, (target, width) f32.
