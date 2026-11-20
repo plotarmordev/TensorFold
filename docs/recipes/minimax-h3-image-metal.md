@@ -1264,35 +1264,61 @@ for speech (`timing_valid=false`) and is reported, not counted.
 
 The Desk's GPU window (16:37-17:17 HKT, voice idle) re-ran the A/B with `frag_get_q` rebuilt on this branch's
 parent (`fc8aa2d45`, the shipped side built from the same commit): one resident ReleaseFast server a side, one lock
-hold a server (cold on card 34's prompt, then harbour, meadow, steam at seed 42), sides alternated main, head, head,
-main, main, head. Load is the 1-minute average when each request was sent; other checkouts' builds kept it at 11-45.
-Seconds; warm runs' six steps (total in brackets):
+hold a server (cold on card 34's prompt, then harbour, meadow, steam at seed 42; latents byte-identical between
+sides on all three prompts), sides alternated main, head, head, main, main, head. Load is the 1-minute average when
+each request was sent; other checkouts' builds kept it at 8.8-45.0. Every warm run's stage times in seconds (`b:`
+bound, `r:` reused; step GPU sum in brackets):
 
-| Round | Side | harbour | meadow | steam | load at the three requests |
-|---|---|---:|---:|---:|---|
-| 1 | main | 8.97 (12.42) | 9.28 (12.66) | 9.31 (12.40) | 23.2 / 20.9 / 18.8 |
-| 1 | head | 8.96 (12.76) | 9.28 (12.52) | 9.95 (12.32) | 33.0 / 29.4 / 26.9 |
-| 2 | head | 9.81 (16.43) | 10.39 (17.38) | 9.61 (16.26) | 19.0 / 15.2 / 14.3 |
-| 2 | main | 10.81 (17.92) | 10.61 (39.09) | 9.60 (14.79) | 15.2 / 25.3 / 16.5 |
-| 3 | main | 9.00 (14.05) | 9.31 (13.67) | 9.72 (14.90) | 28.0 / 25.2 / 22.4 |
-| 3 | head | 10.24 (17.03) | 9.41 (15.80) | 9.28 (14.25) | 21.9 / 24.9 / 19.0 |
+| Round | Side | Request | prompt | case | xform | 6 steps (GPU) | decoder | total | load | notes |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | main | harbour | 1.28 | 0.01 | b:0.75 | 8.97 (8.94) | 1.41 | 12.42 | 23.2 | |
+| 1 | main | meadow | 1.24 | 0.00 | b:0.76 | 9.28 (9.24) | 1.38 | 12.66 | 20.9 | |
+| 1 | main | steam | 1.69 | 0.01 | r:0.00 | 9.31 (9.24) | 1.39 | 12.40 | 18.8 | |
+| 1 | head | harbour | 1.52 | 0.01 | b:0.81 | 8.96 (8.93) | 1.46 | 12.76 | 33.0 | |
+| 1 | head | meadow | 1.02 | 0.01 | b:0.76 | 9.28 (9.24) | 1.46 | 12.52 | 29.4 | |
+| 1 | head | steam | 0.76 | 0.01 | r:0.00 | 9.95 (9.92) | 1.60 | 12.32 | 26.9 | |
+| 2 | head | harbour | 2.03 | 0.06 | b:1.30 | 9.81 (9.02) | 3.23 | 16.43 | 19.0 | |
+| 2 | head | meadow | 3.07 | 0.01 | b:1.20 | 10.39 (9.36) | 2.72 | 17.38 | 15.2 | |
+| 2 | head | steam | 2.73 | 0.09 | r:0.00 | 9.61 (9.32) | 3.83 | 16.26 | 14.3 | |
+| 2 | main | harbour | 2.32 | 0.01 | b:1.46 | 10.81 (9.03) | 3.31 | 17.92 | 15.2 | |
+| 2 | main | meadow | 23.90 | 0.02 | b:1.96 | 10.61 (9.37) | 2.61 | 39.09 | 25.3 | prompt waited 20.78 s for speech |
+| 2 | main | steam | 2.23 | 0.06 | r:0.00 | 9.60 (9.23) | 2.90 | 14.79 | 16.5 | |
+| 3 | main | harbour | 2.28 | 0.01 | b:1.10 | 9.00 (8.94) | 1.65 | 14.05 | 28.0 | |
+| 3 | main | meadow | 1.44 | 0.03 | b:0.91 | 9.31 (9.24) | 1.98 | 13.67 | 25.2 | |
+| 3 | main | steam | 2.69 | 0.05 | r:0.00 | 9.72 (9.24) | 2.45 | 14.90 | 22.4 | |
+| 3 | head | harbour | 2.20 | 0.01 | b:1.18 | 10.24 (9.01) | 3.40 | 17.03 | 21.9 | |
+| 3 | head | meadow | 3.32 | 0.01 | b:1.08 | 9.41 (9.24) | 1.97 | 15.80 | 24.9 | |
+| 3 | head | steam | 2.70 | 0.01 | r:0.00 | 9.28 (9.24) | 2.26 | 14.25 | 19.0 | |
 
-Medians of the nine warm runs a side: main 9.31 s of steps, head 9.61 s. Paired by prompt and round, head wins 3
-(two in round 2, where main's meadow prompt alone took 23.9 s of contention), ties 2 and loses 4.
-No warm request waited for speech; head's round-1 cold run waited 0.53 s and is not in the table.
-Fast mode (`--draft-steps 3`), warm steps (total):
+Medians of the nine warm runs a side: main 9.31 s wall / 9.24 s GPU of steps, head 9.61 s wall / 9.24 s GPU. Every
+warm step reported `timing_valid=true`; round 2 main's meadow prompt waited 20.78 s for speech, and head's round-1
+cold run (not in the table) waited 0.31 s in prompt and 0.53 s in steps 1-2 (`timing_valid=false`).
 
-| Round | Side | harbour | meadow | steam | load at the three requests |
-|---|---|---:|---:|---:|---|
-| 1 | main | 8.98 (14.52) | 8.65 (14.82), speech wait | 6.16 (11.00), speech wait | 19.4 / 18.3 / 15.9 |
-| 1 | head | 10.98 (19.43) | 9.49 (16.70) | 6.49 (12.20) | 11.3 / 8.8 / 9.9 |
-| 2 | main | 9.51 (39.71) | 9.51 (17.61) | 6.67 (11.62) | 22.4 / 20.9 / 15.6 |
-| 2 | head | 8.88 (15.78) | 9.37 (21.20) | 7.30 (20.12) | 11.5 / 15.8 / 45.0 |
+Fast mode (`--draft-steps 3`), same stage breakdown:
 
-The window confirms the quiet round: no served gain from the 4-byte loads at six steps or in fast mode, so the code
-stays reverted. Neither side reached the 10.8 s normal / 7.8 s fast totals of the quiet round under this load; the
-best warm totals were main 12.40 s and head 12.32 s at six steps, and main 11.00 s and head 12.20 s in fast mode
-(the binding-reused third request).
+| Round | Side | Request | prompt | case | xform | 6 steps (GPU) | decoder | total | load | notes |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | main | harbour | 2.16 | 0.02 | b:1.23 | 8.98 (5.88) | 2.13 | 14.52 | 19.4 | |
+| 1 | main | meadow | 3.37 | 0.02 | b:0.94 | 8.65 (6.16) | 1.83 | 14.82 | 18.3 | 0.17 s speech wait; steps 1, 5-6 `timing_valid=false` |
+| 1 | main | steam | 2.68 | 0.02 | r:0.00 | 6.16 (6.09) | 2.13 | 11.00 | 15.9 | steps 4-6 `timing_valid=false` |
+| 1 | head | harbour | 4.19 | 0.02 | b:1.21 | 10.98 (5.88) | 3.03 | 19.43 | 11.3 | |
+| 1 | head | meadow | 3.57 | 0.02 | b:1.19 | 9.49 (6.16) | 2.43 | 16.70 | 8.8 | |
+| 1 | head | steam | 2.79 | 0.02 | r:0.00 | 6.49 (6.09) | 2.90 | 12.20 | 9.9 | |
+| 2 | main | harbour | 25.82 | 0.01 | b:1.46 | 9.51 (5.88) | 2.91 | 39.71 | 22.4 | prompt waited 23.12 s for speech |
+| 2 | main | meadow | 4.21 | 0.06 | b:1.33 | 9.51 (6.16) | 2.50 | 17.61 | 20.9 | |
+| 2 | main | steam | 2.02 | 0.01 | r:0.00 | 6.67 (6.09) | 2.92 | 11.62 | 15.6 | |
+| 2 | head | harbour | 2.58 | 0.02 | b:1.30 | 8.88 (5.87) | 3.00 | 15.78 | 11.5 | |
+| 2 | head | meadow | 2.21 | 0.01 | b:1.39 | 9.37 (6.15) | 8.22 | 21.20 | 15.8 | |
+| 2 | head | steam | 4.49 | 0.03 | r:0.00 | 7.30 (6.16) | 8.29 | 20.12 | 45.0 | |
+
+Fast-mode medians across the six warm runs a side: main 8.82 s wall / 6.09 s GPU of steps, head 9.12 s wall / 6.12 s
+GPU (on the binding-reused third prompt `steam`, 6.16-6.67 s main vs 6.49-7.30 s head; round 1 head's cold run
+waited 0.31 s for speech in its prompt).
+
+The window confirms the quiet round: even on pure step GPU time (9.24 vs 9.24 s normal, 6.09 vs 6.12 s fast) the
+4-byte loads yield no served gain, so the code stays reverted. Neither side reached the quiet baseline's 10.8 s
+normal / 7.8 s fast totals under this host load (8.8-45.0); the best warm totals in the window were main 12.40 s and
+head 12.32 s at six steps, and main 11.00 s (`timing_valid=false`; 11.62 s valid) and head 12.20 s in fast mode.
 
 ### Next, ranked
 
