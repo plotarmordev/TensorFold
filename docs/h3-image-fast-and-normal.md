@@ -17,8 +17,8 @@ column includes the draft's lift inside its six-step count.
 |---|---:|---:|---:|---:|---|
 | Spark normal | 0.0 | 12.9 | 1.3 | 14.2 | `top-30920108b62e` |
 | Spark fast (`--draft-steps 3`) | 0.0 | 8.6 | 1.4 | 9.9 | `top-c2896139b5eb` |
-| Mac normal | 0.0 | 9.4 | 1.4 | 10.8 | `h3-image-fast-and-normal/mac-normal.server.log` |
-| Mac fast (`--draft-steps 3`) | 0.0 | 6.4 | 1.5 | 7.8 | `h3-image-fast-and-normal/mac-drafts.server.log` |
+| Mac normal | 0.0 | 9.4 | 1.4 | 10.8 | `h3-image-fast-and-normal/mac-normal.server.log.txt` |
+| Mac fast (`--draft-steps 3`) | 0.0 | 6.4 | 1.5 | 7.8 | `h3-image-fast-and-normal/mac-drafts.server.log.txt` |
 
 The Spark rows come from two `swarm gpu-run` jobs of
 [`bench-script.sh`](recipes/minimax-h3-cuda/bench-script.sh) and
