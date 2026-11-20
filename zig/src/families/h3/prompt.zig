@@ -8,6 +8,7 @@ pub const tensors = @import("tensors.zig");
 pub const weights = @import("prompt_weights.zig");
 pub const reference = @import("prompt_reference.zig");
 pub const case = @import("prompt_case.zig");
+pub const cache = @import("prompt_cache.zig");
 pub const kernels = @import("prompt_kernels.zig");
 
 const Ref = tensors.Ref;

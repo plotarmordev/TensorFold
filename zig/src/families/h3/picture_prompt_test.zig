@@ -246,3 +246,7 @@ test "h3 prompt: the tensor tables follow their structs' fields, at the released
     try testing.expectEqual(pp.Shape{ 28672, 5376 }, block[6][2]);
     try testing.expectEqual(pp.Shape{ 5376, 5120 }, pp.frontTensors(pp.released_refiner)[0][2]);
 }
+
+test "the prompt cache's states, budget and LRU order" {
+    _ = @import("prompt_cache_test.zig");
+}
