@@ -99,7 +99,7 @@ pub const Int8 = struct {
         for ([_]u64{ lay.acc, lay.xs, w.scales(), act }) |a| args.add(a);
         args.add(@as(c_int, @intCast(rows)));
         args.add(@as(c_int, @intCast(w.n / 2)));
-        try self.launch("h3_swiglu_int8", .{ .x = 1024 }, 256, 0, &args);
+        try self.launch("h3_swiglu_int8", .{ .x = @intCast(rows) }, 256, 0, &args);
     }
 
     /// Room and plans for `rows` before a step is captured: `layout` then only hands out buffers.

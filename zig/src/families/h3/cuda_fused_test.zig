@@ -1,6 +1,7 @@
 //! Device regression of the fused int8 launches against the kernels they fold: h3_norm_quant's rows must be
-//! byte-identical to h3_norm then h3_quantize, and h3_heads_i8's to h3_dequantize then h3_heads. Every rounding
-//! and sum order is shared, so the check is equality, not a bound.
+//! byte-identical to h3_norm then h3_quantize, h3_heads_i8's to h3_dequantize then h3_heads, and
+//! h3_swiglu_int8's to h3_dequantize then h3_swiglu. Every rounding and sum order is shared, so the check is
+//! equality, not a bound.
 const std = @import("std");
 const cuda = @import("cuda");
 const h3 = @import("cuda.zig");
@@ -171,6 +172,31 @@ pub fn run(a: std.mem.Allocator) !void {
     }
     try stream.synchronize();
 
+    // ---- swiglu: the unfused chain dequantizes the fc1 sums to bf16 then runs h3_swiglu; the fused
+    // h3_swiglu_int8 runs the same silu and product on values dequantized the same way
+    const n = C / 2; // the act row's width
+    var wide = try cuda.DeviceBuffer.alloc(&driver, rows * 2 * n * 2);
+    defer wide.free();
+    var act1 = try cuda.DeviceBuffer.alloc(&driver, rows * n * 2);
+    defer act1.free();
+    var act2 = try cuda.DeviceBuffer.alloc(&driver, rows * n * 2);
+    defer act2.free();
+    {
+        var args: cuda.Args = .{};
+        for ([_]u64{ acc_dev.ptr, sx_dev.ptr, sw_dev.ptr, wide.ptr }) |p| args.add(p);
+        for ([_]c_int{ rows, 2 * n }) |v| args.add(v);
+        try cuda.launch.launch(try module.function("h3_dequantize"), .{ .grid = .{ .x = 1024 }, .block = .{ .x = 256 } }, stream, &args);
+        args = .{};
+        for ([_]u64{ wide.ptr, act1.ptr }) |p| args.add(p);
+        for ([_]c_int{ rows, n }) |v| args.add(v);
+        try cuda.launch.launch(try module.function("h3_swiglu"), .{ .grid = .{ .x = 1024 }, .block = .{ .x = 256 } }, stream, &args);
+        args = .{};
+        for ([_]u64{ acc_dev.ptr, sx_dev.ptr, sw_dev.ptr, act2.ptr }) |p| args.add(p);
+        for ([_]c_int{ rows, n }) |v| args.add(v);
+        try cuda.launch.launch(try module.function("h3_swiglu_int8"), .{ .grid = .{ .x = rows }, .block = .{ .x = 256 } }, stream, &args);
+    }
+    try stream.synchronize();
+
     const checks = .{
         .{ q1, q2, rows * C, "quantized rows" },
         .{ s1, s2, rows * 4, "row scales" },
@@ -178,6 +204,7 @@ pub fn run(a: std.mem.Allocator) !void {
         .{ tq1, tq2, heads * slots * 128 * 2, "q tiles" },
         .{ tk1, tk2, heads * slots * 128 * 2, "k tiles" },
         .{ tv1, tv2, heads * slots * 128 * 2, "v tiles" },
+        .{ act1, act2, rows * n * 2, "act rows" },
     };
     inline for (checks) |chk| {
         const first = try download(a, chk[0], chk[2]);
@@ -189,5 +216,5 @@ pub fn run(a: std.mem.Allocator) !void {
             return error.H3FusedMismatch;
         }
     }
-    std.debug.print("H3 CUDA fused: h3_norm_quant and h3_heads_i8 match the unfused kernels byte for byte\n", .{});
+    std.debug.print("H3 CUDA fused: h3_norm_quant, h3_heads_i8 and h3_swiglu_int8 match the unfused kernels byte for byte\n", .{});
 }
