@@ -70,12 +70,19 @@ pub const cuda_pending = [_]CudaRecord{
     .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
 };
 
-/// The picture's TMA products (h3_int8_tma.cuh): pending sm_121 launch measurements, committed once
-/// the GB10 check prints them (registry_media's cuda[] rows keep none).
+/// The picture's TMA products (h3_int8_tma.cuh): sm_121's usage from GB10's live check; sm_120's
+/// pending the five-SM limits job.
 pub const cuda_tma_pending = [_]CudaRecord{
-    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99440, .opt_in = true, .min_sm = 90 }, .usage = @import("registry.zig").none },
-    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma_wide", .symbol = "h3_gemm_int8_tma_wide", .image = "h3", .threads = 256, .dynamic = 99440, .opt_in = true, .min_sm = 90 }, .usage = @import("registry.zig").none },
-    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99440, .opt_in = true, .min_sm = 90 }, .usage = @import("registry.zig").none },
-    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma_wide", .symbol = "h3_swiglu_int8_tma_wide", .image = "h3", .threads = 256, .dynamic = 99440, .opt_in = true, .min_sm = 90 }, .usage = @import("registry.zig").none },
+    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(224) },
+    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma_wide", .symbol = "h3_gemm_int8_tma_wide", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(237) },
+    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(218) },
+    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma_wide", .symbol = "h3_swiglu_int8_tma_wide", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(238) },
     .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = @import("registry.zig").none },
 };
+
+/// A usage row measured on sm_121 alone; the other targets stay missing receipts.
+fn sm121(regs: u32) [5]@import("limits.zig").Usage {
+    var u = @import("registry.zig").none;
+    u[4] = .{ .regs = regs, .static = 0, .bound = 256 };
+    return u;
+}
