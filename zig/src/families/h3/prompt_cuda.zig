@@ -280,7 +280,7 @@ const Products = struct {
     /// (rows, n, k, bias) to its plan.
     plans: std.AutoHashMapUnmanaged([4]u64, cuda.cublaslt.Linear) = .empty,
     /// The int8 products' handle, with (rows, n, k) to its int8-in/int32-out plan.
-    handle: cuda.cublaslt.Handle,
+    handle: cuda.cublaslt.Handle = null,
     int8_plans: std.AutoHashMapUnmanaged([3]u64, cuda.cublaslt.Gemm) = .empty,
 
     const workspace_bytes = 32 << 20;
