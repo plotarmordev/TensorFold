@@ -22,7 +22,7 @@ mkdir -p "$out"
     echo "sizes: ${H3_BENCH_SIZES:-2048}"
     echo "transformer linear layers: ${H3_LINEAR:-int8}"
     echo "draft steps: ${H3_DRAFT_STEPS:-0}${H3_RENOISE_SIGMA:+, renoise sigma $H3_RENOISE_SIGMA}"
-    echo "runs per size: 4 (1 cold, 3 warm)"
+    echo "prompts per run: ${H3_BENCH_PROMPTS:-$pilot/prompt.txt (all runs, each a kept-states hit)}"
 } >"$out/settings"
 selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or FAIL to selftests
     name=$1
@@ -70,7 +70,8 @@ image() { # the resident transformer renders $case; the server's log since the l
     logged=$(wc -c <"$out/$side.server.log")
     [ "$verdict" = done ] || { cat "$case.image.log" >&2; exit 1; }
 }
-prompt_stage() { # the resident prompt stage writes $case's picture case; its new log bytes go to $case.prompt.log
+prompt_stage() { # the resident prompt stage writes $case's picture case from $1; its new log bytes go to $case.prompt.log
+    prompt_file=$1
     [ -n "$prompt_server" ] || {
         mkfifo "$out/prompt-requests" "$out/prompt-replies"
         "$bin/tf-h3-image-prompt-cuda" "$model/text_encoder" "$model" --serve <"$out/prompt-requests" >"$out/prompt-replies" 2>"$out/$side.prompt-server.log" \
@@ -79,7 +80,7 @@ prompt_stage() { # the resident prompt stage writes $case's picture case; its ne
         exec 5>"$out/prompt-requests" 6<"$out/prompt-replies"
         prompt_logged=0
     }
-    echo "$pilot/prompt.txt $case.safetensors ${side}x$side 42" >&5
+    echo "$prompt_file $case.safetensors ${side}x$side 42" >&5
     read -r verdict _ <&6 || verdict=
     tail -c +$((prompt_logged + 1)) "$out/$side.prompt-server.log" >"$case.prompt.log"
     prompt_logged=$(wc -c <"$out/$side.prompt-server.log")
@@ -101,13 +102,17 @@ decoder_stage() { # the resident decoder writes $case.png; its new log bytes go 
     decoder_logged=$(wc -c <"$out/$side.decoder-server.log")
     [ "$verdict" = done ] || { cat "$case.decoder.log" >&2; exit 1; }
 }
+# H3_BENCH_PROMPTS is one prompt file a run; run n takes the nth word, so a file listed twice is a
+# kept-states hit and a file listed once an unseen prompt. Unset, every run re-reads the pilot prompt.
 for side in ${H3_BENCH_SIZES:-2048}; do
-    for run in 1 2 3 4; do
+    run=0
+    for prompt_file in ${H3_BENCH_PROMPTS:-$pilot/prompt.txt $pilot/prompt.txt $pilot/prompt.txt $pilot/prompt.txt}; do
+        run=$((run + 1))
         case=$out/$side-$run
         sample >"$case.smi" &
         sampler=$!
         date +%s.%N >"$case.time"
-        prompt_stage
+        prompt_stage "$prompt_file"
         image
         decoder_stage
         date +%s.%N >>"$case.time"
