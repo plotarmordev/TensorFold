@@ -47,7 +47,13 @@ rows and text tags), so a request with the last one's layout keeps them and only
 the canvas, row count, reference count and tags; it assumes there are no reference rows, so those determine all
 rotary positions. Supporting edits would also require checking reference geometry and refreshing reference
 conditioning, not just comparing row counts.
-Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
+Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), the steps' count
+and seconds, decoder, total.
+
+`--draft-steps N` runs each request's first N steps on the half-size canvas, mmh3's fast mode: the clean draft is
+enlarged bilinearly, noised back to the next step's sigma (`--renoise-sigma X` overrides it) and redrawn at full
+size for the remaining steps. A different picture than the six-step run, not a faster copy of it. A canvas side
+must be a multiple of 64 pixels for the latent grid to halve; anything else refuses with H3BadCascadeGrid.
 A bad request prints its error and the server reads the next line.
 Start it with `profile` after `MODEL_DIR` to print each request's six steps by stage, each stage in its own command
 buffer: `rows in`, `norms`, `q k v gate`, `heads`, `attention`, `attention out`, `mlp in`, `mlp out`, `final`. The
@@ -214,7 +220,7 @@ float64 as the float32-sum run.
 
 ```sh
 zig build tf-h3-image -Dcpu=apple_m1 -Doptimize=ReleaseFast
-zig-out/bin/tf-h3-image MODEL_DIR picture.safetensors out/case [once | free]
+zig-out/bin/tf-h3-image MODEL_DIR picture.safetensors out/case [once | free] [--draft-steps N] [--renoise-sigma X]
 ```
 
 `MODEL_DIR` is the MiniMax-H3-Image folder: `model_index.json` (the image pipeline's class and partition),
@@ -227,6 +233,20 @@ zig-out/bin/tf-h3-image MODEL_DIR picture.safetensors out/case [once | free]
 It writes `out/case.latent.f32`, the normalised latent [24, rows, columns] in float32, ready for the reference's
 decoder. `once` runs the first teacher-forced step alone; `free` runs only the free run. It needs the M5's tensor
 units, as the clip tool does.
+
+`--draft-steps N` runs the first N steps on the half-size canvas, mmh3's fast mode: the clean draft is enlarged
+bilinearly, noised back to the next step's sigma (`--renoise-sigma X` overrides it; off-grid steps blend the
+distilled heads their sigma span covers, as ComfyUI's step_heads does) and redrawn at full size for the rest.
+It draws a different picture, not a faster copy of the six-step one, so the teacher-forced and latent gates don't
+apply: drafts only run the free pass (`once` with `--draft-steps` is an error), and cases with reference rows
+refuse. It also writes `out/case.draft.h3case.safetensors`, the half-size draft's case.
+
+Warm on this Mac (M5 Ultra, 2048x2048, the seed-42 fox prompt): six timing-valid steps take 10.4 s; the same six
+steps with `--draft-steps 3` take 6.3 s — three half-size steps at 0.5 s each plus three full-size ones. The draft
+draws a different but clean fox: latent cosine against the six-step run is 0.70 (a second six-step run's is 0.995),
+matching the Spark port's 0.706. Side by side:
+
+![six steps against draft-steps 3 on the same case](minimax-h3-image-metal/draft-vs-six-step.png)
 
 It and `tf-h3-image-server` make way for live speech on the same GPU. The speech server holds a shared flock on
 `/tmp/tensorfold-speech.lock` while it synthesizes (`zig/src/server/gpu_turn.zig`). The tools submit each block as its
