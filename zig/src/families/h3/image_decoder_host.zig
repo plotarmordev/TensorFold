@@ -32,41 +32,6 @@ pub fn write(io: std.Io, a: std.mem.Allocator, decoded: []const f32, height: usi
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = file });
 }
 
-/// `write` at the canvas size, a band of rows at a time: the same PNG bytes, the rows encoded as they turn final.
-pub const Banded = struct {
-    width: usize,
-    height: usize,
-    rgb: []u8,
-    png: *writer.png.Stream,
-
-    pub fn init(a: std.mem.Allocator, height: usize, width: usize) !Banded {
-        return .{ .width = width, .height = height, .rgb = try a.alloc(u8, 3 * width * height), .png = try writer.png.Stream.create(a, width, height) };
-    }
-
-    pub fn deinit(b: *Banded, a: std.mem.Allocator) void {
-        b.png.destroy();
-        a.free(b.rgb);
-    }
-
-    /// Rows [from, to) of the decoded picture [3, height, width], as RGB bytes into the PNG.
-    pub fn rows(b: *Banded, decoded: []const f32, from: usize, to: usize) !void {
-        const plane = b.width * b.height;
-        if (decoded.len != 3 * plane or from > to or to > b.height) return error.H3BadLatentLength;
-        const band = b.rgb[3 * from * b.width .. 3 * to * b.width];
-        for (0..3) |ch| for (from * b.width..to * b.width) |i| {
-            b.rgb[3 * i + ch] = vae.byte(decoded[ch * plane + i], ch);
-        };
-        try b.png.rows(band);
-    }
-
-    /// The PNG at `path` once every row is in.
-    pub fn finish(b: *Banded, io: std.Io, path: []const u8) !void {
-        const file = try b.png.finish();
-        defer b.png.a.free(file);
-        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = file });
-    }
-};
-
 /// The decoder on the host: every parameter in bf16 as `plan` says, tiles decoded across every core.
 pub const Decoder = struct {
     gpa: std.mem.Allocator,
