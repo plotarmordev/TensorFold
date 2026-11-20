@@ -14,6 +14,10 @@
   readback is skippable, and `model.latent` reads the stepped rows after the last step.
 - The VAE decoder's pass batch is 128 tiles (was 64): a 2048² canvas's 121 tiles decode in one
   pass, the way mmh3 runs its VAE — card 130's batch on the Metal path. Its `h3d_gemm` epilogue
-  already folded the bias and LayerScale rounding card 130 fused on the CUDA side.
+  already folded the bias and LayerScale rounding card 130 fused on the CUDA side. One pass measures
+  1.08 s of GPU against 1.36 s over two passes; wall time is flat (the decode's host blend dominates),
+  so the batch earns its keep in GPU seconds, not a faster picture.
+- Warm 2048 A/B vs base `561d85c1` (ReleaseFast server, alternating rounds, load 24-40): head
+  11.13-11.74 s, base 11.06-11.79 s — flat within noise; the latent is bit-identical to main's
+  (sha1 `8b9e75b5…`) and the PNG bytes match (`7bf89a7f…`).
 - The kernel contract covers `h3_head_norm` (norm then head in f32) and `h3_euler` against their
-  float64 formulas; the resident path is exercised by `tf-h3-image`'s free run, which now takes it.

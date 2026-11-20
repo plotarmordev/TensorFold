@@ -14,7 +14,7 @@ using namespace metal;
 
 // The stream width a head-normed row can stage in threadgroup memory (the checkpoint's hidden).
 #ifndef H3_HIDDEN
-#define H3_HIDDEN 4096
+#define H3_HIDDEN 5376
 #endif
 
 // The modulated norm one value at a time, rounded to bf16 where the reference's bf16 arithmetic rounds.
