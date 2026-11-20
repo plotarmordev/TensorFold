@@ -1,0 +1,479 @@
+diff --git a/docs/recipes/minimax-h3-cuda/bench-script.sh b/docs/recipes/minimax-h3-cuda/bench-script.sh
+index b8cc72b16..6cabeac0f 100755
+--- a/docs/recipes/minimax-h3-cuda/bench-script.sh
++++ b/docs/recipes/minimax-h3-cuda/bench-script.sh
+@@ -54,7 +54,7 @@ image() { # the resident transformer renders $case; the server's log since the l
+         # the earlier server would never see EOF when the script closes it
+         # H3_PROFILE (off unless set) waits after every stage for its block-stage lines; the default run
+         # captures each step as one CUDA graph, which those waits would keep it from doing
+-        # shellcheck disable=SC2046 # --bf16 or no word at all: int8 (qkvc and fc1) is the default
++        # shellcheck disable=SC2046 # --bf16 or no word at all: int8 (all four projections on the own tile) is the default
+         H3_PROFILE=${H3_PROFILE-} "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = bf16 ] && echo --bf16) <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
+             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
+         server=$!
+diff --git a/zig/kernels/cuda/h3.cu b/zig/kernels/cuda/h3.cu
+index f0a266d55..7855979f3 100644
+--- a/zig/kernels/cuda/h3.cu
++++ b/zig/kernels/cuda/h3.cu
+@@ -1,6 +1,141 @@
+ // MiniMax H3 / FastH3's transformer blocks on CUDA in the checkpoint's bf16: the row, routing and attention kernels.
+ #include "h3_attention.cuh"
+ #include "common/reduce.cuh"
++#include "common/qmm_frag.cuh"
++
++namespace h3_gemm {
++using namespace qmm_frag;
++
++// One m16n8k32 int8 mma step on the packed code words of a 32-value slice.
++__device__ __forceinline__ void mma_s8(int (&d)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
++    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};\n"
++                 : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3]) : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
++}
++
++// C (M, N) bf16 = X (M, K) . W (N, K)^T of rotated int8 rows. Activations carry one fp32 scale a 128-wide
++// chunk in XS (M, K/128) — the per-chunk fold keeps a loud chunk from shrinking its neighbours; weights
++// carry one fp32 scale a row in WS (N), applied once in the epilogue. The int32 sums stay in registers
++// across K; the mma's own tile writes bf16, no int32 round trip through a second kernel.
++// A stage is one K chunk deep: BM rows of X, BN rows of W and this chunk's BM activation scales.
++// Grid tiles (M, N) in bands of `group` for L2 reuse.
++template <int BM, int BN, int WM, int WN, int STAGES>
++__device__ __forceinline__ void gemm(const int8_t* __restrict__ X, const float* __restrict__ XS,
++        const int8_t* __restrict__ W, const float* __restrict__ WS, __nv_bfloat16* __restrict__ C,
++        int M, int N, int K, int group) {
++    constexpr int GS = 128, THREADS = WM * WN * 32, MT = BM / WM / 16, NT = BN / WN / 8;
++    constexpr int SX = BM * GS, SW = BN * GS;            // one 128-value chunk's codes a row
++    constexpr int STAGE = SX + SW + BM * 4;              // codes, then this chunk's activation scales
++    extern __shared__ __align__(128) unsigned char buf[];
++    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
++    const int wm = warp / WN, wn = warp % WN;
++    const int KG = K >> 7;
++    const int2 at = tile_of(blockIdx.x, M, N, BM, BN, group);
++    const int m0 = at.x, n0 = at.y;
++    auto load = [&](int s, int g) {
++        unsigned char* p = buf + s * STAGE;
++        for (int c = tid; c < SX / 16; c += THREADS) {          // 8 chunks of 16 bytes a 128-byte row
++            const int r = c >> 3, ch = c & 7, row = m0 + r;
++            cp16z(p + r * GS + swz<8>(r, ch) * 16, X + (size_t)min(row, M - 1) * K + g * GS + ch * 16, row < M);
++        }
++        for (int c = tid; c < SW / 16; c += THREADS) {
++            const int r = c >> 3, ch = c & 7, col = n0 + r;
++            cp16z(p + SX + r * GS + swz<8>(r, ch) * 16, W + (size_t)min(col, N - 1) * K + g * GS + ch * 16, col < N);
++        }
++        float* ps = reinterpret_cast<float*>(p + SX + SW);
++        for (int c = tid; c < BM / 4; c += THREADS) {           // 4 scales a 16-byte copy
++            const int r = c * 4;
++#pragma unroll
++            for (int e = 0; e < 4; ++e) {
++                const int idx = m0 + r + e;
++                ps[r + e] = idx < M ? __ldg(XS + (size_t)idx * KG + g) : 0.f;
++            }
++        }
++    };
++    float acc[MT][NT][4];
++#pragma unroll
++    for (int i = 0; i < MT; ++i)
++#pragma unroll
++        for (int j = 0; j < NT; ++j) acc[i][j][0] = acc[i][j][1] = acc[i][j][2] = acc[i][j][3] = 0.0f;
++#pragma unroll
++    for (int s = 0; s < STAGES - 1; ++s) {
++        if (s < KG) load(s, s);
++        qmm_frag::commit();
++    }
++    for (int it = 0; it < KG; ++it) {
++        qmm_frag::wait<STAGES - 2>();
++        __syncthreads();
++        const int next = it + STAGES - 1;
++        if (next < KG) load(next % STAGES, next);
++        qmm_frag::commit();
++        const unsigned char* p = buf + (it % STAGES) * STAGE;
++        const float* ps = reinterpret_cast<const float*>(p + SX + SW);
++        int iacc[MT][NT][4];
++#pragma unroll
++        for (int i = 0; i < MT; ++i)
++#pragma unroll
++            for (int j = 0; j < NT; ++j) iacc[i][j][0] = iacc[i][j][1] = iacc[i][j][2] = iacc[i][j][3] = 0x4B400000;
++        // a chunk is four 32-deep mma steps; the int32 sums stay exact (each < 2^23) in the 12582912.0f trick's fma
++#pragma unroll
++        for (int kt = 0; kt < 4; ++kt) {
++            uint32_t a[MT][4];
++#pragma unroll
++            for (int i = 0; i < MT; ++i) {
++                const int r = wm * (BM / WM) + i * 16 + (lane & 7) + ((lane >> 3) & 1) * 8;
++                ldmatrix4(a[i], p + r * GS + swz<8>(r, kt * 2 + (lane >> 4)) * 16);
++            }
++#pragma unroll
++            for (int jj = 0; jj < NT; jj += 2) {              // an x4 load feeds two n8 operands
++                const int half = lane >> 4;                    // lanes 16+ take the j+1 weight rows
++                const int c = wn * (BN / WN) + (jj + half) * 8 + (lane & 7);
++                uint32_t b[4];
++                ldmatrix4(b, p + SX + c * GS + swz<8>(c, kt * 2 + ((lane >> 3) & 1)) * 16);
++#pragma unroll
++                for (int i = 0; i < MT; ++i) {
++                    mma_s8(iacc[i][jj], a[i], b[0], b[1]);
++                    mma_s8(iacc[i][jj + 1], a[i], b[2], b[3]);
++                }
++            }
++        }
++        // drop 12582912.0f and fold the chunk's int32 sums in at the activation scale: acc += (iacc - magic) * xs
++        float ra[MT][2], rc[MT][2];
++#pragma unroll
++        for (int i = 0; i < MT; ++i)
++#pragma unroll
++            for (int h = 0; h < 2; ++h) {
++                const float s = ps[wm * (BM / WM) + i * 16 + (lane >> 2) + h * 8];
++                ra[i][h] = s;
++                rc[i][h] = -12582912.0f * s;
++            }
++#pragma unroll
++        for (int j = 0; j < NT; ++j)
++#pragma unroll
++            for (int i = 0; i < MT; ++i)
++#pragma unroll
++                for (int h = 0; h < 2; ++h) {
++                    const float s = ra[i][h], c = rc[i][h];
++                    acc[i][j][2 * h] = fmaf(fmaf(__int_as_float(iacc[i][j][2 * h]), s, c), 1.0f, acc[i][j][2 * h]);
++                    acc[i][j][2 * h + 1] = fmaf(fmaf(__int_as_float(iacc[i][j][2 * h + 1]), s, c), 1.0f, acc[i][j][2 * h + 1]);
++                }
++    }
++    qmm_frag::wait<0>();
++#pragma unroll
++    for (int i = 0; i < MT; ++i)
++#pragma unroll
++        for (int j = 0; j < NT; ++j) {
++            const int col = n0 + wn * (BN / WN) + j * 8 + (lane & 3) * 2;
++            const float w0 = __ldg(WS + min(col, N - 1)), w1 = __ldg(WS + min(col + 1, N - 1));
++#pragma unroll
++            for (int h = 0; h < 2; ++h) {
++                const int row = m0 + wm * (BM / WM) + i * 16 + (lane >> 2) + h * 8;
++                if (row >= M || col >= N) continue;
++                __nv_bfloat16* dst = C + (size_t)row * N + col;
++                dst[0] = __float2bfloat16(acc[i][j][2 * h] * w0);
++                if (col + 1 < N) dst[1] = __float2bfloat16(acc[i][j][2 * h + 1] * w1);
++            }
++        }
++}
++
++} // namespace h3_gemm
+ 
+ namespace tf_h3 {
+ 
+@@ -228,17 +363,6 @@ __global__ void __launch_bounds__(256) h3_swiglu(const __nv_bfloat16* F, __nv_bf
+     }
+ }
+ 
+-// h3_swiglu over an int8 product's int32 sums [gate | value]: each sum to bf16 as h3_dequantize rounds it, then the
+-// same silu and product, so A matches the two kernels' output without the bf16 rows between them. Grid-stride.
+-__global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* A, int M, int N) {
+-    const size_t total = static_cast<size_t>(M) * N;
+-    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < total; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+-        const size_t r = i / N, n = i % N;
+-        const float s = SX[r];
+-        const float g = bf(ACC[r * 2 * N + n] * s * SW[n]), v = bf(ACC[r * 2 * N + N + n] * s * SW[N + n]);
+-        A[i] = __float2bfloat16(bf(g / (1.0f + expf(-g))) * v);
+-    }
+-}
+ 
+ // A warp's 128 values, four a lane in order, through the orthonormal Walsh-Hadamard transform in place.
+ __device__ __forceinline__ void hadamard128(float v[4]) {
+@@ -305,20 +429,34 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
+     }
+ }
+ 
+-// Y (M, N) = bf16(ACC SX[row] SW[col]): an int8 product's int32 sums back to bf16 rows. Grid-stride, four a thread.
+-__global__ void __launch_bounds__(256) h3_dequantize(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* Y, int M, int N) {
+-    const size_t quads = static_cast<size_t>(M) * N / 4;
+-    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < quads; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+-        const size_t at = i * 4, r = at / N, n = at % N;
+-        const int4 a = reinterpret_cast<const int4*>(ACC)[i];
+-        const float4 w = *reinterpret_cast<const float4*>(SW + n);
+-        const float s = SX[r];
+-        __nv_bfloat162* y = reinterpret_cast<__nv_bfloat162*>(Y + at);
+-        y[0] = __floats2bfloat162_rn(a.x * s * w.x, a.y * s * w.y);
+-        y[1] = __floats2bfloat162_rn(a.z * s * w.z, a.w * s * w.w);
++// Each bf16 row of X (M, K) Hadamard-rotated in 128-wide chunks, then to int8 Q at each chunk's own absmax
++// / 127 in S (M, K/128): the activation-side counterpart of h3_quantize's per-row scale. A chunk sits whole
++// in a warp, so its absmax is a warp reduce. Grid [M], 256 threads.
++__global__ void __launch_bounds__(256) h3_quantize_chunks(const __nv_bfloat16* X, int8_t* Q, float* S, int K) {
++    const size_t row = blockIdx.x;
++    const __nv_bfloat16* x = X + row * K;
++    const int chunks = K >> 7;
++    for (int c = threadIdx.x >> 5; c < chunks; c += blockDim.x >> 5) {
++        float v[4];
++        rotated_chunk(x, c, v);
++        float most = 0.f;
++        for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[j]));
++        most = warp_max(most);
++        const float scale = most > 0.f ? most / 127.f : 1.f;
++        if ((threadIdx.x & 31) == 0) S[row * chunks + c] = scale;
++        const char4 q = make_char4(__float2int_rn(v[0] / scale), __float2int_rn(v[1] / scale),
++                                   __float2int_rn(v[2] / scale), __float2int_rn(v[3] / scale));
++        *reinterpret_cast<char4*>(Q + row * K + c * 128 + (threadIdx.x & 31) * 4) = q;
+     }
+ }
+ 
++extern "C" __global__ void __launch_bounds__(256) h3_gemm_int8(const int8_t* __restrict__ X, const float* __restrict__ XS,
++        const int8_t* __restrict__ W, const float* __restrict__ WS, __nv_bfloat16* __restrict__ C,
++        int M, int N, int K, int group) {
++    h3_gemm::gemm<128, 128, 2, 4, 3>(X, XS, W, WS, C, M, N, K, group); // 3 stages fill sm_121's 99328-byte block cap
++}
++
++
+ __global__ void __launch_bounds__(128) h3_attention(
+         const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V, const int* LIST, const int* SIZES,
+         const int* ROWOF, __nv_bfloat16* Y, int slots, int heads, int queries, int keys, int first_query, int per_query,
+diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
+index 4ea8a0e92..c604645a6 100644
+--- a/zig/src/families/h3/cuda.zig
++++ b/zig/src/families/h3/cuda.zig
+@@ -26,7 +26,7 @@ const scale_m = 4;
+ const gate_m = 5;
+ 
+ const image align(16) = @embedFile("fatbin_h3").*;
+-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_rows_in", "h3_rows_out", "h3_euler" };
++const kernel_names = [_][:0]const u8{ "h3_norm", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_chunks", "h3_gemm_int8", "h3_rows_in", "h3_rows_out", "h3_euler" };
+ 
+ pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
+ 
+@@ -124,6 +124,7 @@ pub const Model = struct {
+         errdefer if (ordinary_cleanup) self.module.unload();
+         inline for (kernel_names, 0..) |name, i| self.functions[i] = try self.module.function(name);
+         try self.function("h3_attention").allowDynamicShared(attention_shared);
++        try self.function("h3_gemm_int8").allowDynamicShared(@import("cuda_int8.zig").gemm_shared_bytes);
+         // the legacy default stream: work queued by the caller's framework comes first
+         self.stream = .{ .d = d, .handle = null };
+         self.gemms = try Gemms.init(gpa, d);
+@@ -282,10 +283,9 @@ pub const Model = struct {
+         } else {
+             _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
+             _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
++            _ = try self.gemms.plan(rows, self.hidden, inner);
++            _ = try self.gemms.plan(rows, self.hidden, self.mlp);
+         }
+-        // `out` and `fc2` keep their bf16 weights in both modes
+-        _ = try self.gemms.plan(rows, self.hidden, inner);
+-        _ = try self.gemms.plan(rows, self.hidden, self.mlp);
+     }
+ 
+     /// The launches of `forward` once `plan` and `geometry.prepare` ran: capturable work only —
+@@ -357,11 +357,11 @@ pub const Model = struct {
+                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
+                 try self.lap("gate mix", &mark);
+             }
+-            try self.project(g.ya, b.out.ptr, null, g.y, rows, hidden, inner);
++            try self.project(g.ya, b.out.ptr, if (self.int8) |t| t.blocks[index].out else null, g.y, rows, hidden, inner);
+             try self.lap("attention out", &mark);
+             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m);
+             try self.lap("norms", &mark);
+-            if (self.int8) |t| try t.mlpIn(self, g.xn, t.blocks[index].fc1, g.act, rows) else {
++            if (self.int8) |t| try t.mlpIn(self, g.xn, t.blocks[index].fc1, g.wide, g.act, rows) else {
+                 try self.gemms.run(self.stream, g.xn, b.fc1.ptr, g.wide, rows, 2 * self.mlp, hidden);
+                 var args: cuda.Args = .{};
+                 args.add(g.wide);
+@@ -371,7 +371,7 @@ pub const Model = struct {
+                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
+             }
+             try self.lap("mlp in", &mark);
+-            try self.project(g.act, b.fc2.ptr, null, g.y, rows, hidden, self.mlp);
++            try self.project(g.act, b.fc2.ptr, if (self.int8) |t| t.blocks[index].fc2 else null, g.y, rows, hidden, self.mlp);
+             try self.lap("mlp out", &mark);
+         }
+         {
+diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
+index fbf9e78e9..3364b0d50 100644
+--- a/zig/src/families/h3/cuda_int8.zig
++++ b/zig/src/families/h3/cuda_int8.zig
+@@ -1,15 +1,14 @@
+-//! mmh3's INT8 linear layers on the H3 CUDA blocks: each projection's weight rows and each activation row Hadamard-rotated
+-//! in 128-wide chunks (ConvRot's outlier spreading), quantized to int8 at its absmax, summed exactly in int32 by
+-//! cuBLASLt, and scaled back to bf16 rows. The bf16 weights are freed once quantized.
++//! mmh3's INT8 linear layers on the H3 CUDA blocks: each projection's weight rows Hadamard-rotated and
++//! quantized to int8 at the row's absmax (one fp32 scale a row, stored behind the codes); each activation
++//! row rotated in 128-wide chunks and quantized at its own chunk's absmax (one fp32 scale a chunk), so a
++//! loud chunk cannot shrink its neighbours. `h3_gemm_int8` sums the rotated codes exactly in int32 on
++//! `m16n8k32`, folds each chunk's sum in at the activation scale and writes bf16 from its own tile —
++//! no int32 round trip through a dequantize pass. The bf16 weights are freed once quantized.
+ //!
+-//! Only the two projections whose products int8 makes faster are quantized: `qkvc` and `fc1`. `out` and `fc2` measured
+-//! no faster (they are bound by their weight reads, not their arithmetic) and their quantization was most of the
+-//! picture's distance from episode 1's Mac picture, so they keep their bf16 weights.
++//! All four projections run this tile: `qkvc`, `out`, `fc1` and `fc2`.
+ const std = @import("std");
+ const cuda = @import("cuda");
+-const lt_ = cuda.cublaslt;
+ const h3 = @import("cuda.zig");
+-const workspace_bytes = @import("cuda_gemm.zig").workspace_bytes;
+ const Model = h3.Model;
+ 
+ /// A projection (N, K): its int8 rows, then N fp32 row scales.
+@@ -24,13 +23,17 @@ pub const Weight = struct {
+ };
+ 
+ /// One block's quantized projections.
+-pub const Block = struct { qkvc: Weight, fc1: Weight };
++pub const Block = struct { qkvc: Weight, out: Weight, fc1: Weight, fc2: Weight };
++
++/// h3_gemm_int8's dynamic shared bytes: 3 stages of a 128-deep chunk — BM rows of X, BN rows of W and
++/// the BM activation scales of that chunk (cuda_int8's own; the contract repeats it so it needs no import).
++pub const gemm_shared_bytes = 3 * (128 * 128 + 128 * 128 + 128 * 4);
++/// The tile bands' L2 swizzle width, as tile_of's `group`.
++const gemm_group = 8;
+ 
+ pub const Int8 = struct {
+     blocks: []Block,
+-    handle: lt_.Handle,
+-    plans: std.AutoHashMapUnmanaged([3]u64, lt_.Gemm) = .empty,
+-    /// int32 sums (rows, widest n), then int8 rows (rows, widest k), then the rows' fp32 scales.
++    /// int8 activation rows (rows, widest k), then the rows' per-chunk fp32 scales (rows, widest k / 128).
+     scratch: cuda.DeviceBuffer,
+     rows: usize = 0,
+ 
+@@ -38,24 +41,27 @@ pub const Int8 = struct {
+     pub fn quantize(self: *Model) !void {
+         if (self.gated) return error.H3NotPictureModel; // the dense forward's three of q, k, v only
+         try self.ctx.makeCurrent();
+-        var handle: lt_.Handle = null;
+-        try self.gemms.lt.check(self.gemms.lt.api.cublasLtCreate(&handle), "cublasLtCreate");
+         const t = try self.gpa.create(Int8);
+-        t.* = .{ .blocks = &.{}, .handle = handle, .scratch = .{ .d = &self.driver, .ptr = 0, .len = 0 } };
++        t.* = .{ .blocks = &.{}, .scratch = .{ .d = &self.driver, .ptr = 0, .len = 0 } };
+         self.int8 = t; // the model's deinit frees what a failed quantize already made
+         const none: Weight = .{ .q = .{ .d = &self.driver, .ptr = 0, .len = 0 }, .n = 0, .k = 0 };
+         t.blocks = try self.gpa.alloc(Block, self.blocks.len);
+-        @memset(t.blocks, .{ .qkvc = none, .fc1 = none });
++        @memset(t.blocks, .{ .qkvc = none, .out = none, .fc1 = none, .fc2 = none });
+         for (self.blocks, t.blocks) |*b, *q| {
+             q.qkvc = try weight(self, &b.qkvc, 3 * self.inner, self.hidden);
++            q.out = try weight(self, &b.out, self.hidden, self.inner);
+             q.fc1 = try weight(self, &b.fc1, 2 * self.mlp, self.hidden);
++            q.fc2 = try weight(self, &b.fc2, self.hidden, self.mlp);
+         }
+     }
+ 
+     fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize) !Weight {
+-        if (k % 128 != 0 or k > 14336 or n % 4 != 0) return error.BadGeometry; // h3_quantize's quantize_chunks
++        if (k % 128 != 0 or k > 14336 or n % 8 != 0) return error.BadGeometry; // h3_quantize's quantize_chunks
+         const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * 4), .n = n, .k = k };
+-        try launchQuantize(self, bf16.ptr, w.q.ptr, w.scales(), n, k);
++        var args: cuda.Args = .{};
++        for ([_]u64{ bf16.ptr, w.q.ptr, w.scales() }) |a| args.add(a);
++        args.add(@as(c_int, @intCast(k)));
++        try self.launch("h3_quantize", .{ .x = @intCast(n) }, 256, 0, &args);
+         try self.stream.synchronize();
+         bf16.free();
+         bf16.* = .{ .d = &self.driver, .ptr = 0, .len = 0 };
+@@ -63,53 +69,47 @@ pub const Int8 = struct {
+     }
+ 
+     pub fn deinit(t: *Int8, self: *Model) void {
+-        var it = t.plans.valueIterator();
+-        while (it.next()) |g| g.deinit();
+-        t.plans.deinit(self.gpa);
+-        for (t.blocks) |*b| for ([_]*Weight{ &b.qkvc, &b.fc1 }) |w| w.q.free();
++        for (t.blocks) |*b| for ([_]*Weight{ &b.qkvc, &b.out, &b.fc1, &b.fc2 }) |w| w.q.free();
+         self.gpa.free(t.blocks);
+         t.scratch.free();
+-        _ = self.gemms.lt.api.cublasLtDestroy(t.handle);
+         self.gpa.destroy(t);
+     }
+ 
+-    /// y (rows, w.n) bf16 = x (rows, w.k) bf16 . w^T through the int8 product.
++    /// y (rows, w.n) bf16 = x (rows, w.k) bf16 . w^T through the int8 tile.
+     pub fn run(t: *Int8, self: *Model, x: u64, w: Weight, y: u64, rows: usize) !void {
+         const p = try t.product(self, x, w, rows);
+         var args: cuda.Args = .{};
+-        for ([_]u64{ p.acc, p.xs, w.scales(), y }) |a| args.add(a);
+-        args.add(@as(c_int, @intCast(rows)));
+-        args.add(@as(c_int, @intCast(w.n)));
+-        try self.launch("h3_dequantize", .{ .x = 1024 }, 256, 0, &args);
++        for ([_]u64{ p.xq, p.xs, w.q.ptr, w.scales(), y }) |a| args.add(a);
++        for ([_]usize{ rows, w.n, w.k, gemm_group }) |n| args.add(@as(c_int, @intCast(n)));
++        try self.launch("h3_gemm_int8", .{ .x = @intCast(tiles(rows, w.n)) }, 256, gemm_shared_bytes, &args);
+     }
+ 
+-    /// act (rows, w.n / 2) = swiglu of x . w^T [gate | value], the int32 sums scaled in h3_swiglu_int8 itself.
+-    pub fn mlpIn(t: *Int8, self: *Model, x: u64, w: Weight, act: u64, rows: usize) !void {
+-        const p = try t.product(self, x, w, rows);
++    /// act (rows, w.n / 2) = swiglu of x . w^T [gate | value]: the product writes bf16 `wide`,
++    /// then the same bf16 `h3_swiglu` the unquantized path runs.
++    pub fn mlpIn(t: *Int8, self: *Model, x: u64, w: Weight, wide: u64, act: u64, rows: usize) !void {
++        try t.run(self, x, w, wide, rows);
+         var args: cuda.Args = .{};
+-        for ([_]u64{ p.acc, p.xs, w.scales(), act }) |a| args.add(a);
++        for ([_]u64{ wide, act }) |a| args.add(a);
+         args.add(@as(c_int, @intCast(rows)));
+         args.add(@as(c_int, @intCast(w.n / 2)));
+-        try self.launch("h3_swiglu_int8", .{ .x = 1024 }, 256, 0, &args);
++        try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
+     }
+ 
+-    /// Room and plans for `rows` before a step is captured: `run` and `mlpIn` then only launch.
++    /// Room for `rows` before a step is captured: `run` and `mlpIn` then only launch.
+     pub fn warm(t: *Int8, self: *Model, rows: usize) !void {
+         try t.reserve(self, rows);
+-        _ = try t.plan(self, rows, 3 * self.inner, self.hidden);
+-        _ = try t.plan(self, rows, 2 * self.mlp, self.hidden);
+     }
+ 
+-    /// x's rows quantized and their int32 sums against w in scratch: `acc` (rows, w.n), the rows' scales `xs`.
+-    fn product(t: *Int8, self: *Model, x: u64, w: Weight, rows: usize) !struct { acc: u64, xs: u64 } {
++    /// x's rows quantized in scratch: their int8 codes `xq` and per-128-chunk scales `xs`.
++    fn product(t: *Int8, self: *Model, x: u64, w: Weight, rows: usize) !struct { xq: u64, xs: u64 } {
+         try t.reserve(self, rows);
+-        const acc = t.scratch.ptr;
+-        const xq = acc + rows * t.widest(self) * 4;
++        const xq = t.scratch.ptr;
+         const xs = xq + rows * t.widest(self);
+-        try launchQuantize(self, x, xq, xs, rows, w.k);
+-        const p = try t.plan(self, rows, w.n, w.k);
+-        try p.runInt(w.q.ptr, xq, acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
+-        return .{ .acc = acc, .xs = xs };
++        var args: cuda.Args = .{};
++        for ([_]u64{ x, xq, xs }) |a| args.add(a);
++        args.add(@as(c_int, @intCast(w.k)));
++        try self.launch("h3_quantize_chunks", .{ .x = @intCast(rows) }, 256, 0, &args);
++        return .{ .xq = xq, .xs = xs };
+     }
+ 
+     fn widest(_: *const Int8, self: *const Model) usize {
+@@ -120,23 +120,11 @@ pub const Int8 = struct {
+         if (rows <= t.rows) return;
+         try self.stream.synchronize();
+         t.scratch.free();
+-        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, rows * (t.widest(self) * 5 + 4));
++        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, rows * (t.widest(self) + t.widest(self) / 32));
+         t.rows = rows;
+     }
+-
+-    /// Column-major D^T (n, rows) = W (k, n stored)^T . X^T (k, rows), int32 sums: cuBLASLt's int8 TN layout.
+-    fn plan(t: *Int8, self: *Model, rows: usize, n: usize, k: usize) !*const lt_.Gemm {
+-        const got = try t.plans.getOrPut(self.gpa, .{ rows, n, k });
+-        if (got.found_existing) return got.value_ptr;
+-        errdefer t.plans.removeByPtr(got.key_ptr);
+-        got.value_ptr.* = try lt_.Gemm.init(&self.gemms.lt, t.handle, .{ .ta = .t, .m = n, .n = rows, .k = k, .a = .i8, .b = .i8, .c = .i32, .lda = k, .ldb = k, .ldc = n }, workspace_bytes);
+-        return got.value_ptr;
+-    }
+ };
+ 
+-fn launchQuantize(self: *Model, x: u64, q: u64, s: u64, rows: usize, k: usize) !void {
+-    var args: cuda.Args = .{};
+-    for ([_]u64{ x, q, s }) |a| args.add(a);
+-    args.add(@as(c_int, @intCast(k)));
+-    try self.launch("h3_quantize", .{ .x = @intCast(rows) }, 256, 0, &args);
++fn tiles(rows: usize, n: usize) usize {
++    return ((rows + 127) / 128) * ((n + 127) / 128);
+ }
+diff --git a/zig/tests/h3_image_cuda.zig b/zig/tests/h3_image_cuda.zig
+index bfb0fee31..2892dfa8e 100644
+--- a/zig/tests/h3_image_cuda.zig
++++ b/zig/tests/h3_image_cuda.zig
+@@ -14,8 +14,8 @@ const usage =
+     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
+     \\--serve loads the model once, then renders one `picture.safetensors OUT_PREFIX` line of stdin at a time,
+     \\answering each on stdout with `done OUT_PREFIX` or `failed OUT_PREFIX`.
+-    \\--bf16 runs every projection in bf16; by default qkvc and fc1 run as mmh3 does: rotated int8 weights and
+-    \\rows, exact int32 sums, and the picture passes episode 1's gates.
++    \\--bf16 runs every projection in bf16; by default all four run as mmh3 does: rotated int8 weights and
++    \\rows, exact int32 sums on the own mma tile, and the picture passes episode 1's gates.
+     \\
+ ;
+ 

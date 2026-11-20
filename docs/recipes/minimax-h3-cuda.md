@@ -535,7 +535,8 @@ the picture's own shapes it still loses to cuBLASLt, so it stops short of a pict
 `h3-int8-bench` on TOP (same job): qkvc 116.0 vs 152.1 TOPS, out 119.2 vs 151.3, fc1 115.1 vs 153.5, fc2 118.5 vs
 149.6 — a steady ~0.75-0.79× of cuBLASLt's int8 rate. The occupancy fix was real (one scale vector staged instead of
 two, ~2 fma an element instead of ~5) and the tile is correct, but a third fewer TOPS than the library it would
-replace is not a win; the cuBLASLt qkvc/fc1 int8 default stands and `out`/`fc2` stay bf16.
+replace is not a win. The tile went back out of the tree; the win that remained was coverage, not rate — `out` and
+`fc2` joined `qkvc` and `fc1` on the same cuBLASLt int8 path, and all four projections now run int8.
 
 Two more tile geometries were run under the same stop rule (`bench-129-contract.sh` at `3e1c5842f` job
 `top-3abb0a0b31cb` 82.6/81.6/83.8/78.3 TOPS for a 256×128 two-stage tile with a per-step n-pair fold — worse
