@@ -28,7 +28,10 @@ pub const scale_m = 4;
 pub const gate_m = 5;
 
 /// A block's projections, (N, K) bf16 read in place; in the released layout q holds every head's fused [q, k, v] rows.
-pub const Block = struct { q: Ref, k: Ref, v: Ref, compress: Ref, out: Ref, fc1: Ref, fc2: Ref, norm1: Ref, norm2: Ref, norm_q: Ref, norm_k: Ref, tables: Ref };
+/// A picture's block also binds its int8 operands: `int8`'s w and s into the model's `wq`/`ws` buffers.
+pub const Block = struct { q: Ref, k: Ref, v: Ref, compress: Ref, out: Ref, fc1: Ref, fc2: Ref, norm1: Ref, norm2: Ref, norm_q: Ref, norm_k: Ref, tables: Ref, int8: Int8s };
+pub const Int8 = struct { w: Ref, s: Ref };
+pub const Int8s = struct { q: Int8, out: Int8, fc1: Int8, fc2: Int8 };
 
 /// Shader overrides and optional per-block yielding to live speech.
 pub const Options = struct { defines: []const u8 = "", give_way: ?gpu_turn.Turn = null };
@@ -101,9 +104,10 @@ pub const Model = struct {
     cr: mtl.Buffer,
     wide: mtl.Buffer,
     act: mtl.Buffer,
-    // a picture's: every block's fc1 rows in int8 with a scale per 256 values of K (private), and xn quantized for it
-    fc1_q: mtl.Buffer,
-    fc1_s: mtl.Buffer,
+    // a picture's: every block's four projections in int8 with a scale per 256 values of K (private), and each
+    // product's input quantized into xq/xs under the same grouping
+    wq: mtl.Buffer,
+    ws: mtl.Buffer,
     xq: mtl.Buffer,
     xs: mtl.Buffer,
     // queries, keys and values in tile order, the tiles' means, scores, chosen tiles, pooled branch
@@ -270,7 +274,7 @@ pub const Model = struct {
             b.norm_k = try ck.ref(try std.fmt.bufPrint(&name, "transformer_blocks.{d}.attn.norm_k.weight", .{i}), head_dim);
             b.tables = try self.held(try std.fmt.bufPrint(&name, "tables.{d}", .{i}), .bf16, 6 * self.lines * hidden);
         }
-        if (self.base) try self.quantizeFc1();
+        if (self.base) try self.quantizeWeights();
         return self;
     }
 
@@ -288,7 +292,7 @@ pub const Model = struct {
         inline for (.{ "final_table", "final_norm", "w_video_in", "b_video_in", "w_video_out", "b_video_out", "cos", "sin", "slot", "sizes" }) |f| @field(self, f).buffer.deinit();
         if (self.audio > 0) inline for (.{ "w_audio_in", "b_audio_in", "w_audio_out", "b_audio_out" }) |f| @field(self, f).buffer.deinit();
         inline for (.{ "row_of", "all_tiles", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
-        if (self.base) inline for (.{ "fc1_q", "fc1_s", "xq", "xs" }) |f| @field(self, f).deinit();
+        if (self.base) inline for (.{ "wq", "ws", "xq", "xs" }) |f| @field(self, f).deinit();
         self.queue.deinit();
         self.gpa.free(self.blocks);
         self.gpa.free(self.prompt);
@@ -297,24 +301,42 @@ pub const Model = struct {
         self.gpa.destroy(self);
     }
 
-    /// A picture's fc1: every block's rows to int8 in `fc1_q`, a scale per 256 values of K in `fc1_s`, one pass at
-    /// bind, and room for xn in int8. Private storage: only the GPU reads them, and a step's encode no longer pays for
-    /// 7.7 GiB of shared pages.
-    fn quantizeFc1(self: *Model) !void {
-        const n = 2 * self.mlp;
-        const groups = self.hidden / block.fc1_group;
+    /// A picture's linears: every block's four projections to int8 in `wq`, a scale per 256 values of K in `ws`, one
+    /// pass at bind, and room for a product's input in int8 and its scales. Private storage: only the GPU reads them,
+    /// and a step's encode no longer pays for 20 GiB of shared pages.
+    fn quantizeWeights(self: *Model) !void {
+        const hidden = self.hidden;
+        const inner = self.inner;
+        const mlp = self.mlp;
+        // q (qkv fused), attention out, fc1 and fc2: name, its bf16 rows, n and k
+        const parts = .{ .{ "q", 3 * inner, hidden }, .{ "out", hidden, inner }, .{ "fc1", 2 * mlp, hidden }, .{ "fc2", hidden, mlp } };
+        var qw: usize = 0;
+        var sw: usize = 0;
+        inline for (parts) |p| {
+            qw += p[1] * p[2];
+            sw += p[1] * (p[2] / block.group);
+        }
         const private = mtl.ResourceOptions.private;
-        self.fc1_q = try self.device.buffer(self.blocks.len * n * self.hidden, private);
-        self.fc1_s = try self.device.buffer(self.blocks.len * n * groups * 4, private);
-        self.xq = try self.device.buffer(self.rows * self.hidden, mtl.ResourceOptions.shared);
-        self.xs = try self.device.buffer(self.rows * 4, mtl.ResourceOptions.shared);
+        self.wq = try self.device.buffer(self.blocks.len * qw, private);
+        self.ws = try self.device.buffer(self.blocks.len * sw * 4, private);
+        self.xq = try self.device.buffer(self.rows * mlp, mtl.ResourceOptions.shared);
+        self.xs = try self.device.buffer(self.rows * (mlp / block.group) * 4, mtl.ResourceOptions.shared);
         // the command buffer is autoreleased: its own pool frees it, and what it held, before the model's release
         const pool = mtl.objc.Pool.push();
         defer pool.pop();
         const cb = self.queue.commandBuffer();
         const enc = cb.compute(.concurrent);
-        for (self.blocks, 0..) |b, i|
-            block.quantize(self, enc, b.fc1, n, self.hidden, block.fc1_group, .{ .buffer = self.fc1_q, .offset = i * n * self.hidden }, .{ .buffer = self.fc1_s, .offset = i * n * groups * 4 });
+        for (self.blocks, 0..) |*b, i| {
+            var w_at = i * qw;
+            var s_at = i * sw * 4;
+            inline for (parts) |p| {
+                const q = &@field(b.int8, p[0]);
+                q.* = .{ .w = .{ .buffer = self.wq, .offset = w_at }, .s = .{ .buffer = self.ws, .offset = s_at } };
+                block.quantize(self, enc, @field(b.*, p[0]), p[1], p[2], block.group, q.w, q.s);
+                w_at += p[1] * p[2];
+                s_at += p[1] * (p[2] / block.group) * 4;
+            }
+        }
         enc.end();
         cb.commit();
         _ = try finish(cb);
