@@ -157,8 +157,14 @@ __global__ void __launch_bounds__(256) h3_heads_i8(
             const float4 wb = live ? reinterpret_cast<const float4*>(wk + c0)[i] : make_float4(0.f, 0.f, 0.f, 0.f);
             const float q0 = bf(a4.x * sx * wa.x), q1 = bf(a4.y * sx * wa.y), q2 = bf(a4.z * sx * wa.z), q3 = bf(a4.w * sx * wa.w);
             const float k0 = bf(b4.x * sx * wb.x), k1 = bf(b4.y * sx * wb.y), k2 = bf(b4.z * sx * wb.z), k3 = bf(b4.w * sx * wb.w);
-            sq += q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3;
-            sk += k0 * k0 + k1 * k1 + k2 * k2 + k3 * k3;
+            sq += q0 * q0;
+            sq += q1 * q1;
+            sq += q2 * q2;
+            sq += q3 * q3;
+            sk += k0 * k0;
+            sk += k1 * k1;
+            sk += k2 * k2;
+            sk += k3 * k3;
             qp[2 * i] = pack2(q0, q1);
             qp[2 * i + 1] = pack2(q2, q3);
             kp[2 * i] = pack2(k0, k1);
