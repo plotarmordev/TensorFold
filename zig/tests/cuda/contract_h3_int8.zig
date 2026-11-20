@@ -1,4 +1,4 @@
-//! MiniMax H3's int8 projection kernels (h3_quantize, h3_dequantize) under the contract, against float64 formulas.
+//! MiniMax H3's int8 projection kernels (h3_quantize, h3_gemm_int8_tma) under the contract, against float64 formulas.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
@@ -190,88 +190,307 @@ pub const Quantize = struct {
     }
 };
 
-/// One output a product sum: rows by n, int32 sums times the row's and the column's fp32 scales, then bf16.
-pub fn dequantizeSpec() c.Spec {
+// ---------------------------------------------------------------------------
+// The TMA product (h3_int8_tma.cuh): 256x128 tiles walked by one CTA an SM, tensor maps encoded
+// per launch. Its contract gates the exact int32 sums plus the fp32 scale fold against float64.
+
+const gpu_check = @import("check.zig");
+
+/// The driver encodes a [rows, columns] matrix into a CUtensorMap (cuda_int8.zig's TensorMap).
+const TensorMap = extern struct { bytes: [128]u8 align(64) };
+const Encode = *const fn (*TensorMap, c_uint, c_uint, ?*anyopaque, *const [2]u64, *const u64, *const [2]u32, *const [2]u32, c_uint, c_uint, c_uint, c_uint) callconv(.c) cuda.abi.Result;
+
+/// cuTensorMapEncodeTiled, bound once: a driver without it cannot run the product at all.
+pub fn encoder(d: *const cuda.Driver) !Encode {
+    return d.lib.lookup(Encode, "cuTensorMapEncodeTiled") orelse error.MissingSymbol;
+}
+
+/// UINT8, 2D, swizzle 128B, L2 256B promotion, zero fill: cuda_int8.zig's encode, here for the
+/// contract's own buffers.
+fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, box_rows: u32) !void {
+    const dims: [2]u64 = .{ k, rows };
+    const strides: u64 = k;
+    const box: [2]u32 = .{ 128, box_rows };
+    const es: [2]u32 = .{ 1, 1 };
+    const res = enc(map, 0, 2, @ptrFromInt(@as(usize, @intCast(ptr))), &dims, &strides, &box, &es, 0, 3, 3, 0);
+    if (res != cuda.abi.success) return error.CudaFailed;
+}
+
+/// TallTile's ring (the only tile the picture uses): 2 stages of (256 + 128) x 128 bytes.
+const tma_shared_bytes = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
+
+/// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact.
+pub fn gemmTmaSpec() c.Spec {
     return .{
-        .name = "cuda h3 int8 sums h3_dequantize",
-        .accum = .none,
+        .name = "cuda h3 int8 tma product h3_gemm_int8_tma",
+        .accum = .f32,
         .depth = none,
         .ops = 3,
         .out = .bf16,
-        .tiles = .{ .{}, .{ .size = 1024, .step = 4, .min = 4 }, .{} },
-        // 1024 blocks of 256 threads cover 1M quads: 64 rows of mlp out's 2 x 14336 run the grid-stride loop
-        .served = &.{ .{ .rows = 16, .n = hidden, .k = 1 }, .{ .rows = 16, .n = 3 * inner, .k = 1 }, .{ .rows = 64, .n = 2 * mlp, .k = 1 } },
+        .nan = .{ .stated = "a nonfinite row or column scale reaches every output it multiplies, as h3_dequantize's did" },
+        .tiles = .{ .{}, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 128, .step = 128, .min = 128 } },
+        .served = &.{
+            .{ .rows = 16, .n = 128, .k = 128 }, // one tile, one stage
+            .{ .rows = 300, .n = 128, .k = 256 }, // a partial M tile and two K blocks
+            .{ .rows = 64, .n = 384, .k = 384 }, // three N tiles past a partial M tile
+            .{ .rows = 256, .n = 21504, .k = 5376 }, // qkvc's real fan-out
+        },
+        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
     };
 }
 
-pub const Dequantize = struct {
+/// C (rows, n) bf16 = (X int8 rows,k . W int8 n,k)^T * xs[rows] * ws[n], as the TMA kernel writes it.
+pub const GemmTma = struct {
     rig: rig_.Rig,
     f: cuda.Function,
+    enc: Encode,
     arena: std.heap.ArenaAllocator,
     shape: c.Shape = undefined,
-    acc: []i32 = &.{},
-    sx: []f32 = &.{},
-    sw: []f32 = &.{},
-    bufs: [4]u64 = undefined,
+    xq: []i8 = &.{},
+    wq: []i8 = &.{},
+    xs: []f32 = &.{},
+    ws: []f32 = &.{},
+    dev: [5]u64 = @splat(0),
+    msg: [200]u8 = undefined,
 
-    pub fn deinit(t: *Dequantize) void {
+    pub fn deinit(t: *GemmTma) void {
         t.rig.deinit();
         t.arena.deinit();
     }
 
-    pub fn kernel(t: *Dequantize) g.Kernel {
-        return .{ .spec = dequantizeSpec(), .ctx = t, .vt = &vt };
+    pub fn kernel(t: *GemmTma) g.Kernel {
+        return .{ .spec = gemmTmaSpec(), .ctx = t, .vt = &vt };
     }
 
-    const vt = g.hooks(Dequantize);
+    const vt = g.hooks(GemmTma);
 
-    pub fn prepare(t: *Dequantize, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
-        if (shape.n % 4 != 0 or shape.n == 0) return false;
+    pub fn prepare(t: *GemmTma, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
+        if (shape.k % 128 != 0 or shape.n % 128 != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
         t.rig.reset();
         _ = t.arena.reset(.retain_capacity);
         t.shape = shape;
-        const al = t.arena.allocator();
+        const a = t.arena.allocator();
         var prng = std.Random.DefaultPrng.init(seed);
         const rng = prng.random();
-        t.acc = try al.alloc(i32, shape.rows * shape.n);
-        t.sx = try al.alloc(f32, shape.rows);
-        t.sw = try al.alloc(f32, shape.n);
-        // |sums| up to 127 * 127 * 14336, as a full-width product's can reach
-        for (t.acc) |*v| v.* = rng.intRangeAtMost(i32, -231_000_000, 231_000_000);
-        for (t.sx) |*v| v.* = @floatCast(0x1p-10 * (0.5 + rng.float(f64)));
-        for (t.sw) |*v| v.* = @floatCast(0x1p-12 * (0.5 + rng.float(f64)));
-        if (fill == .nonfinite) {
-            // a NaN row scale, both infinities on columns, and 0 * inf where a sum is zero
-            t.sx[shape.rows - 1] = std.math.nan(f32);
-            t.sw[1] = std.math.inf(f32);
-            t.sw[shape.n - 2] = -std.math.inf(f32);
-            t.acc[1] = 0;
+        t.xq = try a.alloc(i8, shape.rows * shape.k);
+        t.wq = try a.alloc(i8, shape.n * shape.k);
+        t.xs = try a.alloc(f32, shape.rows);
+        t.ws = try a.alloc(f32, shape.n);
+        for (t.xq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        for (t.wq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        for (t.xs) |*v| v.* = 0.001 + 0.004 * rng.float(f32);
+        for (t.ws) |*v| v.* = 0.002 + 0.006 * rng.float(f32);
+        if (fill == .stress) {
+            for (t.xq) |*v| v.* = if (v.* >= 0) 127 else -127;
         }
-        t.bufs[0] = try t.rig.input(std.mem.sliceAsBytes(t.acc));
-        t.bufs[1] = try t.rig.input(std.mem.sliceAsBytes(t.sx));
-        t.bufs[2] = try t.rig.input(std.mem.sliceAsBytes(t.sw));
-        t.bufs[3] = try t.rig.output(shape.rows * shape.n * 2);
+        if (fill == .nonfinite) {
+            if (shape.rows > 2) t.xs[2] = std.math.nan(f32);
+            if (shape.n > 3) t.ws[3] = std.math.inf(f32);
+        }
+        t.dev[0] = try t.rig.input(std.mem.sliceAsBytes(t.xq));
+        t.dev[1] = try t.rig.input(std.mem.sliceAsBytes(t.xs));
+        t.dev[2] = try t.rig.input(std.mem.sliceAsBytes(t.wq));
+        t.dev[3] = try t.rig.input(std.mem.sliceAsBytes(t.ws));
+        t.dev[4] = try t.rig.output(shape.rows * shape.n * 2);
         return true;
     }
 
-    pub fn run(t: *Dequantize) !void {
+    pub fn run(t: *GemmTma) !void {
+        var maps: [2]TensorMap = undefined;
+        try encodeTiled(t.enc, &maps[0], t.dev[0], t.shape.rows, t.shape.k, 256);
+        try encodeTiled(t.enc, &maps[1], t.dev[2], t.shape.n, t.shape.k, 128);
         var args: cuda.Args = .{};
-        for (t.bufs) |p| args.add(p);
-        args.add(@as(c_int, @intCast(t.shape.rows)));
-        args.add(@as(c_int, @intCast(t.shape.n)));
-        try cuda.launch.launch(t.f, .{ .grid = .{ .x = 1024 }, .block = .{ .x = 256 } }, t.rig.s, &args);
+        args.add(maps[0]);
+        args.add(maps[1]);
+        for ([_]u64{ t.dev[1], t.dev[3], t.dev[4] }) |p| args.add(p);
+        for ([_]usize{ t.shape.rows, t.shape.n, t.shape.k }) |v| args.add(@as(c_int, @intCast(v)));
+        args.add(@as(c_int, 8));
+        const sm: usize = @intCast(try t.rig.gpu.ctx.attribute(.multiprocessor_count));
+        const tiles = (t.shape.rows + 255) / 256 * (t.shape.n / 128);
+        try cuda.launch.launch(t.f, .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
         try t.rig.s.synchronize();
     }
 
-    pub fn count(t: *Dequantize) usize {
+    pub fn count(t: *GemmTma) usize {
         return t.shape.rows * t.shape.n;
     }
 
-    pub fn reference(t: *Dequantize, want: []f64, mag: []f64) !void {
+    /// The float64 product: exact int32 dot over the whole row (the mma order is irrelevant to it),
+    /// then acc * xs * ws in fp32, rounded to bf16 as the store does.
+    fn product(t: *GemmTma, out: []f64) !void {
+        const k = t.shape.k;
         const n = t.shape.n;
-        for (want, mag, t.acc, 0..) |*w, *m, a, i| {
-            w.* = @as(f64, @floatFromInt(a)) * t.sx[i / n] * t.sw[i % n];
-            m.* = 0;
+        for (0..t.shape.rows) |row| for (0..n) |col| {
+            var dot: i64 = 0;
+            for (0..k) |j| dot += @as(i64, t.xq[row * k + j]) * t.wq[col * k + j];
+            const v: f32 = @as(f32, @floatFromInt(dot)) * t.xs[row] * t.ws[col];
+            out[row * n + col] = c.fromBf16(c.toBf16(v));
+        };
+    }
+
+    pub fn reference(t: *GemmTma, want: []f64, mag: []f64) !void {
+        try t.product(want);
+        const k = t.shape.k;
+        for (0..t.shape.rows) |row| for (0..t.shape.n) |col| {
+            var sum: i64 = 0;
+            for (0..k) |j| sum += @abs(@as(i64, t.xq[row * k + j]) * t.wq[col * k + j]);
+            mag[row * t.shape.n + col] = @as(f64, @floatFromInt(sum)) * t.xs[row] * t.ws[col];
+        };
+    }
+
+    /// Beyond the float64 bound: a planted nonfinite scale must still land on its row or column.
+    pub fn check(t: *GemmTma, at: g.Gate) !?[]const u8 {
+        if (at != .nonfinite) return null;
+        const s = t.shape;
+        const got = try t.rig.bytes(t.dev[4], s.rows * s.n * 2);
+        var planted: usize = 0;
+        for (0..s.rows) |row| {
+            if (std.math.isFinite(t.xs[row])) continue;
+            planted += 1;
+            for (0..s.n) |col| {
+                const v = c.read(.bf16, got, row * s.n + col);
+                if (std.math.isFinite(v)) return try std.fmt.bufPrint(&t.msg, "row {d}'s nonfinite scale left output {d} finite: {e}", .{ row, col, v });
+            }
         }
+        for (0..s.n) |col| {
+            if (std.math.isFinite(t.ws[col])) continue;
+            planted += 1;
+            for (0..s.rows) |row| {
+                const v = c.read(.bf16, got, row * s.n + col);
+                if (std.math.isFinite(v)) return try std.fmt.bufPrint(&t.msg, "column {d}'s nonfinite scale left output {d} finite: {e}", .{ col, row, v });
+            }
+        }
+        if (planted == 0) return "no planted scale reached a launched output: no proof";
+        return null;
     }
 };
+
+// ---------------------------------------------------------------------------
+// Microbench: the TMA tile against cuBLASLt's int8 product on the real picture
+// shapes — the gate the card sets before any picture run.
+
+const lt_ = cuda.cublaslt;
+const workspace_bytes = 32 << 20; // cuda_gemm's own; duplicated so the test needs no family import
+
+const image_h3 align(16) = @embedFile("fatbin_h3").*;
+
+/// Per-shape wall-clock of `reps` back-to-back launches of `f`, ns each.
+fn timeKernel(f: cuda.Function, s: cuda.Stream, shared: u32, args: *cuda.Args, grid_x: u32, reps: usize, io: std.Io) !i96 {
+    const start = gpu_check.now(io);
+    for (0..reps) |_| try cuda.launch.launch(f, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 256 }, .shared = shared }, s, args);
+    try s.synchronize();
+    return @divTrunc(gpu_check.now(io) - start, @as(i96, @intCast(reps)));
+}
+
+/// Per-shape wall-clock of `reps` cuBLASLt int8 products (C i32), ns each.
+fn timeLt(gm: *const lt_.Gemm, a: u64, b: u64, cc: u64, w: u64, s: cuda.Stream, reps: usize, io: std.Io) !i96 {
+    const start = gpu_check.now(io);
+    for (0..reps) |_| try gm.runInt(a, b, cc, w, workspace_bytes, s.handle);
+    try s.synchronize();
+    return @divTrunc(gpu_check.now(io) - start, @as(i96, @intCast(reps)));
+}
+
+/// A/B the picture projections on the same device buffers: `h3_gemm_int8_tma` writes bf16 from its
+/// own persistent tiles; cuBLASLt sums into int32 (what the old path paid h3_dequantize to read).
+pub fn bench(gpu: gpu_check.Gpu) !void {
+    const io = gpu.io;
+    const cap = try gpu.ctx.capability();
+    try gpu_check.expect(cap == 121, "h3 int8 tma benchmark needs sm_121, got sm_{d}", .{cap});
+    const enc = try encoder(gpu.d);
+    var s = try cuda.Stream.init(gpu.d, false);
+    defer s.deinit();
+    const a = gpu.gpa;
+
+    var mod = try cuda.Module.load(gpu.d, &image_h3);
+    defer mod.unload();
+    const f = try mod.function("h3_gemm_int8_tma");
+    try f.allowDynamicShared(tma_shared_bytes);
+    const f_wide = try mod.function("h3_gemm_int8_tma_wide");
+    try f_wide.allowDynamicShared(tma_shared_bytes);
+
+    var lt = try lt_.Library.open();
+    defer lt.close();
+    const handle = try lt_.createHandle(&lt);
+    var ws = try cuda.DeviceBuffer.alloc(gpu.d, workspace_bytes);
+    defer ws.free();
+
+    // the four projections, (name, rows M, n N, k K): qkvc, out, fc1, fc2
+    const cases = [_]struct { name: []const u8, rows: usize, n: usize, k: usize }{
+        .{ .name = "qkvc", .rows = 4120, .n = 21504, .k = 5376 },
+        .{ .name = "out ", .rows = 4120, .n = 5376, .k = 7168 },
+        .{ .name = "fc1 ", .rows = 4120, .n = 28672, .k = 5376 },
+        .{ .name = "fc2 ", .rows = 4120, .n = 5376, .k = 14336 },
+    };
+    const reps = 5;
+    for (cases, 0..) |sh, i| {
+        var prng = std.Random.DefaultPrng.init(0x1398 + i);
+        const rng = prng.random();
+        const xq = try a.alloc(i8, sh.rows * sh.k);
+        defer a.free(xq);
+        const wq = try a.alloc(i8, sh.n * sh.k);
+        defer a.free(wq);
+        const xs = try a.alloc(f32, sh.rows);
+        defer a.free(xs);
+        const wsv = try a.alloc(f32, sh.n);
+        defer a.free(wsv);
+        for (xq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        for (wq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        for (xs) |*v| v.* = 0.001 + 0.004 * rng.float(f32);
+        for (wsv) |*v| v.* = 0.002 + 0.006 * rng.float(f32);
+
+        var d_xq = try cuda.DeviceBuffer.alloc(gpu.d, xq.len);
+        defer d_xq.free();
+        var d_xs = try cuda.DeviceBuffer.alloc(gpu.d, xs.len * 4);
+        defer d_xs.free();
+        var d_wq = try cuda.DeviceBuffer.alloc(gpu.d, wq.len);
+        defer d_wq.free();
+        var d_ws = try cuda.DeviceBuffer.alloc(gpu.d, wsv.len * 4);
+        defer d_ws.free();
+        var d_out = try cuda.DeviceBuffer.alloc(gpu.d, sh.rows * sh.n * 2);
+        defer d_out.free();
+        var d_acc = try cuda.DeviceBuffer.alloc(gpu.d, sh.rows * sh.n * 4);
+        defer d_acc.free();
+        try d_xq.upload(0, std.mem.sliceAsBytes(xq));
+        try d_xs.upload(0, std.mem.sliceAsBytes(xs));
+        try d_wq.upload(0, std.mem.sliceAsBytes(wq));
+        try d_ws.upload(0, std.mem.sliceAsBytes(wsv));
+
+        // our two tilings (mmh3's TallTile and WideTile), persistent grid of min(SMs, tiles) CTAs
+        const sm: usize = @intCast(try gpu.ctx.attribute(.multiprocessor_count));
+        var ours: [2]i96 = undefined;
+        for ([_]struct { kern: cuda.Function, m: u32, n: u32 }{
+            .{ .kern = f, .m = 256, .n = 128 },
+            .{ .kern = f_wide, .m = 128, .n = 256 },
+        }, 0..) |t, ti| {
+            var maps: [2]TensorMap = undefined;
+            try encodeTiled(enc, &maps[0], d_xq.ptr, sh.rows, sh.k, t.m);
+            try encodeTiled(enc, &maps[1], d_wq.ptr, sh.n, sh.k, t.n);
+            var args: cuda.Args = .{};
+            args.add(maps[0]);
+            args.add(maps[1]);
+            for ([_]u64{ d_xs.ptr, d_ws.ptr, d_out.ptr }) |p| args.add(p);
+            for ([_]usize{ sh.rows, sh.n, sh.k, 8 }) |v| args.add(@as(c_int, @intCast(v)));
+            const tiles = (sh.rows + t.m - 1) / t.m * (sh.n / t.n);
+            const grid_x: u32 = @intCast(@min(sm, tiles));
+            try cuda.launch.launch(t.kern, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, s, &args);
+            try s.synchronize();
+            ours[ti] = try timeKernel(t.kern, s, tma_shared_bytes, &args, grid_x, reps, io);
+        }
+
+        // cuBLASLt int8 on the same inputs, C int32
+        var ltg = try lt_.Gemm.init(&lt, handle, .{ .ta = .t, .m = sh.n, .n = sh.rows, .k = sh.k, .a = .i8, .b = .i8, .c = .i32, .lda = sh.k, .ldb = sh.k, .ldc = sh.n }, workspace_bytes);
+        defer ltg.deinit();
+        try ltg.runInt(d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, workspace_bytes, s.handle);
+        try s.synchronize();
+        const ltns = try timeLt(&ltg, d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, s, reps, io);
+
+        const flops: f64 = 2.0 * @as(f64, @floatFromInt(sh.rows)) * @as(f64, @floatFromInt(sh.n)) * @as(f64, @floatFromInt(sh.k));
+        const lt_ms = @as(f64, @floatFromInt(ltns)) / std.time.ns_per_ms;
+        for (ours, [_][]const u8{ "tall", "wide" }) |ns, label| {
+            const ours_ms = @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
+            std.debug.print("BENCH h3_int8_tma {s} {s} M={d} N={d} K={d}: tile={d:.2} ms ({d:.1} TOPS) cublaslt={d:.2} ms ({d:.1} TOPS) ratio={d:.3}x\n", .{
+                sh.name, label, sh.rows, sh.n, sh.k, ours_ms, flops / (ours_ms * 1e9), lt_ms, flops / (lt_ms * 1e9), lt_ms / ours_ms,
+            });
+        }
+    }
+}
