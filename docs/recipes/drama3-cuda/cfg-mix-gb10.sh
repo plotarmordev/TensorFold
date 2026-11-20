@@ -1,5 +1,5 @@
 #!/bin/sh
-# d3_cfg_mix's kernel contract on TOP's Spark (sm_121, nvcc 13.0) through the Desk's GPU door:
+# The compact router's and d3_cfg_mix's kernel contracts on TOP's Spark (sm_121, nvcc 13.0) through the Desk's GPU door:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/drama3-cuda/cfg-mix-gb10.sh
 # Gates 1-4, the planted non-finite fill and the limits check; exits with tf-cuda-test's status.
 set -eu
@@ -16,4 +16,4 @@ echo "commit $(git -c safe.directory='*' rev-parse HEAD)"
 "$nvcc" --version | tail -n 1
 zig build install fatbins kernel-contract-fatbins -Dsm=121 -Dnvcc=$nvcc -Doptimize=ReleaseFast --prefix /work/sm121
 zig build -Dgpu=spark -Dnvcc=$nvcc --prefix /work/sm121
-exec /work/sm121/bin/tf-cuda-test kernel-contract 'd3_cfg_mix'
+exec /work/sm121/bin/tf-cuda-test kernel-contract 'compact router' 'd3_cfg_mix'
