@@ -48,9 +48,13 @@ phase() {
         "/work/sm121-$name/bin/tf-h3-image-decoder-cuda" "$bin"
     # a five-image fatbin build once a phase, so the h3 records' sm_80/86/89/120/121 numbers can be
     # re-derived from the kernels this phase compiled (registry_media.zig's usage columns)
-    zig build tf-cuda-limits -Dsm=80,86,89,120,121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast \
+    # tf-cuda-limits installs only its binary; kernel-contract-fatbins installs h3.fatbin (and, through
+    # fatbins, norms.fatbin) under $prefix/fatbin, cleared first so a kept /work cannot audit an older image
+    fatdir=/work/sm-all-$name/fatbin
+    rm -rf "$fatdir"
+    zig build tf-cuda-limits kernel-contract-fatbins -Dsm=80,86,89,120,121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast \
         --prefix "/work/sm-all-$name" >"$dir/limits-build.log" 2>&1 || { tail -20 "$dir/limits-build.log" >&2; exit 1; }
-    fatdir=$(find "/work/sm-all-$name" -name h3.fatbin -exec dirname {} \; -quit)
+    [ -f "$fatdir/h3.fatbin" ] || { echo "no $fatdir/h3.fatbin" >&2; exit 1; }
     # the audit's verdict fails the job at the end, after both phases' timings
     "/work/sm-all-$name/bin/tf-cuda-limits" "$fatdir" h3 >"$dir/limits.log" 2>&1 \
         || { echo "$name limits audit FAILED" | tee -a "$out/limits-failed" >&2; tail -20 "$dir/limits.log" >&2; }
@@ -135,8 +139,11 @@ echo "=== this commit: the fused int8 passes ==="
 phase candidate
 echo "=== main: the card's files at main ==="
 git -c safe.directory='*' apply -R "$patch_file"
-status=0
-(phase baseline) || status=$?
+# not `(phase baseline) || ...`: errexit is off on the left of || and a failing step would not end the phase
+set +e
+(set -e; phase baseline)
+status=$?
+set -e
 git -c safe.directory='*' apply "$patch_file"
 [ ! -e "$out/limits-failed" ] || status=1
 

@@ -887,10 +887,10 @@ at main **14.3 s** (14.3, 14.3, 14.3: transformer 12.9): `q k v gate` 2.68→1.8
 episode 1's Mac picture the gates hold unchanged — the latent is byte-identical to the measured one.
 
 `b163d44` (job `top-52a99a9e86fd`, 20 November, exit 0 — a same-job A/B: `bench-145-ab.sh` on this commit, then
-`bench-145-base.patch` reverse-applied and the same unseen prompts again) cuts the two non-product passes card
+`bench-145-base.patch` reverse-applied and the same unseen prompts again) targets the two non-product passes card
 128's split left: `heads` 1.40 s and the ~0.8 s `h3_swiglu_int8` inside `mlp in`. `h3_heads_i8` keeps q and k
-rounded to bf16 two a word (bit-identical values, half card 128's live registers — its float arrays took 252
-and spilled), reads every row 16 bytes at a time, and reloads each rotary partner's `int32` group to dequantize
+rounded to bf16 two a word (bit-identical values, 146–172 registers across the five SMs where card 128's float
+arrays took 246–255 and spilled), reads every row 16 bytes at a time, and reloads each rotary partner's `int32` group to dequantize
 it again rather than sharing rounded values; `h3_swiglu_int8` runs one block a row of 4-wide `int4`/`float4`
 groups instead of a grid-stride element loop, the same dequantize, silu and product. An int8 act rows variant
 (swiglu quantizing its own output, fc2's product reading the codes) was cut before the run: cuBLASLt's mixed
@@ -902,5 +902,5 @@ byte-identical between phases (`e95fd65d…`, `58db502a…`, `a8beb316…`). A w
 (transformer 12.52, 12.64, 12.63): `heads` 1.40–1.41→1.11–1.12 s, `mlp in` 3.28–3.30→3.23–3.25 s and `mlp out`
 2.43–2.45→2.22–2.23 s, with `q k v gate` (1.84–1.85 s against 1.83–1.85), `attention` and `norms` unchanged.
 `mlp out` is only fc2's bf16 product over `act`, so its 0.2 s comes from swiglu's new write order, likely
-leaving `act` in L2 for fc2 (inferred, not profiled). Together that is ~0.55 s off card 128's ~2.4 s of
-non-product passes, so ~1.85 s against mmh3's 1.34 s.
+leaving `act` in L2 for fc2 (inferred, not profiled). Of card 128's ~2.4 s of non-product passes, `heads` and `h3_swiglu_int8`'s own share of `mlp in` give back
+~0.35 s, so ~2.05 s against mmh3's 1.34 s; the further ~0.2 s lands in `mlp out`, a product pass.
