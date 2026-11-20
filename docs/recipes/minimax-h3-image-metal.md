@@ -1262,6 +1262,38 @@ widened loads blind. Fast mode (`--draft-steps 3`) on the shipped state, same pr
 and 6.17 s (the second with the transformer binding reused), totals 11.19/7.86 s; one warm run waited up to 0.52 s
 for speech (`timing_valid=false`) and is reported, not counted.
 
+The Desk's GPU window (16:37-17:17 HKT, voice idle) re-ran the A/B with `frag_get_q` rebuilt on this branch's
+parent (`fc8aa2d45`, the shipped side built from the same commit): one resident ReleaseFast server a side, one lock
+hold a server (cold on card 34's prompt, then harbour, meadow, steam at seed 42), sides alternated main, head, head,
+main, main, head. Load is the 1-minute average when each request was sent; other checkouts' builds kept it at 11-45.
+Seconds; warm runs' six steps (total in brackets):
+
+| Round | Side | harbour | meadow | steam | load at the three requests |
+|---|---|---:|---:|---:|---|
+| 1 | main | 8.97 (12.42) | 9.28 (12.66) | 9.31 (12.40) | 23.2 / 20.9 / 18.8 |
+| 1 | head | 8.96 (12.76) | 9.28 (12.52) | 9.95 (12.32) | 33.0 / 29.4 / 26.9 |
+| 2 | head | 9.81 (16.43) | 10.39 (17.38) | 9.61 (16.26) | 19.0 / 15.2 / 14.3 |
+| 2 | main | 10.81 (17.92) | 10.61 (39.09) | 9.60 (14.79) | 15.2 / 25.3 / 16.5 |
+| 3 | main | 9.00 (14.05) | 9.31 (13.67) | 9.72 (14.90) | 28.0 / 25.2 / 22.4 |
+| 3 | head | 10.24 (17.03) | 9.41 (15.80) | 9.28 (14.25) | 21.9 / 24.9 / 19.0 |
+
+Medians of the nine warm runs a side: main 9.31 s of steps, head 9.61 s. Paired by prompt and round, head wins 3
+(two in round 2, where main's meadow prompt alone took 23.9 s of contention), ties 2 and loses 4.
+No warm request waited for speech; head's round-1 cold run waited 0.53 s and is not in the table.
+Fast mode (`--draft-steps 3`), warm steps (total):
+
+| Round | Side | harbour | meadow | steam | load at the three requests |
+|---|---|---:|---:|---:|---|
+| 1 | main | 8.98 (14.52) | 8.65 (14.82), speech wait | 6.16 (11.00), speech wait | 19.4 / 18.3 / 15.9 |
+| 1 | head | 10.98 (19.43) | 9.49 (16.70) | 6.49 (12.20) | 11.3 / 8.8 / 9.9 |
+| 2 | main | 9.51 (39.71) | 9.51 (17.61) | 6.67 (11.62) | 22.4 / 20.9 / 15.6 |
+| 2 | head | 8.88 (15.78) | 9.37 (21.20) | 7.30 (20.12) | 11.5 / 15.8 / 45.0 |
+
+The window confirms the quiet round: no served gain from the 4-byte loads at six steps or in fast mode, so the code
+stays reverted. Neither side reached the 10.8 s normal / 7.8 s fast totals of the quiet round under this load; the
+best warm totals were main 12.40 s and head 12.32 s at six steps, and main 11.00 s and head 12.20 s in fast mode
+(the binding-reused third request).
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
