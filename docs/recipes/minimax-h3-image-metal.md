@@ -1136,15 +1136,17 @@ download.
 ### Card 135: the Spark's norm-quantize fusion on the Metal path
 
 Card 128's lever 2 on the picture path's launches: `h3_norm_quant` runs the gated residual add, the modulated
-RMSNorm and `h3_quantize_rows`' row quantization as one launch — each lane recomputes the normed value for the
+RMSNorm and `h3_quantize_rows`' quantization as one launch — each lane recomputes the normed value for a block's
 absmax and the rounding, so the bf16 normed rows are never written (the int8 fc1 product was their only reader;
-norm1's bf16 `xn` still feeds the bf16 qkv product). A block's launched passes go 10 to 9; a clip's bf16 path is
-unchanged.
+norm1's bf16 `xn` still feeds the bf16 qkv product). Its scales land in `xs` at the gemm's own layout, one scale
+per 256-value K block a row (21 a row at hidden 5,376): the card-136 merge brought the block-scaled gemm this
+fusion predates, so the grouped form is what it must feed. A block's launched passes go 10 to 9; a clip's bf16
+path is unchanged.
 
-`test-h3-gemm` holds the fusion byte for byte against the two launches it replaces, the contract runner's
-`h3_norm_quant` entry byte-compares it to `h3_norm` then `h3_quantize_rows` on the same inputs, and a resident
-server's warm 2048² latents and PNGs are sha1-identical to main's (`8b9e75b5…`, `7bf89a7f…`): the step's GPU
-time is 1.56 s against main's 1.57-1.58 s, a warm 2048² request 11.6 s either way. An
+`test-h3-gemm` holds the fusion byte for byte against the two launches it replaces at `g = 256`, and the contract
+runner's `h3_norm_quant` entry byte-compares it to `h3_norm` then `h3_quantize_rows` at that grouping on the same
+inputs. A resident server's warm 2048² latent and PNG are sha1-identical to this main's (`776b443a…`, `3cda60cf…`),
+with the step at 1.53 s of GPU against main's 1.54 s and the warm request at 10.6-11.6 s against 11.1 s. An
 activation-in-epilogue variant of fc1's int8 product (`silu(gate)·value` folded in, `h3_swiglu` and the `wide`
 rows dropped) was built and measured before review: a first layout keeping both K halves' fp32 accumulators
 live ran the step at 1.73 s GPU, and a second shape reusing one accumulator over sequential value and gate

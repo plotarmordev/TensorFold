@@ -58,6 +58,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
         .norm, .norm_quant, .final_norm, .gate_add => {
             const C = s.n;
             if (self.which != .gate_add and s.k != C) return false;
+            if (self.which == .norm_quant and C % 256 != 0) return false; // S holds a scale a 256-value block
             // terms of one sign: no cancellation hides an intermediate rounding from the bound
             const x = try self.values(s.rows * C, 0, 2, fill, rng, true, true);
             const y = try self.values(s.rows * C, 0, 2, .random, rng, true, false);
@@ -90,7 +91,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             if (self.which == .norm) try self.output(x.len * 2);
             if (self.which == .norm_quant) {
                 try self.output(x.len); // Q: each row's int8 values
-                try self.output(s.rows * 4); // S: each row's scale
+                try self.output(s.rows * (s.n / 256) * 4); // S: each row's scale a 256-value block
             }
             if (self.which == .final_norm) try self.output(x.len * 2);
         },
@@ -219,7 +220,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
     self.outs = switch (self.which) {
         .rows_in, .rows_out, .swiglu, .swiglu_gate_first, .modulation => s.rows * s.n,
         .norm => 2 * s.rows * s.n,
-        .norm_quant => s.rows * (3 * s.n + 4),
+        .norm_quant => s.rows * (3 * s.n + s.n / 64),
         .final_norm, .gate_add, .gate_mix => s.rows * s.n,
         .heads => 3 * heads * slots * 128,
         .pool => 3 * heads * s.rows * 128,

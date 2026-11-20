@@ -85,10 +85,10 @@ inline float h3_mod(float x, float inv, float w, float scale, float shift) {
   for (int c = int(lane); c < C; c += 32) x[c] = bfloat(float(x[c]) + float(bfloat(float(g[c]) * float(y[c]))));
 }
 
-// h3_norm and h3_quantize_rows as one launch for the int8 fc1 path: the gated add and the modulated norm round
-// exactly as h3_norm rounds them (the same thread stride and simd_sum), and each lane recomputes its normed values
-// for the absmax and the rounding, so the bf16 rows are never written: the int8 product is their only reader.
-// Q [M, C] int8, S [M] fp32, one scale a row. Threadgroups [M, 1, 1] of 32.
+// h3_norm and h3_quantize_rows at g = 256 as one launch for the int8 fc1 path: the gated add and the modulated
+// norm round exactly as h3_norm rounds them (the same thread stride and simd_sum), and each lane recomputes its
+// normed values for a block's absmax and rounding, so the bf16 rows are never written: the int8 product is their
+// only reader. Q [M, C] int8, S [M, C / 256] fp32 — one scale a row per 256-value K block, as the gemm reads it.
 [[kernel]] void h3_norm_quant(
   device bfloat* X [[buffer(0)]],
   const device bfloat* Y [[buffer(1)]],
@@ -120,20 +120,25 @@ inline float h3_mod(float x, float inv, float w, float scale, float shift) {
   const float inv = rsqrt(simd_sum(sq) / float(C) + E[0]);
   const device bfloat* s = TAB + (long(P[4]) * L + line) * C;
   const device bfloat* h = TAB + (long(P[5]) * L + line) * C;
-  float most = 0;
-  bool nan = false;
-  for (int c = int(lane); c < C; c += 32) {
-    const float v = abs(h3_mod(float(x[c]), inv, float(W[c]), float(s[c]), float(h[c])));
-    most = max(most, v);
-    nan = nan || isnan(v);
-  }
-  // max drops NaN: a row holding one takes a NaN scale, so its products come out NaN — h3_quantize_rows' rule
-  most = simd_any(nan) ? NAN : simd_max(most);
-  const float scale = most > 0 || isnan(most) ? most / 127 : 1;
-  if (lane == 0) S[row] = scale;
-  for (int c = int(lane); c < C; c += 32) {
-    const float v = h3_mod(float(x[c]), inv, float(W[c]), float(s[c]), float(h[c]));
-    Q[long(row) * C + c] = int8_t(rint(v / scale));
+  // h3_quantize_rows at g = 256: each block's absmax, its scale in the gemm's SA layout, then the block to int8
+  const int G = 256;
+  S += long(row) * (C / G);
+  for (int from = 0; from < C; from += G) {
+    float most = 0;
+    bool nan = false;
+    for (int i = from + int(lane); i < from + G; i += 32) {
+      const float v = abs(h3_mod(float(x[i]), inv, float(W[i]), float(s[i]), float(h[i])));
+      most = max(most, v);
+      nan = nan || isnan(v);
+    }
+    // max drops NaN: a block holding one takes a NaN scale, so its products come out NaN — h3_quantize_rows' rule
+    most = simd_any(nan) ? NAN : simd_max(most);
+    const float scale = most > 0 || isnan(most) ? most / 127 : 1;
+    if (lane == 0) S[from / G] = scale;
+    for (int i = from + int(lane); i < from + G; i += 32) {
+      const float v = h3_mod(float(x[i]), inv, float(W[i]), float(s[i]), float(h[i]));
+      Q[long(row) * C + i] = int8_t(rint(v / scale));
+    }
   }
 }
 

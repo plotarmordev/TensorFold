@@ -226,7 +226,8 @@ pub const H3 = struct {
         defer self.a.free(mag);
         return self.compute(.{ .acc = acc, .order = order }, out, mag);
     }
-    /// The replaced pair's launches on the prepared inputs: h3_norm into a scratch xn, then h3_quantize_rows into the same Q and S outputs the fused kernel fills. Output bytes are X, Q, S — the fused kernel's layout.
+    /// The replaced pair's launches on the prepared inputs: h3_norm into a scratch xn, then h3_quantize_rows at the
+    /// gemm's 256-value block grouping into the same Q and S outputs the fused kernel fills. Output bytes: X, Q, S.
     pub fn replaced(self: *H3) ![]const u8 {
         if (self.fresh.len > 0) @memcpy(self.rig.bytes(self.bufs[0], self.fresh.len), self.fresh);
         const s = self.shape;
@@ -245,7 +246,7 @@ pub const H3 = struct {
         e.barrier();
         e.setPipeline(self.quant_pipe.?);
         e.setBuffer(xn.buf, xn.off, 0);
-        e.setValue([3]i32{ @intCast(s.rows), @intCast(s.n), @intCast(s.n) }, 1);
+        e.setValue([3]i32{ @intCast(s.rows), @intCast(s.n), 256 }, 1);
         e.setBuffer(self.bufs[5].buf, self.bufs[5].off, 2);
         e.setBuffer(self.bufs[6].buf, self.bufs[6].off, 3);
         e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));

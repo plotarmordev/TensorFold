@@ -78,7 +78,8 @@ fn norm(m: *const Model, enc: mtl.ComputeEncoder, w: Ref, gates: ?Ref, gate: i32
 }
 
 /// norm's int8 form for the picture's second norm: the gated add and the modulated norm round exactly as norm
-/// rounds them, then each row straight to int8 in xq with its scale in xs — the bf16 normed rows are never written.
+/// rounds them, then each row straight to int8 in xq with its per-256-value block scales in xs — the bf16 normed
+/// rows are never written.
 fn normQuant(m: *const Model, enc: mtl.ComputeEncoder, w: Ref, gates: ?Ref, gate: i32, tables: Ref, scale: i32, shift: i32) void {
     const g = gates orelse tables;
     enc.setPipeline(m.pipeline("h3_norm_quant"));
@@ -388,11 +389,11 @@ test "h3 fused: h3_norm_quant's rows are bit-identical to h3_norm then h3_quanti
     defer xn.deinit();
     const xq = try device.buffer(rows * C, shared);
     defer xq.deinit();
-    const xs = try device.buffer(rows * 4, shared);
+    const xs = try device.buffer(rows * (C / group) * 4, shared);
     defer xs.deinit();
     const xq2 = try device.buffer(rows * C, shared);
     defer xq2.deinit();
-    const xs2 = try device.buffer(rows * 4, shared);
+    const xs2 = try device.buffer(rows * (C / group) * 4, shared);
     defer xs2.deinit();
     m.x = x;
     m.y = y;
@@ -409,6 +410,7 @@ test "h3 fused: h3_norm_quant's rows are bit-identical to h3_norm then h3_quanti
     const parts = [6]i32{ @intCast(rows), @intCast(C), @intCast(lines), gate, scale, shift };
     {
         // the two launches the fused kernel folds: h3_norm (gated add + modulated norm), then h3_quantize_rows
+        // at the gemm's 256-value block grouping
         const cb = queue.commandBuffer();
         const enc = cb.compute(.concurrent);
         enc.setPipeline(m.pipeline("h3_norm"));
@@ -423,7 +425,7 @@ test "h3 fused: h3_norm_quant's rows are bit-identical to h3_norm then h3_quanti
         enc.setBuffer(xn, 0, 8);
         enc.dispatchGroups(mtl.Size.of(rows, 1, 1), mtl.Size.of(32, 1, 1));
         enc.barrier();
-        quantize(&m, enc, .{ .buffer = xn }, rows, C, C, .{ .buffer = xq }, .{ .buffer = xs });
+        quantize(&m, enc, .{ .buffer = xn }, rows, C, group, .{ .buffer = xq }, .{ .buffer = xs });
         enc.end();
         cb.commit();
         cb.wait();
@@ -449,10 +451,11 @@ test "h3 fused: h3_norm_quant's rows are bit-identical to h3_norm then h3_quanti
         cb.wait();
         try std.testing.expect(cb.failure() == null);
     }
-    // the fused kernel's in-place add must match h3_norm's, its quantized rows h3_quantize_rows', bit for bit
+    // the fused kernel's in-place add must match h3_norm's, its quantized rows and block scales h3_quantize_rows',
+    // bit for bit
     try std.testing.expectEqualSlices(u16, x.slice(u16, rows * C), x2.slice(u16, rows * C));
     try std.testing.expectEqualSlices(i8, xq.slice(i8, rows * C), xq2.slice(i8, rows * C));
-    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(xs.slice(f32, rows)), std.mem.sliceAsBytes(xs2.slice(f32, rows)));
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(xs.slice(f32, rows * (C / group))), std.mem.sliceAsBytes(xs2.slice(f32, rows * (C / group))));
 }
 
 test "h3 gemm: a clip's linears stay bf16, bit for bit main's MLX product, whole and ragged" {
