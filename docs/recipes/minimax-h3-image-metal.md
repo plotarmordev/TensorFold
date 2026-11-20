@@ -1220,8 +1220,8 @@ and value rows of one output side by side, applies `bf16(bf16(SiLU(gate)) * valu
 Episode 1's latent decodes to the same PNG bytes as before the fusion (`85098fa9…` both builds), and the GPU meter falls from 0.56 s to 0.49 s.
 The products remain bf16 rather than FP16: bf16 operands give exact products in the fragments' float32 sums at the
 same rounding points. FP16 would add a conversion on every bf16 activation and weight, and narrow their range. After the pass, unpatchify, the blend and
-`picture_writer`'s PNG take 0.25 s at 2048. The writer is outside this card's files, and parallel deflate bands
-would change the compressed bytes.
+`picture_writer`'s PNG take 0.25 s at 2048. Nothing is left to overlap: the PNG needs the whole blended picture, and the
+request ends when its file is written. Parallel deflate bands would change the compressed bytes.
 
 Gates: `tf-h3-image-contract` 31 kernels pass gates 1-4 (`h3d_gemm`'s SwiGLU form in place of `h3d_swiglu`), all 34
 controls go red as planted, and there are no limit problems;
@@ -1230,29 +1230,29 @@ test-golden` exits 0. Episode 1's latent decoded by this card versus main: 56.6 
 latents are bit-identical to main's on every request below. The cold picture against episode 1's Mac PNG
 (`904814d6…`): latent cosine 0.9955, 28.67 dB, mean 3.90 for both builds.
 
-Warm A/B before the SwiGLU fusion, M5 Ultra, ReleaseFast `tf-h3-image-server` per build, base `fc8aa2d45`, one session per build and mode.
-These runs did not record taking `/tmp/tensorfold-model.lock` or each run's load average, so they do not meet
-the card's bench rule. A locked rerun with per-run load waits for a GPU window.
-Each session ran the seed-42 pilot once, then three unseen prompts (a lighthouse keeper, an autumn market, a rooftop
-greenhouse; seeds 11-13). Stage seconds: prompt / transformer bind / 6 steps / decoder / total:
+Warm A/B, M5 Ultra, ReleaseFast `tf-h3-image-server` per build: main `82a2bfba3` against this card's SwiGLU-fused
+head. Each session runs one resident server under `/tmp/tensorfold-model.lock` (`zsystem flock`, taken before the
+server starts and held until it quits, 41-50 s a session) and sends the seed-42 pilot, then three unseen prompts (a
+glassblower's workshop, a mountain railway station at dawn, a tide pool from above; seeds 21-23). Stage seconds:
+prompt / transformer bind / 6 steps / decoder / total. Load is the one-minute average before / after each request:
 
-| Run | Load | main | this card |
-|---|---|---|---|
-| normal, pilot | 9.2 / 6.8 | 0.28 / 0.65 / 9.25 / 1.37 / 11.56 | 0.29 / 0.65 / 9.81 / 0.85 / 11.60 |
-| normal, unseen 1 | | 0.22 / 0.75 / 9.27 / 1.36 / 11.61 | 0.22 / 0.71 / 9.54 / 0.82 / 11.30 |
-| normal, unseen 2 | | 0.22 / 0.75 / 9.27 / 1.35 / 11.59 | 0.22 / 0.72 / 9.53 / 0.80 / 11.28 |
-| normal, unseen 3 | | 0.22 / 0.74 / 9.27 / 1.37 / 11.61 | 0.22 / 0.71 / 9.53 / 0.81 / 11.28 |
-| fast (`--draft-steps 3`), pilot | 11.6 / 11.7 | 0.23 / 0.88 / 7.97 / 1.41 / 10.50 | 0.29 / 0.67 / 7.58 / 0.77 / 9.31 |
-| fast, unseen 1 | | 0.22 / 0.68 / 7.74 / 1.39 / 10.04 | 0.22 / 0.72 / 7.72 / 0.80 / 9.46 |
-| fast, unseen 2 | | 0.22 / 0.76 / 8.19 / 1.35 / 10.53 | 0.22 / 0.76 / 7.66 / 0.78 / 9.42 |
-| fast, unseen 3 | | 0.22 / 0.71 / 7.69 / 1.37 / 10.00 | 0.22 / 0.78 / 7.73 / 0.77 / 9.51 |
+| Run | main | load | this card | load |
+|---|---|---|---|---|
+| normal, pilot | 0.27 / 0.90 / 9.17 / 1.41 / 11.76 | 3.35 / 3.43 | 0.58 / 0.61 / 9.30 / 0.81 / 11.31 | 3.92 / 4.18 |
+| normal, unseen 1 | 0.22 / 0.66 / 9.20 / 1.36 / 11.44 | 3.43 / 3.51 | 0.22 / 0.67 / 9.28 / 0.76 / 10.94 | 4.18 / 4.29 |
+| normal, unseen 2 | 0.24 / 0.65 / 9.29 / 1.41 / 11.59 | 3.51 / 3.67 | 0.22 / 0.67 / 9.25 / 0.82 / 10.96 | 4.29 / 4.33 |
+| normal, unseen 3 | 0.27 / 0.68 / 9.24 / 1.32 / 11.52 | 3.67 / 3.83 | 0.22 / 0.67 / 9.23 / 0.72 / 10.84 | 4.33 / 4.49 |
+| fast (`--draft-steps 3`), pilot | 0.28 / 0.59 / 7.79 / 1.45 / 10.11 | 4.29 / 4.06 | 0.23 / 0.79 / 8.08 / 0.85 / 9.96 | 3.37 / 3.94 |
+| fast, unseen 1 | 0.22 / 0.65 / 6.72 / 1.35 / 8.94 | 4.06 / 3.88 | 0.24 / 0.64 / 6.72 / 0.75 / 8.36 | 3.94 / 3.88 |
+| fast, unseen 2 | 0.26 / 0.66 / 7.48 / 1.40 / 9.80 | 3.88 / 3.72 | 0.24 / 0.65 / 7.55 / 0.79 / 9.23 | 3.88 / 3.83 |
+| fast, unseen 3 | 0.28 / 0.64 / 7.56 / 1.32 / 9.80 | 3.72 / 3.23 | RERUN | |
 
-Load is the one-minute average at the start of each session (main / this card). The decoder stage falls from
-1.35-1.41 s to 0.77-0.85 s, about 0.55 s per picture. The transformer is unchanged, and its latents are
-bit-identical. The normal session's steps ran 0.26 s slower on this card's side; the fast sessions' steps match.
-That drift is not this card's code. The first pass of all four sessions ran at load 40-65, while this worktree's
-own `zig build test` was running, and the base fast session reached 21.7-26.1 s. All four were rerun after the suite
-finished, and the table shows those reruns. The first pass's decoder stage matched them: 1.51-2.09 s on main, 1.32-1.50 s here.
+The decoder stage falls from 1.32-1.45 s to 0.72-0.85 s, about 0.6 s a picture, and every warm total is lower. The
+latents of the two builds are bit-identical request for request, so the steps' spread is the machine's. Contention
+spoiled two of this card's fast runs, and both were rerun rather than dropped. Unseen 3 of the first fast session
+recorded decoder 1.23 s, total 9.77 s, with load rising from 3.83 to 6.11. A whole fast session rerun right after
+met other workers' CPU tests: load rose from 5.71 to 21.14, and the session recorded decoder 1.37 / 0.84 / 0.93 /
+1.04 s and totals 11.03 / 9.83 / 9.95 / 9.93 s.
 ### Next, ranked
 
 | # | Idea | Size | Basis |
