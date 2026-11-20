@@ -131,6 +131,20 @@ servers close, the script decodes the 2048² latent again with `reference`: the 
 decoder's on the same latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits
 non-zero past the bound. The host decoder needs the memory the servers held, so it runs once their arenas are free.
 
+### The cuBLASLt picks file
+
+Every projection's plan starts as a `cublasLtMatmulAlgoGetHeuristic` search: the bf16 products probe once
+at a canonical 16,384 rows per (n, k) and each int8 product once at the picture's own (rows, n, k) — on
+the GB10 each answer is worth seconds of a cold picture's first step. `tf-h3-image-cuda` keeps the picks
+in `~/.cache/tensorfold/h3-cublaslt-algos.bin` (a `TFH3LT1` header, the identity line, then fixed
+records): keyed by GPU name, CUDA driver and cuBLASLt version, so another card, driver or toolkit is a
+miss, as is a missing or torn file; the searches then run as before and `deinit` rewrites the table
+whole. `TF_H3_ALGO_CACHE` names another file or, as `off`, skips it.
+
+[`cache-ab.sh`](minimax-h3-cuda/cache-ab.sh) is the receipt: `bench-script.sh` on TOP twice in one job —
+once with the file absent (the searches write it), once with it — then compares the two cold latents bit
+for bit.
+
 ### Fewer steps: the draft canvas, not the PDMD LoRA
 
 The card's two options were mmh3's PDMD 2-NFE LoRA and its `--draft-steps` half canvas
