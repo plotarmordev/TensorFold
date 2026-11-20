@@ -333,7 +333,7 @@ pub const GemmTma = struct {
         try t.product(want);
         const k = t.shape.k;
         for (0..t.shape.rows) |row| for (0..t.shape.n) |col| {
-            var sum: i64 = 0;
+            var sum: u64 = 0;
             for (0..k) |j| sum += @abs(@as(i64, t.xq[row * k + j]) * t.wq[col * k + j]);
             mag[row * t.shape.n + col] = @as(f64, @floatFromInt(sum)) * t.xs[row] * t.ws[col];
         };
