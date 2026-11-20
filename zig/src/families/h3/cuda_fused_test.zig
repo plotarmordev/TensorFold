@@ -135,22 +135,22 @@ pub fn run(a: std.mem.Allocator) !void {
     // dead slots (rowof -1) are never written: a fill before the launches makes the full-tile compare deterministic
     var tq1 = try cuda.DeviceBuffer.alloc(&driver, heads * slots * 128 * 2);
     defer tq1.free();
-    try tq1.fill8(0xAB, stream);
+    try tq1.fill8(0xAB, stream.handle);
     var tk1 = try cuda.DeviceBuffer.alloc(&driver, heads * slots * 128 * 2);
     defer tk1.free();
-    try tk1.fill8(0xAB, stream);
+    try tk1.fill8(0xAB, stream.handle);
     var tv1 = try cuda.DeviceBuffer.alloc(&driver, heads * slots * 128 * 2);
     defer tv1.free();
-    try tv1.fill8(0xAB, stream);
+    try tv1.fill8(0xAB, stream.handle);
     var tq2 = try cuda.DeviceBuffer.alloc(&driver, heads * slots * 128 * 2);
     defer tq2.free();
-    try tq2.fill8(0xAB, stream);
+    try tq2.fill8(0xAB, stream.handle);
     var tk2 = try cuda.DeviceBuffer.alloc(&driver, heads * slots * 128 * 2);
     defer tk2.free();
-    try tk2.fill8(0xAB, stream);
+    try tk2.fill8(0xAB, stream.handle);
     var tv2 = try cuda.DeviceBuffer.alloc(&driver, heads * slots * 128 * 2);
     defer tv2.free();
-    try tv2.fill8(0xAB, stream);
+    try tv2.fill8(0xAB, stream.handle);
     {
         var args: cuda.Args = .{};
         for ([_]u64{ acc_dev.ptr, sx_dev.ptr, sw_dev.ptr, qkv_dev.ptr }) |p| args.add(p);
