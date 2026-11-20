@@ -653,11 +653,11 @@ test "speech arriving during the prompt encoder, denoising or the decoder holds 
     var b = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
     defer b.release();
     const velocity = try a.alloc(f32, case.noise.len);
-    _ = try b.model.forward(case.noise, &.{}, 0, velocity, &.{});
+    _ = try b.model.forward(case.noise, &.{}, 0, null, velocity, &.{});
     const held_velocity = try a.alloc(f32, velocity.len);
     // the third probe, after `mark` and the forward's first yield: speech arrives once the first block is submitted
     b.model.give_way = Arrival.at(io, lock, 3, hold_ms);
-    const step = try b.model.forward(case.noise, &.{}, 0, held_velocity, &.{});
+    const step = try b.model.forward(case.noise, &.{}, 0, null, held_velocity, &.{});
     try Arrival.join();
     try testing.expect(step.paused >= least and !step.timing_valid);
     try testing.expectEqualSlices(f32, velocity, held_velocity);

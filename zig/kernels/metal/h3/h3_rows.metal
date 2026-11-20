@@ -12,6 +12,11 @@ using namespace metal;
 #define H3_TILES 288
 #endif
 
+// The stream width a head-normed row can stage in threadgroup memory (the checkpoint's hidden).
+#ifndef H3_HIDDEN
+#define H3_HIDDEN 5376
+#endif
+
 // The modulated norm one value at a time, rounded to bf16 where the reference's bf16 arithmetic rounds.
 inline float h3_mod(float x, float inv, float w, float scale, float shift) {
   return float(bfloat(float(bfloat(float(bfloat(x * inv * w)) * float(bfloat(1.0f + scale)))) + shift));
@@ -114,42 +119,62 @@ inline float h3_mod(float x, float inv, float w, float scale, float shift) {
   A[long(at.y) * N + at.x] = bfloat(silu * v);
 }
 
-// The final layer's modulated RMSNorm. TAB: (T, 2 C) bf16, shift then scale. Y: (M, C) bf16.
-[[kernel]] void h3_final_norm(
+
+// The stream's row through the final norm, modulated by its table line, then the step's head into
+// V (rows, width): h3_final_norm's SIMD sum order for the inverse and h3_rows_out's lane-strided
+// dot, fused — the normed row is normed once into threadgroup memory, never a buffer. P: rows, C,
+// width. X is offset to the first stepped row and TIME to its table line. [rows] groups of 256:
+// every SIMD group stages x, group 0 norms it, then the groups take every eighth head column.
+[[kernel]] void h3_head_norm(
   const device bfloat* X [[buffer(0)]],
-  const device bfloat* W [[buffer(1)]],
+  const device bfloat* NW [[buffer(1)]],
   const device bfloat* TAB [[buffer(2)]],
-  const device int32_t* LINE [[buffer(3)]],
-  const constant int32_t* P [[buffer(4)]],
-  const constant float* E [[buffer(5)]],
-  device bfloat* Y [[buffer(6)]],
+  const device int32_t* TIME [[buffer(3)]],
+  const device float* W [[buffer(4)]],
+  const device float* B [[buffer(5)]],
+  const constant int32_t* P [[buffer(6)]],
+  const constant float* E [[buffer(7)]],
+  device float* V [[buffer(8)]],
+  uint sg [[simdgroup_index_in_threadgroup]],
   uint lane [[thread_index_in_simdgroup]],
-  uint3 tg [[threadgroup_position_in_grid]]) {
-  const int C = P[1], row = int(tg.x);
+  uint tid [[thread_index_in_threadgroup]],
+  uint tg [[threadgroup_position_in_grid]]) {
+  const int C = P[1], WIDTH = P[2], row = int(tg);
+  threadgroup float xs[H3_HIDDEN];
+  if (C > H3_HIDDEN) return;
   const device bfloat* x = X + long(row) * C;
-  const device bfloat* t = TAB + long(LINE[row]) * 2 * C;
-  float sq = 0.0f;
-  for (int c = int(lane); c < C; c += 32) sq += float(x[c]) * float(x[c]);
-  const float inv = rsqrt(simd_sum(sq) / float(C) + E[0]);
-  for (int c = int(lane); c < C; c += 32) Y[long(row) * C + c] = bfloat(h3_mod(float(x[c]), inv, float(W[c]), float(t[C + c]), float(t[c])));
+  for (int c = int(tid); c < C; c += 256) xs[c] = float(x[c]);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (sg == 0) {
+    float sq = 0.0f;
+    for (int c = int(lane); c < C; c += 32) sq += xs[c] * xs[c];
+    const float inv = rsqrt(simd_sum(sq) / float(C) + E[0]);
+    const device bfloat* t = TAB + long(TIME[row]) * 2 * C;
+    for (int c = int(lane); c < C; c += 32)
+      xs[c] = float(bfloat(h3_mod(xs[c], inv, float(NW[c]), float(t[C + c]), float(t[c]))));
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (int col = int(sg); col < WIDTH; col += 8) {
+    const device float* w = W + long(col) * C;
+    float part = 0.0f;
+    for (int k = int(lane); k < C; k += 32) part += xs[k] * w[k];
+    const float sum = simd_sum(part);
+    if (lane == 0) V[long(row) * WIDTH + col] = sum + B[col];
+  }
 }
 
-// Y[r, n] = B[n] + sum over k of X[row0 + r, k] W[n, k]: an output head over its bf16 rows, in float.
-[[kernel]] void h3_rows_out(
-  const device bfloat* X [[buffer(0)]],
-  const device float* W [[buffer(1)]],
-  const device float* B [[buffer(2)]],
-  const constant int32_t* P [[buffer(3)]],
-  device float* Y [[buffer(4)]],
-  uint lane [[thread_index_in_simdgroup]],
-  uint3 tg [[threadgroup_position_in_grid]]) {
-  const int K = P[1], N = P[2], row0 = P[3];
-  const device bfloat* x = X + long(row0 + int(tg.y)) * K;
-  const device float* w = W + long(tg.x) * K;
-  float sum = 0.0f;
-  for (int k = int(lane); k < K; k += 32) sum += float(x[k]) * w[k];
-  sum = simd_sum(sum);
-  if (lane == 0) Y[long(tg.y) * N + tg.x] = sum + B[tg.x];
+// X += delta * V, the Euler step, in picture.euler's two roundings. [N, 1, 1] threads of 256.
+[[kernel]] void h3_euler(
+  device float* X [[buffer(0)]],
+  const device float* V [[buffer(1)]],
+  const constant int32_t* P [[buffer(2)]],
+  const constant float* D [[buffer(3)]],
+  uint at [[thread_position_in_grid]]) {
+  if (int(at) < P[0]) {
+    // picture.euler rounds the product then the sum; a volatile rounds out what fma contraction would skip.
+    const volatile float p = D[0] * V[at];
+    X[at] += p;
+  }
 }
 
 // AdaLN tables: Y = X W^T + B, n = (group, part, c) written at (part, t G + group, c). Threadgroups [N / 8] of 256.
