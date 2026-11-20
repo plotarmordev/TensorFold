@@ -20,7 +20,7 @@ const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_no
 /// H3_PROFILE's stages, in the order a pass runs them: where a warm picture's decoder seconds go.
 pub const profile_stages = [_][]const u8{ "embedding", "norms", "products", "finish", "heads", "attention", "swiglu" };
 
-/// The fast path's cuBLASLt workspace, vit.Gemms' own 32 MiB.
+/// The fast path's cuBLASLt workspace bound, the same 32 MiB the other H3 products hold.
 const tc_workspace_bytes = 32 << 20;
 
 /// h3_image_decoder.cu's H3dShape.
@@ -85,9 +85,6 @@ pub const Decoder = struct {
     fast: bool = false,
     gemms: ?cuda.vit.Gemms = null,
     mark: f64 = 0,
-    /// True inside `capture`'s stream capture: laps no-op (device syncs are illegal there), so a
-    /// graphed pass reports its stage seconds as outside the stages.
-    capturing: bool = false,
 
     /// A scratch view's byte offset inside `scratch`.
     const View = struct {
@@ -121,11 +118,9 @@ pub const Decoder = struct {
         d.module = try cuda.Module.load(&d.driver, &image);
         errdefer d.module.unload();
         inline for (kernel_names, 0..) |name, i| d.functions[i] = try d.module.function(name);
-        // a non-blocking stream: a pass can capture as one CUDA graph, and pageable copies on the
-        // legacy stream stay ordered before and after its work only through drains
-        d.queue = try cuda.Stream.init(&d.driver, true);
+        // the legacy default stream: copies on it stay ordered with this decoder's own launches
+        d.queue = .{ .d = &d.driver, .handle = null };
         d.weights = try cuda.DeviceBuffer.alloc(&d.driver, plan.total() * 2);
-        errdefer d.queue.deinit();
         errdefer d.weights.free();
         return d;
     }
@@ -149,7 +144,6 @@ pub const Decoder = struct {
         if (d.scratch) |*s| s.free();
         if (d.latent) |*l| l.free();
         d.weights.free();
-        d.queue.deinit();
         d.module.unload();
         d.ctx.deinit();
         d.driver.close();
@@ -167,7 +161,7 @@ pub const Decoder = struct {
 
     /// H3_PROFILE: the stage's seconds since the last lap, once its launches have finished.
     fn lap(d: *Decoder, comptime stage: []const u8) !void {
-        if (!d.profile or d.capturing) return;
+        if (!d.profile) return;
         try d.drain();
         const now = seconds();
         inline for (profile_stages, 0..) |s, i| {
@@ -299,33 +293,10 @@ pub const Decoder = struct {
         try begin.record(d.queue);
         if (d.profile) d.mark = seconds();
         const s: Shape = .{ .tiles = @intCast(origins.len), .h = @intCast(d.h), .w = @intCast(d.w), .tokens = @intCast(d.tokens), .rows = @intCast(d.rows), .cols = @intCast(d.cols), .m = @intCast(origins.len * d.tokens) };
-        // The fast path's launches captured as one graph: between-kernel scheduling drops out of
-        // the pass's wall, and the eager fallback runs the same launches on a capture failure.
-        // --exact keeps the ordered path's eager launches either way.
-        if (d.fast) {
-            if (d.capture(s, origins.len, stages)) |*exec| {
-                var e = exec.*;
-                defer e.deinit();
-                try e.launchOn(d.queue);
-            } else |_| {
-                try d.passBody(s, origins.len, stages);
-            }
-        } else {
-            try d.passBody(s, origins.len, stages);
-        }
-        try end.record(d.queue);
-        try end.synchronize();
-        d.passed = origins.len;
-        return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
-    }
-
-    /// The pass's launch sequence: the embedding, blocks [from, to), then norm_out and proj_out.
-    /// Runs live on the queue, or inside `capture`'s stream capture where the same calls become nodes.
-    fn passBody(d: *Decoder, s: Shape, tiles: usize, stages: Stages) !void {
         if (stages.embed) {
             var a = d.args(&.{ d.latent.?.ptr, d.dev(d.view.origins), d.param(d.plan.head(.post_w)), d.param(d.plan.head(.post_b)), d.dev(d.view.tok) });
             a.add(s);
-            try d.launch("h3d_post_quant", .{ .x = 1, .y = @intCast((tiles * d.h * d.w + 7) / 8), .z = 1 }, .{ .x = 32, .y = 8 }, 0, &a);
+            try d.launch("h3d_post_quant", .{ .x = 1, .y = @intCast((origins.len * d.h * d.w + 7) / 8), .z = 1 }, .{ .x = 32, .y = 8 }, 0, &a);
             var b = d.args(&.{ d.dev(d.view.tok), d.param(d.plan.head(.embed_w)), d.param(d.plan.head(.embed_b)), d.param(d.plan.head(.registers)), d.dev(d.view.x) });
             b.add(s);
             try d.launch("h3d_embed", .{ .x = 4, .y = s.m, .z = 1 }, .{ .x = 256, .y = 1 }, 0, &b);
@@ -344,29 +315,10 @@ pub const Decoder = struct {
             try d.lap("norms");
             _ = try d.gemm(s, d.view.xn, d.plan.tail(.proj_w), d.plan.tail(.proj_b), null, d.view.out, host.patch, W);
         }
-    }
-
-    /// `passBody` captured as one CUDA graph on the queue's stream: H3_PROFILE's laps stay no-ops
-    /// while `capturing` is set, so a graphed pass reports its seconds under "outside the stages".
-    fn capture(d: *Decoder, s: Shape, tiles: usize, stages: Stages) !cuda.graph.Exec {
-        const graph_api = @import("cuda").graph;
-        try graph_api.beginCapture(d.queue, .thread_local);
-        d.capturing = true;
-        d.passBody(s, tiles, stages) catch |err| {
-            d.capturing = false;
-            if (graph_api.endCapture(d.queue)) |g| {
-                var dropped = g;
-                dropped.deinit();
-            } else |_| {}
-            return err;
-        };
-        d.capturing = false;
-        var g = try graph_api.endCapture(d.queue);
-        defer g.deinit();
-        var exec = try g.instantiate();
-        errdefer exec.deinit();
-        try exec.upload(d.queue);
-        return exec;
+        try end.record(d.queue);
+        try end.synchronize();
+        d.passed = origins.len;
+        return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
     }
 
     /// y = bf16(x w^T + b): --tc asks cuBLASLt's bias epilogue for that one rounding straight into `y`
