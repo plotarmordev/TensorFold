@@ -641,6 +641,77 @@ costs G n-sized round trips — only an own-mma product folding scales in regist
 Card 129's three tile geometries plateaued at 0.74–0.79× of cuBLASLt's int8 rate, so the round's open part stays a
 TMA + persistent-grid int8 product at mmh3's ~172 TOPS, not a library call.
 
+### The side-by-side: mmh3's warm server beside ours, unseen prompts (20 November)
+
+[`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) puts both engines' resident servers
+in one TOP window (job `top-d2fb1f45a475` at `0e2a3a5b`, GB10, driver 580.173.02) on the same five
+prompts in the same order: the pilot's fox (episode 1's gate prompt), the three files in
+[`prompts/`](minimax-h3-cuda/prompts) neither server has seen — a harbour, a meadow, a
+locomotive — then the fox once more. Seed 42 and the checkpoint's six distilled steps throughout;
+mmh3 runs its defaults (the six sigmas, dense BF16 attention, INT8 ConvRot linears, fp16 VAE) and
+ours the default build (qkvc and fc1 int8 on cuBLASLt, the tensor-core decoder). Warm runs count
+only what each engine pays for a prompt it has not seen; each side's fifth run repeats its own
+first prompt, the repeated-prompt figure reported separately below and never part of the
+headline. `bench-script.sh` learned `H3_BENCH_PROMPTS`, one prompt file a run (default: the pilot
+prompt four times, as before).
+
+| Run | Prompt | TensorFold wall | mmh3 wall |
+|---|---|---|---:|---:|
+| cold | fox | 153.3 s (load 51.3) | 17.6 s (17.2 server-reported) |
+| warm 1 | harbour (unseen) | 15.1 s | 10.6 s (10.11 server) |
+| warm 2 | meadow (unseen) | 15.2 s | 10.6 s (10.13 server) |
+| warm 3 | steam (unseen) | 15.1 s | 10.1 s (9.62 server) |
+| repeated | fox again, labelled cached | 13.9 s | 10.1 s (9.62 server) |
+
+Warm walls are client-side; mmh3's server-reported `seconds` bracket the same request.
+Per-run stage columns, warm:
+
+| Stage | TensorFold unseen ×3 | mmh3 unseen ×3 |
+|---|---:|---:|
+| Prompt | 1.23-1.25 s | 0.2 s encode |
+| Transformer, 6 steps | 12.5-12.7 s (~2.09 a step) | ~8.6-8.7 s (1.4-1.5 a step) |
+| Decoder | 1.2-1.3 s | 0.7 s |
+| Wall | **15.0-15.1 s** | **9.6-10.6 s** |
+
+**mmh3 wins the window I ran.** The card's goal — a warm 2048² picture at or under 7 s beside
+mmh3's 9.5 s — is not met at this head: I measure our warm at 15.0-15.1 s on unseen prompts (13.9 s on
+the repeated one). mmh3's warm barely moves off its 9.5 s quoted figure when the prompt is new:
+its INT8 text encoder stays resident and encodes an unseen prompt in 0.2 s (against its 3.4 s
+first encode with the encoder load), so "unseen" costs it 0.2-0.5 s, not the 3.4 s card 125's
+whole-run figure suggested. Our unseen prompt costs the BF16 encoder's 1.2 s; the kept-states hit
+is 0.01 s. The transformer holds the gap that matters — its 8.6 s to our 12.6 s, the products and
+the fused elementwise passes the rounds above already name — the decoder its 0.7 s to our 1.3 s.
+
+The gates hold for the gate prompt: I measured run 1's latent cosine against episode 1's Mac
+latent at **0.9952** (≥ 0.99) and its PNG **28.69 dB** PSNR and **4.02** apart on average (≥ 28.2,
+≤ 4.1); run 5's is byte-identical. Every selftest passed and the same-latent `reference` compare
+repeated the `--tc` bound: 85.213% of bytes identical, 99.875% within 1, at most 7 apart, 56.31
+dB, relative error 3.33e-3 under 3e-2. Six steps both engines, same seed; mmh3's seed draws other
+noise, so its side is times, not pixels.
+
+What each engine does that the other doesn't, at this head:
+
+- **TensorFold**: every denoising step replays as one captured CUDA graph — rows in, all 50
+  blocks' launches, the step's final norm, output head and Euler — while mmh3 launches every
+  kernel itself. The decoder's products and attention run on the tensor cores as cuBLASLt bf16
+  GEMMs with fp32 sums (bias and LayerScale folded into GEMM epilogues and `h3d_res_norm`), all
+  121 tiles of a 2048² canvas in one batched pass; mmh3's VAE is CUTLASS fp16. The prompt server
+  keeps a prompt's states keyed by its exact bytes (LRU inside `H3_PROMPT_CACHE`); mmh3 keys on
+  the encoder's digest.
+- **mmh3**: all four linears run ConvRot INT8 `m16n8k32` mma products writing bf16 from the tile
+  at ~172 TOPS with no int32 round trip — ours runs `qkvc`/`fc1` on cuBLASLt int8 (~154 TOPS, the
+  int32 sums round-tripping `h3_dequantize`) and `out`/`fc2` still in bf16. Its one
+  `add_norm_quantize` launch family is 1.34 s a picture to our fused set's ~2.4 s. Its text
+  encoder is INT8 too and stays resident, so an unseen prompt costs 0.2 s where ours costs 1.2 s.
+  It saves cuBLASLt's picks and its INT8 tilings to disk (`~/.cache/mmh3`), so a cold request pays
+  no algorithm search; our cold picture pays one 4-7 s search on its first step (card 141 owns
+  the same cache for us).
+- **Neither side runs the other's headline trick**: where the card names block-scaled FP8/NVFP4
+  projections and fused quantized attention, both engines were measured there and neither ships
+  it on this model — our MXFP8 products missed every gate (`160c7687`, cosine 0.9664, 11.5 apart
+  mean) and the e4m3/INT8 attention rounds measured slower and failed the picture (`acda1e04`,
+  `fb5090ae`), while mmh3's own FP8/NVFP4 paths are opt-ins that change the picture, off in its
+  defaults. On this checkpoint the gates, not the formats, decide.
 
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
