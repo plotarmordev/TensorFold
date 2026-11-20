@@ -31,7 +31,8 @@ const usage =
     \\                    draws them, and the requested size
     \\  --serve           the weights loaded once, then one `prompt.txt out.safetensors WxH [SEED [MIN_AREA]]` line
     \\                    of stdin per picture, each answered `done OUT` or `failed OUT` on stdout;
-    \\                    a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256)
+    \\                    a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256); with H3_PROMPT_CHECK=1
+    \\                    each encode's refiner rows must reach cosine 0.999 against the host reference, else failed
     \\  selftest          the GPU kernels on a tiny synthetic checkpoint against the float64 host reference;
     \\                    WORK_DIR (default under TMPDIR) holds a new folder with the checkpoint while it runs
     \\Exit 0: done or every gate passed; 1: a gate failed.
@@ -71,6 +72,8 @@ const Loaded = struct {
     res: hp.Resident,
     /// Kept prompt states across `--serve`'s pictures: the prompt's exact bytes to its rows.
     cache: prompt_cache.Cache,
+    /// H3_PROMPT_CHECK=1: each encode's refiner rows checked against the host reference (`checkRefine`).
+    check: bool,
     fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
         // the folder and its tokenizer, checked as the host prompt path checks them
         const enc = try rules.checkEncoder(a, try read(io, a, &.{ encoder_dir, "config.json" }));
@@ -100,7 +103,8 @@ const Loaded = struct {
         for (shards.folder.files.values()) |*file| file.evict();
         for (front_shards.folder.files.values()) |*file| file.evict();
         const cache = prompt_cache.Cache.init(gpa, prompt_cache.Cache.budgetOf(env.get("H3_PROMPT_CACHE")));
-        return .{ .enc = enc, .front = front, .tok = tok, .shards = shards, .front_shards = front_shards, .runner = runner, .res = res, .cache = cache };
+        const check = if (env.get("H3_PROMPT_CHECK")) |v| std.mem.eql(u8, v, "1") else false;
+        return .{ .enc = enc, .front = front, .tok = tok, .shards = shards, .front_shards = front_shards, .runner = runner, .res = res, .cache = cache, .check = check };
     }
 
     fn deinit(l: *Loaded, gpa: std.mem.Allocator) void {
@@ -185,6 +189,7 @@ fn pictureRun(io: std.Io, a: std.mem.Allocator, loaded: *Loaded, prompt_path: []
         gpu_started = seconds();
         try runner.refine(loaded.front, &loaded.res, enc_rows, text);
         std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU\n", .{ seconds() - gpu_started, runner.gpu });
+        if (loaded.check) try checkRefine(a, loaded, enc_rows, text);
         loaded.cache.keep(prompt, p.ids, p.tags, text);
     }
     const T = p.ids.len;
@@ -192,6 +197,35 @@ fn pictureRun(io: std.Io, a: std.mem.Allocator, loaded: *Loaded, prompt_path: []
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = try stage.write(a, loaded.front.hidden, p, text, request, &noise.randn, &.{}) });
     std.debug.print("wrote {s}: text [{d}, {d}] bf16, text_tags and ids\n", .{ out_path, T, loaded.front.hidden });
     std.debug.print("prompt: {d:.2} s\n", .{seconds() - started});
+}
+
+/// H3_PROMPT_CHECK=1: the GPU refiner's rows against the host reference's float32 sums on the same encoder rows, at
+/// the BF16 roundings the reference stores; a cosine under 0.999 fails the picture.
+fn checkRefine(a: std.mem.Allocator, loaded: *Loaded, enc_rows: []const u16, ours: []const u16) !void {
+    const g = loaded.front;
+    const fr = try frontTensors(&loaded.front_shards, g);
+    const blocks = try a.alloc(ref.Block, g.blocks);
+    var ctx: BlockCtx = .{ .shards = &loaded.front_shards, .g = g };
+    for (blocks, 0..) |*b, bi| {
+        const set = try blockOf(&ctx, bi);
+        inline for (comptime std.meta.fieldNames(ref.Block)) |field| @field(b, field) = try values(a, @field(set, field));
+    }
+    const host: ref.Refiner = .{ .cond_w = try values(a, fr.cond_w), .cond_b = try values(a, fr.cond_b), .final_norm = try values(a, fr.final_norm), .blocks = blocks };
+    const out = try a.alloc(f32, ours.len);
+    const started = seconds();
+    try ref.refine(f32, a, g, host, try values(a, std.mem.sliceAsBytes(enc_rows)), out);
+    const m = match.match(ours, out, g.hidden);
+    const pass = m.cosine >= 0.999;
+    match.report("refiner rows against the BF16 host reference", m, pass);
+    std.debug.print("  host reference: {d:.2} s\n", .{seconds() - started});
+    if (!pass) return error.H3PromptCheckFailed;
+}
+
+/// Stored bf16 bytes as the fp32 values they hold.
+fn values(a: std.mem.Allocator, bytes: []const u8) ![]f32 {
+    const out = try a.alloc(f32, bytes.len / 2);
+    for (out, std.mem.bytesAsSlice(u16, bytes)) |*o, b| o.* = bf16_round.value(b);
+    return out;
 }
 
 fn read(io: std.Io, a: std.mem.Allocator, parts: []const []const u8) ![]u8 {
