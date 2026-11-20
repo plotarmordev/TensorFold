@@ -95,7 +95,7 @@ index 8d36c1d75..926b39810 100644
  __global__ void __launch_bounds__(256) h3_dequantize(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* Y, int M, int N) {
      const size_t quads = static_cast<size_t>(M) * N / 4;
 diff --git a/zig/src/cuda/cublaslt.zig b/zig/src/cuda/cublaslt.zig
-index 8a7efd2d0..4a42e71d5 100644
+index 8e5bd18d2..e27681917 100644
 --- a/zig/src/cuda/cublaslt.zig
 +++ b/zig/src/cuda/cublaslt.zig
 @@ -21,9 +21,11 @@ pub const Heuristic = extern struct {
@@ -127,7 +127,7 @@ index 8a7efd2d0..4a42e71d5 100644
  pub const layout_order: c_int = 1;
  pub const layout_batch_count: c_int = 5;
  pub const layout_batch_stride: c_int = 6;
-@@ -239,6 +250,9 @@ pub const Spec = struct {
+@@ -244,6 +255,9 @@ pub const Spec = struct {
      sa: u64 = 0,
      sb: u64 = 0,
      sc: u64 = 0,
@@ -137,7 +137,7 @@ index 8a7efd2d0..4a42e71d5 100644
  };
  
  /// A planned `Spec` on a shared handle: the heuristic's first algorithm within the workspace limit.
-@@ -265,7 +279,11 @@ pub const Gemm = struct {
+@@ -270,7 +284,11 @@ pub const Gemm = struct {
          const tb: c_int = @backingInt(s.tb);
          try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transa, &ta, @sizeOf(c_int)), "set transa");
          try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transb, &tb, @sizeOf(c_int)), "set transb");
@@ -150,7 +150,7 @@ index 8a7efd2d0..4a42e71d5 100644
          g.a = try layout(lt, s.a, if (s.ta == .n) s.m else s.k, if (s.ta == .n) s.k else s.m, s.lda, s.batch, s.sa);
          errdefer _ = api.cublasLtMatrixLayoutDestroy(g.a);
          g.b = try layout(lt, s.b, if (s.tb == .n) s.k else s.n, if (s.tb == .n) s.n else s.k, s.ldb, s.batch, s.sb);
-@@ -309,6 +327,21 @@ pub const Gemm = struct {
+@@ -314,6 +332,21 @@ pub const Gemm = struct {
          try g.lt.check(g.lt.api.cublasLtMatmul(g.handle, g.desc, &one, a, g.a, b, g.b, &zero, c, g.c, c, g.c, &g.algo, workspace, workspace_len, stream), "cublasLtMatmul");
      }
  
@@ -173,7 +173,7 @@ index 8a7efd2d0..4a42e71d5 100644
          if (ld < rows) return error.Invalid;
          var l: Layout = null;
 diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
-index 9015c9bef..6d4871139 100644
+index 73bac4185..301580b56 100644
 --- a/zig/src/families/h3/cuda.zig
 +++ b/zig/src/families/h3/cuda.zig
 @@ -13,6 +13,7 @@ pub const fused_test = @import("cuda_fused_test.zig");
@@ -202,7 +202,7 @@ index 9015c9bef..6d4871139 100644
      hidden: usize,
      inner: usize,
      heads: usize,
-@@ -160,6 +163,7 @@ pub const Model = struct {
+@@ -161,6 +164,7 @@ pub const Model = struct {
          host.free(self);
          weights.free(self);
          if (self.int8) |t| t.deinit(self);
@@ -210,7 +210,7 @@ index 9015c9bef..6d4871139 100644
          self.gemms.deinit();
          self.module.unload();
          _ = self.driver.api.cuDevicePrimaryCtxRelease_v2(self.ctx.device);
-@@ -192,7 +196,7 @@ pub const Model = struct {
+@@ -193,7 +197,7 @@ pub const Model = struct {
          args.add(scale);
          args.add(shift);
          args.add(eps);
@@ -219,7 +219,7 @@ index 9015c9bef..6d4871139 100644
      }
  
      /// softmax(q k) v for `count` query tiles from `first`; `queries` is how many a head's lists are laid out for.
-@@ -285,13 +289,15 @@ pub const Model = struct {
+@@ -286,13 +290,15 @@ pub const Model = struct {
          const inner = self.inner;
          if (self.int8) |t| {
              try t.warm(self, rows);
@@ -238,7 +238,7 @@ index 9015c9bef..6d4871139 100644
      }
  
      /// The launches of `forward` once `plan` and `geometry.prepare` ran: capturable work only —
-@@ -315,10 +321,12 @@ pub const Model = struct {
+@@ -316,10 +322,12 @@ pub const Model = struct {
          const video_tiles = tiles - prefix;
          const count = checked.count;
          var mark = seconds();
@@ -254,7 +254,7 @@ index 9015c9bef..6d4871139 100644
          for (self.blocks[0..count], 0..) |*b, index| {
              const tab = in.tables + index * table_bytes;
              const par = index & 1;
-@@ -327,6 +335,8 @@ pub const Model = struct {
+@@ -328,6 +336,8 @@ pub const Model = struct {
              try self.lap("norms", &mark);
              if (self.int8) |t| {
                  try t.gemm(self, lay.?, t.blocks[index].qkvc, rows);
@@ -263,7 +263,7 @@ index 9015c9bef..6d4871139 100644
              } else {
                  try self.gemms.run(self.stream, g.xn, b.qkvc.ptr, g.qkvc, rows, width, hidden);
              }
-@@ -376,12 +386,14 @@ pub const Model = struct {
+@@ -377,12 +387,14 @@ pub const Model = struct {
                  try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
                  try self.lap("gate mix", &mark);
              }
@@ -281,7 +281,7 @@ index 9015c9bef..6d4871139 100644
                  var args: cuda.Args = .{};
                  args.add(g.wide);
                  args.add(g.act);
-@@ -390,7 +402,7 @@ pub const Model = struct {
+@@ -391,7 +403,7 @@ pub const Model = struct {
                  try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
              }
              try self.lap("mlp in", &mark);
@@ -461,12 +461,24 @@ index d17477ca4..30f26a855 100644
          try self.ctx.makeCurrent();
          var handle: lt_.Handle = null;
          try self.gemms.lt.check(self.gemms.lt.api.cublasLtCreate(&handle), "cublasLtCreate");
+diff --git a/zig/src/families/h3/cuda_runtime_fake.zig b/zig/src/families/h3/cuda_runtime_fake.zig
+index 3e58221b1..2be6e1a76 100644
+--- a/zig/src/families/h3/cuda_runtime_fake.zig
++++ b/zig/src/families/h3/cuda_runtime_fake.zig
+@@ -135,6 +135,7 @@ pub fn model() !*h3.Model {
+     m.blocks[0] = .{ .qkvc = empty, .out = empty, .fc1 = empty, .fc2 = empty, .norms = empty };
+     m.gemms = .{ .gpa = m.gpa, .lt = undefined, .workspace = empty };
+     m.int8 = null;
++    m.fp4 = null;
+     m.gemms.lt.lib = try @TypeOf(m.gemms.lt.lib).open(if (@import("builtin").os.tag == .macos) "/usr/lib/libSystem.B.dylib" else "libc.so.6");
+     m.hidden = 128;
+     m.inner = 128;
 diff --git a/zig/tests/cuda/h3_fp4_bench.zig b/zig/tests/cuda/h3_fp4_bench.zig
 new file mode 100644
-index 000000000..1df2de79d
+index 000000000..c6dac8a47
 --- /dev/null
 +++ b/zig/tests/cuda/h3_fp4_bench.zig
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,185 @@
 +//! GB10's native block-scaled NVFP4 products against the int8 path on the picture's four projection shapes:
 +//! e2m1 operands at one e4m3 scale every 16 values of k (cuBLASLt VEC16_UE4M3, fp32 sums, bf16 out) against
 +//! the heuristic-first int8 TN product (int32 sums) the transformer ships. Card 147's stop rule: if the FP4
@@ -508,7 +520,7 @@ index 000000000..1df2de79d
 +    algo: lt_.Algo,
 +    workspace_need: usize,
 +
-+    fn init(lt: *const lt_.Library, handle: lt_.Handle, dtype: c_int, scale_mode: c_int, rows: usize, n: usize, k: usize, ws: u64, scales_a: u64, scales_b: u64) !Fp4 {
++    fn init(lt: *const lt_.Library, handle: lt_.Handle, dtype: c_int, scale_mode: c_int, rows: usize, n: usize, k: usize, scales_a: u64, scales_b: u64) !Fp4 {
 +        const api = lt.api;
 +        var f: Fp4 = .{ .lt = lt, .handle = handle, .desc = null, .a = null, .b = null, .c = null, .algo = undefined, .workspace_need = 0 };
 +        try lt.check(api.cublasLtMatmulDescCreate(&f.desc, lt_.compute_32f, .f32), "cublasLtMatmulDescCreate");
@@ -540,7 +552,6 @@ index 000000000..1df2de79d
 +        if (count < 1 or found[0].state != 0) return error.NoAlgorithm;
 +        f.algo = found[0].algo;
 +        f.workspace_need = found[0].workspace_size;
-+        _ = ws;
 +        return f;
 +    }
 +
@@ -630,7 +641,7 @@ index 000000000..1df2de79d
 +        try d_ws.upload(0, wsc);
 +        try d_xs.upload(0, xsc);
 +
-+        var fp4 = Fp4.init(&lt, handle, dtype, scale_mode, sh.rows, sh.n, sh.k, ws.ptr, d_ws.ptr, d_xs.ptr) catch |err| {
++        var fp4 = Fp4.init(&lt, handle, dtype, scale_mode, sh.rows, sh.n, sh.k, d_ws.ptr, d_xs.ptr) catch |err| {
 +            std.debug.print("BENCH h3_fp4 {s} M={d} N={d} K={d}: NO ALGORITHM ({s})\n", .{ sh.name, sh.rows, sh.n, sh.k, @errorName(err) });
 +            return err;
 +        };
@@ -642,8 +653,8 @@ index 000000000..1df2de79d
 +        try int8.runInt(d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, workspace_bytes, s.handle);
 +        try fp4.run(d_w4.ptr, d_x4.ptr, d_out.ptr, ws.ptr, s);
 +        try s.synchronize();
-+        const i8ns = try timeIt(int8.runInt, .{ &int8, d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, workspace_bytes, s.handle }, s, reps, io);
-+        const f4ns = try timeIt(fp4.run, .{ &fp4, d_w4.ptr, d_x4.ptr, d_out.ptr, ws.ptr, s }, s, reps, io);
++        const i8ns = try timeIt(lt_.Gemm.runInt, .{ &int8, d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, workspace_bytes, s.handle }, s, reps, io);
++        const f4ns = try timeIt(Fp4.run, .{ &fp4, d_w4.ptr, d_x4.ptr, d_out.ptr, ws.ptr, s }, s, reps, io);
 +
 +        const flops: f64 = 2.0 * @as(f64, @floatFromInt(sh.rows)) * @as(f64, @floatFromInt(sh.n)) * @as(f64, @floatFromInt(sh.k));
 +        const i8ms = @as(f64, @floatFromInt(i8ns)) / std.time.ns_per_ms;
@@ -654,7 +665,7 @@ index 000000000..1df2de79d
 +    }
 +}
 diff --git a/zig/tests/cuda/main.zig b/zig/tests/cuda/main.zig
-index c231af0a0..f8e8eb162 100644
+index 25723cad2..b2c6dd26d 100644
 --- a/zig/tests/cuda/main.zig
 +++ b/zig/tests/cuda/main.zig
 @@ -331,6 +331,11 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
@@ -670,17 +681,17 @@ index c231af0a0..f8e8eb162 100644
      if (std.mem.eql(u8, cmd, "qmm-prefill-many-contract")) return qmm_prefill_many_contract.run(gpu);
      if (std.mem.eql(u8, cmd, "qmm-prefill-tile22-contract")) return @import("contract_qmm_prefill_tile22.zig").run(gpu);
 diff --git a/zig/tests/h3_image_cuda.zig b/zig/tests/h3_image_cuda.zig
-index 3ec76eec9..50fea3e23 100644
+index da4492da7..f65727a6e 100644
 --- a/zig/tests/h3_image_cuda.zig
 +++ b/zig/tests/h3_image_cuda.zig
 @@ -8,15 +8,17 @@ const schedule = h3image.schedule;
  const cascade = h3image.cascade;
  
  const usage =
--    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16] [--draft-steps N] [--renoise-sigma X]
--    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16] [--draft-steps N] [--renoise-sigma X]
-+    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16|--fp4] [--draft-steps N] [--renoise-sigma X]
-+    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16|--fp4] [--draft-steps N] [--renoise-sigma X]
+-    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
+-    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
++    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16|--fp4] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
++    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16|--fp4] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
      \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
      \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
      \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
@@ -694,8 +705,8 @@ index 3ec76eec9..50fea3e23 100644
      \\--draft-steps N runs the first N of the checkpoint's steps on the half-size canvas, as mmh3's
      \\--draft-steps does: the clean draft is enlarged bilinearly, noised to the next step's sigma (or
      \\to --renoise-sigma X) and redrawn at full size for the rest. It draws a different picture, not a
-@@ -24,6 +26,9 @@ const usage =
-     \\
+@@ -26,6 +28,9 @@ const usage =
+     \\the shards in place.
  ;
  
 +/// The transformer's linear layers: the int8 default, all-bf16, or the opt-in block-scaled NVFP4 products.
@@ -704,17 +715,17 @@ index 3ec76eec9..50fea3e23 100644
  fn read(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
      const path = try std.fs.path.join(a, &.{ dir, name });
      return std.Io.Dir.cwd().readFileAlloc(init.io, path, a, .limited(64 << 20)) catch |err| {
-@@ -46,7 +51,7 @@ const Folder = struct {
+@@ -48,7 +53,7 @@ const Folder = struct {
      modulation: ?h3.modulation.Tables = null,
      times: []f32 = &.{},
  
--    fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, int8: bool) !Folder {
-+    fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, linear: Linear) !Folder {
+-    fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, int8: bool, threads: usize) !Folder {
++    fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, linear: Linear, threads: usize) !Folder {
          const heads_name = try picture.checkIndex(a, try read(init, a, dir, "model_index.json"));
          const transformer_dir = try std.fs.path.join(a, &.{ dir, "transformer" });
          try picture.checkTransformer(a, try read(init, a, transformer_dir, "config.json"));
-@@ -58,7 +63,8 @@ const Folder = struct {
-         const model = try h3.Model.loadSharded(init.gpa, &ck);
+@@ -60,7 +65,8 @@ const Folder = struct {
+         const model = try h3.Model.loadSharded(init.gpa, &ck, threads);
          errdefer model.deinit();
          if (model.gated) return error.H3NotPictureModel; // a picture's blocks are dense: every tile sees every tile
 -        if (int8) try h3.Int8.quantize(model);
@@ -723,9 +734,9 @@ index 3ec76eec9..50fea3e23 100644
          ck.evict(); // the prompt and decoder stages share this memory; each render evicts what it read back
          const heads = try h3.checkpoint.Checkpoint.open(try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, heads_name }, 0));
          return .{ .ck = ck, .model = model, .heads = heads, .pdd = pdd };
-@@ -95,13 +101,17 @@ pub fn main(init: std.process.Init) !void {
-     }
+@@ -98,13 +104,17 @@ pub fn main(init: std.process.Init) !void {
      var draft_steps: usize = 0;
+     var load_threads: usize = 0;
      var renoise: ?f32 = null;
 -    var bf16 = false;
 +    var linear: Linear = .int8;
@@ -740,15 +751,15 @@ index 3ec76eec9..50fea3e23 100644
 +        } else if (std.mem.eql(u8, arg, "--fp4")) {
 +            if (linear != .int8) return error.BadArguments;
 +            linear = .fp4;
-         } else if (std.mem.eql(u8, arg, "--draft-steps")) {
+         } else if (std.mem.eql(u8, arg, "--load-threads")) {
              i += 1;
              if (i >= all.len) return error.BadArguments;
-@@ -119,7 +129,7 @@ pub fn main(init: std.process.Init) !void {
+@@ -126,7 +136,7 @@ pub fn main(init: std.process.Init) !void {
      }
      if (draft_steps == 0 and renoise != null) return error.BadArguments; // --renoise-sigma noises a draft
      const started = h3.seconds();
--    var folder = try Folder.load(init, init.arena.allocator(), args.items[0], !bf16);
-+    var folder = try Folder.load(init, init.arena.allocator(), args.items[0], linear);
+-    var folder = try Folder.load(init, init.arena.allocator(), args.items[0], !bf16, load_threads);
++    var folder = try Folder.load(init, init.arena.allocator(), args.items[0], linear, load_threads);
      defer folder.deinit(init.gpa);
      std.debug.print("model loaded in {d:.1} s\n", .{h3.seconds() - started});
      if (!serving) return render(init, init.arena.allocator(), &folder, args.items[1], args.items[2], draft_steps, renoise);
