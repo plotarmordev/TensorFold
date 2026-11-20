@@ -136,7 +136,7 @@ pub fn configInt(a: Allocator, io: std.Io, dir: []const u8, key: []const u8) ?u6
     return if (v == .integer and v.integer >= 0) @intCast(v.integer) else null;
 }
 
-/// config.json's model_type as the registry names it; without one, Woof's weights make it "woof", else "unknown".
+/// config.json's model_type as the registry names it, in `a`; without one, Woof's weights make it "woof", else "unknown".
 pub fn modelType(a: Allocator, io: std.Io, dir: []const u8) []const u8 {
     const text = @import("checkpoint_config").optional(a, io, dir) orelse {
         // the family's weights_file; Woof's HF download ships no config.json
@@ -147,7 +147,7 @@ pub fn modelType(a: Allocator, io: std.Io, dir: []const u8) []const u8 {
     defer parsed.deinit();
     if (parsed.value != .object) return "unknown";
     const t = parsed.value.object.get("model_type") orelse return "unknown";
-    return if (t == .string) @import("checkpoint_config").servedType(t.string) else "unknown";
+    return if (t == .string) a.dupe(u8, @import("checkpoint_config").servedType(t.string)) catch "unknown" else "unknown";
 }
 
 const ConfigDetails = struct { is_bolt: bool, modelopt_formats: ?[]const []const u8 = null };
