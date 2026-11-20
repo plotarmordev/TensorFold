@@ -228,12 +228,15 @@ const Products = struct {
                 try p.lt.check(p.lt.api.cublasLtMatmulDescSetAttribute(l.desc, cuda.cublaslt.desc_epilogue, &epilogue, @sizeOf(u32)), "set H3 condition bias");
             }
             var checked: cuda.cublaslt.Heuristic = undefined;
-            const s = p.lt.api.cublasLtMatmulAlgoCheck(l.handle, l.desc, l.a, l.b, l.c, l.c, &probe.algo, &checked);
-            if (s == 0 and checked.state == 0 and checked.workspace_size <= workspace_bytes) {
+            if (p.fits(&l, &probe.algo, &checked)) {
                 l.algo = probe.algo;
-            } else {
-                const actual = p.lt.api.cublasLtMatmulAlgoCheck(l.handle, l.desc, l.a, l.b, l.c, l.c, &l.algo, &checked);
-                if (actual != 0 or checked.state != 0 or checked.workspace_size > workspace_bytes) return error.NoAlgorithm;
+            } else if (!p.fits(&l, &l.algo, &checked)) {
+                // the plain product's algorithm cannot add the bias at this shape: ask for one that can
+                if (bias != 0) try l.pick();
+                if (bias == 0 or !p.fits(&l, &l.algo, &checked)) {
+                    std.log.warn("h3 prompt cuda: no cuBLASLt algorithm for ({d}, {d}, {d}) bias {}", .{ rows, n, k, bias != 0 });
+                    return error.NoAlgorithm;
+                }
             }
             l.workspace_need = checked.workspace_size;
             if (bias != 0) l.epilogue = .bias;
@@ -241,6 +244,12 @@ const Products = struct {
         }
         if (bias != 0) return got.value_ptr.runBias(x, w, bias, y, p.workspace.ptr, workspace_bytes, stream.handle);
         try got.value_ptr.run(x, w, y, p.workspace.ptr, workspace_bytes, stream.handle);
+    }
+
+    /// Whether `algo` runs `l`'s descriptor (its epilogue included) within the workspace; `checked` gets its need.
+    fn fits(p: *const Products, l: *const cuda.cublaslt.Linear, algo: *const cuda.cublaslt.Algo, checked: *cuda.cublaslt.Heuristic) bool {
+        const s = p.lt.api.cublasLtMatmulAlgoCheck(l.handle, l.desc, l.a, l.b, l.c, l.c, algo, checked);
+        return s == 0 and checked.state == 0 and checked.workspace_size <= workspace_bytes;
     }
 };
 
@@ -522,6 +531,10 @@ pub const Runner = struct {
 
 test "condition projection keeps bias when the actual-row heuristic cannot fuse it" {
     try @import("prompt_cuda_products_test.zig").check(Products, Products.run);
+}
+
+test "condition projection draws at every prompt length, its bias fused" {
+    try @import("prompt_cuda_lengths_test.zig").check(Products, Products.run);
 }
 
 test "the prompt cache's states, budget and LRU order" {
