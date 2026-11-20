@@ -1218,8 +1218,10 @@ and `h3d_attention` reads k four wide and v two wide. SwiGLU then moved into w1'
 and value rows of one output side by side, applies `bf16(bf16(SiLU(gate)) * value)` in the epilogue, and writes
 4,096 values a row instead of 8,192. That removes `h3d_swiglu`'s 24 launches a pass and the 2n-wide rows' trip through memory.
 Episode 1's latent decodes to the same PNG bytes as before the fusion (`85098fa9…` both builds), and the GPU meter falls from 0.56 s to 0.49 s.
-The products remain bf16 rather than FP16: bf16 operands give exact products in the fragments' float32 sums at the
-same rounding points. FP16 would add a conversion on every bf16 activation and weight, and narrow their range. After the pass, unpatchify, the blend and
+The products remain bf16 rather than FP16. bf16 operands give exact products in the fragments' float32 sums at the
+same rounding points, and FP16 measured slower. With the fragments typed `frag<half>`, every bf16 activation and weight
+converts on load: episode 1's latent decoded in 0.68 s of GPU twice, against bf16's 0.54-0.55 s, under the lock at load 21.
+The two builds alternated, and each build's runs were byte-identical. After the pass, unpatchify, the blend and
 `picture_writer`'s PNG take 0.25 s at 2048. Nothing is left to overlap: the PNG needs the whole blended picture, and the
 request ends when its file is written. Parallel deflate bands would change the compressed bytes.
 
