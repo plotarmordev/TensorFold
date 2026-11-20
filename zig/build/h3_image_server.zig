@@ -15,7 +15,7 @@ pub fn tool(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
         .{ .name = "h3_kernels", .module = h3_kernels },
         .{ .name = "kernel_sources", .module = sources },
         .{ .name = "h3_prompt_kernels", .module = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/prompt_kernels.zig") }) },
-        .{ .name = "h3_image_decoder_kernels", .module = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/image_decoder.zig") }) },
+        .{ .name = "h3_image_decoder_kernels", .module = @import("h3_image_contract.zig").decoderKernels(b) },
         .{ .name = "qwen_vl_rope", .module = prompt.rope(b, target) },
         .{ .name = "checkpoint_fixture", .module = fixture },
         .{ .name = "picture", .module = writer },
