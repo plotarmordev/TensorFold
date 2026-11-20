@@ -5,7 +5,7 @@ model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
 commit=$(git -c safe.directory='*' rev-parse HEAD)
 bin=/work/out/tensorfold-cuda-$commit
-out=/work/out/h3-image-bench
+out=${H3_BENCH_OUT:-/work/out/h3-image-bench}
 # the sm_121 tools only: the five SMs' build and limits audit are cuda-build.sh's own job
 H3_BUILD=sm121 sh docs/recipes/minimax-h3-cuda/cuda-build.sh
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
