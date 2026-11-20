@@ -25,7 +25,7 @@ index 0210aae31..21390b61c 100644
 +
  } // extern "C"
 diff --git a/zig/src/families/h3/image_decoder_cuda.zig b/zig/src/families/h3/image_decoder_cuda.zig
-index 3881adab1..a5d6764e8 100644
+index 3881adab1..d1ee73de5 100644
 --- a/zig/src/families/h3/image_decoder_cuda.zig
 +++ b/zig/src/families/h3/image_decoder_cuda.zig
 @@ -15,7 +15,7 @@ const W = host.width;
@@ -49,17 +49,17 @@ index 3881adab1..a5d6764e8 100644
  
      /// A scratch view's byte offset inside `scratch`.
      const View = struct {
-@@ -141,6 +146,10 @@ pub const Decoder = struct {
+@@ -140,6 +145,10 @@ pub const Decoder = struct {
+     fn tryDeinit(d: *Decoder) !void {
          try d.drain();
          d.staged.deinit(d.gpa);
-         if (d.gemms) |*g| g.deinit();
 +        var it = d.half_plans.valueIterator();
 +        while (it.next()) |l| l.deinit();
 +        d.half_plans.deinit(d.gpa);
 +        for ([_]*?cuda.DeviceBuffer{ &d.half_w, &d.half_x, &d.lost }) |b| if (b.*) |*x| x.free();
+         if (d.gemms) |*g| g.deinit();
          if (d.scratch) |*s| s.free();
          if (d.latent) |*l| l.free();
-         d.weights.free();
 @@ -178,6 +187,7 @@ pub const Decoder = struct {
          const bits = try a.alloc(u16, d.plan.total());
          host.read(w, bits);
@@ -68,7 +68,7 @@ index 3881adab1..a5d6764e8 100644
      }
  
      /// Synthetic weights from `seed` for the self-test: matrices by their fan-in, gains near 1, small biases.
-@@ -185,6 +195,32 @@ pub const Decoder = struct {
+@@ -185,6 +195,35 @@ pub const Decoder = struct {
          const bits = try a.alloc(u16, d.plan.total());
          try host.synthetic(a, d.plan, seed, bits);
          try d.weights.upload(0, std.mem.sliceAsBytes(bits));
@@ -79,7 +79,10 @@ index 3881adab1..a5d6764e8 100644
 +    fn halveWeights(d: *Decoder) !void {
 +        if (!d.fast) return;
 +        if (d.half_w == null) d.half_w = try cuda.DeviceBuffer.alloc(&d.driver, d.plan.total() * 2);
-+        if (d.lost == null) d.lost = try cuda.DeviceBuffer.alloc(&d.driver, 4);
++        if (d.lost == null) {
++            d.lost = try cuda.DeviceBuffer.alloc(&d.driver, 4);
++            try d.lost.?.upload(0, &std.mem.zeroes([4]u8));
++        }
 +        try d.halve(d.weights.ptr, d.half_w.?.ptr, d.plan.total());
 +        std.debug.print("FP16 trial: {d} weights outside fp16's normals\n", .{try d.takeLost()});
 +    }
@@ -101,7 +104,7 @@ index 3881adab1..a5d6764e8 100644
      }
  
      /// The raw latent [24, rows, cols] in, and scratch for passes of up to `batch` tiles of h x w cells.
-@@ -207,6 +243,9 @@ pub const Decoder = struct {
+@@ -207,6 +246,9 @@ pub const Decoder = struct {
          d.scratch = null;
          const m = batch * n;
          if (d.fast and d.gemms == null) d.gemms = try cuda.vit.Gemms.init(d.gpa, &d.driver);
@@ -111,7 +114,7 @@ index 3881adab1..a5d6764e8 100644
          // x, xn, wide, q, k, v, o, act, out (bf16 rows); tok's cells; the rotary tables; origins; acc fp32
          const sizes = [_]usize{ m * W * 2, m * W * 2, m * 2 * F * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8, m * 2 * F * 4 };
          var total: usize = 0;
-@@ -317,6 +356,7 @@ pub const Decoder = struct {
+@@ -317,6 +359,7 @@ pub const Decoder = struct {
          }
          try end.record(d.queue);
          try end.synchronize();
@@ -119,7 +122,7 @@ index 3881adab1..a5d6764e8 100644
          d.passed = origins.len;
          return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
      }
-@@ -333,15 +373,16 @@ pub const Decoder = struct {
+@@ -333,15 +376,16 @@ pub const Decoder = struct {
          p.k = @intCast(k);
          p.mode = @intFromBool(scale != null);
          if (d.fast) {
