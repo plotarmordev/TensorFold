@@ -1243,7 +1243,8 @@ The products are three quarters of it. Each of the acceptance's four levers, wit
 
 Gates: `tf-h3-image-contract` on the M5 runs the tensor-unit build (`h3d_gemm`'s SwiGLU form beside `h3d_swiglu`,
 which every build still compiles) and that build's controls; a GPU without tensor units runs main's build and main's
-controls. All controls go red as planted, and there are no limit problems;
+controls. On the M5 Ultra (21 Nov, load 26-30): 32 kernels pass gates 1-4, all 36 controls go red as planted, and
+there are no limit problems;
 `tf-h3-image-decoder selftest` passes (24 blocks relative 1.48e-2, picture bytes at most 1 apart); `zig build test
 test-golden` exits 0. Episode 1's latent decoded by this card versus main: 56.6 dB, mean 0.14, max 5. The warm
 latents are bit-identical to main's on every request below. The cold picture against episode 1's Mac PNG
