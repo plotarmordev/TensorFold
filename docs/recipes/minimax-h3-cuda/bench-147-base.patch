@@ -1,5 +1,5 @@
 diff --git a/zig/kernels/cuda/h3.cu b/zig/kernels/cuda/h3.cu
-index 8d36c1d75..926b39810 100644
+index 8d36c1d75..30f9cbbb4 100644
 --- a/zig/kernels/cuda/h3.cu
 +++ b/zig/kernels/cuda/h3.cu
 @@ -1,4 +1,5 @@
@@ -39,9 +39,9 @@ index 8d36c1d75..926b39810 100644
  
 +// h3_quantize's rotated rows as NVFP4 for cuBLASLt's 16-element block scaling: a block's four lanes reduce its
 +// absmax, its e4m3 scale is e4m3(amax / 6) (nvfp4q) and its values e2m1(v / scale) 4-bit codes, Q (M, K / 2)
-+// bytes. S holds the scale at the 128 x 4 tiled offset cuBLASLt reads — h3_quantize_fp8's layout, b a 16-block
-+// (row r, block b: tile (r / 128, b / 4), then (r % 32) * 16 + (r % 128 / 32) * 4 + b % 4). S's padding past M
-+// and K stays as the caller cleared it. Grid [M], 256 threads.
++// bytes. S holds the scale at cuBLASLt's 128 x 4 tiled offset, b a 16-block (row r, block b: tile (r / 128, b / 4),
++// then (r % 32) * 16 + (r % 128 / 32) * 4 + b % 4); padding past M and K is the caller's to clear (the weights'
++// N and K / 16 fill whole tiles). Grid [M], 256 threads.
 +__global__ void __launch_bounds__(256) h3_quantize_fp4(const __nv_bfloat16* X, uint8_t* Q, uint8_t* S, int K) {
 +    const size_t row = blockIdx.x;
 +    const __nv_bfloat16* x = X + row * K;
@@ -95,7 +95,7 @@ index 8d36c1d75..926b39810 100644
  __global__ void __launch_bounds__(256) h3_dequantize(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* Y, int M, int N) {
      const size_t quads = static_cast<size_t>(M) * N / 4;
 diff --git a/zig/src/cuda/cublaslt.zig b/zig/src/cuda/cublaslt.zig
-index 8e5bd18d2..e27681917 100644
+index 8e5bd18d2..c3ba5c55e 100644
 --- a/zig/src/cuda/cublaslt.zig
 +++ b/zig/src/cuda/cublaslt.zig
 @@ -21,9 +21,11 @@ pub const Heuristic = extern struct {
@@ -103,7 +103,7 @@ index 8e5bd18d2..e27681917 100644
  };
  
 -pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14 };
-+pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14, e4m3 = 28, f4 = cuda_r_4f_e2m1 };
++pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14, f4 = cuda_r_4f_e2m1 };
  pub const compute_32f: c_int = 68;
  pub const compute_32i: c_int = 72;
 +/// CUDA_R_4F_E2M1 (library_types.h): e2m1 values, two a byte, cuBLASLt's block-scaled FP4 operand.
@@ -111,7 +111,7 @@ index 8e5bd18d2..e27681917 100644
  pub const Op = enum(c_int) { n = 0, t = 1 };
  pub const Order = enum(c_int) { col = 0, row = 1 };
  
-@@ -31,6 +33,15 @@ pub const desc_transa: c_int = 3;
+@@ -31,6 +33,18 @@ pub const desc_transa: c_int = 3;
  pub const desc_transb: c_int = 4;
  pub const desc_epilogue: c_int = 7;
  pub const desc_bias_pointer: c_int = 8;
@@ -121,13 +121,16 @@ index 8e5bd18d2..e27681917 100644
 +pub const desc_b_scale_mode: c_int = 32;
 +/// cublasLtMatmulMatrixScale_t's CUBLASLT_MATMUL_MATRIX_SCALE_VEC16_UE4M3: one e4m3 scale every 16 values.
 +pub const scale_vec16_ue4m3: c_int = 1;
-+/// cublasLtMatmulMatrixScale_t's CUBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0.
-+pub const scale_vec32_ue8m0: c_int = 2;
++
++/// Bytes of the VEC16_UE4M3 scales of `rows` rows of k values in cuBLASLt's 128 x 4 tiles, padding included.
++pub fn scaleBytes(rows: usize, k: usize) usize {
++    return std.mem.alignForward(usize, rows, 128) * std.mem.alignForward(usize, k / 16, 4);
++}
 +
  pub const layout_order: c_int = 1;
  pub const layout_batch_count: c_int = 5;
  pub const layout_batch_stride: c_int = 6;
-@@ -244,6 +255,9 @@ pub const Spec = struct {
+@@ -244,6 +258,9 @@ pub const Spec = struct {
      sa: u64 = 0,
      sb: u64 = 0,
      sc: u64 = 0,
@@ -137,7 +140,7 @@ index 8e5bd18d2..e27681917 100644
  };
  
  /// A planned `Spec` on a shared handle: the heuristic's first algorithm within the workspace limit.
-@@ -270,7 +284,11 @@ pub const Gemm = struct {
+@@ -270,7 +287,11 @@ pub const Gemm = struct {
          const tb: c_int = @backingInt(s.tb);
          try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transa, &ta, @sizeOf(c_int)), "set transa");
          try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transb, &tb, @sizeOf(c_int)), "set transb");
@@ -150,7 +153,7 @@ index 8e5bd18d2..e27681917 100644
          g.a = try layout(lt, s.a, if (s.ta == .n) s.m else s.k, if (s.ta == .n) s.k else s.m, s.lda, s.batch, s.sa);
          errdefer _ = api.cublasLtMatrixLayoutDestroy(g.a);
          g.b = try layout(lt, s.b, if (s.tb == .n) s.k else s.n, if (s.tb == .n) s.n else s.k, s.ldb, s.batch, s.sb);
-@@ -314,6 +332,21 @@ pub const Gemm = struct {
+@@ -314,6 +335,21 @@ pub const Gemm = struct {
          try g.lt.check(g.lt.api.cublasLtMatmul(g.handle, g.desc, &one, a, g.a, b, g.b, &zero, c, g.c, c, g.c, &g.algo, workspace, workspace_len, stream), "cublasLtMatmul");
      }
  
@@ -173,7 +176,7 @@ index 8e5bd18d2..e27681917 100644
          if (ld < rows) return error.Invalid;
          var l: Layout = null;
 diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
-index 73bac4185..301580b56 100644
+index 73bac4185..2060872f3 100644
 --- a/zig/src/families/h3/cuda.zig
 +++ b/zig/src/families/h3/cuda.zig
 @@ -13,6 +13,7 @@ pub const fused_test = @import("cuda_fused_test.zig");
@@ -202,7 +205,15 @@ index 73bac4185..301580b56 100644
      hidden: usize,
      inner: usize,
      heads: usize,
-@@ -161,6 +164,7 @@ pub const Model = struct {
+@@ -114,6 +117,7 @@ pub const Model = struct {
+         self.hosts = .empty;
+         self.blocks = &.{};
+         self.int8 = null;
++        self.fp4 = null;
+         self.load_stages = .{ .{}, .{} };
+         self.load_failed = false;
+         self.retained_next = null;
+@@ -161,6 +165,7 @@ pub const Model = struct {
          host.free(self);
          weights.free(self);
          if (self.int8) |t| t.deinit(self);
@@ -210,7 +221,7 @@ index 73bac4185..301580b56 100644
          self.gemms.deinit();
          self.module.unload();
          _ = self.driver.api.cuDevicePrimaryCtxRelease_v2(self.ctx.device);
-@@ -193,7 +197,7 @@ pub const Model = struct {
+@@ -193,7 +198,7 @@ pub const Model = struct {
          args.add(scale);
          args.add(shift);
          args.add(eps);
@@ -219,25 +230,14 @@ index 73bac4185..301580b56 100644
      }
  
      /// softmax(q k) v for `count` query tiles from `first`; `queries` is how many a head's lists are laid out for.
-@@ -286,13 +290,15 @@ pub const Model = struct {
+@@ -284,6 +289,7 @@ pub const Model = struct {
+     /// the int8 reserve may synchronise the stream.
+     pub fn warm(self: *Model, rows: usize) !void {
          const inner = self.inner;
++        if (self.fp4) |t| return t.warm(self, rows);
          if (self.int8) |t| {
              try t.warm(self, rows);
-+        } else if (self.fp4) |t| {
-+            try t.warm(self, rows);
          } else {
-             _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
-             _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
-+            // `out` and `fc2` keep their bf16 weights in the bf16 mode
-+            _ = try self.gemms.plan(rows, self.hidden, inner);
-+            _ = try self.gemms.plan(rows, self.hidden, self.mlp);
-         }
--        // `out` and `fc2` keep their bf16 weights in both modes
--        _ = try self.gemms.plan(rows, self.hidden, inner);
--        _ = try self.gemms.plan(rows, self.hidden, self.mlp);
-     }
- 
-     /// The launches of `forward` once `plan` and `geometry.prepare` ran: capturable work only —
 @@ -316,10 +322,12 @@ pub const Model = struct {
          const video_tiles = tiles - prefix;
          const count = checked.count;
@@ -292,10 +292,10 @@ index 73bac4185..301580b56 100644
          {
 diff --git a/zig/src/families/h3/cuda_fp4.zig b/zig/src/families/h3/cuda_fp4.zig
 new file mode 100644
-index 000000000..e7edbf682
+index 000000000..6bd4d1c21
 --- /dev/null
 +++ b/zig/src/families/h3/cuda_fp4.zig
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,147 @@
 +//! mmh3's NVFP4 linear layers as an opt-in (`--fp4`): every projection's weight rows and each activation row
 +//! Hadamard-rotated in 128-wide chunks as `cuda_int8.zig` rotates them, then e2m1 at one e4m3 scale every 16
 +//! values of k (`h3_quantize_fp4`), and cuBLASLt's block-scaled FP4 product writes the bf16 rows from its own
@@ -308,11 +308,6 @@ index 000000000..e7edbf682
 +const h3 = @import("cuda.zig");
 +const workspace_bytes = @import("cuda_gemm.zig").workspace_bytes;
 +const Model = h3.Model;
-+
-+/// Bytes of the e4m3 scales of `rows` rows of k values in cuBLASLt's 128 x 4 tiles, padding included.
-+pub fn scaleBytes(rows: usize, k: usize) usize {
-+    return std.mem.alignForward(usize, rows, 128) * std.mem.alignForward(usize, k / 16, 4);
-+}
 +
 +/// A projection (N, K): its e2m1 codes, then N rows of tiled scales.
 +pub const Weight = struct {
@@ -364,9 +359,10 @@ index 000000000..e7edbf682
 +    /// A bf16 (n, k) projection to e2m1 codes and tiled scales, the bf16 buffer freed.
 +    fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize) !Weight {
 +        if (k % 128 != 0) return error.BadGeometry; // the rotation's chunks; every k is a multiple of 32 otherwise
-+        const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k / 2 + scaleBytes(n, k)), .n = n, .k = k };
++        const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k / 2 + lt_.scaleBytes(n, k)), .n = n, .k = k };
 +        var args = quantizeArgs(bf16.ptr, w.q.ptr, w.scales(), k);
 +        try self.launch("h3_quantize_fp4", .{ .x = @intCast(n) }, 256, 0, &args);
++        try self.stream.synchronize();
 +        bf16.free();
 +        bf16.* = .{ .d = &self.driver, .ptr = 0, .len = 0 };
 +        return w;
@@ -425,7 +421,7 @@ index 000000000..e7edbf682
 +        if (rows <= t.rows) return;
 +        try self.stream.synchronize();
 +        t.scratch.free();
-+        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, std.mem.alignForward(usize, rows * t.widest(self) / 2, 16) + scaleBytes(rows, t.widest(self)));
++        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, std.mem.alignForward(usize, rows * t.widest(self) / 2, 16) + lt_.scaleBytes(rows, t.widest(self)));
 +        try t.scratch.fill8(0, null); // the padding rows of the scale tiles never change
 +        t.rows = rows;
 +    }
@@ -448,15 +444,13 @@ index 000000000..e7edbf682
 +    return args;
 +}
 diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
-index d17477ca4..30f26a855 100644
+index d17477ca4..84e7c7cc1 100644
 --- a/zig/src/families/h3/cuda_int8.zig
 +++ b/zig/src/families/h3/cuda_int8.zig
-@@ -40,7 +40,8 @@ pub const Int8 = struct {
- 
+@@ -41,6 +41,7 @@ pub const Int8 = struct {
      /// Replaces every block's bf16 projections with int8 ones, freeing each bf16 buffer once it is quantized.
      pub fn quantize(self: *Model) !void {
--        if (self.gated) return error.H3NotPictureModel; // the dense forward's three of q, k, v only
-+        if (self.gated) return error.H3NotPictureModel; // the dense forward's three of q, k and v only
+         if (self.gated) return error.H3NotPictureModel; // the dense forward's three of q, k, v only
 +        if (self.fp4 != null) return error.Quantized;
          try self.ctx.makeCurrent();
          var handle: lt_.Handle = null;
@@ -473,12 +467,37 @@ index 3e58221b1..2be6e1a76 100644
      m.gemms.lt.lib = try @TypeOf(m.gemms.lt.lib).open(if (@import("builtin").os.tag == .macos) "/usr/lib/libSystem.B.dylib" else "libc.so.6");
      m.hidden = 128;
      m.inner = 128;
+diff --git a/zig/src/families/h3/cuda_weights.zig b/zig/src/families/h3/cuda_weights.zig
+index b3dedf36f..86da77bf7 100644
+--- a/zig/src/families/h3/cuda_weights.zig
++++ b/zig/src/families/h3/cuda_weights.zig
+@@ -180,7 +180,7 @@ pub const Projection = enum(c_int) { qkv, gate_compress, out, fc1, fc2 };
+ /// One projection of `block` from `w`, bf16 (N, K) on the device (a LoRA merged in by the host), copied in.
+ pub fn set(self: *Model, block: usize, which: Projection, w: u64, rows: usize, cols: usize) !void {
+     if (block >= self.blocks.len) return error.NoSuchBlock;
+-    if (self.int8 != null) return error.Quantized; // its bf16 projections were freed
++    if (self.int8 != null or self.fp4 != null) return error.Quantized; // its bf16 projections were freed
+     if (which == .gate_compress and !self.gated) return error.NoGate;
+     try self.ctx.makeCurrent();
+     const b = &self.blocks[block];
+diff --git a/zig/src/families/h3/cuda_weights_test.zig b/zig/src/families/h3/cuda_weights_test.zig
+index 55ced03a2..be95994d1 100644
+--- a/zig/src/families/h3/cuda_weights_test.zig
++++ b/zig/src/families/h3/cuda_weights_test.zig
+@@ -129,6 +129,7 @@ const Mock = struct {
+         m.driver = driver();
+         m.blocks = &.{};
+         m.int8 = null;
++        m.fp4 = null;
+         m.load_stages = .{ .{}, .{} };
+         m.load_failed = false;
+         m.retained_next = null;
 diff --git a/zig/tests/cuda/h3_fp4_bench.zig b/zig/tests/cuda/h3_fp4_bench.zig
 new file mode 100644
-index 000000000..c6dac8a47
+index 000000000..252931479
 --- /dev/null
 +++ b/zig/tests/cuda/h3_fp4_bench.zig
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,174 @@
 +//! GB10's native block-scaled NVFP4 products against the int8 path on the picture's four projection shapes:
 +//! e2m1 operands at one e4m3 scale every 16 values of k (cuBLASLt VEC16_UE4M3, fp32 sums, bf16 out) against
 +//! the heuristic-first int8 TN product (int32 sums) the transformer ships. Card 147's stop rule: if the FP4
@@ -491,15 +510,6 @@ index 000000000..c6dac8a47
 +const lt_ = cuda.cublaslt;
 +
 +const workspace_bytes = 32 << 20;
-+const desc_a_scale_pointer: c_int = 17;
-+const desc_b_scale_pointer: c_int = 18;
-+const desc_a_scale_mode: c_int = 31;
-+const desc_b_scale_mode: c_int = 32;
-+
-+/// Bytes of the e4m3 scales of `rows` rows of k values in cuBLASLt's 128 x 4 tiles, padding included.
-+fn scaleBytes(rows: usize, k: usize) usize {
-+    return std.mem.alignForward(usize, rows, 128) * std.mem.alignForward(usize, k / 16, 4);
-+}
 +
 +/// The four projections a 2048² picture steps through, (name, rows M, n N, k K), as card 129's bench had them.
 +const cases = [_]struct { name: []const u8, rows: usize, n: usize, k: usize }{
@@ -518,11 +528,10 @@ index 000000000..c6dac8a47
 +    b: lt_.Layout,
 +    c: lt_.Layout,
 +    algo: lt_.Algo,
-+    workspace_need: usize,
 +
 +    fn init(lt: *const lt_.Library, handle: lt_.Handle, dtype: c_int, scale_mode: c_int, rows: usize, n: usize, k: usize, scales_a: u64, scales_b: u64) !Fp4 {
 +        const api = lt.api;
-+        var f: Fp4 = .{ .lt = lt, .handle = handle, .desc = null, .a = null, .b = null, .c = null, .algo = undefined, .workspace_need = 0 };
++        var f: Fp4 = .{ .lt = lt, .handle = handle, .desc = null, .a = null, .b = null, .c = null, .algo = undefined };
 +        try lt.check(api.cublasLtMatmulDescCreate(&f.desc, lt_.compute_32f, .f32), "cublasLtMatmulDescCreate");
 +        errdefer _ = api.cublasLtMatmulDescDestroy(f.desc);
 +        const ta: c_int = @backingInt(lt_.Op.t);
@@ -530,11 +539,11 @@ index 000000000..c6dac8a47
 +        try lt.check(api.cublasLtMatmulDescSetAttribute(f.desc, lt_.desc_transa, &ta, @sizeOf(c_int)), "set transa");
 +        try lt.check(api.cublasLtMatmulDescSetAttribute(f.desc, lt_.desc_transb, &tb, @sizeOf(c_int)), "set transb");
 +        // the heuristic refuses a block-scaled plan without its scales
-+        for ([_]c_int{ desc_a_scale_mode, desc_b_scale_mode }) |m|
++        for ([_]c_int{ lt_.desc_a_scale_mode, lt_.desc_b_scale_mode }) |m|
 +            try lt.check(api.cublasLtMatmulDescSetAttribute(f.desc, m, &scale_mode, @sizeOf(c_int)), "set scale mode");
-+        for ([_]struct { c_int, u64 }{ .{ desc_a_scale_pointer, scales_a }, .{ desc_b_scale_pointer, scales_b } }) |p|
++        for ([_]struct { c_int, u64 }{ .{ lt_.desc_a_scale_pointer, scales_a }, .{ lt_.desc_b_scale_pointer, scales_b } }) |p|
 +            try lt.check(api.cublasLtMatmulDescSetAttribute(f.desc, p[0], &p[1], @sizeOf(u64)), "set scale pointer");
-+        const t: lt_.DataType = @enumFromInt(dtype);
++        const t: lt_.DataType = @fromBackingInt(@intCast(dtype));
 +        try lt.check(api.cublasLtMatrixLayoutCreate(&f.a, t, k, n, @intCast(k)), "layout W");
 +        errdefer _ = api.cublasLtMatrixLayoutDestroy(f.a);
 +        try lt.check(api.cublasLtMatrixLayoutCreate(&f.b, t, k, rows, @intCast(k)), "layout X");
@@ -551,7 +560,6 @@ index 000000000..c6dac8a47
 +        try lt.check(api.cublasLtMatmulAlgoGetHeuristic(handle, f.desc, f.a, f.b, f.c, f.c, pref, 1, &found, &count), "cublasLtMatmulAlgoGetHeuristic");
 +        if (count < 1 or found[0].state != 0) return error.NoAlgorithm;
 +        f.algo = found[0].algo;
-+        f.workspace_need = found[0].workspace_size;
 +        return f;
 +    }
 +
@@ -609,9 +617,9 @@ index 000000000..c6dac8a47
 +        defer a.free(w4);
 +        const x4 = try a.alloc(u8, sh.rows * sh.k / 2);
 +        defer a.free(x4);
-+        const wsc = try a.alloc(u8, scaleBytes(sh.n, sh.k));
++        const wsc = try a.alloc(u8, lt_.scaleBytes(sh.n, sh.k));
 +        defer a.free(wsc);
-+        const xsc = try a.alloc(u8, scaleBytes(sh.rows, sh.k));
++        const xsc = try a.alloc(u8, lt_.scaleBytes(sh.rows, sh.k));
 +        defer a.free(xsc);
 +        for (w4) |*v| v.* = rng.int(u8);
 +        for (x4) |*v| v.* = rng.int(u8);
