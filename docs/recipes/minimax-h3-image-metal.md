@@ -453,8 +453,9 @@ of 1,024, 16 heads of 64, 4 register tokens) on any Apple GPU. Its kernels compi
 products run on `nax.h`'s fragments, the M5's tensor units where the GPU has them and simdgroup matrices elsewhere.
 The products moved to `nax.h` with card 152. Their transposed weights load through `frag_get_t`, the loader that
 `frags.check` proves on pre-M5 GPUs. The M3 Ultra receipts below predate that move, and the simdgroup-matrix form
-of the new products has not yet run on a pre-M5 GPU. Forcing that form on an M5 is no stand-in: there the M5's
-cooperative-tensor layout fails every product whichever loader is used.
+of the new products has not yet run on a pre-M5 GPU. Forcing that form on an M5 is no stand-in: there `nax.h`'s own
+`tf_frag_check` (`core/frags.zig`), compiled with `TF_SIMD_FRAGS`, gets 512 of 512 transposed sums and 510 of 512
+plain ones wrong (21 Nov), while the tensor-unit form gets all of them right.
 
 **What runs:**
 
@@ -1231,18 +1232,12 @@ The products are three quarters of it. Each of the acceptance's four levers, wit
   with the two builds alternating under the lock at load 21 and each build's runs byte-identical. The acceptance
   keeps a change only if it is faster, so the products stay bf16: bf16 operands give exact products in the
   fragments' float32 sums at the same rounding points.
-- **PNG write overlapped or parallel (open: owed, not taken).** After the pass, unpatchify, the blend and
-  `picture_writer`'s PNG take 0.25 s at 2048. Nearly all of it is `png.encode`, which on its own took 0.27-0.30 s for
-  a 2048 picture (ReleaseFast, three runs at load 25, so slower than in the server). It writes one zlib stream at the
-  default level through `std.compress.flate`. Parallel bands, or another level or filter, change the compressed
-  bytes. Overlap does not have to: a split decode is bit-identical, and `png.encode` feeds its rows through one
-  `flate.Compress`, so a top band's rows can stream into that one stream while the GPU decodes the bottom band.
-  On this card's kernels the split costs nothing. Episode 1's warm latent (`head-v1`), decoded by
-  `tf-h3-image-decoder` under the lock at load 6.6 in passes of 128 and 61 tiles, alternated twice:
-  0.54 / 0.53 / 0.54 / 0.48 s of GPU, and the same PNG (`265bf7ff…`) both ways. Card 137's +0.28 s split cost
-  was main's slower gemm. The overlap can hide at most about one half-pass, roughly 0.25 s, of the encode. It needs a
-  streaming encode and a banded blend, followed by its own locked server A/B. Neither was built within this card,
-  so the lever remains open.
+- **PNG write overlapped (tried, not shipped).** After the pass, unpatchify, the blend and `picture_writer`'s PNG
+  take 0.25 s at 2048, nearly all of it `png.encode`'s single zlib stream through `std.compress.flate`. Parallel
+  bands, or another level or filter, change the compressed bytes. A band-by-band encode feeding one `flate.Compress`
+  while the GPU decodes the next tile rows keeps them, and a split decode is bit-identical on this card's kernels.
+  It was built and timed only in the standalone tool, never in a locked warm server A/B, so it was reverted; it goes
+  to a later Mac card with its own A/B.
 
 Gates: `tf-h3-image-contract` 31 kernels pass gates 1-4 (`h3d_gemm`'s SwiGLU form in place of `h3d_swiglu`), all 34
 controls go red as planted, and there are no limit problems;
