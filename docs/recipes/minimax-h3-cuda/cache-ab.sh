@@ -1,7 +1,6 @@
 #!/bin/sh
-# bench-script.sh twice in one GPU window: the picks file absent, then present. The first phase's own
-# cold run writes it, so its second phase is not run (a present file's cold run is the next job's).
-# The two cold latents are compared bit for bit at the end; a difference fails the job.
+# bench-script.sh twice in one GPU window: the picks file absent (the first cold run writes it), then
+# present. The two cold latents are compared bit for bit at the end; a difference fails the job.
 set -eu
 model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
@@ -21,7 +20,6 @@ runbench() { # runbench OUTDIR: the bench's four 2048 runs into its own out, the
 } >"$out/settings"
 # A: every heuristic searched, the picks file written by the run itself; its host-compare is skipped
 # (phase B's keeps the picture gate, and the latents are compared bit for bit below)
-
 rm -f "$cachefile"
 H3_BENCH_SKIP_COMPARE=1 runbench "$out/without-cache"
 # B: the same binary with the picks file A left: cold and warm reads
