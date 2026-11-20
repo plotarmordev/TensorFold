@@ -1107,6 +1107,24 @@ either fails the picture or costs its win in the fold. The lever worth a next ca
 latent resident across steps (`h3_euler` exists on the CUDA path); that also deletes the per-step velocity
 download.
 
+### Card 135: the Spark's elementwise fusion on the Metal path
+
+Card 128's lever 2 on the picture path's launches: `h3_norm_quant` runs the gated residual add, the modulated
+RMSNorm and `h3_quantize_rows`' row quantization as one launch — each lane recomputes the normed value for the
+absmax and the rounding, so the bf16 normed rows are never written (the int8 fc1 product was their only reader;
+norm1's bf16 `xn` still feeds the bf16 qkv product). `h3_gemm_32x64_i8_act` folds `silu(gate)·value` into fc1's
+int8 product: the tile sweeps K twice, the value rows' bf16 product parked in `act` exactly as `h3_swiglu` would
+read it back, then the gate sweep's epilogue writes `bfloat(silu(g)·v)` — `h3_swiglu` and the `wide` buffer
+(~236 MB at a 2048² picture's rows) drop out of a picture's block. A block's launched passes go 10 to 8; a clip's
+bf16 path is unchanged.
+
+`test-h3-gemm` holds both fusions byte for byte against the launches they replace (the clip check skips the
+subnormal-sigmoid tail, which Metal's bf16 conversion flushes to signed zero), and a resident server's warm
+2048² latents and PNGs are sha1-identical to main's (`8b9e75b5…`, `7bf89a7f…`). A first layout kept both K
+halves' fp32 accumulators live and ran the step at 1.73 s GPU against main's 1.58 s; the shipped shape reuses
+one accumulator over sequential value and gate sweeps and runs it at 1.63 s — the ~0.05 s a step buys back the
+launch and the `wide` write and read but not more, on this silicon where the step is GPU-bound.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
