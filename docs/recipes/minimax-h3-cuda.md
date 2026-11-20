@@ -617,6 +617,30 @@ goal), in order, each needing its own window:
    (86.952% with them, card 72) fails.
 5. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
 
+### Card 139: `out` and `fc2` int8 at a scale per 256 of K, through cuBLASLt batch — measured and reverted
+
+Card 136's picture gates held on the Mac at a scale per 256 values of K on both operands where card 129's per-row
+scales failed here (28.15 dB, mean 4.23 against 28.2 dB and 4.1). cuBLASLt's int8 sums are int32 only, so the fine
+fold reached the library as a strided batch: `out` (K=7,168 → 28 groups) and `fc2` (K=14,336 → 56) ran one batched
+call whose batch `g` summed the 256-deep slice `[g·256, g·256+256)` of K into its own (rows, n) int32 plane
+(`Spec.batch`/`sa`/`sb`/`sc`), and `h3_dequantize_grouped` folded the planes at both operands' `S[row·G+g]` scales.
+`h3_quantize` took the group count (1 the row's scale; K/256 the grouped one), staging the 128-chunk maxes in shared.
+
+`bench-139.sh` at `6bf561216` (job `top-1c32bccda27d`, 20 November, exit 0, `H3_PROFILE=1` on both sides — no CUDA
+graph) ran the bench on that commit then on `bench-139-base.patch` reverse-applied (main's qkvc/fc1-int8 default).
+Every selftest passed on both sides. Grouped all-four int8 gave a warm 2048² **34.8 s** (34.8, 34.8, 35.0;
+transformer 33.6: attention out 7.94, mlp out 16.12) against the same job's main re-measure **14.3 s**
+(14.3, 14.3, 14.3; transformer 13.0: attention out 1.15, mlp out 2.35). The planes are the cost: `out` writes and
+reads 28 (4,120 × 5,376) int32 planes and `fc2` 56 — ≈4 TiB of acc traffic a picture at 2048², an order over the
+compute the int8 saves; a library fold needs the scales inside the product, which only an own-mma tile can do.
+`h3_image_compare.py` on the fetched picture measured **latent cosine 0.9935, PSNR 28.02 dB, mean diff 4.27**
+against episode 1's Mac latent and PNG — the grouped scales did not reach the picture either (main's bf16 `out`/`fc2`
+side: cosine 0.9952, 28.69 dB, 4.01). The forward path is reverted; `out` and `fc2` stay bf16. Per-256-of-K scales
+through cuBLASLt are closed: the library's int32 C writes each group's partial to its own plane, so a grouped fold
+costs G n-sized round trips — only an own-mma product folding scales in registers can hold the gates and the rate.
+Card 129's three tile geometries plateaued at 0.74–0.79× of cuBLASLt's int8 rate, so the round's open part stays a
+TMA + persistent-grid int8 product at mmh3's ~172 TOPS, not a library call.
+
 ### The side-by-side: mmh3's warm server beside ours, unseen prompts (20 November)
 
 [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) puts both engines' resident servers

@@ -1133,6 +1133,25 @@ either fails the picture or costs its win in the fold. The lever worth a next ca
 latent resident across steps (`h3_euler` exists on the CUDA path); that also deletes the per-step velocity
 download.
 
+### Card 135: the Spark's norm-quantize fusion on the Metal path
+
+Card 128's lever 2 on the picture path's launches: `h3_norm_quant` runs the gated residual add, the modulated
+RMSNorm and `h3_quantize_rows`' quantization as one launch — each lane recomputes the normed value for a block's
+absmax and the rounding, so the bf16 normed rows are never written (the int8 fc1 product was their only reader;
+norm1's bf16 `xn` still feeds the bf16 qkv product). Its scales land in `xs` at the gemm's own layout, one scale
+per 256-value K block a row (21 a row at hidden 5,376): the card-136 merge brought the block-scaled gemm this
+fusion predates, so the grouped form is what it must feed. A block's launched passes go 10 to 9; a clip's bf16
+path is unchanged.
+
+`test-h3-gemm` holds the fusion byte for byte against the two launches it replaces at `g = 256`, and the contract
+runner's `h3_norm_quant` entry byte-compares it to `h3_norm` then `h3_quantize_rows` at that grouping on the same
+inputs. A resident server's warm 2048² latent and PNG are sha1-identical to this main's (`776b443a…`, `3cda60cf…`),
+with the step at 1.53 s of GPU against main's 1.54 s and the warm request at 10.6-11.6 s against 11.1 s. An
+activation-in-epilogue variant of fc1's int8 product (`silu(gate)·value` folded in, `h3_swiglu` and the `wide`
+rows dropped) was built and measured before review: a first layout keeping both K halves' fp32 accumulators
+live ran the step at 1.73 s GPU, and a second shape reusing one accumulator over sequential value and gate
+sweeps ran 1.63 s — a net loss, so fc1 keeps `h3_gemm_32x64_i8` + `h3_swiglu`.
+
 ### Card 136: int8 on all four linears
 
 Every picture linear — the fused qkv projection, attention out, fc1 and fc2 — runs on `h3_gemm_32x64_i8`, now with a
@@ -1177,7 +1196,6 @@ cold then three warm requests each, load average 24-40: head warm 11.13-11.74 s 
 change is flat — the ~0.1 s a step of host round-trips is small next to a 1.6 s step — while the GPU-pass meter
 shows the decoder's 121 tiles at 1.08 s in one pass against 1.36 s over two, and the tail kernels' launches replace
 two dispatches and a buffer. The win is structural, not a new warm number.
-
 ### Next, ranked
 
 | # | Idea | Size | Basis |
