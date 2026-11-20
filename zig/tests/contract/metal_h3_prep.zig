@@ -91,9 +91,10 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             self.fresh = std.mem.sliceAsBytes(fresh);
             try self.upload(v, false);
         },
-        .norm, .gate_add => {
+        .norm, .norm_quant, .gate_add => {
             const C = s.n;
             if (self.which != .gate_add and s.k != C) return false;
+            if (self.which == .norm_quant and C % 256 != 0) return false; // S holds a scale a 256-value block
             // terms of one sign: no cancellation hides an intermediate rounding from the bound
             const x = try self.values(s.rows * C, 0, 2, fill, rng, true, true);
             const y = try self.values(s.rows * C, 0, 2, .random, rng, true, false);
@@ -117,6 +118,10 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             try self.upload(tab, true);
             try self.ints(line);
             if (self.which == .norm) try self.output(x.len * 2);
+            if (self.which == .norm_quant) {
+                try self.output(x.len); // Q: each row's int8 values
+                try self.output(s.rows * (s.n / 256) * 4); // S: each row's scale a 256-value block
+            }
         },
         .gate_mix => {
             const R = s.rows;
@@ -243,6 +248,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
     self.outs = switch (self.which) {
         .rows_in, .head_norm, .swiglu, .swiglu_gate_first, .modulation => s.rows * s.n,
         .norm => 2 * s.rows * s.n,
+        .norm_quant => s.rows * (3 * s.n + s.n / 64),
         .euler, .gate_add, .gate_mix => s.rows * s.n,
         .heads => 3 * heads * slots * 128,
         .pool => 3 * heads * s.rows * 128,
@@ -271,7 +277,7 @@ pub fn launch(self: *H3, e: mtl.ComputeEncoder) !void {
                 e.dispatchGroups(mtl.Size.of((s.n + 7) / 8, 1, 1), mtl.Size.of(256, 1, 1));
             } else e.dispatchThreads(mtl.Size.of(s.n, s.rows, 1), mtl.Size.of(64, 16, 1));
         },
-        .norm => {
+        .norm, .norm_quant => {
             // X (in place), Y, W, the gate table, the tables, LINE; then the normed rows
             for (0..3) |i| bind(self, e, i, i);
             bind(self, e, 3, 3);
@@ -280,6 +286,7 @@ pub fn launch(self: *H3, e: mtl.ComputeEncoder) !void {
             e.setValue([6]i32{ @intCast(s.rows), @intCast(s.n), 1, 2, 1, 0 }, 6);
             e.setValue(eps, 7);
             bind(self, e, 5, 8);
+            if (self.which == .norm_quant) bind(self, e, 6, 9);
             e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));
         },
         .gate_add => {

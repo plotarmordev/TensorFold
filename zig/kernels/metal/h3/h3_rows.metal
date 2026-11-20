@@ -90,6 +90,63 @@ inline float h3_mod(float x, float inv, float w, float scale, float shift) {
   for (int c = int(lane); c < C; c += 32) x[c] = bfloat(float(x[c]) + float(bfloat(float(g[c]) * float(y[c]))));
 }
 
+// h3_norm and h3_quantize_rows at g = 256 as one launch for the int8 fc1 path: the gated add and the modulated
+// norm round exactly as h3_norm rounds them (the same thread stride and simd_sum), and each lane recomputes its
+// normed values for a block's absmax and rounding, so the bf16 rows are never written: the int8 product is their
+// only reader. Q [M, C] int8, S [M, C / 256] fp32 — one scale a row per 256-value K block, as the gemm reads it.
+[[kernel]] void h3_norm_quant(
+  device bfloat* X [[buffer(0)]],
+  const device bfloat* Y [[buffer(1)]],
+  const device bfloat* W [[buffer(2)]],
+  const device bfloat* TG [[buffer(3)]],
+  const device bfloat* TAB [[buffer(4)]],
+  const device int32_t* LINE [[buffer(5)]],
+  const constant int32_t* P [[buffer(6)]],
+  const constant float* E [[buffer(7)]],
+  device int8_t* Q [[buffer(8)]],
+  device float* S [[buffer(9)]],
+  uint lane [[thread_index_in_simdgroup]],
+  uint3 tg [[threadgroup_position_in_grid]]) {
+  const int C = P[1], L = P[2], row = int(tg.x);
+  const int line = LINE[row];
+  device bfloat* x = X + long(row) * C;
+  float sq = 0.0f;
+  if (P[3] >= 0) {
+    const device bfloat* g = TG + (long(P[3]) * L + line) * C;
+    const device bfloat* y = Y + long(row) * C;
+    for (int c = int(lane); c < C; c += 32) {
+      const bfloat v = bfloat(float(x[c]) + float(bfloat(float(g[c]) * float(y[c]))));
+      x[c] = v;
+      sq += float(v) * float(v);
+    }
+  } else {
+    for (int c = int(lane); c < C; c += 32) sq += float(x[c]) * float(x[c]);
+  }
+  const float inv = rsqrt(simd_sum(sq) / float(C) + E[0]);
+  const device bfloat* s = TAB + (long(P[4]) * L + line) * C;
+  const device bfloat* h = TAB + (long(P[5]) * L + line) * C;
+  // h3_quantize_rows at g = 256: each block's absmax, its scale in the gemm's SA layout, then the block to int8
+  const int G = 256;
+  S += long(row) * (C / G);
+  for (int from = 0; from < C; from += G) {
+    float most = 0;
+    bool nan = false;
+    for (int i = from + int(lane); i < from + G; i += 32) {
+      const float v = abs(h3_mod(float(x[i]), inv, float(W[i]), float(s[i]), float(h[i])));
+      most = max(most, v);
+      nan = nan || isnan(v);
+    }
+    // max drops NaN: a block holding one takes a NaN scale, so its products come out NaN — h3_quantize_rows' rule
+    most = simd_any(nan) ? NAN : simd_max(most);
+    const float scale = most > 0 || isnan(most) ? most / 127 : 1;
+    if (lane == 0) S[from / G] = scale;
+    for (int i = from + int(lane); i < from + G; i += 32) {
+      const float v = h3_mod(float(x[i]), inv, float(W[i]), float(s[i]), float(h[i]));
+      Q[long(row) * C + i] = int8_t(rint(v / scale));
+    }
+  }
+}
+
 // The pooled branch gated into the attention output: Y[row, h] += C[h, tile of row] * G[row, h]. Threads [R, H, 1].
 [[kernel]] void h3_gate_mix(
   device bfloat* Y [[buffer(0)]],

@@ -130,11 +130,11 @@ pub fn main(init: std.process.Init) !u8 {
     const pool = mtl.objc.Pool.push();
     defer pool.pop();
     const loading = mtl.clock.seconds();
-    var encoder = try prompt_tool.Encoder.load(init, a, args[1], args[2]);
+    var encoder = try prompt_tool.Encoder.load(init, a, args[0], args[1]);
     defer encoder.deinit(init.gpa);
-    var folder = try image_tool.Folder.open(init, a, args[2]);
+    var folder = try image_tool.Folder.open(init, a, args[1]);
     defer folder.heads.deinit();
-    const vae = try decoder_tool.Vae.load(init, a, args[2]);
+    const vae = try decoder_tool.Vae.load(init, a, args[1]);
     defer vae.d.deinit();
     std.debug.print("loaded the prompt encoder, transformer weights and decoder in {d:.1} s; ready\n", .{mtl.clock.seconds() - loading});
     var resident = try holdWeights(init, a, &encoder, &folder, &vae);
