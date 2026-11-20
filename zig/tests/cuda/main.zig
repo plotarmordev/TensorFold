@@ -331,6 +331,11 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
     if (std.mem.eql(u8, cmd, "q27-gemm")) return q27_gemm_tests.run(gpu);
     if (std.mem.eql(u8, cmd, "gdn-back-27b")) return gdn_back_tests.runShape(gpu, 5120, 64);
     if (std.mem.eql(u8, cmd, "kernel-contract")) return contract_tests.run(gpu, rest);
+    if (std.mem.eql(u8, cmd, "h3-fp4-bench")) {
+        const dtype = try std.fmt.parseInt(c_int, try arg(rest, 0), 10);
+        const scale_mode = try std.fmt.parseInt(c_int, try arg(rest, 1), 10);
+        return @import("h3_fp4_bench.zig").run(gpu, dtype, scale_mode);
+    }
     if (std.mem.eql(u8, cmd, "gb10-grouped-contract")) return @import("contract_gb10_many.zig").runAll(gpu);
     if (std.mem.eql(u8, cmd, "qmm-prefill-many-contract")) return qmm_prefill_many_contract.run(gpu);
     if (std.mem.eql(u8, cmd, "qmm-prefill-tile22-contract")) return @import("contract_qmm_prefill_tile22.zig").run(gpu);
