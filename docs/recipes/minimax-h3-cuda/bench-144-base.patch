@@ -162,24 +162,6 @@ index 59a58e8a1..0210aae31 100644
  }
  
  // Per row and head: q and k RMS-normed (no weight) to bf16, their first 32 dims turned half-style in bf16; v copied.
-diff --git a/zig/src/families/h3/image_decoder.zig b/zig/src/families/h3/image_decoder.zig
-index c3bc38b1e..7c5a8539e 100644
---- a/zig/src/families/h3/image_decoder.zig
-+++ b/zig/src/families/h3/image_decoder.zig
-@@ -310,8 +310,11 @@ pub const Tiles = struct {
- pub fn tiles(a: std.mem.Allocator, c: *const vae.Config, rows: usize, columns: usize) !Tiles {
-     if (rows == 0 or columns == 0) return error.H3BadPictureGrid;
-     if (try geometry.product(&.{ rows, columns }) > 1 << 24) return error.H3BadPictureGrid;
--    const r = try vae.split(a, rows * vae.cell_pixels, c.tile, c.overlap);
--    const k = try vae.split(a, columns * vae.cell_pixels, c.tile, c.overlap);
-+    // mmh3 tiles its VAE the same way at 32 pixels of overlap, half the checkpoint's floor: the
-+    // split still lands every tile whole (a 2,048-pixel side needs 9 spans against 11).
-+    const overlap = @min(c.overlap, 2 * vae.cell_pixels);
-+    const r = try vae.split(a, rows * vae.cell_pixels, c.tile, overlap);
-+    const k = try vae.split(a, columns * vae.cell_pixels, c.tile, overlap);
-     const out: Tiles = .{ .rows = r, .cols = k, .h = r[0].len / vae.cell_pixels, .w = k[0].len / vae.cell_pixels };
-     _ = try tokens(out.h, out.w);
-     return out;
 diff --git a/zig/src/families/h3/image_decoder_cuda.zig b/zig/src/families/h3/image_decoder_cuda.zig
 index 8f28b1735..c462cf2f6 100644
 --- a/zig/src/families/h3/image_decoder_cuda.zig
@@ -469,26 +451,3 @@ index 8f28b1735..c462cf2f6 100644
      /// The decoded picture [3, 16 rows, 16 cols] (normalised) of a raw latent: tiles in batches, blended in fp32.
      pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, batch: usize, out: []f32) !Timing {
          const t = try host.tiles(a, c, rows, cols);
-diff --git a/zig/src/families/h3/image_decoder_test.zig b/zig/src/families/h3/image_decoder_test.zig
-index cf88073d9..a0d2a1788 100644
---- a/zig/src/families/h3/image_decoder_test.zig
-+++ b/zig/src/families/h3/image_decoder_test.zig
-@@ -158,13 +158,14 @@ test "picture decoder geometry: tiles of at most 16 cells, latent lengths, reque
-     defer a.deinit();
-     const x = a.allocator();
-     var c: vae.Config = .{ .mean = @splat(0), .std = @splat(1), .tile = 256, .overlap = 64, .rope_theta = 100 };
--    // a 2048 x 2048 canvas: 11 x 11 tiles of 16 x 16 cells; a small one is a single tile of its own size
-+    // a 2048 x 2048 canvas: 9 x 9 tiles of 16 x 16 cells at the 32-pixel floor (mmh3's overlap);
-+    // a small one is a single tile of its own size
-     const big = try h.tiles(x, &c, 128, 128);
--    try testing.expectEqual(@as(usize, 121), big.total());
-+    try testing.expectEqual(@as(usize, 81), big.total());
-     try testing.expectEqual(@as(usize, 16), big.h);
--    const last = big.at(120);
-+    const last = big.at(80);
-     try testing.expectEqual(@as(usize, 112), last.row);
--    try testing.expectEqual(@as(usize, 10), last.c);
-+    try testing.expectEqual(@as(usize, 8), last.c);
-     const small = try h.tiles(x, &c, 6, 10);
-     try testing.expectEqual(@as(usize, 1), small.total());
-     try testing.expectEqual(@as(usize, 6), small.h);

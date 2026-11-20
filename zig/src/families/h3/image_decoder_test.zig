@@ -158,14 +158,13 @@ test "picture decoder geometry: tiles of at most 16 cells, latent lengths, reque
     defer a.deinit();
     const x = a.allocator();
     var c: vae.Config = .{ .mean = @splat(0), .std = @splat(1), .tile = 256, .overlap = 64, .rope_theta = 100 };
-    // a 2048 x 2048 canvas: 9 x 9 tiles of 16 x 16 cells at the 32-pixel floor (mmh3's overlap);
-    // a small one is a single tile of its own size
+    // a 2048 x 2048 canvas: 11 x 11 tiles of 16 x 16 cells; a small one is a single tile of its own size
     const big = try h.tiles(x, &c, 128, 128);
-    try testing.expectEqual(@as(usize, 81), big.total());
+    try testing.expectEqual(@as(usize, 121), big.total());
     try testing.expectEqual(@as(usize, 16), big.h);
-    const last = big.at(80);
+    const last = big.at(120);
     try testing.expectEqual(@as(usize, 112), last.row);
-    try testing.expectEqual(@as(usize, 8), last.c);
+    try testing.expectEqual(@as(usize, 10), last.c);
     const small = try h.tiles(x, &c, 6, 10);
     try testing.expectEqual(@as(usize, 1), small.total());
     try testing.expectEqual(@as(usize, 6), small.h);
