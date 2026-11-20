@@ -220,11 +220,18 @@ fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, bo
 /// TallTile's ring (the only tile the picture uses): 2 stages of (256 + 128) x 128 bytes.
 const tma_shared_bytes = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
 
+/// A TMA product kernel with its ring's dynamic shared memory allowed (past the 48 KiB default).
+pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8) !cuda.Function {
+    const f = try mod.function(name);
+    try f.allowDynamicShared(tma_shared_bytes);
+    return f;
+}
+
 /// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact.
 pub fn gemmTmaSpec() c.Spec {
     return .{
         .name = "cuda h3 int8 tma product h3_gemm_int8_tma",
-        .accum = .f32,
+        .accum = .none, // int32 sums, exact: no fp accumulator for gate 4 to stress
         .depth = none,
         .ops = 3,
         .out = .bf16,
@@ -404,10 +411,8 @@ pub fn bench(gpu: gpu_check.Gpu) !void {
 
     var mod = try cuda.Module.load(gpu.d, &image_h3);
     defer mod.unload();
-    const f = try mod.function("h3_gemm_int8_tma");
-    try f.allowDynamicShared(tma_shared_bytes);
-    const f_wide = try mod.function("h3_gemm_int8_tma_wide");
-    try f_wide.allowDynamicShared(tma_shared_bytes);
+    const f = try tmaFunction(mod, "h3_gemm_int8_tma");
+    const f_wide = try tmaFunction(mod, "h3_gemm_int8_tma_wide");
 
     var lt = try lt_.Library.open();
     defer lt.close();
