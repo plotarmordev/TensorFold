@@ -551,10 +551,12 @@ The loss was named on TOP (`profile-int8-job.sh` at `38422b4b`, job `top-6384892
 shim without its nsight-compute support dir, so the dynamic readout is the fatbin's `cuobjdump -res-usage` and the
 measured per-stage times above, not a profile). The reverted tile staged both scale vectors in shared and folded each
 chunk's int32 sum into fp32 at about five ops a element; it ran **167 registers** at 256 threads and 3 × (16,384 +
-16,384 + 1,024) = **101,376 shared bytes a block** — exactly sm_121's opt-in cap. On the GB10's 228 KB of shared an SM
-that caps residency at one 128×128 block, eight warps (12.5% of the 64-warp scheduler) to hide each chunk's ldmatrix
-and mma latency; cuBLASLt's heuristic choice pipelines deeper and holds ~154 TOPS where this tile sat near a third of
-it. The fix keeps the m16n8k32 tile but folds only the activation scale in registers (two fma a element against the
+16,384 + 1,024) = **101,376 shared bytes a block** — sm_121's per-block opt-in cap (`static_assert(SMEM <= 101376)`
+in `deepseek_v41/attn_cuda.cu`), and its ~100 KB of shared an SM caps residency at one 128×128 block, eight warps
+(16.7% of the 48-warp scheduler; 167 registers × 256 threads says one block on its own) to hide each chunk's
+ldmatrix and mma latency; cuBLASLt's heuristic choice pipelines deeper and holds ~154 TOPS where this tile ran
+slower (its share was inferred from the 20.5 s warm wall, ncu being unavailable).
+The fix keeps the m16n8k32 tile but folds only the activation scale in registers (two fma a element against the
 12582912.0f magic bias), applies the weight scale once in the epilogue and stages only that vector — the rebuilt
 `h3_gemm_int8` below.
 
@@ -577,7 +579,7 @@ ceiling: a cp.async tile with eight-to-twelve warps and no persistent grid tops 
 
 The rescope won on speed but not on the picture: `out` and `fc2` joined `qkvc` and `fc1` on the cuBLASLt int8
 path (`bench-129-cublaslt.sh` at `6279e2a2`, job `top-ee9f603eeeed`, 20 November, exit 0, `H3_PROFILE=1` on
-both sides — no CUDA graph, so the warm walls are ~1 s above the graphed 15.3 s). All four projections int8
+both sides — no CUDA graph, so the warm walls are ~1 s above the same commits graphed). All four projections int8
 gave a warm 2048² **13.7 s** (13.7, 13.6, 13.7; transformer 12.3) against the same job's main re-measure
 **14.3 s** (14.3, 14.3, 14.3; transformer 12.9): the 286 TFLOP of `out`/`fc2` products moved off bf16 saved
 0.6 s of kernel time. Every selftest passed on both sides; the same-latent `reference` passed on the after
@@ -589,8 +591,6 @@ scales are the only fold cuBLASLt's int32 C supports; the finer scales the gates
 product this card stopped. `out` and `fc2` went back to bf16, so the tree carries qkvc+fc1 int8 and the card
 closes at main's warm time with the measured receipts above.
 
-
-
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93; its first picture is 17.6 s, card 80's standing
 goal), in order, each needing its own window:
 
@@ -599,9 +599,10 @@ goal), in order, each needing its own window:
    that writes bf16 straight from the tile with a per-128-chunk scale was card 89's `h3_gemm_int8`: it measured 20.5 s
    warm against `c30403d9`'s 18.9 s (above) and is reverted, so the cuBLASLt products stay. A faster int8 product than
    cuBLASLt's heuristic first offer is still the round's open part — `822b217c` found the heuristic's first offer
-   already its fastest, so it needs a tile that beats cuBLASLt's sums, not a selection change. The two kernels' records
-   are in the registry as of `cadab6b2`, and `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs
-   their gates 1-4 (`contract_h3_int8.zig`); the limits audit (gate 5) is `limits-job.sh`'s own window.
+   already its fastest, and card 129 found three cp.async geometries plateau around 117 TOPS (0.74–0.79× cuBLASLt):
+   matching mmh3's ~172 needs TMA plus a persistent grid, a port of its own, not a tile-shape retry. The two kernels'
+   records are in the registry as of `cadab6b2`, and `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh`
+   runs their gates 1-4 (`contract_h3_int8.zig`); the limits audit (gate 5) is `limits-job.sh`'s own window.
 2. **Attention**: 1.80 s a picture in the transformer on main (`368cee6b`'s re-pipelining measured 1.91 s, reverted
    `787f3d3d`), 217 registers at 128 threads and two CTAs an SM (8 warps), and 1.89 s in the decoder, whose
    16-byte key loads changed nothing. Its bound is not the value load's latency — deeper prefetch and query-in-registers
