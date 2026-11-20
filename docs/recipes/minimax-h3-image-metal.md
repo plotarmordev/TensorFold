@@ -1037,8 +1037,8 @@ K chain is MLX's, 32-deep steps in order. Ten dispatches a shape in one command 
 | out | 5,376 x 7,168 | 113 | 108 |
 | fc2 | 5,376 x 14,336 | 89 | 103 |
 
-The products are at the rate MLX's kernel reaches and a wider tile does not move them (card 150 later measured that
-rate at under two fifths of the tensor unit's own ceiling); the only shape that gains is fc2, worth
+The products are at the rate MLX's kernel reaches and a wider tile does not move them (card 150's isolated replays
+later put that rate at under two fifths of the tensor unit's own ceiling); the only shape that gains is fc2, worth
 0.3 s of the six steps. Warm 2048 requests took 12.12 and 12.13 s (6 steps 10.49 and 10.52 s, decoder 1.38 and 1.40 s)
 against 12.30 s before. The latent and PNG stay sha1 `f3563c56…` / `904814d6…`.
 
@@ -1218,9 +1218,9 @@ isolation; they are not in-picture kernel times and not a share of a picture's 9
 (First set at load 47-92, the rerun at load 4.5 within 3% of these.) The peaks the products run against, measured
 the same way with register-fed `mma_16x32` chains — 16,384 simdgroups of 80,000 chained ops through MPP's
 `matmul2d` cooperative-tensor op, the M5 tensor-unit path every product kernel already takes, its
-cooperative-tensor staging included: **493 TOPS int8 and 255 TFLOPS bf16**. The int8 product sits at 25-28% of its
-path's own ceiling, and the bf16 products (the same probe's 255 TFLOPS against their measured 96) at 38%: the
-operand gather, not the tensor unit, is what binds — each fragment loads as eight scalar reads.
+cooperative-tensor staging included: **493 TOPS int8 and 255 TFLOPS bf16**. Replayed alone, the int8 product sits at
+25-28% of its path's own ceiling, and the bf16 products (the same probe's 255 TFLOPS against their measured 96) at
+38%: the operand gather, not the tensor unit, is what binds — each fragment loads as eight scalar reads.
 
 Candidates, each microbenched against the shipped kernel first (medians; both sets, loads 55-80 and 4.5):
 
@@ -1317,15 +1317,16 @@ Fast mode (`--draft-steps 3`), same stage breakdown:
 | 2 | head | meadow | 2.21 | 0.01 | b:1.39 | 9.37 (6.15) | 8.22 | 21.20 | 15.8 | |
 | 2 | head | steam | 4.49 | 0.03 | r:0.00 | 7.30 (6.16) | 8.29 | 20.12 | 45.0 | |
 
-Three of main's fast-mode runs were spoiled: round 1 meadow and steam had steps with `timing_valid=false`, and round
-2 harbour's prompt waited 23.12 s for speech. They are reported above but not counted, and they were never rerun:
-the Desk closed the window and the lead ruled out further GPU windows for this card. The fast-mode comparison is
-therefore unbalanced and is not a verdict; the verdict rests on the nine-a-side six-step A/B above. Over the clean
-runs: main 8.98 s wall / 6.09 s GPU of steps (three runs), head 9.12 s wall / 6.12 s GPU (six runs; round 1 head's
-cold run waited 0.31 s for speech in its prompt). Matched to main's three clean requests (round 1 harbour, round 2
-meadow and steam), head's medians are 9.37 s wall / 6.15 s GPU against main's 8.98 / 6.09 s.
+Three of main's fast-mode runs were spoiled: round 1 meadow (load 18.3) and steam (load 15.9) had steps with
+`timing_valid=false`, and round 2 harbour's prompt (load 22.4) waited 23.12 s for speech. They are reported above but
+not counted, and they were never rerun here: the Desk closed the window and the lead ruled out further GPU windows for
+this card, so clean fast-mode reruns move to card 148. The fast-mode comparison is therefore unbalanced and is not a
+verdict; the verdict rests on the nine-a-side six-step A/B above. Over the clean runs only: main 8.98 s wall / 6.09 s
+GPU of steps (three runs), head 9.12 s wall / 6.12 s GPU (six runs; round 1 head's cold run waited 0.31 s for speech
+in its prompt). Matched to main's three clean requests (round 1 harbour, round 2 meadow and steam), head's medians
+are 9.37 s wall / 6.15 s GPU against main's 8.98 / 6.09 s. No fast-mode win or loss is claimed from these.
 
-The window confirms the quiet round: even on pure step GPU time (9.24 vs 9.24 s normal, 6.09 vs 6.12 s fast) the
+The window confirms the quiet round at six steps: even on pure step GPU time (9.24 vs 9.24 s, nine runs a side) the
 4-byte loads yield no served gain, so the code stays reverted. Neither side reached the quiet baseline's 10.8 s
 normal / 7.8 s fast totals under this host load (8.8-45.0); the best warm totals in the window were main 12.40 s and
 head 12.32 s at six steps, and main 11.00 s (`timing_valid=false`; 11.62 s valid) and head 12.20 s in fast mode.

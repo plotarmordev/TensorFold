@@ -11,7 +11,9 @@ the per-256 scale fold (both ~70% slower; the fold turns out to break the mma ac
 (cosine 0.995459, PSNR 28.673 dB, mean diff 3.903), `test-h3-gemm`, `test-h3-image-server`, the kernel contract —
 but lost the served A/B on unseen prompts (three warm runs a side, one resident server a side, load reported):
 main 8.94/9.25/9.24 s of steps against the candidate's 9.15/9.67/9.67 s. A second A/B in the Desk's GPU window (three
-alternated rounds, nine warm runs a side, six steps and `--draft-steps 3`, full stage times and loads recorded)
-agreed: median 9.31 s wall / 9.24 s GPU for main against 9.61 s wall / 9.24 s GPU for the candidate (fast mode:
-6.09 vs 6.12 s GPU). Kept only if faster: the code was reverted and the receipts, including the micro/served
-divergence, are in `docs/recipes/minimax-h3-image-metal.md` under "Card 150".
+alternated rounds, nine warm runs a side at six steps, full stage times and loads recorded) agreed: median 9.31 s wall
+/ 9.24 s GPU for main against 9.61 s wall / 9.24 s GPU for the candidate. Its `--draft-steps 3` half is unbalanced —
+three of main's six runs were spoiled (`timing_valid=false` steps or a speech wait) and excluded, clean medians
+6.09 s GPU (three runs) vs 6.12 s (six) — so it claims no fast-mode win or loss; clean reruns move to card 148. Kept
+only if faster: the code was reverted and the receipts, including the micro/served divergence, are in
+`docs/recipes/minimax-h3-image-metal.md` under "Card 150".
