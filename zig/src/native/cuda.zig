@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 pub const budget = @import("cuda_memory.zig");
 const lane_backend = @import("cuda_bound.zig");
 const snaps = @import("cuda_snaps.zig");
+pub const requestStepFor = snaps.requestStepFor;
 const prompt_pages = @import("cuda_prompt_pages.zig");
 const slide_adapter = @import("slide_adapter.zig");
 const cuda_disk = @import("cuda_disk.zig");
@@ -182,6 +183,10 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
 }
 fn openWith(comptime F: type, a: Allocator, gpa: Allocator, io: std.Io, asked: api.Open, problem: *[]const u8) !?api.Opened {
     const o = family_memory.familyOpen(F, asked);
+    if (try refusals.place(F, a, o)) |why| { // a rank inside its world, a world the family serves: before admission
+        problem.* = why;
+        return null;
+    }
     if (refusals.family(F, o)) |why| {
         problem.* = why;
         return null;
@@ -465,6 +470,7 @@ fn openWith(comptime F: type, a: Allocator, gpa: Allocator, io: std.Io, asked: a
         .policy = if (@hasField(@TypeOf(loaded), "policy")) loaded.policy else "",
         .prompt_cache = h.store != null,
         .decode_share = o.decode_share,
+        .default_decode_share = 0.25, // #3397: shares long fills only (past Share.default_arm_rows); short prompts keep main's cells
         .prompt_cache_capacity = cache_capacity,
         .warm_turns = h.store != null and @hasDecl(F, "warm_quiet"),
         .logprobs = served.backend.vtable.first_row != null,
