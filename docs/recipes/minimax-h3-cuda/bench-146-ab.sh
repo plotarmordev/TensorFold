@@ -3,9 +3,9 @@
 # commit, then bench-146-base.patch reverse-applied — the card's kernel and family files back to
 # main's — and bench-script.sh again: the baseline is the same job's main code with this commit's
 # bench script, model paths and int8 default.
-# Run 1 renders the pilot's fox prompt cold, the picture the episode-1 gates are read on (compared
-# against the Mac references in-job); runs 2-4 are warm repeats on the three prompts the repo and
-# earlier jobs never used (./prompts/tram|greenhouse|trench.txt).
+# Run 1 renders the pilot's fox prompt cold, the picture the episode-1 gates are read on (the Mac
+# references are copied beside it for tools/zig/h3_image_compare.py on the fetched files); runs 2-4 are
+# warm repeats on the three prompts the repo and earlier jobs never used (./prompts/tram|greenhouse|trench.txt).
 # The TMA product claims bit-identical latents to the cuBLASLt + h3_dequantize path it replaces (the
 # same products and roundings in registers), so every warm latent must be sha256-equal across phases.
 # Results: /work/out/h3-image-bench (this commit) and /work/out/h3-image-bench-base (main).
