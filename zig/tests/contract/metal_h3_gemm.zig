@@ -272,7 +272,6 @@ pub const Product = struct {
         return out[0..kb];
     }
 
-
     const Job = struct {
         t: *const Product,
         acc: ?c.Accum,
