@@ -111,6 +111,26 @@ ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax
 The 14 November tables below predate this cutover; the
 [`64188519` window](#gpu-qualification-and-the-64188519-window) measures it.
 
+### Threaded weight reads (card 142)
+
+`tf-h3-image-cuda --load-threads N` loads the transformer's 36.7 GiB of shards with N reader
+threads (`cuda_load_threads.zig`): every tensor's staged image is cut into 8 MiB read jobs the
+readers `pread` straight into the pinned stage, and the two 64 MiB stages alternate — one fills
+while the other's copy ranges upload (`copy_source.Stage`, same custody as before). The fused qkv
+stacking lands as whole head parts. `0` (default) keeps the single-threaded in-place reads; a
+missing or short shard fails at header/shape checks or the fill, before any step runs. The steps
+never see the load path, so the latent and PNG are byte-identical and the warm picture is
+unchanged. [`bench-142-ab.sh`](minimax-h3-cuda/bench-142-ab.sh) is the one-job A/B: one sm_121
+build, six cold runs with every weight file evicted (`posix_fadvise(DONTNEED)`), alternating
+0/8/0/8/0/8 threads, plus a resident transformer a count for the warm picture, every latent and
+PNG `cmp`ed against the 0-thread run.
+
+Measured on TOP (job `top-aa70eb7fd52e`, commit `b298850`): the transformer's `model loaded in` fell
+from **49.5 s** mean (48.8, 49.5, 52.1) cold at `--load-threads 0` to **17.9 s** (17.8, 17.9, 18.2)
+at 8 threads — the cold 2048² picture's wall went 92.0 s mean to 60.6 s. The warm picture held
+(13.65 s vs 13.61 s wall, transformer 12.33 vs 12.30 s) and every latent and PNG was
+byte-identical.
+
 ### Benchmark run
 
 [`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds the sm_121 tools alone in the same TOP job

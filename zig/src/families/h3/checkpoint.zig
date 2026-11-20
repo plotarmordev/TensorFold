@@ -36,7 +36,14 @@ pub const Checkpoint = struct {
     names: st.Header,
     arena: std.heap.ArenaAllocator,
 
-    pub const Entry = struct { rows: usize, cols: usize, bytes: []const u8 };
+    pub const Entry = struct {
+        rows: usize,
+        cols: usize,
+        bytes: []const u8,
+        /// The shard's descriptor (still open) and the tensor's absolute offset in it, for `pread`.
+        fd: c_int = -1,
+        file: usize = 0,
+    };
 
     pub fn open(path: [*:0]const u8) !Checkpoint {
         return openWith(path, c);
@@ -120,7 +127,7 @@ pub const Checkpoint = struct {
             return e;
         };
         if (self.data > self.bytes.len or span.end > self.bytes.len - self.data) return error.BadHeader;
-        return .{ .rows = span.rows, .cols = span.cols, .bytes = self.bytes[self.data + span.start .. self.data + span.end] };
+        return .{ .rows = span.rows, .cols = span.cols, .bytes = self.bytes[self.data + span.start .. self.data + span.end], .fd = self.fd, .file = self.data + span.start };
     }
 };
 
