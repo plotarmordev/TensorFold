@@ -54,6 +54,10 @@ __device__ __forceinline__ void h3_barrier_expect_bytes(uint32_t barrier, uint32
 }
 
 __device__ __forceinline__ bool h3_barrier_try_wait(uint32_t barrier, uint32_t parity) {
+#ifdef H3_TMA_TRAP
+    __trap();
+    return true;
+#else
     uint32_t done;
     asm volatile("{\n"
                  ".reg .pred arrived;\n"
@@ -64,6 +68,7 @@ __device__ __forceinline__ bool h3_barrier_try_wait(uint32_t barrier, uint32_t p
                  : "r"(barrier), "r"(parity)
                  : "memory");
     return done != 0;
+#endif
 }
 
 __device__ __forceinline__ void h3_barrier_wait(uint32_t barrier, uint32_t parity) {
