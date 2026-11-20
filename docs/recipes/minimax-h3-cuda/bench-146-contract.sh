@@ -6,5 +6,6 @@
 set -eu
 status=0
 H3_BUILD=contract H3_CONTRACT=int8 sh docs/recipes/minimax-h3-cuda/cuda-build.sh || status=$?
-/work/contract/bin/tf-cuda-test h3-int8-bench
+# cuda-build.sh's library path ends with its shell; the bench dlopens cuBLASLt from the toolkit
+LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib /work/contract/bin/tf-cuda-test h3-int8-bench
 exit "$status"
