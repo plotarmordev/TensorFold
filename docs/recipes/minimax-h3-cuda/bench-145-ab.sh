@@ -31,8 +31,8 @@ export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACH
     NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++" H3_PROFILE=1
 
 mkdir -p "$out"
-# three prompts the server has not seen, the same files in both phases
-for n in 1 2 3; do { cat "$pilot/prompt.txt"; printf ' — variant %s of the same scene\n' "$n"; } >"$out/prompt-$n.txt"; done
+# three prompts the server has not seen, the same files in both phases, after a warm-up (variant 0) each phase
+for n in 0 1 2 3; do { cat "$pilot/prompt.txt"; printf ' — variant %s of the same scene\n' "$n"; } >"$out/prompt-$n.txt"; done
 
 # phase NAME: build the three picture tools, selftest them, run the three unseen prompts through the
 # resident servers, write every run's stage seconds to $dir/times
@@ -121,6 +121,7 @@ PY
     }
 
     : >"$dir/times"
+    run warmup "$out/prompt-0.txt"
     for n in 1 2 3; do run "unseen-$n" "$out/prompt-$n.txt"; done
     exec 3>&- 4<&- 5>&- 6<&- 7>&- 8<&-
     wait "$server"
