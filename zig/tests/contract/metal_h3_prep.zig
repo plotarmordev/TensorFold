@@ -37,7 +37,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
     const stress = fill == .stress;
     self.in = .{ .rows = s.rows, .n = s.n, .k = s.k, .heads = heads, .slots = slots };
     switch (self.which) {
-        .rows_in, .rows_out, .modulation => {
+        .rows_in, .modulation => {
             const lo: f64 = if (stress) -6 else -1;
             const xr = s.rows;
             const half = self.which != .rows_in;
@@ -53,9 +53,45 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             try self.upload(x, half);
             try self.upload(w, self.which == .modulation);
             try self.upload(b, self.which == .modulation);
-            try self.output(s.rows * s.n * @as(usize, if (self.which == .rows_out) 4 else 2));
+            try self.output(s.rows * s.n * 2);
         },
-        .norm, .norm_quant, .final_norm, .gate_add => {
+        .head_norm => {
+            // a x (rows, k) bf16, the norm's weight/table like final_norm's, the head's (n, k) f32 rows and bias
+            const C = s.k;
+            const x = try self.values(s.rows * C, 0, 2, fill, rng, true, true);
+            const w = try self.values(C, 0.5, 1.5, .random, rng, true, false);
+            const tab = try self.values(2 * C, 0, 0.5, .random, rng, true, false);
+            const hw = try self.values(s.n * C, -1, 1, fill, rng, false, false);
+            const hb = try self.values(s.n, -0.5, 0.5, fill, rng, false, false);
+            const line = try al.alloc(i32, s.rows);
+            @memset(line, 0);
+            self.in.a = x;
+            self.in.d = w;
+            self.in.f = tab[C..];
+            self.in.g = tab[0..C];
+            self.in.b = hw;
+            self.in.e = hb;
+            try self.upload(x, true);
+            try self.upload(w, true);
+            try self.upload(tab, true);
+            try self.ints(line);
+            try self.upload(hw, false);
+            try self.upload(hb, false);
+            try self.output(s.rows * s.n * 4);
+        },
+        .euler => {
+            const x = try self.values(s.rows * s.n, -2, 2, fill, rng, false, true);
+            const v = try self.values(s.rows * s.n, -2, 2, .random, rng, false, false);
+            const fresh = try al.alloc(f32, x.len);
+            for (fresh, x) |*o, val| o.* = @floatCast(val);
+            self.in.a = x;
+            self.in.b = v;
+            self.in.scale = 0.2;
+            try self.output(x.len * 4);
+            self.fresh = std.mem.sliceAsBytes(fresh);
+            try self.upload(v, false);
+        },
+        .norm, .norm_quant, .gate_add => {
             const C = s.n;
             if (self.which != .gate_add and s.k != C) return false;
             if (self.which == .norm_quant and C % 256 != 0) return false; // S holds a scale a 256-value block
@@ -71,19 +107,12 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             self.in.e = tab[2 * C .. 3 * C];
             self.in.f = tab[C .. 2 * C];
             self.in.g = tab[0..C];
-            if (self.which == .final_norm) {
-                // the final table is (shift, scale) a line
-                self.in.g = tab[0..C];
-                self.in.f = tab[C .. 2 * C];
-            }
             const line = try al.alloc(i32, s.rows);
             @memset(line, 0);
             const fresh = try al.alloc(u16, x.len);
             for (fresh, x) |*o, v| o.* = c.toBf16(@floatCast(v));
-            if (self.which == .final_norm) try self.upload(x, true) else {
-                try self.output(x.len * 2);
-                self.fresh = std.mem.sliceAsBytes(fresh);
-            }
+            try self.output(x.len * 2);
+            self.fresh = std.mem.sliceAsBytes(fresh);
             try self.upload(y, true);
             try self.upload(w, true);
             try self.upload(tab, true);
@@ -93,7 +122,6 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
                 try self.output(x.len); // Q: each row's int8 values
                 try self.output(s.rows * (s.n / 256) * 4); // S: each row's scale a 256-value block
             }
-            if (self.which == .final_norm) try self.output(x.len * 2);
         },
         .gate_mix => {
             const R = s.rows;
@@ -218,10 +246,10 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
         },
     }
     self.outs = switch (self.which) {
-        .rows_in, .rows_out, .swiglu, .swiglu_gate_first, .modulation => s.rows * s.n,
+        .rows_in, .head_norm, .swiglu, .swiglu_gate_first, .modulation => s.rows * s.n,
         .norm => 2 * s.rows * s.n,
         .norm_quant => s.rows * (3 * s.n + s.n / 64),
-        .final_norm, .gate_add, .gate_mix => s.rows * s.n,
+        .euler, .gate_add, .gate_mix => s.rows * s.n,
         .heads => 3 * heads * slots * 128,
         .pool => 3 * heads * s.rows * 128,
         .tile_scores => heads * s.rows * s.rows,
@@ -240,14 +268,14 @@ pub fn launch(self: *H3, e: mtl.ComputeEncoder) !void {
     const eps = [1]f32{1e-5};
     e.setPipeline(self.pipe);
     switch (self.which) {
-        .rows_in, .rows_out, .modulation => {
+        .rows_in, .modulation => {
             for (0..3) |i| bind(self, e, i, i);
             e.setValue([4]i32{ @intCast(s.rows), @intCast(s.k), @intCast(s.n), 0 }, 3);
             bind(self, e, 3, 4);
             if (self.which == .modulation) {
                 e.setValue([6]i32{ @intCast(s.rows), @intCast(s.k), @intCast(s.n), 3, 6, @intCast(s.n / 18) }, 3);
                 e.dispatchGroups(mtl.Size.of((s.n + 7) / 8, 1, 1), mtl.Size.of(256, 1, 1));
-            } else if (self.which == .rows_in) e.dispatchThreads(mtl.Size.of(s.n, s.rows, 1), mtl.Size.of(64, 16, 1)) else e.dispatchGroups(mtl.Size.of(s.n, s.rows, 1), mtl.Size.of(32, 1, 1));
+            } else e.dispatchThreads(mtl.Size.of(s.n, s.rows, 1), mtl.Size.of(64, 16, 1));
         },
         .norm, .norm_quant => {
             // X (in place), Y, W, the gate table, the tables, LINE; then the normed rows
@@ -268,15 +296,19 @@ pub fn launch(self: *H3, e: mtl.ComputeEncoder) !void {
             e.setValue([4]i32{ @intCast(s.rows), @intCast(s.n), 1, 2 }, 4);
             e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));
         },
-        .final_norm => {
+        .head_norm => {
+            for (0..6) |i| bind(self, e, i, i);
+            e.setValue([3]i32{ @intCast(s.rows), @intCast(s.k), @intCast(s.n) }, 6);
+            e.setValue(eps, 7);
+            bind(self, e, 6, 8);
+            e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(256, 1, 1));
+        },
+        .euler => {
             bind(self, e, 0, 0);
-            bind(self, e, 2, 1);
-            bind(self, e, 3, 2);
-            bind(self, e, 4, 3);
-            e.setValue([2]i32{ @intCast(s.rows), @intCast(s.n) }, 4);
-            e.setValue(eps, 5);
-            bind(self, e, 5, 6);
-            e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));
+            bind(self, e, 1, 1);
+            e.setValue([1]i32{@intCast(s.rows * s.n)}, 2);
+            e.setValue([1]f32{@floatCast(self.in.scale)}, 3);
+            e.dispatchThreads(mtl.Size.of(s.rows * s.n, 1, 1), mtl.Size.of(256, 1, 1));
         },
         .gate_mix => {
             for (0..4) |i| bind(self, e, i, i);

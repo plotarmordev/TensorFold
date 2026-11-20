@@ -461,8 +461,8 @@ tensor units.
 3. Each tile runs `post_quant_conv`, then its cells become tokens through `x_embedder`, with the 4 registers and one
    zero token appended.
 4. The 2D rotary table is built, and the 24 blocks run, then `norm_out` and `proj_out`.
-5. Each token's 768 values are unpatchified to its 16 x 16 pixels. Up to 64 tiles run in one command buffer: two
-   passes at 2048 x 2048, where a pass of 16 took eight.
+5. Each token's 768 values are unpatchified to its 16 x 16 pixels. Up to 128 tiles run in one command buffer: a
+   2048 x 2048 canvas's 121 tiles decode in one pass, the way mmh3 decodes its whole canvas at once.
 6. Tiles are blended in float32: the top band against the tile above, then the left band against the tile to the left,
    both as decoded.
 7. The result is mapped to [0, 1] with ImageNet's statistics, clamped and truncated to bytes.
@@ -1177,6 +1177,25 @@ scales it already read. The bind pays ~5 s once (20 GiB to quantize against 7.7)
 `zig build test test-golden` is green apart from `message_starts_proof_test`'s timing bound, which fails identically
 on unmodified main; the contract's int8 product serves all four projection shapes against float64 (worst 0.995 of
 the bound).
+
+### Card 137: the finish pass and the Euler on the GPU
+
+Card 124's last lever landed: the step's tail is one fused `h3_head_norm` dispatch (final layer's modulated norm
+and the step's head, the normed row in threadgroup memory, `normed` buffer and `h3_final_norm`/`h3_rows_out`
+gone) and `h3_euler` steps `x += delta * v` on the resident rows in `picture.euler`'s two roundings — its product
+goes through a volatile because the Metal compiler contracts to fma and skips the first rounding. The video rows
+stay on the GPU across all six steps: one upload, one download, no per-step velocity readback. The decoder's pass
+batch went to 128 tiles so 2048's 121 decode in one pass (card 130's batch; its `h3d_gemm` epilogue had already
+folded the bias and LayerScale).
+
+Gates: the warm 2048 latent is **bit-identical** to main's (sha1 `8b9e75b5…` matches the card 124 receipt) and the
+PNG matches byte for byte (`7bf89a7f…`). Warm A/B, ReleaseFast server, the base the card's merge base `561d85c1`
+(before card 136's int8 linears landed on main; the finish pass is orthogonal to them), alternating rounds of one
+cold then three warm requests each, load average 24-40: head warm 11.13-11.74 s (decoder 1.38-1.61 s), base warm
+11.06-11.79 s (decoder 1.36-1.48 s); two base runs were spoiled by contention and excluded. On wall clock the
+change is flat — the ~0.1 s a step of host round-trips is small next to a 1.6 s step — while the GPU-pass meter
+shows the decoder's 121 tiles at 1.08 s in one pass against 1.36 s over two, and the tail kernels' launches replace
+two dispatches and a buffer. The win is structural, not a new warm number.
 ### Next, ranked
 
 | # | Idea | Size | Basis |

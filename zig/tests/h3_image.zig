@@ -247,18 +247,16 @@ pub const Case = struct {
     }
 };
 
-/// Steps `from` to `to` of `sched` on `model`: each step's velocity, then the Euler update. The last
-/// step's velocity is left in `last` when set (a draft's lift input: x stays at its sigma, no update).
-fn runSteps(model: *h3.Model, a: std.mem.Allocator, sched: picture.Pdd, from: usize, to: usize, x: []f32, last: ?[]f32) !void {
-    const velocity = try a.alloc(f32, x.len);
-    defer a.free(velocity);
+/// Steps `from` to `to` of `sched` on `model`: the latent stays on the GPU between them (forward's
+/// delta does the Euler there), then `latent` brings it down once. The last step's velocity is left
+/// in `last` when set (a draft's lift input: x stays at its sigma, no update).
+fn runSteps(model: *h3.Model, sched: picture.Pdd, from: usize, to: usize, x: []f32, last: ?[]f32) !void {
     for (from..to) |k| {
-        const took = try model.forward(x, &.{}, k, velocity, &.{});
-        if (last != null and k == to - 1) {
-            @memcpy(last.?, velocity);
-        } else picture.euler(x, velocity, sched.deltas[k]);
+        const hold = last != null and k == to - 1;
+        const took = try model.forward(if (k == from) x else &.{}, &.{}, k, if (hold) null else sched.deltas[k], if (hold) last.? else &.{}, &.{});
         std.debug.print("step {d}/{d}: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech, timing_valid={}\n", .{ k + 1, sched.steps(), took.wall, took.gpu, took.paused, took.timing_valid });
     }
+    model.latent(x);
 }
 
 /// The run's rows and latent: {prefix}.rows.f32 and {prefix}.latent.f32 written, both returned.
@@ -276,7 +274,7 @@ fn finish(a: std.mem.Allocator, prefix: []const u8, grid: picture.Grid, x: []f32
 /// The six steps from the case's noise: OUT_PREFIX.rows.f32 and .latent.f32 written, both returned.
 pub fn free(a: std.mem.Allocator, model: *h3.Model, f: *const Folder, case: *const Case, prefix: []const u8) !LatentOut {
     const x = try a.dupe(f32, case.noise);
-    try runSteps(model, a, f.pdd, 0, f.pdd.steps(), x, null);
+    try runSteps(model, f.pdd, 0, f.pdd.steps(), x, null);
     return finish(a, prefix, case.grid, x);
 }
 
@@ -303,7 +301,7 @@ pub fn drafted(
     // velocity goes to cascade.lift for the clean prediction
     const draft = try a.dupe(f32, draft_case.noise);
     const draft_vel = try a.alloc(f32, draft.len);
-    try runSteps(draft_model, a, sched, 0, drafts, draft, draft_vel);
+    try runSteps(draft_model, sched, 0, drafts, draft, draft_vel);
     std.debug.print("{d}x{d} draft done, lifting\n", .{ draft_case.canvas.width / 2, draft_case.canvas.height / 2 });
 
     // cascade.lift predicts the clean latent x + sigma*v at half size, upsamples it bilinearly and
@@ -317,7 +315,7 @@ pub fn drafted(
     try h3.cascade.lift(x_latent, v_latent, sched.sigmas[drafts - 1], sched.sigmas[drafts], noise_latent, full_grid, lifted);
     const x = try a.alloc(f32, noise_latent.len);
     try picture.patchify(lifted, case.grid, x);
-    try runSteps(model, a, sched, drafts, steps, x, null);
+    try runSteps(model, sched, drafts, steps, x, null);
     return finish(a, prefix, case.grid, x);
 }
 
@@ -491,7 +489,7 @@ pub fn main(init: std.process.Init) !void {
         const want = reference orelse break :teacher;
         for (0..if (mode == .once) 1 else steps) |k| {
             @memcpy(x, ins[k * target * width ..][0 .. target * width]);
-            const took = try model.forward(x, &.{}, k, velocity, &.{});
+            const took = try model.forward(x, &.{}, k, null, velocity, &.{});
             const d = try picture.distance(velocity, want[k * target * width ..][0 .. target * width], width);
             const ok = picture.stepPasses(d);
             gate.gated = true;
