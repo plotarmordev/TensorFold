@@ -2,9 +2,9 @@
 //! in 128-wide chunks (ConvRot's outlier spreading), quantized to int8 at its absmax, summed exactly in int32 by
 //! cuBLASLt, and scaled back to bf16 rows. The bf16 weights are freed once quantized.
 //!
-//! Only the two projections whose products int8 makes faster are quantized: `qkvc` and `fc1`. `out` and `fc2` measured
-//! no faster (they are bound by their weight reads, not their arithmetic) and their quantization was most of the
-//! picture's distance from episode 1's Mac picture, so they keep their bf16 weights.
+//! Only `qkvc` and `fc1` run it: `out` and `fc2` keep their bf16 weights. Their int8 products measured faster
+//! (286 TFLOP a picture saved 0.6 s warm at 2048²) but fail the episode-1 picture gates (28.15 dB, mean 4.23
+//! against 28.2 dB and 4.1) at per-row scales; the finer scales need an own-mma product.
 const std = @import("std");
 const cuda = @import("cuda");
 const lt_ = cuda.cublaslt;
