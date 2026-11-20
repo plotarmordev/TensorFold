@@ -1196,6 +1196,7 @@ cold then three warm requests each, load average 24-40: head warm 11.13-11.74 s 
 change is flat — the ~0.1 s a step of host round-trips is small next to a 1.6 s step — while the GPU-pass meter
 shows the decoder's 121 tiles at 1.08 s in one pass against 1.36 s over two, and the tail kernels' launches replace
 two dispatches and a buffer. The win is structural, not a new warm number.
+
 ### Card 150: the int8 product's rate, profiled per kernel
 
 One warm 2048 picture profiled per kernel on the M5 Ultra (`tools/zig/metal_bench.swift`, command-buffer GPU
@@ -1243,6 +1244,8 @@ steam; `docs/recipes/minimax-h3-cuda/prompts/`), one request a lock hold, seed 4
 |---|---:|---:|---:|---:|---|
 | 1 | 9.15 s | 11.44 s | 8.94 s | 11.22 s | 12.2 / 8.9 |
 | 2 | 9.67 s | 12.36 s | 9.25 s | 11.51 s | 10.8 / 8.0 |
+| 3 | 9.67 s | 11.27 s | 9.24 s | 10.83 s | 10.0 / 7.5 |
+
 Every paired warm run is main's. An earlier round under worse contention (main's requests at load 31-52 with the
 golden suite building, head's at 15-48) measured head 9.20-9.82 s against main 10.44-11.72 s and decoder walls up to
 6.5 s — load, not the kernels, moved those numbers, which is why the quiet round above is the one that decides. The
