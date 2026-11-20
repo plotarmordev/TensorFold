@@ -28,25 +28,13 @@ report() {
 echo "=== after: this commit $(git -c safe.directory='*' rev-parse --short HEAD) ==="
 H3_PROFILE=1 sh docs/recipes/minimax-h3-cuda/bench-script.sh || status=$?
 report /work/out/h3-image-bench
-echo "=== episode-1 gates: run 1's latent and PNG against the Mac references ==="
-python3 tools/zig/h3_image_compare.py \
-    /assets/drama3-pilot/h3-image-runs/34/t2i-2048.latent.f32 /work/out/h3-image-bench/2048-1.latent.f32 \
-    /assets/drama3-pilot/ep1-mac-fast/2048-warm1.png /work/out/h3-image-bench/2048-1.png --size 2048 \
-    | tee /work/out/h3-image-bench/2048-1.gates.json
-python3 - /work/out/h3-image-bench/2048-1.gates.json \
-    /assets/drama3-pilot/ep1-mac-fast/2048-warm1.png /work/out/h3-image-bench/2048-1.png <<'PY' || status=1
-import json, math, sys
-import numpy as np
-from PIL import Image
-g = json.load(open(sys.argv[1]))
-a, b = (np.asarray(Image.open(p).convert("RGB"), dtype=np.float64) for p in sys.argv[2:4])
-mse = float(((a - b) ** 2).mean())
-psnr = 10 * math.log10(255 * 255 / mse)
-ok = g["latent_cosine"] >= 0.99 and psnr >= 28.2 and g["pixel_mae"] <= 4.1
-print(f"episode-1 gates {'PASS' if ok else 'FAIL'}: cosine {g['latent_cosine']:.4f}, "
-      f"PSNR {psnr:.2f} dB, mean {g['pixel_mae']:.2f}")
-sys.exit(0 if ok else 1)
-PY
+# the episode-1 Mac picture and latent beside run 1 (the fox): the picture gates are
+# tools/zig/h3_image_compare.py's run on the fetched /work/out, as card 122's
+find /assets/drama3-pilot \( -name 2048-warm1.png -o -name t2i-2048.latent.f32 \) >/work/out/mac-refs.log
+for want in 2048-warm1.png t2i-2048.latent.f32; do
+    hit=$(grep "/$want\$" /work/out/mac-refs.log | head -1)
+    if [ -n "$hit" ]; then cp "$hit" "/work/out/h3-image-bench/mac-$want"; else echo "no $want in the pilot folder"; fi
+done
 echo "=== before: the card's files at main (patch -R) ==="
 git -c safe.directory='*' apply -R "$patch_file"
 H3_BENCH_OUT=/work/out/h3-image-bench-base H3_PROFILE=1 \
