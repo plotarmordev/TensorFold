@@ -19,6 +19,7 @@ pub const cuda_after = @import("registry_media.zig").cuda ++
     @import("minimax_cuda_records.zig").cuda ++
     @import("moss_image_cuda_records.zig").cuda ++
     @import("nemo_audio_cuda_records.zig").cuda ++
+    @import("idol_cuda_sets.zig").cuda ++
     @import("exl3_dense_records.zig").cuda ++
     @import("exl3_finish_records.zig").cuda ++
     @import("lfm2_moe_cuda_records.zig").cuda ++
@@ -63,6 +64,7 @@ pub const all_metal = @import("lane_q8_records.zig").records ++
     @import("simd_half_records.zig").records ++
     @import("metal_pair_records.zig").records ++
     @import("glm_rows_records.zig").records ++
+    @import("glm_launch_records.zig").records ++
     @import("row_wide_records.zig").records ++
     @import("weight_only_records.zig").metal ++
     @import("grouped_records.zig").metal ++
@@ -79,14 +81,16 @@ pub const all_metal = @import("lane_q8_records.zig").records ++
     @import("spark25_records.zig").records ++
     @import("gemma_attention_records.zig").records ++
     @import("moss_image_records.zig").records ++
+    @import("idol_records.zig").records ++
     @import("dsv41_metal_records.zig").records ++
     @import("minimax_records.zig").records ++
     @import("ling_route_records.zig").records ++
+    @import("ling_mla_records.zig").records ++
     @import("qwen27_moe_records.zig").records ++
     @import("affine_gather_records.zig").records ++
     @import("flint_records.zig").records ++
     @import("uocr_records.zig").records;
-pub const landed_cuda = registry.cuda ++
+pub const landed_cuda = registry.cuda ++ @import("muse_cuda_records.zig").cuda ++
     @import("dory_cuda_records.zig").cuda ++
     registry.gradient_pending ++
     registry.qwen_learning_pending ++

@@ -149,6 +149,7 @@ pub const kernels = [_]Kernel{
     .{ .name = "glm_index", .flags = &.{"-O3"} }, // a prompt chunk's DSA scores and top-512 pools
     .{ .name = "minimax_m3", .flags = glue }, // ours: MiniMax-M3.1-Flash's glue (norms, RoPE prep, routing, DSpark, tower RoPE)
     .{ .name = "minimax_m3_attn", .flags = glue }, // ours: MiniMax-M3.1-Flash's indexer and block-sparse attention
+    .{ .name = "idol", .flags = glue }, // ours: Idol's denoiser glue and its fp16 head-64 attention
     .{ .name = "glm_quant", .flags = torch_ops }, // ours: GLM's draft-only weight quantizers, torch at load in the Python family
     .{ .name = "exl3_linear", .flags = &.{ "-O3", "--expt-relaxed-constexpr" } }, // exl3/linear.cu's device code, tensorfold_exl3_linear_v5
     .{ .name = "exl3_experts", .flags = &.{ "-O3", "--expt-relaxed-constexpr" } }, // exl3/experts.cu's device code, tensorfold_exl3_experts
@@ -165,6 +166,12 @@ pub const kernels = [_]Kernel{
     .{ .name = "roce_gather", .src = "roce_gather", .flags = &.{"-O3"} }, // b12x's one-shot RoCE all-gather, any world on a mesh
     .{ .name = "l2pf", .src = "deepseek_v41/l2pf", .flags = &.{"-O3"} }, // DeepSeek V4.1's L2 prefetch of a weight table, as GLM's too (records: glm_l2pf_pending.zig)
     .{ .name = "l2pace", .src = "deepseek_v41/l2pace", .flags = &.{"-O3"} }, // and its paced form
+    .{ .name = "muse_dflash", .src = "muse_spark/dflash", .flags = glue }, // Muse Spark: DFlash2 drafter glue
+    .{ .name = "muse_glue", .src = "muse_spark/glue", .flags = glue }, // Muse Spark: norms, gates, router, expert sums, head
+    .{ .name = "muse_attention", .src = "muse_spark/attention", .flags = &.{"-O3"} }, // Muse Spark: head_dim 64 decode attention
+    .{ .name = "muse_dflash2", .src = "muse_spark/dflash2", .flags = glue }, // Muse Spark: DFlash2 convs, top-k, selector walk
+    .{ .name = "muse_experts2", .src = "muse_spark/experts2", .flags = &.{"-O3"} }, // Muse Spark: 32-member expert tiles
+    .{ .name = "muse_linear", .src = "muse_spark/linear_multi", .flags = &.{ "-O3", "--expt-relaxed-constexpr" } }, // Muse Spark: q/k/v/gate in one launch
     .{ .name = "drama3_staged_gemv", .flags = glue },
     .{ .name = "drama3", .flags = &.{"-O3"} },
     .{ .name = "drama3_fp8", .flags = &.{"-O3"} },

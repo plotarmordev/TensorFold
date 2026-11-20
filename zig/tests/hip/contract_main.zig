@@ -21,6 +21,7 @@ const relu2_k = @import("contract_relu2.zig");
 const kv_k = @import("contract_kv_write.zig");
 const tap_k = @import("contract_tap.zig");
 const draft_k = @import("contract_draft.zig");
+const exl3_k = @import("contract_exl3.zig");
 const argmax_k = @import("contract_argmax.zig");
 const pair_k = @import("contract_relu2_pair.zig");
 const heads_rows_k = @import("contract_heads_rows.zig");
@@ -239,9 +240,14 @@ fn run(a: std.mem.Allocator, io: std.Io) !usize {
     for (&streams, 0..) |*x, i| x.* = .init(a, &r, s, &l, i);
     defer for (&streams) |*x| x.deinit();
     for (&streams) |*x| try kernels.append(a, x.kernel());
-    var relu2 = relu2_k.Relu2.init(a, &r, s, &l);
-    defer relu2.deinit();
-    try kernels.append(a, relu2.kernel());
+    // each width's relu^2 stream tile, then each wider width's planted control (its codes read as 4-bit)
+    var relu2s: [2 * relu2_k.widths.len - 1]relu2_k.Relu2 = undefined;
+    for (&relu2s, 0..) |*x, i| {
+        const plant = i >= relu2_k.widths.len;
+        x.* = .init(a, &r, s, &l, relu2_k.widths[if (plant) i + 1 - relu2_k.widths.len else i], plant);
+    }
+    defer for (&relu2s) |*x| x.deinit();
+    for (&relu2s) |*x| try kernels.append(a, x.kernel());
     var kv_write = kv_k.KvWrite.init(a, &r, s, &l);
     defer kv_write.deinit();
     try kernels.append(a, kv_write.kernel());
@@ -254,6 +260,10 @@ fn run(a: std.mem.Allocator, io: std.Io) !usize {
     for (&drafts, draft_modes) |*m, w| m.* = .init(a, &r, s, &l, w);
     defer for (&drafts) |*m| m.deinit();
     for (&drafts) |*m| try kernels.append(a, m.kernel());
+    var exl3s: [exl3_k.registrations.len]exl3_k.Case = undefined;
+    for (&exl3s, exl3_k.registrations) |*m, reg| m.* = .init(a, &r, s, &l, reg);
+    defer for (&exl3s) |*m| m.deinit();
+    for (&exl3s) |*m| try kernels.append(a, m.kernel());
     var argmax = argmax_k.Argmax.init(a, &r, s, &l);
     defer argmax.deinit();
     try kernels.append(a, argmax.kernel());
