@@ -21,4 +21,6 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     const ports = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/rows_reference.zig"), .target = b.graph.host, .imports = &.{.{ .name = "core", .module = @import("h3_host.zig").coreModule(b, b.graph.host) }} });
     b.step("test-h3-image-cuda-host", "The host ports of the H3 row kernels and the shard reader, no GPU").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = ports })).step);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/checkpoint.zig"), .target = b.graph.host, .imports = &.{.{ .name = "core", .module = @import("h3_host.zig").coreModule(b, b.graph.host) }} }) })).step);
+    // the threaded loader's plan and its short-shard failures, no GPU anywhere
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/cuda_load_threads.zig"), .target = b.graph.host, .link_libc = true, .imports = &.{.{ .name = "core", .module = @import("h3_host.zig").coreModule(b, b.graph.host) }} }) })).step);
 }
