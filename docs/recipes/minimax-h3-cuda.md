@@ -111,6 +111,26 @@ ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax
 The 14 November tables below predate this cutover; the
 [`64188519` window](#gpu-qualification-and-the-64188519-window) measures it.
 
+### Threaded weight reads (card 142)
+
+`tf-h3-image-cuda --load-threads N` loads the transformer's 36.7 GiB of shards with N reader
+threads (`cuda_load_threads.zig`): every tensor's staged image is cut into 8 MiB read jobs the
+readers `pread` straight into the pinned stage, and the two 64 MiB stages alternate — one fills
+while the other's copy ranges upload (`copy_source.Stage`, same custody as before). The fused qkv
+stacking lands as whole head parts. `0` (default) keeps the single-threaded in-place reads; a
+missing or short shard fails at header/shape checks or the fill, before any step runs. The steps
+never see the load path, so the latent and PNG are byte-identical and the warm picture is
+unchanged. [`bench-142-ab.sh`](minimax-h3-cuda/bench-142-ab.sh) is the one-job A/B: one sm_121
+build, six cold runs with every weight file evicted (`posix_fadvise(DONTNEED)`), alternating
+0/8/0/8/0/8 threads, plus a resident transformer a count for the warm picture, every latent and
+PNG `cmp`ed against the 0-thread run.
+
+Measured on TOP (job `top-aa70eb7fd52e`, commit `b298850`): the transformer's `model loaded in` fell
+from **49.5 s** mean (48.8, 49.5, 52.1) cold at `--load-threads 0` to **17.9 s** (17.8, 17.9, 18.2)
+at 8 threads — the cold 2048² picture's wall went 92.0 s mean to 60.6 s. The warm picture held
+(13.65 s vs 13.61 s wall, transformer 12.33 vs 12.30 s) and every latent and PNG was
+byte-identical.
+
 ### Benchmark run
 
 [`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds the sm_121 tools alone in the same TOP job
@@ -674,6 +694,42 @@ and 4.1. Main's side of the same job measured 0.9952, 28.69 dB, 4.01. A state co
 six-step picture past the gates, so per-row int8 on the encoder is reverted and the bf16 encoder stays.
 Card 139 found the same for the transformer: per-row scales are the only fold cuBLASLt's int32 C supports, so finer
 scales need an own-mma product.
+
+### Card 154: unseen prompts of every length draw again
+
+An unseen 55-token prompt (the lighthouse, job `top-6f13211c7306`) failed with `NoAlgorithm` on both sides of that
+job. I probed the prompt server over 1 to 4,096 tokens (`top-6b06d02a7e21`, a throwaway branch logging each
+product's plan): the failing product is condition_proj, `Products.run` at (T, 5,376, 5,120) with its bias fused.
+Prompts of 1-32 and 65-90 tokens drew; 33-64 and 100 and up failed — 55, 128, 300 and 4,096 among them. At those
+lengths cuBLASLt refuses the canonical algorithm (`AlgoCheck` status 15, `NOT_SUPPORTED`), and the fallback that
+`bb46c418` added on 15 November checked the shape's own algorithm — picked by the heuristic *without* the bias
+epilogue, because `fuse` leaves it unfused when it cannot take one — against a descriptor that now carries the bias.
+No commit broke a passing prompt: card 132's unseen prompts were 31-32 tokens, inside the band that draws, and the
+fused bias with a canonical-only plan dates from `a3755cbb` the same day.
+
+The fallback now asks the heuristic again with the bias epilogue set (`Linear.pick`), so every length gets an
+algorithm that adds the bias in its epilogue; the canonical algorithm still runs wherever cuBLASLt accepts it, and
+an unanswered shape still fails with its (rows, n, k, bias) logged. The transformer's `Gemms.plan` keeps the shape's
+own algorithm the same way instead of refusing. `prompt_cuda_lengths_test.zig` replays GB10's answers on a cuBLASLt
+stub at 1, 55, 77, 301 and 4,096 rows; it fails on main and passes here.
+
+[`bench-154.sh`](minimax-h3-cuda/bench-154.sh) at `912e9d9f` (job `top-473d0aacdf51`, GB10, driver 580.173.02,
+20 November, exit 0) drew the pilot prompt and five unseen ones through the resident servers, `H3_PROMPT_CHECK=1`
+checking each encode's refiner rows against the BF16 host reference (`prompt_reference.refine`, f32 sums, on the
+GPU encoder's rows). All selftests passed.
+
+| 2048² run | prompt | tokens | refiner rows against the host reference | wall s |
+|---|---|---:|---|---:|
+| cold | pilot (fox) | 24 | cosine 0.9999922, relative 3.95e-3 | 156.0 |
+| warm 1 | one word | 1 | cosine 0.9999998, relative 6.17e-4 | 17.0 |
+| warm 2 | lighthouse | 55 | cosine 0.9999917, relative 4.08e-3 | 19.8 |
+| warm 3 | workshop | 81 | cosine 0.9999914, relative 4.15e-3 | 22.1 |
+| warm 4 | glacier | 134 | cosine 0.9999929, relative 3.76e-3 | 27.3 |
+| warm 5 | station | 316 | cosine 0.9999921, relative 3.98e-3 | 48.9 |
+
+The prompt column includes the host check (316 tokens: 18.0 s encoding, 15.0 s reference), so these walls are not
+speed receipts. The second phase reverse-applied `bench-154-base.patch` (main's products) and drew the pilot prompt
+again: both 2048-1 latents are sha256 `8d067d75…`, byte-equal — the canonical algorithm still runs at 24 rows.
 
 ### The side-by-side: mmh3's warm server beside ours, unseen prompts (20 November)
 
