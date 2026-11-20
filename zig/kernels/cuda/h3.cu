@@ -211,10 +211,10 @@ __global__ void __launch_bounds__(256) h3_heads_i8(
                 const float sign = grp_low ? -1.0f : 1.0f;
                 const float qpp[4] = {pa.x * sx * wpa.x, pa.y * sx * wpa.y, pa.z * sx * wpa.z, pa.w * sx * wpa.w};
                 const float kpp[4] = {pb.x * sx * wpb.x, pb.y * sx * wpb.y, pb.z * sx * wpb.z, pb.w * sx * wpb.w};
-                const float npav[4] = {f(unpack(&npa.x, 0)), f(unpack(&npa.x, 1)), f(unpack(&npa.y, 0)), f(unpack(&npa.y, 1))};
-                const float npbv[4] = {f(unpack(&npb.x, 0)), f(unpack(&npb.x, 1)), f(unpack(&npb.y, 0)), f(unpack(&npb.y, 1))};
-                const float npa2v[4] = {f(unpack(&npa2.x, 0)), f(unpack(&npa2.x, 1)), f(unpack(&npa2.y, 0)), f(unpack(&npa2.y, 1))};
-                const float npb2v[4] = {f(unpack(&npb2.x, 0)), f(unpack(&npb2.x, 1)), f(unpack(&npb2.y, 0)), f(unpack(&npb2.y, 1))};
+                const float npav[4] = {unpack(&npa.x, 0), unpack(&npa.x, 1), unpack(&npa.y, 0), unpack(&npa.y, 1)};
+                const float npbv[4] = {unpack(&npb.x, 0), unpack(&npb.x, 1), unpack(&npb.y, 0), unpack(&npb.y, 1)};
+                const float npa2v[4] = {unpack(&npa2.x, 0), unpack(&npa2.x, 1), unpack(&npa2.y, 0), unpack(&npa2.y, 1)};
+                const float npb2v[4] = {unpack(&npb2.x, 0), unpack(&npb2.x, 1), unpack(&npb2.y, 0), unpack(&npb2.y, 1)};
                 const float cov[4] = {co.x, co.y, co.z, co.w}, siv[4] = {si.x, si.y, si.z, si.w};
 #pragma unroll
                 for (int e = 0; e < 4; ++e) {
