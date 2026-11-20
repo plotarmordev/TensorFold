@@ -130,8 +130,9 @@ for side in ${H3_BENCH_SIZES:-2048}; do
     rm "$out/decoder-requests" "$out/decoder-replies"
 done
 # the GPU decoder's 2048² picture beside the host reference decoder's on the same latent, after the
-# resident servers freed their arenas: the host decoder needs the memory they held
-if [ -f "$out/2048-1.latent.f32" ]; then
+# resident servers freed their arenas: the host decoder needs the memory they held. H3_BENCH_SKIP_COMPARE
+# skips it for a same-job A/B's second phase, which needs no second host decode.
+if [ -z "${H3_BENCH_SKIP_COMPARE:-}" ] && [ -f "$out/2048-1.latent.f32" ]; then
     case=$out/2048-reference
     stage compare "$bin/tf-h3-image-decoder-cuda" reference "$model" "$out/2048-1.latent.f32" 128 128 \
         "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048 $decflag

@@ -1,11 +1,10 @@
 //! mmh3's INT8 linear layers on the H3 CUDA blocks: each projection's weight rows and each activation row Hadamard-rotated
-//! in 128-wide chunks (ConvRot's outlier spreading), quantized to int8 at absmax scales, summed exactly in int32 by
+//! in 128-wide chunks (ConvRot's outlier spreading), quantized to int8 at its absmax, summed exactly in int32 by
 //! cuBLASLt, and scaled back to bf16 rows. The bf16 weights are freed once quantized.
 //!
-//! `qkvc` and `fc1` quantize each row at one scale; `out` and `fc2` scale every 256-wide group of K, the fold card 136's
-//! picture needed (per-row scales there measured 28.15 dB and 4.23 against the 28.2 dB and 4.1 gates). A grouped product
-//! is one strided-batched cuBLASLt call, a batch a 256-deep slice of K writing its own (rows, n) int32 plane, whose
-//! partials h3_dequantize_grouped folds at both operands' per-group scales.
+//! Only `qkvc` and `fc1` run it: `out` and `fc2` keep their bf16 weights. Their int8 products measured faster
+//! (286 TFLOP a picture saved 0.6 s warm at 2048²) but fail the episode-1 picture gates (28.15 dB, mean 4.23
+//! against 28.2 dB and 4.1) at per-row scales; the finer scales need an own-mma product.
 const std = @import("std");
 const cuda = @import("cuda");
 const lt_ = cuda.cublaslt;
@@ -13,29 +12,29 @@ const h3 = @import("cuda.zig");
 const workspace_bytes = @import("cuda_gemm.zig").workspace_bytes;
 const Model = h3.Model;
 
-/// K values one scale covers in a grouped projection.
-pub const group_k = 256;
-
-/// A projection (N, K): its int8 rows, then N * `groups` fp32 scales, one per `group_k`-wide group when `groups` > 1.
+/// A projection (N, K): its int8 rows, then N fp32 row scales.
 pub const Weight = struct {
     q: cuda.DeviceBuffer,
     n: usize,
     k: usize,
-    groups: usize = 1,
 
-    fn scales(w: Weight) u64 {
+    pub fn scales(w: Weight) u64 {
         return w.q.ptr + w.n * w.k;
     }
 };
 
 /// One block's quantized projections.
-pub const Block = struct { qkvc: Weight, out: Weight, fc1: Weight, fc2: Weight };
+pub const Block = struct { qkvc: Weight, fc1: Weight };
+
+/// The buffers a product's input rows and int32 sums use: `norm` writes q/s before `gemm` fills acc.
+/// `acc` doubles as the qkvc product's output and fc1's — each block uses it before the next overwrites it.
+pub const Scratch = struct { acc: u64, xq: u64, xs: u64 };
 
 pub const Int8 = struct {
     blocks: []Block,
     handle: lt_.Handle,
-    plans: std.AutoHashMapUnmanaged([4]u64, lt_.Gemm) = .empty,
-    /// int32 sums (rows x `accWide`: a product's n x groups), then int8 rows (rows, widest k), then their fp32 scales.
+    plans: std.AutoHashMapUnmanaged([3]u64, lt_.Gemm) = .empty,
+    /// int32 sums (rows, widest n), then int8 rows (rows, widest k), then the rows' fp32 scales.
     scratch: cuda.DeviceBuffer,
     rows: usize = 0,
 
@@ -50,19 +49,17 @@ pub const Int8 = struct {
         self.int8 = t; // the model's deinit frees what a failed quantize already made
         const none: Weight = .{ .q = .{ .d = &self.driver, .ptr = 0, .len = 0 }, .n = 0, .k = 0 };
         t.blocks = try self.gpa.alloc(Block, self.blocks.len);
-        @memset(t.blocks, .{ .qkvc = none, .out = none, .fc1 = none, .fc2 = none });
+        @memset(t.blocks, .{ .qkvc = none, .fc1 = none });
         for (self.blocks, t.blocks) |*b, *q| {
-            q.qkvc = try weight(self, &b.qkvc, 3 * self.inner, self.hidden, 1);
-            q.out = try weight(self, &b.out, self.hidden, self.inner, self.inner / group_k);
-            q.fc1 = try weight(self, &b.fc1, 2 * self.mlp, self.hidden, 1);
-            q.fc2 = try weight(self, &b.fc2, self.hidden, self.mlp, self.mlp / group_k);
+            q.qkvc = try weight(self, &b.qkvc, 3 * self.inner, self.hidden);
+            q.fc1 = try weight(self, &b.fc1, 2 * self.mlp, self.hidden);
         }
     }
 
-    fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize, groups: usize) !Weight {
-        if (k % group_k != 0 or k > 14336 or n % 4 != 0) return error.BadGeometry; // h3_quantize's quantize_chunks, the batch slice
-        const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * groups * 4), .n = n, .k = k, .groups = groups };
-        try launchQuantize(self, bf16.ptr, w.q.ptr, w.scales(), n, k, groups);
+    fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize) !Weight {
+        if (k % 128 != 0 or k > 14336 or n % 4 != 0) return error.BadGeometry; // h3_quantize's quantize_chunks
+        const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * 4), .n = n, .k = k };
+        try launchQuantize(self, bf16.ptr, w.q.ptr, w.scales(), n, k);
         try self.stream.synchronize();
         bf16.free();
         bf16.* = .{ .d = &self.driver, .ptr = 0, .len = 0 };
@@ -73,60 +70,43 @@ pub const Int8 = struct {
         var it = t.plans.valueIterator();
         while (it.next()) |g| g.deinit();
         t.plans.deinit(self.gpa);
-        for (t.blocks) |*b| for ([_]*Weight{ &b.qkvc, &b.out, &b.fc1, &b.fc2 }) |w| w.q.free();
+        for (t.blocks) |*b| for ([_]*Weight{ &b.qkvc, &b.fc1 }) |w| w.q.free();
         self.gpa.free(t.blocks);
         t.scratch.free();
         _ = self.gemms.lt.api.cublasLtDestroy(t.handle);
         self.gpa.destroy(t);
     }
 
-    /// y (rows, w.n) bf16 = x (rows, w.k) bf16 . w^T through the int8 product.
-    pub fn run(t: *Int8, self: *Model, x: u64, w: Weight, y: u64, rows: usize) !void {
-        const p = try t.product(self, x, w, rows);
-        var args: cuda.Args = .{};
-        for ([_]u64{ p.acc, p.xs, w.scales(), y }) |a| args.add(a);
-        args.add(@as(c_int, @intCast(rows)));
-        args.add(@as(c_int, @intCast(w.n)));
-        if (w.groups == 1) return self.launch("h3_dequantize", .{ .x = 1024 }, 256, 0, &args);
-        args.add(@as(c_int, @intCast(w.groups)));
-        try self.launch("h3_dequantize_grouped", .{ .x = 1024 }, 256, 0, &args);
+    /// The row and sum buffers the fused launches share, as Scratch.
+    pub fn layout(t: *Int8, self: *Model, rows: usize) !Scratch {
+        try t.reserve(self, rows);
+        const acc = t.scratch.ptr;
+        const xq = acc + rows * t.widest(self) * 4;
+        const xs = xq + rows * t.widest(self);
+        return .{ .acc = acc, .xq = xq, .xs = xs };
+    }
+
+    /// x's rows (already quantized at lay.xq by h3_norm_quant) against w: the int32 sums land at lay.acc.
+    pub fn gemm(t: *Int8, self: *Model, lay: Scratch, w: Weight, rows: usize) !void {
+        const p = try t.plan(self, rows, w.n, w.k);
+        try p.runInt(w.q.ptr, lay.xq, lay.acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
     }
 
     /// act (rows, w.n / 2) = swiglu of x . w^T [gate | value], the int32 sums scaled in h3_swiglu_int8 itself.
-    pub fn mlpIn(t: *Int8, self: *Model, x: u64, w: Weight, act: u64, rows: usize) !void {
-        const p = try t.product(self, x, w, rows);
+    pub fn mlpIn(t: *Int8, self: *Model, lay: Scratch, w: Weight, act: u64, rows: usize) !void {
+        try t.gemm(self, lay, w, rows);
         var args: cuda.Args = .{};
-        for ([_]u64{ p.acc, p.xs, w.scales(), act }) |a| args.add(a);
+        for ([_]u64{ lay.acc, lay.xs, w.scales(), act }) |a| args.add(a);
         args.add(@as(c_int, @intCast(rows)));
         args.add(@as(c_int, @intCast(w.n / 2)));
         try self.launch("h3_swiglu_int8", .{ .x = 1024 }, 256, 0, &args);
     }
 
-    /// Room and plans for `rows` before a step is captured: `run` and `mlpIn` then only launch.
+    /// Room and plans for `rows` before a step is captured: `layout` then only hands out buffers.
     pub fn warm(t: *Int8, self: *Model, rows: usize) !void {
         try t.reserve(self, rows);
-        _ = try t.plan(self, rows, 3 * self.inner, self.hidden, 1);
-        _ = try t.plan(self, rows, self.hidden, self.inner, self.inner / group_k);
-        _ = try t.plan(self, rows, 2 * self.mlp, self.hidden, 1);
-        _ = try t.plan(self, rows, self.hidden, self.mlp, self.mlp / group_k);
-    }
-
-    /// x's rows quantized and their int32 sums against w in scratch: `acc` (`w.groups` planes of rows x w.n), `xs`.
-    fn product(t: *Int8, self: *Model, x: u64, w: Weight, rows: usize) !struct { acc: u64, xs: u64 } {
-        try t.reserve(self, rows);
-        const acc = t.scratch.ptr;
-        const xq = acc + rows * t.accWide(self) * 4;
-        const xs = xq + rows * t.widest(self);
-        try launchQuantize(self, x, xq, xs, rows, w.k, w.groups);
-        const p = try t.plan(self, rows, w.n, w.k, w.groups);
-        try p.runInt(w.q.ptr, xq, acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle);
-        return .{ .acc = acc, .xs = xs };
-    }
-
-    /// A product's widest int32 count a row: the biggest `n` x `groups` over the four projections — fc2's
-    /// `hidden` x `mlp` / 256 — not the product of the widest n and the most groups (no projection has both).
-    fn accWide(_: *const Int8, self: *const Model) usize {
-        return @max(3 * self.inner, 2 * self.mlp, self.hidden * (self.inner / group_k), self.hidden * (self.mlp / group_k));
+        _ = try t.plan(self, rows, 3 * self.inner, self.hidden);
+        _ = try t.plan(self, rows, 2 * self.mlp, self.hidden);
     }
 
     fn widest(_: *const Int8, self: *const Model) usize {
@@ -137,28 +117,23 @@ pub const Int8 = struct {
         if (rows <= t.rows) return;
         try self.stream.synchronize();
         t.scratch.free();
-        const wide = t.widest(self);
-        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, rows * (t.accWide(self) * 4 + wide + (self.mlp / group_k) * 4));
+        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, rows * (t.widest(self) * 5 + 4));
         t.rows = rows;
     }
 
-    /// Column-major D^T (n, rows) = W (k, n stored)^T . X^T (k, rows), int32 sums: cuBLASLt's int8 TN layout. A
-    /// grouped weight runs `groups` batches of the k / groups-deep slice, each writing its own (n, rows) plane.
-    fn plan(t: *Int8, self: *Model, rows: usize, n: usize, k: usize, groups: usize) !*const lt_.Gemm {
-        const got = try t.plans.getOrPut(self.gpa, .{ rows, n, k, groups });
+    /// Column-major D^T (n, rows) = W (k, n stored)^T . X^T (k, rows), int32 sums: cuBLASLt's int8 TN layout.
+    fn plan(t: *Int8, self: *Model, rows: usize, n: usize, k: usize) !*const lt_.Gemm {
+        const got = try t.plans.getOrPut(self.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
         errdefer t.plans.removeByPtr(got.key_ptr);
-        const batch: u64 = if (groups > 1) k / groups else k;
-        const spec: lt_.Spec = .{ .ta = .t, .m = n, .n = rows, .k = batch, .a = .i8, .b = .i8, .c = .i32, .lda = k, .ldb = k, .ldc = n, .batch = @intCast(groups), .sa = batch, .sb = batch, .sc = n * rows };
-        got.value_ptr.* = try lt_.Gemm.init(&self.gemms.lt, t.handle, spec, workspace_bytes);
+        got.value_ptr.* = try lt_.Gemm.init(&self.gemms.lt, t.handle, .{ .ta = .t, .m = n, .n = rows, .k = k, .a = .i8, .b = .i8, .c = .i32, .lda = k, .ldb = k, .ldc = n }, workspace_bytes);
         return got.value_ptr;
     }
 };
 
-fn launchQuantize(self: *Model, x: u64, q: u64, s: u64, rows: usize, k: usize, groups: usize) !void {
+fn launchQuantize(self: *Model, x: u64, q: u64, s: u64, rows: usize, k: usize) !void {
     var args: cuda.Args = .{};
     for ([_]u64{ x, q, s }) |a| args.add(a);
     args.add(@as(c_int, @intCast(k)));
-    args.add(@as(c_int, @intCast(groups)));
     try self.launch("h3_quantize", .{ .x = @intCast(rows) }, 256, 0, &args);
 }

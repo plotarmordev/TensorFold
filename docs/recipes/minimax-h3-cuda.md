@@ -739,3 +739,19 @@ post-fix benchmark needs a new Desk window. Receipt SHA-256 identifiers:
 - `64188519/tensorfold.log`: `5bfda8793e16af8159c8435c098768d26466455c10931db7bd619174262cdb12`
 - `64188519/mmh3/out/mmh3/2048.log`: `54e17e0ada53c14502c6dadf543d4f64b0522537e704a383018f78da11772cfb`
 - `64188519/mmh3/out/mmh3/4096.log`: `a509701c36d026a9ca502fe904bc723ce73e888a8dd8abc868f800bd72cae3e1`
+
+`5d4bd40` (job `top-e611c4df9602`, 20 November, exit 0 — a same-job A/B: `bench-script.sh` on this commit,
+then `bench-128-base.patch` reverse-applied and `bench-script.sh` again; the branch carries cards 124, 125, 127
+and 131 merged from main) fuses the int8 transformer's elementwise passes as `docs/mmh3-h3-image-study.md`'s
+lever 2 reads mmh3: `h3_norm_quant` runs the gated add, modulated RMSNorm, rotate and quantize as one launch
+(the normed row is recomputed per lane as `modulated` rounded to bf16 — never materialized), and `h3_heads_i8`
+reads the qkvc product's int32 sums and scales and runs `h3_heads`' q/k norm and rotary on values dequantized
+as `h3_dequantize` rounds them — once a row, not per tile pair. `h3_swiglu_int8` stays its own launch over
+fc1's sums: mmh3's swiglu sits in its own int8 GEMM's epilogue, and cuBLASLt's i8×i8→i32 descriptors take none
+(the card's "in fc1's epilogue" clause asks for the amendment that keeps it a launch). `fused_test` in
+`--self-test` checks both against the unfused chain byte for byte (transformer PASS in both phases), and all
+eight bench latents are sha256-identical (`8d067d75…`) between head and baseline. A warm 2048² picture took
+**13.9 s** mean (13.9, 13.9, 14.0: transformer 12.5–12.6, decoder 1.3–1.4 s) against the same job's baseline
+at main **14.3 s** (14.3, 14.3, 14.3: transformer 12.9): `q k v gate` 2.68→1.88–1.89 s, `heads`
+0.96→1.40–1.41 s, `mlp in` 3.39→3.32–3.34 s — the study's 3.20 s of elementwise launches is 2.4 s. Against
+episode 1's Mac picture the gates hold unchanged — the latent is byte-identical to the measured one.
