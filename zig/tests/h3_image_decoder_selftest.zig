@@ -196,7 +196,7 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
     const decoded = try a.alloc(f32, staged.len);
     for ([_]usize{ c.batch, tiles }, 0..) |b, i| {
         if (i == 1 and b == c.batch) continue;
-        _ = try d.decode(a, config, latent, c.rows, c.cols, checked, b, decoded);
+        _ = try d.decode(a, config, latent, c.rows, c.cols, checked, b, decoded, null);
         const same = std.mem.eql(u32, @ptrCast(staged), @ptrCast(decoded));
         std.debug.print("  decode in passes of {d}: {s} the staged tiles assembled\n", .{ b, if (same) "bit-identical to" else "DIFFERENT from" });
         ok = ok and same;
@@ -230,19 +230,38 @@ fn assemble(a: std.mem.Allocator, t: host.Tiles, tiles: []const f32, len: usize)
     return out;
 }
 
-/// A square latent of `cells` decoded through `checked` blocks in passes of the decoder's most and of 16 tiles: the same bits.
+/// A square latent of `cells` decoded through `checked` blocks in passes of the decoder's most and of 16 tiles, and
+/// with a sink taking final rows between passes: the same bits, every row handed over once, in order.
 fn batches(a: std.mem.Allocator, d: *dec.Decoder, config: *const vae.Config, cells: usize) !bool {
     const latent = try synthetic(a, cells, cells);
     const tiles = (try host.tiles(a, config, cells, cells)).total();
     const len = 3 * cells * cells * side * side;
     const most = try a.alloc(f32, len);
     const sixteen = try a.alloc(f32, len);
-    _ = try d.decode(a, config, latent, cells, cells, checked, dec.most_batch, most);
-    _ = try d.decode(a, config, latent, cells, cells, checked, 16, sixteen);
-    const same = std.mem.eql(u32, @ptrCast(most), @ptrCast(sixteen));
-    std.debug.print("{d} x {d} cells, {d} tiles: passes of {d} {s} passes of 16\n", .{ cells, cells, tiles, dec.most_batch, if (same) "bit-identical to" else "DIFFERENT from" });
-    return same;
+    const sunk = try a.alloc(f32, len);
+    _ = try d.decode(a, config, latent, cells, cells, checked, dec.most_batch, most, null);
+    _ = try d.decode(a, config, latent, cells, cells, checked, 16, sixteen, null);
+    var rows: Rows = .{};
+    _ = try d.decode(a, config, latent, cells, cells, checked, dec.most_batch, sunk, .{ .ctx = &rows, .rows = Rows.take });
+    const same = std.mem.eql(u32, @ptrCast(most), @ptrCast(sixteen)) and std.mem.eql(u32, @ptrCast(most), @ptrCast(sunk));
+    const whole = rows.ordered and rows.next == cells * side and rows.calls > 1;
+    std.debug.print("{d} x {d} cells, {d} tiles: passes of {d} {s} passes of 16 and to a sink ({d} bands, {s})\n", .{ cells, cells, tiles, dec.most_batch, if (same) "bit-identical to" else "DIFFERENT from", rows.calls, if (whole) "every row once" else "ROWS MISSED OR REPEATED" });
+    return same and whole;
 }
+
+/// A sink that checks its bands of rows follow one another.
+const Rows = struct {
+    next: usize = 0,
+    calls: usize = 0,
+    ordered: bool = true,
+
+    fn take(ctx: *anyopaque, _: []const f32, from: usize, to: usize) anyerror!void {
+        const r: *Rows = @ptrCast(@alignCast(ctx));
+        r.ordered = r.ordered and from == r.next and to > from;
+        r.next = to;
+        r.calls += 1;
+    }
+};
 
 /// All 24 blocks chained, the GPU from the latent in one pass and the reference beside it.
 fn deep(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, latent: []const f32, c: Case, t: host.Tiles, origins: []const [2]u32, cos: []const u16, sin: []const u16, scratch: ref.Scratch) !bool {
@@ -268,6 +287,6 @@ fn timing(a: std.mem.Allocator, d: *dec.Decoder, config: *const vae.Config) !voi
     const latent = try synthetic(a, cells, cells);
     const out = try a.alloc(f32, 3 * cells * cells * side * side);
     const tiles = (try host.tiles(a, config, cells, cells)).total();
-    const took = try d.decode(a, config, latent, cells, cells, vae.layers, 16, out);
+    const took = try d.decode(a, config, latent, cells, cells, vae.layers, 16, out, null);
     std.debug.print("timing: {d} tiles of 16 x 16, 24 blocks: {d:.2} s in passes, {d:.2} s on the GPU, {d:.1} ms a tile\n", .{ tiles, took.wall, took.gpu, 1000 * took.gpu / @as(f64, @floatFromInt(tiles)) });
 }

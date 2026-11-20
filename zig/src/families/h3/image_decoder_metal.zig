@@ -183,6 +183,28 @@ pub const Decoder = struct {
 
     /// One command buffer: `stages` on the tiles whose first cells (row, column) are `origins`.
     pub fn pass(d: *Decoder, origins: []const [2]u32, stages: Stages) !Timing {
+        const pool = mtl.objc.Pool.push();
+        defer pool.pop();
+        return (try d.commit(origins, stages)).wait();
+    }
+
+    /// A pass committed to the GPU; `wait` for it before reading its outputs or committing another.
+    const Committed = struct {
+        cb: mtl.CommandBuffer,
+        started: f64,
+
+        fn wait(c: Committed) !Timing {
+            c.cb.wait();
+            if (c.cb.failure()) |msg| {
+                std.log.err("h3 image decoder: a pass failed on the GPU: {s}", .{msg});
+                return error.GpuFailure;
+            }
+            return .{ .wall = mtl.clock.seconds() - c.started, .gpu = c.cb.gpuSeconds() };
+        }
+    };
+
+    /// `pass`'s work committed, not waited for (inside the caller's pool).
+    fn commit(d: *Decoder, origins: []const [2]u32, stages: Stages) !Committed {
         if (d.scratch == null or origins.len == 0 or origins.len > d.batch) return error.H3BadTiles;
         if (stages.from > stages.to or stages.to > d.plan.layers) return error.H3BadTiles;
         const slots = @as([*][2]u32, @ptrCast(@alignCast(d.views.origins.buf.contents() + d.views.origins.off)))[0..origins.len];
@@ -191,8 +213,6 @@ pub const Decoder = struct {
             s.* = o;
         }
         const started = mtl.clock.seconds();
-        const pool = mtl.objc.Pool.push();
-        defer pool.pop();
         const cb = d.queue.commandBuffer();
         const e = cb.compute(.serial);
         const s: Shape = .{ .tiles = @intCast(origins.len), .h = @intCast(d.h), .w = @intCast(d.w), .tokens = @intCast(d.tokens), .rows = @intCast(d.rows), .cols = @intCast(d.cols), .m = @intCast(origins.len * d.tokens) };
@@ -208,12 +228,7 @@ pub const Decoder = struct {
         }
         e.end();
         cb.commit();
-        cb.wait();
-        if (cb.failure()) |msg| {
-            std.log.err("h3 image decoder: a pass failed on the GPU: {s}", .{msg});
-            return error.GpuFailure;
-        }
-        return .{ .wall = mtl.clock.seconds() - started, .gpu = cb.gpuSeconds() };
+        return .{ .cb = cb, .started = started };
     }
 
     fn param(d: *const Decoder, offset: usize) Ref {
@@ -260,26 +275,35 @@ pub const Decoder = struct {
         d.gemm(e, s, v.act, p.block(i, .w2_w), p.block(i, .w2_b), .{ .layer_scale = p.block(i, .scale2) }, v.x, W, F);
     }
 
+    /// Takes the picture's rows [from, to) once they are final, while the GPU runs the next pass.
+    pub const Sink = struct {
+        ctx: *anyopaque,
+        rows: *const fn (ctx: *anyopaque, out: []const f32, from: usize, to: usize) anyerror!void,
+    };
+
     /// The decoded picture [3, 16 rows, 16 cols] (normalised) of a raw latent: tiles in batches, blended in fp32.
-    pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, batch: usize, out: []f32) !Timing {
+    /// With a `sink`, passes end on whole tile rows (at least two passes, so the sink overlaps the GPU) and every
+    /// pixel row reaches it once, in order; the pixels are the same either way.
+    pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, batch: usize, out: []f32, sink: ?Sink) !Timing {
         const t = try host.tiles(a, c, rows, cols);
-        const per = @min(batch, t.total());
+        const across = t.cols.len;
+        const bands = t.rows.len;
+        const per = if (sink == null or bands < 2) @min(batch, t.total()) else @max(1, @min(batch / across, (bands + 1) / 2)) * across;
         try d.prepare(raw, rows, cols, t.h, t.w, per);
         var assembly = try vae.Assembler.init(a, t.rows, t.cols, 3, out);
         const tile = try a.alloc(f32, 3 * t.h * t.w * vae.cell_pixels * vae.cell_pixels);
         const origins = try a.alloc([2]u32, per);
+        const pool = mtl.objc.Pool.push();
+        defer pool.pop();
         var took: Timing = .{};
+        var final: usize = 0;
         var k: usize = 0;
-        while (k < t.total()) {
-            const n = @min(per, t.total() - k);
-            for (origins[0..n], 0..) |*o, i| {
-                const at = t.at(k + i);
-                o.* = .{ @intCast(at.row), @intCast(at.col) };
-            }
-            if (d.give_way) |turn| took.paused += gpu_turn.yield(turn.io, turn.at);
-            const one = try d.pass(origins[0..n], .{ .to = layers });
+        var running = try d.commitFrom(&took, t, origins, k, layers);
+        while (true) {
+            const one = try running.wait();
             took.wall += one.wall;
             took.gpu += one.gpu;
+            const n = @min(per, t.total() - k);
             const projected_rows = d.projected();
             for (0..n) |i| {
                 try host.unpatchify(projected_rows[i * d.tokens * host.patch ..][0 .. t.h * t.w * host.patch], t.h, t.w, tile);
@@ -287,7 +311,26 @@ pub const Decoder = struct {
                 try assembly.place(at.r, at.c, tile);
             }
             k += n;
+            const done = k == t.total();
+            if (!done) running = try d.commitFrom(&took, t, origins, k, layers);
+            if (sink) |s| {
+                const band = t.rows[t.at(k - 1).r];
+                const to = if (done) band.start + band.len else band.start + band.len - band.overlap;
+                try s.rows(s.ctx, out, final, to);
+                final = to;
+            }
+            if (done) return took;
         }
-        return took;
+    }
+
+    /// The pass of tiles [k, k + batch) committed, after giving way to live speech.
+    fn commitFrom(d: *Decoder, took: *Timing, t: host.Tiles, origins: [][2]u32, k: usize, layers: usize) !Committed {
+        const n = @min(origins.len, t.total() - k);
+        for (origins[0..n], 0..) |*o, i| {
+            const at = t.at(k + i);
+            o.* = .{ @intCast(at.row), @intCast(at.col) };
+        }
+        if (d.give_way) |turn| took.paused += gpu_turn.yield(turn.io, turn.at);
+        return d.commit(origins[0..n], .{ .to = layers });
     }
 };

@@ -49,11 +49,26 @@ pub const Vae = struct {
         try vae.denormalize(&v.config, latent);
         const started = mtl.clock.seconds();
         const decoded = try a.alloc(f32, 3 * width * height);
-        const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded);
-        try hostdec.write(init.io, a, decoded, height, width, size.width, size.height, path);
+        const took = if (size.width == width and size.height == height) banded: {
+            // the canvas size: each band of final rows is encoded while the GPU decodes the next
+            var b = try hostdec.Banded.init(a, height, width);
+            defer b.deinit(a);
+            const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded, .{ .ctx = &b, .rows = bandRows });
+            try b.finish(init.io, path);
+            break :banded took;
+        } else resized: {
+            const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded, null);
+            try hostdec.write(init.io, a, decoded, height, width, size.width, size.height, path);
+            break :resized took;
+        };
         std.debug.print("{d}x{d} canvas: decoded {d} tiles in {d:.2} s ({d:.2} s on the GPU, {d:.2} s waited for speech), {d:.2} s in all; wrote {s} at {d}x{d}\n", .{ width, height, tiles.total(), took.wall, took.gpu, took.paused, mtl.clock.seconds() - started, path, size.width, size.height });
     }
 };
+
+fn bandRows(ctx: *anyopaque, decoded: []const f32, from: usize, to: usize) anyerror!void {
+    const b: *hostdec.Banded = @ptrCast(@alignCast(ctx));
+    try b.rows(decoded, from, to);
+}
 
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
