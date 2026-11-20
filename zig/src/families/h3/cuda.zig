@@ -129,6 +129,7 @@ pub const Model = struct {
         self.stream = .{ .d = d, .handle = null };
         self.gemms = try Gemms.init(gpa, d);
         errdefer if (ordinary_cleanup) self.gemms.deinit();
+        try self.gemms.loadPicks(d, &self.ctx);
         ordinary_cleanup = false;
         self.opened = seconds();
         return self;

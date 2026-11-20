@@ -122,11 +122,17 @@ pub const Int8 = struct {
     }
 
     /// Column-major D^T (n, rows) = W (k, n stored)^T . X^T (k, rows), int32 sums: cuBLASLt's int8 TN layout.
+    /// The pick is the model's cache file's when it holds this (rows, n, k); a miss searches and records.
     fn plan(t: *Int8, self: *Model, rows: usize, n: usize, k: usize) !*const lt_.Gemm {
         const got = try t.plans.getOrPut(self.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
         errdefer t.plans.removeByPtr(got.key_ptr);
-        got.value_ptr.* = try lt_.Gemm.init(&self.gemms.lt, t.handle, .{ .ta = .t, .m = n, .n = rows, .k = k, .a = .i8, .b = .i8, .c = .i32, .lda = k, .ldb = k, .ldc = n }, workspace_bytes);
+        const spec: lt_.Spec = .{ .ta = .t, .m = n, .n = rows, .k = k, .a = .i8, .b = .i8, .c = .i32, .lda = k, .ldb = k, .ldc = n };
+        const shape = [3]u64{ rows, n, k };
+        const picks = self.gemms.picks;
+        const cached = if (picks) |p| p.get(.int8, shape) else null;
+        got.value_ptr.* = if (cached) |a| try lt_.Gemm.initChecked(&self.gemms.lt, t.handle, spec, workspace_bytes, a) else try lt_.Gemm.init(&self.gemms.lt, t.handle, spec, workspace_bytes);
+        if (cached == null and picks != null) try picks.?.put(self.gpa, .int8, shape, got.value_ptr.algo);
         return got.value_ptr;
     }
 };
