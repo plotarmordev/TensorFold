@@ -219,7 +219,7 @@ pub const Gemms = struct {
         return (try g.plan(rows, n, k, .bf16, .bias)).epilogue == .bias;
     }
 
-    fn plan(g: *Gemms, rows: usize, n: usize, k: usize, out: cublaslt.DataType, epilogue: cublaslt.Epilogue) !*const Linear {
+    pub fn plan(g: *Gemms, rows: usize, n: usize, k: usize, out: cublaslt.DataType, epilogue: cublaslt.Epilogue) !*const Linear {
         const key = [3]u64{ rows, n, k | @as(u64, @intCast(@backingInt(out))) << 40 | @as(u64, @backingInt(epilogue)) << 48 };
         const got = try g.plans.getOrPut(g.gpa, key);
         if (!got.found_existing) got.value_ptr.* = Linear.initEpilogue(&g.lt, rows, n, k, out, workspace_bytes, epilogue) catch |e| {

@@ -24,8 +24,8 @@ const usage =
     \\
 ;
 
-/// Tiles a pass decodes at most.
-const batch = 16;
+/// Tiles a pass decodes at most: the decoder's own bound, which covers a 2048² canvas in one pass.
+const batch = dec.most_batch;
 
 /// The image decoder loaded once: its config and weights, its kernels and cuBLASLt plans.
 pub const Vae = struct {
