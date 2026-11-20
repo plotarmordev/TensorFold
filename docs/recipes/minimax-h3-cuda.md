@@ -144,7 +144,8 @@ whole. A record the device still refuses (`cublasLtMatmulAlgoCheck` says no: a b
 header, a workspace need that grew) is dropped, the search reruns and its pick replaces it, so a corrupt
 file never survives a start — `tf-h3-image-cuda --self-test` proves both fallbacks, bf16 and int8, on
 the device. `TF_H3_ALGO_CACHE` names another file (a bare name lands in the working directory) or, as
-`off`, skips it.
+`off`, skips it. The table is staged in a unique, exclusively created no-follow sibling and renamed into
+place, so a link planted beside the file is never written through and two writers never share a sibling.
 
 [`cache-ab.sh`](minimax-h3-cuda/cache-ab.sh) is the receipt: `bench-script.sh` on TOP twice in one job —
 once with the file absent (the searches write it), once with it — then compares the two cold latents bit
@@ -167,8 +168,14 @@ is unchanged at 12.6 s, and the cold latents are bit-identical). The wall gap is
 but only ~3.3 s of it is accounted for by load (−2.2 s) and transformer (−1.2 s); the rest is
 prompt-stage noise the cache does not touch, and phase B runs on page caches phase A warmed, so wall is
 not the cache's receipt. The file held four records — the bf16 shapes collapse to a few distinct (n, k)
-under their canonical rows, the int8 products to theirs. A faster cold start past these ~1.2 s needs a
-faster `warm`/`load` path, not a picks file.
+under their canonical rows, the int8 products to theirs.
+
+**The card's "cold first step ≥ 3 s faster" is not met and cannot be met at step 1.** Step 1 itself is
+2.06–2.08 s cold or warm, with or without the file (job `top-a2dd6c37cd7f`: 2.06 s without, 2.08 s with;
+wall 152.8 → 149.6 s): the searches run in `warm`, before step 1 starts, so step 1 had no search time
+to lose. The cold transformer's ~29 s over a warm one sits ahead of step 1 too, and the file removes
+~1.2 s of it; the rest is staging and first-launch cost, which a picks file does not touch. Cutting
+it needs a faster `warm`/staging path.
 
 `49d1cdd7c` repeated the A/B under the `TFH3LT2` format (job `top-ac6a89d0864f`, exit 0): every selftest
 passed, phase A wrote a 656-byte file (the 272-byte header and four records), phase B read it, and the cold
