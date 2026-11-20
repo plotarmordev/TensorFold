@@ -202,7 +202,8 @@ const Encode = *const fn (*TensorMap, c_uint, c_uint, ?*anyopaque, *const [2]u64
 
 /// cuTensorMapEncodeTiled, bound once: a driver without it cannot run the product at all.
 pub fn encoder(d: *const cuda.Driver) !Encode {
-    return d.lib.lookup(Encode, "cuTensorMapEncodeTiled") orelse error.MissingSymbol;
+    var lib = d.lib;
+    return lib.lookup(Encode, "cuTensorMapEncodeTiled") orelse error.MissingSymbol;
 }
 
 /// UINT8, 2D, swizzle 128B, L2 256B promotion, zero fill: cuda_int8.zig's encode, here for the
