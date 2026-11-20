@@ -20,8 +20,13 @@ pub fn options(part: Part) mtl.CompileOptions {
     return o;
 }
 
-pub fn library(device: mtl.Device, part: Part, text: []const u8) !mtl.Library {
-    return mtl.Library.fromSource(device, text, options(part));
+/// A part's text (or an edit of it) compiled as its launcher compiles it on this GPU; the decoder's with nax.h
+/// inlined (Decoder.init).
+pub fn library(a: std.mem.Allocator, device: mtl.Device, part: Part, text: []const u8) !mtl.Library {
+    if (part != .decoder) return mtl.Library.fromSource(device, text, options(part));
+    const full = try @import("h3_image_decoder_kernels").assemble(a, device.tensorUnits(), text);
+    defer a.free(full);
+    return mtl.Library.fromSource(device, full, options(part));
 }
 
 /// The record and spec name of a part's kernel: "minimax image <part> <function>".
