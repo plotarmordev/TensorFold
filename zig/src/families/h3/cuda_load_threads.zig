@@ -203,7 +203,10 @@ pub const Crew = struct {
         fills: []const Fill = &.{},
         jobs: []const Job = &.{},
         next: std.atomic.Value(usize) = .init(0),
-        done: std.atomic.Value(usize) = .init(0),
+        /// The readers spawned, and those done with this generation: `run` returns only once every
+        /// reader has left, so none can claim the next window's jobs with this one's slices.
+        readers: usize = 0,
+        left: usize = 0,
         failed: std.atomic.Value(bool) = .init(false),
         err: anyerror = error.Unexpected,
         quit: bool = false,
@@ -213,7 +216,10 @@ pub const Crew = struct {
     pub fn start(crew: *Crew, threads: usize) !void {
         crew.* = .{};
         errdefer crew.stop();
-        for (crew.threads[0..@min(threads, max_readers)]) |*t| t.* = try std.Thread.spawn(.{}, worker, .{crew});
+        for (crew.threads[0..@min(threads, max_readers)]) |*t| {
+            t.* = try std.Thread.spawn(.{}, worker, .{crew});
+            crew.work.readers += 1;
+        }
     }
 
     /// Every reader fills `jobs`' staged bytes of `window`; an unreadable or short range fails.
@@ -230,10 +236,10 @@ pub const Crew = struct {
         w.fills = fills;
         w.jobs = jobs;
         w.next.store(0, .monotonic);
-        w.done.store(0, .monotonic);
+        w.left = 0;
         w.failed.store(false, .release);
         w.changed.broadcast();
-        while (w.done.load(.monotonic) < jobs.len and !w.failed.load(.acquire)) w.changed.wait(&w.mutex);
+        while (w.left < w.readers) w.changed.wait(&w.mutex);
         const err: ?anyerror = if (w.failed.load(.acquire)) w.err else null;
         w.mutex.unlock();
         if (err) |e| return e;
@@ -275,17 +281,14 @@ pub const Crew = struct {
                     w.mutex.lock();
                     if (!w.failed.load(.monotonic)) w.err = e;
                     w.failed.store(true, .release);
-                    w.done.store(jobs.len, .monotonic);
-                    w.changed.broadcast();
                     w.mutex.unlock();
-                    return;
+                    break;
                 };
-                if (w.done.fetchAdd(1, .monotonic) + 1 == jobs.len) {
-                    w.mutex.lock();
-                    w.changed.broadcast();
-                    w.mutex.unlock();
-                }
             }
+            w.mutex.lock();
+            w.left += 1;
+            if (w.left == w.readers) w.changed.broadcast();
+            w.mutex.unlock();
         }
     }
 };
@@ -378,4 +381,36 @@ test "h3 threaded load: readers stage a shard's bytes, fused qkv stacked per hea
     var want: [data.len]u8 = undefined;
     for (&want, 0..) |*b, at| b.* = data[fused.source(at)];
     try std.testing.expectEqualSlices(u8, &want, &stacked);
+}
+
+test "h3 threaded load: back-to-back windows each read whole by many readers" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data: [64 << 10]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @truncate(i *% 131 +% i / 251);
+    try tmp.dir.writeFile(io, .{ .sub_path = "w", .data = &data });
+    const file = try tmp.dir.openFile(io, "w", .{});
+    defer file.close(io);
+    const fills = [_]Fill{.{ .tag = 0, .at = 0, .fd = file.handle, .file = 0, .len = data.len }};
+    // a reader done with one window must not claim the next window's jobs: many small windows,
+    // (readers, jobs a window) both 8 as loads run, then 16 readers on 4 jobs
+    for ([_][2]usize{ .{ 8, 8 }, .{ 16, 4 } }) |shape| {
+        var p = try plan(gpa, &fills, 64 * shape[1], 64);
+        defer p.deinit();
+        var crew: Crew = .{};
+        try crew.start(shape[0]);
+        defer crew.stop();
+        var window: [512]u8 = undefined;
+        for (0..8) |_| {
+            var off: usize = 0;
+            for (p.windows) |w| {
+                @memset(&window, 0);
+                try crew.run(&fills, w.jobs, window[0..w.bytes]);
+                try std.testing.expectEqualSlices(u8, data[off..][0..w.bytes], window[0..w.bytes]);
+                off += w.bytes;
+            }
+        }
+    }
 }
