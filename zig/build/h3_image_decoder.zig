@@ -9,7 +9,7 @@ fn host(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
 /// The tool on `metal`: the decoder and its kernels' source, and the picture writer (PNG and resampler).
 fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, metal: *std.Build.Module) *std.Build.Module {
     const core = @import("h3_host.zig").coreModule(b, target);
-    const kernels = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/image_decoder.zig") });
+    const kernels = @import("h3_image_contract.zig").decoderKernels(b);
     const writer = b.createModule(.{ .root_source_file = b.path("zig/src/picture_writer.zig"), .target = target, .optimize = optimize });
     const decoder = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/image_decoder_metal.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "core", .module = core }, .{ .name = "h3_image_decoder_kernels", .module = kernels }, .{ .name = "picture_writer", .module = writer }, .{ .name = "gpu_turn", .module = b.createModule(.{ .root_source_file = b.path("zig/src/server/gpu_turn.zig"), .target = target, .optimize = optimize }) } } });
     return b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_decoder.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "h3_image_decoder", .module = decoder } } });

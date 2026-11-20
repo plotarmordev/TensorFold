@@ -1,6 +1,11 @@
-// MiniMax-H3-Image's image decoder (the VAE's 2D ViT decoder) in bf16 with fp32 sums, on any Apple GPU.
+// MiniMax-H3-Image's image decoder (the VAE's 2D ViT decoder) in bf16 with fp32 sums: tensor-unit products where
+// H3D_TENSOR is set (the M5), main's simdgroup-matrix products and separate SwiGLU on every other Apple GPU.
 #include <metal_stdlib>
 using namespace metal;
+#if H3D_TENSOR
+// The products' fragments on the M5's tensor units.
+#include "../nax.h"
+#endif
 
 #define H3D_UNROLL _Pragma("clang loop unroll(full)")
 // Keys a lane holds in the attention: 9 a lane, 288 a simdgroup, past a 16 x 16 tile's 261 tokens.
@@ -119,6 +124,69 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
   }
 }
 
+#if H3D_TENSOR
+// y = bf16(x w^T + b), x [m, k] and w [n, k] bf16, fp32 sums on nax.h's fragments; mode 1 adds bf16(y s) into y's
+// old value (LayerScale); mode 2 is w1's SwiGLU: w and b hold [gate n | value n] and y = bf16(bf16(SiLU(gate)) * value),
+// so the 2n-wide rows never reach memory. A threadgroup spans 64 rows x 64 columns, each of its four warps 32 x 32.
+[[max_total_threads_per_threadgroup(128)]] [[kernel]] void h3d_gemm(
+    const device bfloat* x [[buffer(0)]], const device bfloat* w [[buffer(1)]], const device bfloat* b [[buffer(2)]],
+    const device bfloat* s [[buffer(3)]], device bfloat* y [[buffer(4)]], constant H3dShape& p [[buffer(5)]],
+    uint2 tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  using namespace tfp;
+  const int row = int(tg.y) * 64 + 32 * int(sg >> 1);
+  const int col = int(tg.x) * 64 + 32 * int(sg & 1);
+  const bool gated = p.mode == 2;
+  const short2 home = frag_home(ushort(lane));
+  const device bfloat* A = x + ulong(row) * p.k;
+  const device bfloat* B = w + ulong(col) * p.k;
+  const device bfloat* V = B + ulong(p.n) * p.k;
+  frag<float> acc[2][2];
+  frag<float> val[2][2];
+  TF_UNROLL
+  for (short m = 0; m < 2; m++) TF_UNROLL for (short n = 0; n < 2; n++) {
+    acc[m][n] = frag<float>(0.0f);
+    val[m][n] = frag<float>(0.0f);
+  }
+  for (int k0 = 0; k0 < int(p.k); k0 += 32) {
+    frag<bfloat> a[2][2];
+    frag<bfloat> wb[2][2];
+    TF_UNROLL
+    for (short m = 0; m < 2; m++) TF_UNROLL for (short k2 = 0; k2 < 2; k2++)
+      frag_get_in(a[m][k2], A, int(p.k), 16 * m, k0 + 16 * k2, home, int(p.m) - row, 1 << 30);
+    TF_UNROLL
+    for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short n = 0; n < 2; n++)
+      frag_get_t(wb[k2][n], B, int(p.k), 16 * n, k0 + 16 * k2, home);
+    TF_UNROLL
+    for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short m = 0; m < 2; m++)
+      mma_16x32<false, true>(acc[m][0], acc[m][1], a[m][k2], wb[k2][0], wb[k2][1]);
+    if (gated) {
+      TF_UNROLL
+      for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short n = 0; n < 2; n++)
+        frag_get_t(wb[k2][n], V, int(p.k), 16 * n, k0 + 16 * k2, home);
+      TF_UNROLL
+      for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short m = 0; m < 2; m++)
+        mma_16x32<false, true>(val[m][0], val[m][1], a[m][k2], wb[k2][0], wb[k2][1]);
+    }
+  }
+  TF_UNROLL
+  for (short m = 0; m < 2; m++) TF_UNROLL for (short h2 = 0; h2 < 2; h2++) TF_UNROLL for (short e = 0; e < 8; e++) {
+    const int rr = row + 16 * m + home.y + (e >> 2) * 8;
+    if (rr >= int(p.m)) continue;
+    const int cc = col + 16 * h2 + home.x + TF_COL(e);
+    const float out = float(bfloat(acc[m][h2][e] + float(b[cc])));
+    const ulong at = ulong(rr) * p.n + uint(cc);
+    if (p.mode == 0) {
+      y[at] = bfloat(out);
+    } else if (gated) {
+      const float value = float(bfloat(val[m][h2][e] + float(b[p.n + cc])));
+      y[at] = bfloat(float(bfloat(out / (1.0f + precise::exp(-out)))) * value);
+    } else {
+      y[at] = bfloat(float(y[at]) + float(bfloat(out * float(s[cc]))));
+    }
+  }
+}
+#else
 // y = bf16(x w^T + b), x [m, k] and w [n, k] bf16, fp32 sums; mode 1 adds bf16(y s) into y's old value (LayerScale).
 [[max_total_threads_per_threadgroup(128)]] [[kernel]] void h3d_gemm(
     const device bfloat* x [[buffer(0)]], const device bfloat* w [[buffer(1)]], const device bfloat* b [[buffer(2)]],
@@ -192,6 +260,7 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
     }
   }
 }
+#endif
 
 // Per row and head: q and k RMS-normed (no weight) to bf16, their first 32 dims turned half-style in bf16; v copied.
 [[max_total_threads_per_threadgroup(32)]] [[kernel]] void h3d_heads(
@@ -247,10 +316,19 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
     const uint key = lane + 32 * i;
     sc[i] = -INFINITY;
     if (key < T) {
+#if H3D_TENSOR
+      const device bfloat4* kr = (const device bfloat4*)(k + base + ulong(key) * 64);
+      const threadgroup float4* q4 = (const threadgroup float4*)qr;
+      float4 dot = float4(0.0f);
+      H3D_UNROLL
+      for (uint d = 0; d < 16; d++) dot += float4(kr[d]) * q4[d];
+      sc[i] = (dot.x + dot.y + dot.z + dot.w) * p.scale;
+#else
       const device bfloat* kr = k + base + ulong(key) * 64;
       float dot = 0.0f;
       for (uint d = 0; d < 64; d++) dot += qr[d] * float(kr[d]);
       sc[i] = dot * p.scale;
+#endif
       top = max(top, sc[i]);
     }
   }
@@ -267,6 +345,16 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
   }
   total = simd_sum(total);
   simdgroup_barrier(mem_flags::mem_threadgroup);
+#if H3D_TENSOR
+  float2 a = float2(0.0f);
+  for (uint key = 0; key < T; key++) {
+    const device bfloat2* vr = (const device bfloat2*)(v + base + ulong(key) * 64 + 2 * lane);
+    a += float2(vr[0]) * pr[key];
+  }
+  const ulong at = (ulong(tile) * T + query) * 1024 + head * 64 + 2 * lane;
+  o[at] = bfloat(a.x / total);
+  o[at + 1] = bfloat(a.y / total);
+#else
   float a0 = 0.0f;
   float a1 = 0.0f;
   for (uint key = 0; key < T; key++) {
@@ -278,6 +366,7 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
   const ulong at = (ulong(tile) * T + query) * 1024 + head * 64 + 2 * lane;
   o[at] = bfloat(a0 / total);
   o[at + 1] = bfloat(a1 / total);
+#endif
 }
 
 // act = bf16(bf16(SiLU(gate)) * value), w1's rows read as [gate 4,096 | value 4,096]. Threads [4,096, m].
