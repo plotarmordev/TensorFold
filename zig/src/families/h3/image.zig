@@ -11,6 +11,7 @@ pub const Tensors = h3.Tensors;
 pub const modulation = h3.modulation;
 pub const schedule = h3.schedule;
 pub const picture = h3.picture;
+pub const cascade = h3.cascade;
 pub const gpu_turn = h3.gpu_turn;
 
 pub const rules = prompt.rules;
@@ -18,6 +19,7 @@ pub const tensors = prompt.tensors;
 pub const weights = prompt.weights;
 pub const reference = prompt.reference;
 pub const case = prompt.case;
+pub const cache = prompt.cache;
 pub const Runner = prompt.Runner;
 pub const Vision = prompt.Vision;
 

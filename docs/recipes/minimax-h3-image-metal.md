@@ -47,7 +47,18 @@ rows and text tags), so a request with the last one's layout keeps them and only
 the canvas, row count, reference count and tags; it assumes there are no reference rows, so those determine all
 rotary positions. Supporting edits would also require checking reference geometry and refreshing reference
 conditioning, not just comparing row counts.
-Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
+Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), the steps' count
+and seconds, decoder, total.
+A reference-free prompt's states — its rows' ids, tags and the refiner's text rows — are kept across requests
+keyed by the prompt's exact bytes, least recently used inside a byte budget (`H3_PROMPT_CACHE` MiB, 256 by
+default; 0 keeps nothing). A repeated prompt skips the text encoder and refiner; an edit case's never leave the
+cache alone, so `--reference` prompts always encode. The key is the prompt bytes alone because the tokenizer,
+marks and geometry are checked at load and H3-Image has no negative prompt or CFG.
+
+`--draft-steps N` runs each request's first N steps on the half-size canvas, mmh3's fast mode: the clean draft is
+enlarged bilinearly, noised back to the next step's sigma (`--renoise-sigma X` overrides it) and redrawn at full
+size for the remaining steps. A different picture than the six-step run, not a faster copy of it. A canvas side
+must be a multiple of 64 pixels for the latent grid to halve; anything else refuses with H3BadCascadeGrid.
 A bad request prints its error and the server reads the next line.
 Start it with `profile` after `MODEL_DIR` to print each request's six steps by stage, each stage in its own command
 buffer: `rows in`, `norms`, `q k v gate`, `heads`, `attention`, `attention out`, `mlp in`, `mlp out`, `final`. The
@@ -214,7 +225,7 @@ float64 as the float32-sum run.
 
 ```sh
 zig build tf-h3-image -Dcpu=apple_m1 -Doptimize=ReleaseFast
-zig-out/bin/tf-h3-image MODEL_DIR picture.safetensors out/case [once | free]
+zig-out/bin/tf-h3-image MODEL_DIR picture.safetensors out/case [once | free] [--draft-steps N] [--renoise-sigma X]
 ```
 
 `MODEL_DIR` is the MiniMax-H3-Image folder: `model_index.json` (the image pipeline's class and partition),
@@ -227,6 +238,20 @@ zig-out/bin/tf-h3-image MODEL_DIR picture.safetensors out/case [once | free]
 It writes `out/case.latent.f32`, the normalised latent [24, rows, columns] in float32, ready for the reference's
 decoder. `once` runs the first teacher-forced step alone; `free` runs only the free run. It needs the M5's tensor
 units, as the clip tool does.
+
+`--draft-steps N` runs the first N steps on the half-size canvas, mmh3's fast mode: the clean draft is enlarged
+bilinearly, noised back to the next step's sigma (`--renoise-sigma X` overrides it; off-grid steps blend the
+distilled heads their sigma span covers, as ComfyUI's step_heads does) and redrawn at full size for the rest.
+It draws a different picture, not a faster copy of the six-step one, so the teacher-forced and latent gates don't
+apply: drafts only run the free pass (`once` with `--draft-steps` is an error), and cases with reference rows
+refuse. It also writes `out/case.draft.h3case.safetensors`, the half-size draft's case.
+
+Warm on this Mac (M5 Ultra, 2048x2048, the seed-42 fox prompt): six timing-valid steps take 10.4 s; the same six
+steps with `--draft-steps 3` take 6.3 s — three half-size steps at 0.5 s each plus three full-size ones. The draft
+draws a different but clean fox: latent cosine against the six-step run is 0.70 (a second six-step run's is 0.995),
+matching the Spark port's 0.706. Side by side:
+
+![six steps against draft-steps 3 on the same case](minimax-h3-image-metal/draft-vs-six-step.png)
 
 It and `tf-h3-image-server` make way for live speech on the same GPU. The speech server holds a shared flock on
 `/tmp/tensorfold-speech.lock` while it synthesizes (`zig/src/server/gpu_turn.zig`). The tools submit each block as its
@@ -436,8 +461,8 @@ tensor units.
 3. Each tile runs `post_quant_conv`, then its cells become tokens through `x_embedder`, with the 4 registers and one
    zero token appended.
 4. The 2D rotary table is built, and the 24 blocks run, then `norm_out` and `proj_out`.
-5. Each token's 768 values are unpatchified to its 16 x 16 pixels. Up to 64 tiles run in one command buffer: two
-   passes at 2048 x 2048, where a pass of 16 took eight.
+5. Each token's 768 values are unpatchified to its 16 x 16 pixels. Up to 128 tiles run in one command buffer: a
+   2048 x 2048 canvas's 121 tiles decode in one pass, the way mmh3 decodes its whole canvas at once.
 6. Tiles are blended in float32: the top band against the tile above, then the left band against the tile to the left,
    both as decoded.
 7. The result is mapped to [0, 1] with ImageNet's statistics, clamped and truncated to bytes.
@@ -1038,9 +1063,10 @@ outliers that one row scale cannot cover. fc1's weights grouped per 256 values o
 (`h3_gemm_32x64_i8`): `bind` quantizes every block's fc1 rows once (`h3_quantize_rows`, one simdgroup a row, its
 groups in turn) into a private 7.7 GiB copy, each block quantizes `xn` a row before its product, and each 256-deep
 block's int32 sums fold into fp32 at the weights' scales for that block, the row's scale last. The fold costs about
-0.10 s a step against the ungrouped quantizer. The other products stay bf16 and byte-identical. Only the released
-layout's (a picture's) fc1 runs in int8: a FastH3 clip's binding makes no copy and its fc1 stays the bf16 product,
-which `test-h3-gemm` holds bit for bit against MLX's kernel at whole and ragged rows.
+0.10 s a step against the ungrouped quantizer. The other products stay bf16 and byte-identical (until card 136 put
+them on the same kernel). Only the released layout's (a picture's) fc1 ran in int8: a FastH3 clip's binding makes no
+copy and its linears stay the bf16 product, which `test-h3-gemm` holds bit for bit against MLX's kernel at whole and
+ragged rows.
 
 `tf-h3-image-server` joins each binding's int8 copy to its weights' residency set while the binding lives: in shared
 storage a step's encode took 0.42 s, private 0.19 s, joined 0.04 s. Cold and warm requests give the same latent
@@ -1106,6 +1132,51 @@ wall-GPU gap is ~0.1 s a step of host round-trips (latent up, velocity down, hos
 either fails the picture or costs its win in the fold. The lever worth a next card is a GPU-side Euler with the
 latent resident across steps (`h3_euler` exists on the CUDA path); that also deletes the per-step velocity
 download.
+
+### Card 136: int8 on all four linears
+
+Every picture linear — the fused qkv projection, attention out, fc1 and fc2 — runs on `h3_gemm_32x64_i8`, now with a
+scale per 256 values of K on **both** operands: card 124's measurements showed a row's activation scale breaks the
+picture (26.16 dB on qkv) while the grouped fold held the gates, and the same applies to SwiGLU's outliers on fc2's
+input. `bind` quantizes all four projections of every block once into private `wq`/`ws` (~20 GiB of int8 weights for
+the release checkpoint, joined to the weights' residency set as the fc1 copy was); each product quantizes its input
+into the shared `xq`/`xs` scratch, ordered by the same stage barriers that already bound the block. A clip's FastH3
+blocks make no copy and keep their bf16 products.
+
+A/B on this Mac, card 34's prompt, seed 42, warm 2048 requests on one resident server each (the latents below are
+the second of two warm requests; every run's latent was byte-identical within its own build):
+
+| | latent sha1 | cosine vs main | PSNR | mean diff | steps | total |
+|---|---|---|---|---|---|---|
+| main | `8b9e75b5…` (the pinned value) | — | — | — | 9.63/9.64 s | 12.50/13.27 s |
+| int8 all four | `776b443a…` | 0.996884 | 30.613 dB | 3.451 | 9.33 s | 11.18 s |
+
+The picture holds card 80's rule with more headroom than fc1's row-scaled landing (28.240 dB): the grouped fold pays
+its accuracy back. The steps run ~0.3 s faster than this main build's, where card 124's all-four trial measured
+slower (11.74-13.32 s totals) — this kernel takes one activation scale per lane row per K block, beside the column
+scales it already read. The bind pays ~5 s once (20 GiB to quantize against 7.7); a resident server amortizes it.
+`zig build test test-golden` is green apart from `message_starts_proof_test`'s timing bound, which fails identically
+on unmodified main; the contract's int8 product serves all four projection shapes against float64 (worst 0.995 of
+the bound).
+
+### Card 137: the finish pass and the Euler on the GPU
+
+Card 124's last lever landed: the step's tail is one fused `h3_head_norm` dispatch (final layer's modulated norm
+and the step's head, the normed row in threadgroup memory, `normed` buffer and `h3_final_norm`/`h3_rows_out`
+gone) and `h3_euler` steps `x += delta * v` on the resident rows in `picture.euler`'s two roundings — its product
+goes through a volatile because the Metal compiler contracts to fma and skips the first rounding. The video rows
+stay on the GPU across all six steps: one upload, one download, no per-step velocity readback. The decoder's pass
+batch went to 128 tiles so 2048's 121 decode in one pass (card 130's batch; its `h3d_gemm` epilogue had already
+folded the bias and LayerScale).
+
+Gates: the warm 2048 latent is **bit-identical** to main's (sha1 `8b9e75b5…` matches the card 124 receipt) and the
+PNG matches byte for byte (`7bf89a7f…`). Warm A/B, ReleaseFast server, the base the card's merge base `561d85c1`
+(before card 136's int8 linears landed on main; the finish pass is orthogonal to them), alternating rounds of one
+cold then three warm requests each, load average 24-40: head warm 11.13-11.74 s (decoder 1.38-1.61 s), base warm
+11.06-11.79 s (decoder 1.36-1.48 s); two base runs were spoiled by contention and excluded. On wall clock the
+change is flat — the ~0.1 s a step of host round-trips is small next to a 1.6 s step — while the GPU-pass meter
+shows the decoder's 121 tiles at 1.08 s in one pass against 1.36 s over two, and the tail kernels' launches replace
+two dispatches and a buffer. The win is structural, not a new warm number.
 
 ### Next, ranked
 

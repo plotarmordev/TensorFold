@@ -86,12 +86,12 @@ Job `top-7ccced985b0a` ran it at `cf2da2d92`: the build passed and `kernel-contr
 |---|---|---|
 | Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CUDA `prompt_cuda.zig`, a layer's weights uploaded at a time; CPU reference `prompt_reference.zig`, the case from `prompt_case.zig` |
 | Weights | `model.safetensors.index.json` and its shards | `Model.loadSharded` reads the shards in place |
-| Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | host, `rows_reference.rowsIn` |
+| Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | `h3_rows_in` (`cuda_rows.zig`, card 122); CPU reference `rows_reference.rowsIn` |
 | AdaLN tables: the time embedder, each block's projection per timestep | `h3_modulation` | CUDA `cuda_modulation.zig`, resident (line, part, c) tables; final-norm table downloaded |
 | Rotary: 48 angles over 96 dims | `picture.rotary`, 96 wide, duplicated | `cos`/`sin` 48 wide, `rot` 48: the first half of each row |
 | Transformer blocks, dense, tiles of 64 | `block.zig` | these blocks, `keep` 0 |
-| Final norm and the step's head, `pdd_fused_heads` | `h3_final_norm`, `h3_rows_out` | host, `rows_reference.finalNorm`, `rowsOut` |
-| Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | the same |
+| Final norm and the step's head, `pdd_fused_heads` | `h3_final_norm`, `h3_rows_out` | `h3_rows_out` on the device (final norm + head), `rows_reference`'s order |
+| Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | `h3_euler` on the device; `picture.unpatchify` on the host |
 | Image decoder | `image_decoder_metal.zig` | CUDA `image_decoder_cuda.zig`, batched tiles; host blending and PNG output |
 
 Gaps between the video and image transformer: the image transformer has no routing gate (dense attention), fuses each
@@ -400,10 +400,39 @@ default's. The decoder selftest's staged blocks land ~81–84% identical inside 
 — cuBLASLt's fp32 accumulation order, not an error — so `selftest --tc` drops only the identity bar
 (`selftest-tc.sh` gates that alone).
 
-| Warm 2048² (pre-122 window) | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
+Card 130 fuses the `--tc` decoder's finish pass: the bias-free-of-LayerScale projections run
+cuBLASLt's bias epilogue — `bf16(acc + b)` in the one rounding `h3d_finish` mode 0 held — and the
+LayerScale projections write that same rounded product into `u`, which `h3d_res_norm` folds into
+the next block norm (`x = bf16(x + bf16(u * s))`, then the RMS norm). `h3d_finish` had 776 launches
+a picture at 341 µs each on the card-125 trace; a CUPTI trace of the same bench
+(`top-5a08d40d1ed5`, at `5d2354fa`) shows 48 launches a warm decode — two a block: the qkv (m,3072,1024) and w2
+(m,1024,4096) projections, whose heuristic pick (nvjet `tss_128x208`) declines the bias epilogue,
+while out, w1 and proj_out run cutlass_80 relu algorithms that take it. Those two shapes keep the
+fp32 `acc` and `h3d_finish`. That remainder is cuBLASLt's answer, not a structural one:
+`h3d_res_norm` could read w2's fp32 acc and bias directly and `h3d_heads` could add qkv's, a ~0.09 s
+fold left for a later card. `--exact` is unchanged. `most_batch` is 128 so a 2048² canvas's 121
+tiles decode in one pass, the way mmh3 batches its VAE.
+
+`32279731` (job `top-c328ffe998ad`, 20 November, exit 0) ran the same-job A/B — the bench on this
+commit, then again with the card's seven files put back to merge base `60dd5ac5` inside the job.
+Every selftest passed in both phases; the same-latent `reference` repeated `9914f752`'s
+figures exactly (85.213% of bytes identical, 99.875% within 1, at most 7 apart, PSNR 56.31 dB,
+relative 3.33e-3), and every latent and PNG was byte-identical between phases. A warm 2048² picture
+took **15.2 s** mean (15.2, 15.2, 15.2: prompt 1.1, transformer 12.8, decoder 1.2–1.3) against the
+same job's base phase **15.3 s** (15.3, 15.3, 15.3: decoder 1.3) — kept. The decode's GPU time fell
+0.98 → 0.83 s: the finish stage 0.26 → 0.08 s (the 48 remaining `h3d_finish` launches of 0.091 s on
+the trace — qkv's nvjet pick and w2's decline the epilogue) and res_norm folded into norms at +0.02 s.
+The products' rates are the gap left toward mmh3's 0.55 s decode: products plus attention 0.58 s
+(0.34 + 0.24) against the card-125 trace's 0.52 s of nvjet+cutlass GEMM time — the finish pass was
+never the products' rate. The trace's per-shape rates: w2 94, w1 81, out 78 TFLOP/s, qkv's nvjet
+pick 56, proj_out 42. Against episode 1's Mac picture the fused path's `2048-2` measures the
+window's own 28.69 dB and 4.01 apart, cosine 0.9952.
+
+| Warm 2048² | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
 |---|---:|---:|---:|---:|---:|---:|
 | fp32-order decoder (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
 | tensor-core decoder (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
+| fused finish pass (`32279731`, `top-c328ffe998ad`) | 15.2 s | 1.1 s | 12.8 s | 1.2 s | 56.31 dB | 28.69 dB, 4.01 |
 
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on
@@ -518,6 +547,50 @@ revert's ground, and the cuBLASLt qkvc/fc1 int8 default stands. `bench-int8.sh` 
 Desk's env-less door at `cdf02b8b4`; the revert removed it with the flag it set. The `bf16` window that job ran
 beside (job `top-c5dfb77a467c`, at `b4c709177`, whose default was bf16) took 21.0 s (transformer 14.7).
 
+The loss was named on TOP (`profile-int8-job.sh` at `38422b4b`, job `top-6384892e821f`; the job image's `ncu` is a
+shim without its nsight-compute support dir, so the dynamic readout is the fatbin's `cuobjdump -res-usage` and the
+measured per-stage times above, not a profile). The reverted tile staged both scale vectors in shared and folded each
+chunk's int32 sum into fp32 at about five ops a element; it ran **167 registers** at 256 threads and 3 × (16,384 +
+16,384 + 1,024) = **101,376 shared bytes a block** — sm_121's per-block opt-in cap (`static_assert(SMEM <= 101376)`
+in `deepseek_v41/attn_cuda.cu`), and its ~100 KB of shared an SM caps residency at one 128×128 block, eight warps
+(16.7% of the 48-warp scheduler; 167 registers × 256 threads says one block on its own) to hide each chunk's
+ldmatrix and mma latency; cuBLASLt's heuristic choice pipelines deeper and holds ~154 TOPS where this tile ran
+slower (its share was inferred from the 20.5 s warm wall, ncu being unavailable).
+The fix keeps the m16n8k32 tile but folds only the activation scale in registers (two fma a element against the
+12582912.0f magic bias), applies the weight scale once in the epilogue and stages only that vector — the rebuilt
+`h3_gemm_int8` below.
+
+Card 129 rebuilt the tile on that diagnosis — one activation scale folded in registers, the weight scale once in the
+epilogue — and its contract gates all pass (`bench-129-contract.sh` at `fd2ecf13e`, job `top-56c1a215a30f`): but on
+the picture's own shapes it still loses to cuBLASLt, so it stops short of a picture run by this card's own rule.
+`h3-int8-bench` on TOP (same job): qkvc 116.0 vs 152.1 TOPS, out 119.2 vs 151.3, fc1 115.1 vs 153.5, fc2 118.5 vs
+149.6 — a steady ~0.75-0.79× of cuBLASLt's int8 rate. The occupancy fix was real (one scale vector staged instead of
+two, ~2 fma an element instead of ~5) and the tile is correct, but a third fewer TOPS than the library it would
+replace is not a win. The tile went back out of the tree; the win that remained looked like coverage, not rate —
+`out` and `fc2` joined `qkvc` and `fc1` on the same cuBLASLt int8 path — but the picture gates said no below.
+
+Two more tile geometries were run under the same stop rule (`bench-129-contract.sh` at `3e1c5842f` job
+`top-3abb0a0b31cb` 82.6/81.6/83.8/78.3 TOPS for a 256×128 two-stage tile with a per-step n-pair fold — worse
+than 128×128, the wider tile's extra smem stage lost to its fold running four times a chunk; at `8c4f3cb89` job
+`top-5688a4933512` a 192×128 two-stage tile at 12 warps an SM measured 116.0/118.1/117.6/115.9 TOPS, 0.74-0.77×
+cuBLASLt — it recovered to the 128×128 plateau, no better). Three geometries now bracket the same ~117 TOPS
+ceiling: a cp.async tile with eight-to-twelve warps and no persistent grid tops out a quarter under cuBLASLt's
+~152, and mmh3's own 172 comes from TMA plus a persistent grid, not the tile shape — that port is its own card.
+
+The rescope won on speed but not on the picture: `out` and `fc2` joined `qkvc` and `fc1` on the cuBLASLt int8
+path (`bench-129-cublaslt.sh` at `6279e2a2`, job `top-ee9f603eeeed`, 20 November, exit 0, `H3_PROFILE=1` on
+both sides — no CUDA graph, so the warm walls are ~1 s above the same commits graphed). All four projections int8
+gave a warm 2048² **13.7 s** (13.7, 13.6, 13.7; transformer 12.3) against the same job's main re-measure
+**14.3 s** (14.3, 14.3, 14.3; transformer 12.9): the 286 TFLOP of `out`/`fc2` products moved off bf16 saved
+0.6 s of kernel time. Every selftest passed on both sides; the same-latent `reference` passed on the after
+side (85.246% bytes identical, 99.887% within 1, at most 5 apart, PSNR 56.33 dB, relative error 3.31e-3
+against 3e-2). But `h3_image_compare.py` on the fetched picture measured **latent cosine 0.9945, PSNR 28.15
+dB, mean diff 4.23** against episode 1's Mac latent and PNG — cosine over 0.99, the other two under the gates
+(28.2 dB, 4.1), the same 28.15/4.23 `bd734252` measured the day before when every projection ran int8. Per-row
+scales are the only fold cuBLASLt's int32 C supports; the finer scales the gates need there want the own-mma
+product this card stopped. `out` and `fc2` went back to bf16, so the tree carries qkvc+fc1 int8 and the card
+closes at main's warm time with the measured receipts above.
+
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93; its first picture is 17.6 s, card 80's standing
 goal), in order, each needing its own window:
 
@@ -526,9 +599,10 @@ goal), in order, each needing its own window:
    that writes bf16 straight from the tile with a per-128-chunk scale was card 89's `h3_gemm_int8`: it measured 20.5 s
    warm against `c30403d9`'s 18.9 s (above) and is reverted, so the cuBLASLt products stay. A faster int8 product than
    cuBLASLt's heuristic first offer is still the round's open part — `822b217c` found the heuristic's first offer
-   already its fastest, so it needs a tile that beats cuBLASLt's sums, not a selection change. The two kernels' records
-   are in the registry as of `cadab6b2`, and `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh` runs
-   their gates 1-4 (`contract_h3_int8.zig`); the limits audit (gate 5) is `limits-job.sh`'s own window.
+   already its fastest, and card 129 found three cp.async geometries plateau around 117 TOPS (0.74–0.79× cuBLASLt):
+   matching mmh3's ~172 needs TMA plus a persistent grid, a port of its own, not a tile-shape retry. The two kernels'
+   records are in the registry as of `cadab6b2`, and `H3_BUILD=contract sh docs/recipes/minimax-h3-cuda/cuda-build.sh`
+   runs their gates 1-4 (`contract_h3_int8.zig`); the limits audit (gate 5) is `limits-job.sh`'s own window.
 2. **Attention**: 1.80 s a picture in the transformer on main (`368cee6b`'s re-pipelining measured 1.91 s, reverted
    `787f3d3d`), 217 registers at 128 threads and two CTAs an SM (8 warps), and 1.89 s in the decoder, whose
    16-byte key loads changed nothing. Its bound is not the value load's latency — deeper prefetch and query-in-registers
