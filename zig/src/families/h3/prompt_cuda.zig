@@ -150,7 +150,7 @@ fn quantizeInto(r: *Runner, bytes: Tensor, staging: u64, q: u64, s: u64, off: us
     if (bytes.len != rows * k * 2) return error.H3UnexpectedTensor;
     try r.copy(bytes, staging);
     var args: cuda.Args = .{};
-    for ([_]u64{ staging, q + off * k, s + off }) |p| args.add(p);
+    for ([_]u64{ staging, q + off * k, s + off * 4 }) |p| args.add(p);
     args.add(@as(c_int, @intCast(k)));
     try r.launch("h3p_quantize", .{ .x = @intCast(rows) }, 256, &args);
 }

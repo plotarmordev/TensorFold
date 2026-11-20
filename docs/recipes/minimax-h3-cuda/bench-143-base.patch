@@ -191,7 +191,7 @@ index 03f55b5ba..bf778f501 100644
      record("h3m_embed", "h3_image_modulation", 256, 0, .{ .{ .regs = 32, .static = 0, .bound = 256 }, .{ .regs = 42, .static = 0, .bound = 256 }, .{ .regs = 42, .static = 0, .bound = 256 }, .{ .regs = 39, .static = 0, .bound = 256 }, .{ .regs = 39, .static = 0, .bound = 256 } }),
      record("h3m_project", "h3_image_modulation", 256, 0, .{ .{ .regs = 32, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 40, .static = 0, .bound = 256 }, .{ .regs = 39, .static = 0, .bound = 256 }, .{ .regs = 39, .static = 0, .bound = 256 } }),
 diff --git a/zig/src/families/h3/prompt_cuda.zig b/zig/src/families/h3/prompt_cuda.zig
-index 055e41b4f..8fc131652 100644
+index 055e41b4f..d9b684981 100644
 --- a/zig/src/families/h3/prompt_cuda.zig
 +++ b/zig/src/families/h3/prompt_cuda.zig
 @@ -21,7 +21,7 @@ const mode_qwen: c_int = 0;
@@ -269,7 +269,7 @@ index 055e41b4f..8fc131652 100644
 +    if (bytes.len != rows * k * 2) return error.H3UnexpectedTensor;
 +    try r.copy(bytes, staging);
 +    var args: cuda.Args = .{};
-+    for ([_]u64{ staging, q + off * k, s + off }) |p| args.add(p);
++    for ([_]u64{ staging, q + off * k, s + off * 4 }) |p| args.add(p);
 +    args.add(@as(c_int, @intCast(k)));
 +    try r.launch("h3p_quantize", .{ .x = @intCast(rows) }, 256, &args);
 +}
