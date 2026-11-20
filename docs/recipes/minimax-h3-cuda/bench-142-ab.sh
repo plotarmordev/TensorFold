@@ -9,6 +9,52 @@
 # Results: /work/out/h3-load-ab/SUMMARY.txt.
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-142-ab.sh
 set -eu
+
+# summary DIR THREADS: every threaded run's outputs against the 0-thread run's bytes, then the
+# times; fails when any output differs
+summary() {
+    status=0
+    for run in 1 2 3; do
+        for ext in latent.f32 png; do
+            if cmp -s "$1/cold-$run-t0.$ext" "$1/cold-$run-t$2.$ext"; then
+                echo "cold-$run $ext: byte-identical"
+            else
+                echo "cold-$run $ext: DIFFERS"
+                status=1
+            fi
+        done
+    done
+    for ext in latent.f32 png; do
+        if cmp -s "$1/warm-t0-2.$ext" "$1/warm-t$2-2.$ext"; then
+            echo "warm-2 $ext: byte-identical"
+        else
+            echo "warm-2 $ext: DIFFERS"
+            status=1
+        fi
+    done
+    echo
+    cat "$1/times"
+    return "$status"
+}
+if [ "${1:-}" = summary ]; then
+    summary "$2" "$3"
+    exit
+fi
+
+# before any GPU work: the script's own summary must fail on one planted differing PNG
+probe=$(mktemp -d)
+for name in cold-1-t0 cold-1-t8 cold-2-t0 cold-2-t8 cold-3-t0 cold-3-t8 warm-t0-2 warm-t8-2; do
+    printf same >"$probe/$name.latent.f32"
+    printf same >"$probe/$name.png"
+done
+printf other >"$probe/cold-2-t8.png"
+: >"$probe/times"
+if sh docs/recipes/minimax-h3-cuda/bench-142-ab.sh summary "$probe" 8 >/dev/null; then
+    echo "the summary passed a differing PNG" >&2
+    exit 1
+fi
+rm -rf "$probe"
+
 model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
 commit=$(git -c safe.directory='*' rev-parse HEAD)
@@ -145,26 +191,6 @@ trap - EXIT
 
 # every threaded run's outputs must be the 0-thread run's bytes
 status=0
-{
-    for run in 1 2 3; do
-        for ext in latent.f32 png; do
-            if cmp -s "$out/cold-$run-t0.$ext" "$out/cold-$run-t$threads.$ext"; then
-                echo "cold-$run $ext: byte-identical"
-            else
-                echo "cold-$run $ext: DIFFERS"
-                status=1
-            fi
-        done
-    done
-    for ext in latent.f32 png; do
-        if cmp -s "$out/warm-t0-2.$ext" "$out/warm-t$threads-2.$ext"; then
-            echo "warm-2 $ext: byte-identical"
-        else
-            echo "warm-2 $ext: DIFFERS"
-            status=1
-        fi
-    done
-    echo
-    cat "$out/times"
-} | tee "$out/SUMMARY.txt"
+summary "$out" "$threads" >"$out/SUMMARY.txt" || status=1
+cat "$out/SUMMARY.txt"
 exit "$status"
