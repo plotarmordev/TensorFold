@@ -9,7 +9,9 @@ pub fn encode(a: std.mem.Allocator, rgb: []const u8, width: usize, height: usize
     var z: std.Io.Writer.Allocating = try .initCapacity(a, rgb.len / 2 + 64);
     defer z.deinit();
     var window: [flate.max_window_len]u8 = undefined;
-    var c = try flate.Compress.init(&z.writer, &window, .zlib, .default);
+    // filter 0 keeps every byte literal, so level 6 buys ~1% size for ~6x the seconds: level 2 writes
+    // the decoder's 2048² pictures measurably sooner at the same picture
+    var c = try flate.Compress.init(&z.writer, &window, .zlib, .level_2);
     const row = width * 3;
     for (0..height) |y| {
         try c.writer.writeByte(0);
