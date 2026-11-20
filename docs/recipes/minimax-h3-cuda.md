@@ -564,8 +564,8 @@ the picture's own shapes it still loses to cuBLASLt, so it stops short of a pict
 `h3-int8-bench` on TOP (same job): qkvc 116.0 vs 152.1 TOPS, out 119.2 vs 151.3, fc1 115.1 vs 153.5, fc2 118.5 vs
 149.6 — a steady ~0.75-0.79× of cuBLASLt's int8 rate. The occupancy fix was real (one scale vector staged instead of
 two, ~2 fma an element instead of ~5) and the tile is correct, but a third fewer TOPS than the library it would
-replace is not a win. The tile went back out of the tree; the win that remained was coverage, not rate — `out` and
-`fc2` joined `qkvc` and `fc1` on the same cuBLASLt int8 path, and all four projections now run int8.
+replace is not a win. The tile went back out of the tree; the win that remained looked like coverage, not rate —
+`out` and `fc2` joined `qkvc` and `fc1` on the same cuBLASLt int8 path — but the picture gates said no below.
 
 Two more tile geometries were run under the same stop rule (`bench-129-contract.sh` at `3e1c5842f` job
 `top-3abb0a0b31cb` 82.6/81.6/83.8/78.3 TOPS for a 256×128 two-stage tile with a per-step n-pair fold — worse
@@ -575,14 +575,20 @@ cuBLASLt — it recovered to the 128×128 plateau, no better). Three geometries 
 ceiling: a cp.async tile with eight-to-twelve warps and no persistent grid tops out a quarter under cuBLASLt's
 ~152, and mmh3's own 172 comes from TMA plus a persistent grid, not the tile shape — that port is its own card.
 
-The rescope won on coverage, not rate: `out` and `fc2` joined `qkvc` and `fc1` on the cuBLASLt int8 path
-(`bench-129-cublaslt.sh` at `6279e2a2`, job `top-ee9f603eeeed`, 20 November, exit 0, `H3_PROFILE=1` on both
-sides — no CUDA graph, so the warm walls are ~1 s above the graphed 15.3 s). All four projections int8 gave a
-warm 2048² **13.7 s** (13.7, 13.6, 13.7; transformer 12.3) against the same job's main re-measure **14.3 s**
-(14.3, 14.3, 14.3; transformer 12.9): the 286 TFLOP of `out`/`fc2` products moved off bf16 saved 0.6 s of kernel
-time. Every selftest passed on both sides; the same-latent `reference` passed on the after side (85.213% bytes
-identical, 99.875% within 1, at most 7 apart, PSNR 56.31 dB, relative error 3.33e-3 against 3e-2). The Mac-picture
-gates (28.2 dB, 4.1, 0.99) are `h3_image_compare.py`'s run on the fetched files.
+The rescope won on speed but not on the picture: `out` and `fc2` joined `qkvc` and `fc1` on the cuBLASLt int8
+path (`bench-129-cublaslt.sh` at `6279e2a2`, job `top-ee9f603eeeed`, 20 November, exit 0, `H3_PROFILE=1` on
+both sides — no CUDA graph, so the warm walls are ~1 s above the graphed 15.3 s). All four projections int8
+gave a warm 2048² **13.7 s** (13.7, 13.6, 13.7; transformer 12.3) against the same job's main re-measure
+**14.3 s** (14.3, 14.3, 14.3; transformer 12.9): the 286 TFLOP of `out`/`fc2` products moved off bf16 saved
+0.6 s of kernel time. Every selftest passed on both sides; the same-latent `reference` passed on the after
+side (85.246% bytes identical, 99.887% within 1, at most 5 apart, PSNR 56.33 dB, relative error 3.31e-3
+against 3e-2). But `h3_image_compare.py` on the fetched picture measured **latent cosine 0.9945, PSNR 28.15
+dB, mean diff 4.23** against episode 1's Mac latent and PNG — cosine over 0.99, the other two under the gates
+(28.2 dB, 4.1), the same 28.15/4.23 `bd734252` measured the day before when every projection ran int8. Per-row
+scales are the only fold cuBLASLt's int32 C supports; the finer scales the gates need there want the own-mma
+product this card stopped. `out` and `fc2` went back to bf16, so the tree carries qkvc+fc1 int8 and the card
+closes at main's warm time with the measured receipts above.
+
 
 
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93; its first picture is 17.6 s, card 80's standing
