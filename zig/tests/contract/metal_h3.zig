@@ -189,7 +189,11 @@ pub const H3 = struct {
     }
 
     fn compute(self: *H3, s: ref.Sum, want: []f64, mag: []f64) !void {
-        const scratch = try self.a.alloc(f64, @max(2 * self.in.n, 1024) + self.in.k);
+        const scratch = try self.a.alloc(f64, switch (self.which) {
+            // headNorm needs 3 * k: the squares, the normed row, then each column's product.
+            .head_norm => 3 * self.in.k,
+            else => @max(2 * self.in.n, 1024) + self.in.k,
+        });
         defer self.a.free(scratch);
         switch (self.which) {
             .rows_in => ref.dot(self.in, s, scratch, want, mag),

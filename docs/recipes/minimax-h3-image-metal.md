@@ -1170,13 +1170,13 @@ batch went to 128 tiles so 2048's 121 decode in one pass (card 130's batch; its 
 folded the bias and LayerScale).
 
 Gates: the warm 2048 latent is **bit-identical** to main's (sha1 `8b9e75b5…` matches the card 124 receipt) and the
-PNG matches byte for byte (`7bf89a7f…`). Warm A/B, ReleaseFast server, base `561d85c1`, alternating rounds of one
+PNG matches byte for byte (`7bf89a7f…`). Warm A/B, ReleaseFast server, the base the card's merge base `561d85c1`
+(before card 136's int8 linears landed on main; the finish pass is orthogonal to them), alternating rounds of one
 cold then three warm requests each, load average 24-40: head warm 11.13-11.74 s (decoder 1.38-1.61 s), base warm
 11.06-11.79 s (decoder 1.36-1.48 s); two base runs were spoiled by contention and excluded. On wall clock the
 change is flat — the ~0.1 s a step of host round-trips is small next to a 1.6 s step — while the GPU-pass meter
 shows the decoder's 121 tiles at 1.08 s in one pass against 1.36 s over two, and the tail kernels' launches replace
 two dispatches and a buffer. The win is structural, not a new warm number.
-
 
 ### Next, ranked
 
