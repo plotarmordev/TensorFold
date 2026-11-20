@@ -1,4 +1,4 @@
-"""drama3_limits_gate.sh: stale records pass, a failed launch, missing image, missed control or unaudited router fails."""
+"""drama3_limits_gate.sh: stale records pass; a failed launch, missing image or unaudited router fails."""
 import re
 import subprocess
 import tempfile
