@@ -50,14 +50,37 @@ pub const Gemms = struct {
     }
 
     /// The shape's plan, running the algorithm cuBLASLt picked for (canonical_rows, n, k) — the
-    /// picks file's own when it matches, proven on this shape by `initChecked`.
+    /// picks file's own when it matches, proven on this shape by `initChecked`. A record the device
+    /// refuses (a bit flip behind a valid header, a workspace need that grew) is dropped, the search
+    /// reruns and its fresh pick replaces it — a corrupt file never repeats.
     pub fn plan(g: *Gemms, rows: usize, n: usize, k: usize) !*const lt_.Linear {
         const got = try g.plans.getOrPut(g.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
         errdefer g.plans.removeByPtr(got.key_ptr);
         const chosen = try g.algoFor(n, k);
-        got.value_ptr.* = try lt_.Linear.initChecked(&g.lt, rows, n, k, .bf16, workspace_bytes, chosen);
+        got.value_ptr.* = lt_.Linear.initChecked(&g.lt, rows, n, k, .bf16, workspace_bytes, chosen) catch |e| blk: {
+            if (e != error.NoAlgorithm) return e;
+            g.stale(.{ canonical_rows, n, k });
+            const fresh = try g.searched(n, k);
+            break :blk try lt_.Linear.initChecked(&g.lt, rows, n, k, .bf16, workspace_bytes, fresh);
+        };
         return got.value_ptr;
+    }
+
+    /// The canonical shape's stored pick dropped after the device refused it; the (n, k) in `algos`
+    /// cleared the same way, so the next caller searches too.
+    fn stale(g: *Gemms, shape: [3]u64) void {
+        if (g.picks) |p| p.remove(.bf16, shape);
+        _ = g.algos.remove(.{ shape[1], shape[2] });
+    }
+
+    /// A fresh heuristic pick for (n, k), remembered in both maps; used on a miss and on a refusal.
+    fn searched(g: *Gemms, n: usize, k: usize) !lt_.Algo {
+        var l = try lt_.Linear.init(&g.lt, canonical_rows, n, k, .bf16, workspace_bytes);
+        defer l.deinit();
+        try g.algos.put(g.gpa, .{ n, k }, l.algo);
+        if (g.picks) |p| try p.put(g.gpa, .bf16, .{ canonical_rows, n, k }, l.algo);
+        return l.algo;
     }
 
     /// (n, k)'s canonical algorithm: the picks file's, this process's, else the heuristic's, which
@@ -69,10 +92,6 @@ pub const Gemms = struct {
             try g.algos.put(g.gpa, .{ n, k }, a);
             return a;
         };
-        var l = try lt_.Linear.init(&g.lt, canonical_rows, n, k, .bf16, workspace_bytes);
-        defer l.deinit();
-        try g.algos.put(g.gpa, .{ n, k }, l.algo);
-        if (g.picks) |p| try p.put(g.gpa, .bf16, shape, l.algo);
-        return l.algo;
+        return g.searched(n, k);
     }
 };

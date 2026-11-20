@@ -131,8 +131,18 @@ pub const Int8 = struct {
         const shape = [3]u64{ rows, n, k };
         const picks = self.gemms.picks;
         const cached = if (picks) |p| p.get(.int8, shape) else null;
-        got.value_ptr.* = if (cached) |a| try lt_.Gemm.initChecked(&self.gemms.lt, t.handle, spec, workspace_bytes, a) else try lt_.Gemm.init(&self.gemms.lt, t.handle, spec, workspace_bytes);
-        if (cached == null and picks != null) try picks.?.put(self.gpa, .int8, shape, got.value_ptr.algo);
+        got.value_ptr.* = if (cached) |a|
+            lt_.Gemm.initChecked(&self.gemms.lt, t.handle, spec, workspace_bytes, a) catch |e| blk: {
+                if (e != error.NoAlgorithm) return e;
+                // a corrupt or outgrown record is dropped, searched and replaced: it never repeats
+                picks.?.remove(.int8, shape);
+                const g = try lt_.Gemm.init(&self.gemms.lt, t.handle, spec, workspace_bytes);
+                try picks.?.put(self.gpa, .int8, shape, g.algo);
+                break :blk g;
+            }
+        else
+            try lt_.Gemm.init(&self.gemms.lt, t.handle, spec, workspace_bytes);
+        if (picks != null and cached == null) try picks.?.put(self.gpa, .int8, shape, got.value_ptr.algo);
         return got.value_ptr;
     }
 };

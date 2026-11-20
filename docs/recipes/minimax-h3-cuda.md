@@ -134,19 +134,38 @@ non-zero past the bound. The host decoder needs the memory the servers held, so 
 ### The cuBLASLt picks file
 
 Every projection's plan starts as a `cublasLtMatmulAlgoGetHeuristic` search: the bf16 products probe once
-at a canonical 16,384 rows per (n, k) and each int8 product once at the picture's own (rows, n, k) — on
-the GB10 each answer is worth seconds of a cold picture's first step. `tf-h3-image-cuda` keeps the picks
+at a canonical 16,384 rows per (n, k) and each int8 product once at the picture's own (rows, n, k), all
+inside `warm` before the first step. `tf-h3-image-cuda` keeps the picks
 in `~/.cache/tensorfold/h3-cublaslt-algos.bin` (a `TFH3LT1` header, the identity line, then fixed
 records): keyed by GPU name, CUDA driver and cuBLASLt version, so another card, driver or toolkit is a
 miss, as is a missing or torn file; the searches then run as before and `deinit` rewrites the table
-whole. `TF_H3_ALGO_CACHE` names another file or, as `off`, skips it.
+whole. A record the device still refuses (`cublasLtMatmulAlgoCheck` says no: a bit flip behind a valid
+header, a workspace need that grew) is dropped, the search reruns and its pick replaces it, so a corrupt
+file never survives a start. `TF_H3_ALGO_CACHE` names another file or, as `off`, skips it.
 
 [`cache-ab.sh`](minimax-h3-cuda/cache-ab.sh) is the receipt: `bench-script.sh` on TOP twice in one job —
 once with the file absent (the searches write it), once with it — then compares the two cold latents bit
-for bit. On the GB10 (driver 580.173.02, commit `673dec5b7`) the cold 2048² picture went 155.9 → 147.1 s
-wall (−8.8 s; load 53.6 → 51.4 s, transformer 41.9 → 40.8 s) with the warm mean unchanged at 12.6 s, and
-the cold latents came back bit-identical. The file held four records — the bf16 shapes collapse to a few
-distinct (n, k) under their canonical rows, the int8 products to theirs.
+for bit. On the GB10 (driver 580.173.02, commit `673dec5b7`), the `h3_image_bench.py` tables:
+
+| run | wall s | load s | case s | transformer s | step 1 s | warm mean transformer s |
+|---|---:|---:|---:|---:|---:|---:|
+| 2048² cold, no cache | 155.9 | 53.6 | 0.0 | 41.9 | 2.07 | — |
+| 2048² warm 1, no cache | 13.8 | — | 0.0 | 12.5 | 2.06 | — |
+| 2048² warm 2, no cache | 14.0 | — | 0.0 | 12.7 | 2.06 | — |
+| 2048² warm 3, no cache | 13.9 | — | 0.0 | 12.6 | 2.06 | — |
+| 2048² cold, with cache | 147.1 | 51.4 | 0.0 | 40.8 | 2.08 | — |
+| 2048² warm 1, with cache | 13.9 | — | 0.0 | 12.6 | 2.09 | — |
+| 2048² warm 2, with cache | 13.9 | — | 0.0 | 12.6 | 2.10 | — |
+| 2048² warm 3, with cache | 13.9 | — | 0.0 | 12.7 | 2.09 | — |
+
+The honest read: the four searches the file skips cost **~1.2 s** of the cold picture (transformer
+41.91 → 40.75 s, all of it inside `warm` before step 1 — the per-step times are unchanged, the warm mean
+is unchanged at 12.6 s, and the cold latents are bit-identical). The wall gap is wider (155.9 → 147.1 s)
+but only ~3.3 s of it is accounted for by load (−2.2 s) and transformer (−1.2 s); the rest is
+prompt-stage noise the cache does not touch, and phase B runs on page caches phase A warmed, so wall is
+not the cache's receipt. The file held four records — the bf16 shapes collapse to a few distinct (n, k)
+under their canonical rows, the int8 products to theirs. The ~1.2 s it saves does not reach the card's
+3 s cold bar; that needs a faster `warm`/`load` path, not a picks file.
 
 ### Fewer steps: the draft canvas, not the PDMD LoRA
 

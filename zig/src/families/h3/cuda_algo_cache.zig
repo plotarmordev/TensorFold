@@ -80,7 +80,7 @@ pub const Picks = struct {
             p.file_len = file.len;
         }
         if (spec != null) {
-            if (file.len > p.file.len) {
+            if (file.len >= p.file.len) {
                 p.off = true;
                 return p;
             }
@@ -88,7 +88,7 @@ pub const Picks = struct {
             p.file_len = file.len;
             // a named file's own directory, for the .part sibling
             if (std.fs.path.dirname(file)) |dir| {
-                if (dir.len > p.dir.len) {
+                if (dir.len >= p.dir.len) {
                     p.off = true;
                     return p;
                 }
@@ -114,10 +114,22 @@ pub const Picks = struct {
         return null;
     }
 
-
-    /// Remembers a search's pick; the next `save` publishes it.
+    /// Remembers a pick, replacing the shape's old one: a search that reran after a record failed
+    /// `AlgoCheck` keeps no stale bytes behind.
     pub fn put(p: *Picks, gpa: std.mem.Allocator, kind: Kind, shape: [3]u64, algo: lt_.Algo) !void {
+        for (p.entries.items) |*e| if (e.kind == kind and std.mem.eql(u64, &e.shape, &shape)) {
+            e.algo = algo;
+            return;
+        };
         try p.entries.append(gpa, .{ .kind = kind, .shape = shape, .algo = algo });
+    }
+
+    /// Drops a record the device refused (`initChecked` NoAlgorithm), so `save` writes a clean table.
+    pub fn remove(p: *Picks, kind: Kind, shape: [3]u64) void {
+        for (p.entries.items, 0..) |e, i| if (e.kind == kind and std.mem.eql(u64, &e.shape, &shape)) {
+            _ = p.entries.swapRemove(i);
+            return;
+        };
     }
 
     /// The file's bytes as written: magic, this device's key, the records.
@@ -182,13 +194,13 @@ pub const Picks = struct {
 /// POSIX-only like the rows store's counters: a file this small is one write and one rename.
 pub fn saveAt(dir: []const u8, file: []const u8, data: []const u8) bool {
     var zdir: [max_path]u8 = undefined;
-    if (dir.len > zdir.len) return false;
+    if (dir.len >= zdir.len) return false;
     @memcpy(zdir[0..dir.len], dir);
     zdir[dir.len] = 0;
     makeParents(zdir[0..dir.len :0]);
     var zfile: [max_path]u8 = undefined;
     var ztmp: [max_path + 8]u8 = undefined;
-    if (file.len > zfile.len) return false;
+    if (file.len >= zfile.len) return false;
     @memcpy(zfile[0..file.len], file);
     zfile[file.len] = 0;
     const tmp = std.fmt.bufPrintSentinel(&ztmp, "{s}.part", .{file}, 0) catch return false;
@@ -213,7 +225,7 @@ pub fn saveAt(dir: []const u8, file: []const u8, data: []const u8) bool {
 /// `dir` made 0700 the way rows_store's parents are — but here the last component is a directory.
 fn makeParents(path: [:0]const u8) void {
     var buf: [max_path]u8 = undefined;
-    if (path.len > buf.len) return;
+    if (path.len >= buf.len) return;
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     for (buf[1..path.len], 1..) |ch, i| if (ch == '/') {
@@ -278,4 +290,16 @@ test "h3 cublaslt picks: a stored pick answers its shape, kinds separate, and a 
     try std.testing.expect(saveAt(nested, file, data));
     r.readFile(a);
     try std.testing.expectEqual(@as(usize, 2), r.entries.items.len);
+    // a record the device would refuse is dropped and the search's fresh pick replaces it
+    p.remove(.bf16, .{ 16384, 4096, 4096 });
+    try std.testing.expect(p.get(.bf16, .{ 16384, 4096, 4096 }) == null);
+    try p.put(a, .bf16, .{ 16384, 4096, 4096 }, .{ .data = .{ 9, 9, 9, 9, 9, 9, 9, 9 } });
+    try std.testing.expectEqual(@as(usize, 2), p.entries.items.len); // put replaced, not appended
+    // a path at the sentinel buffers' limit is refused, never written past
+    const long_dir = try a.alloc(u8, max_path);
+    defer a.free(long_dir);
+    @memset(long_dir, 'x');
+    const long_file = try std.fs.path.join(a, &.{ long_dir, "picks.bin" });
+    defer a.free(long_file);
+    try std.testing.expect(!saveAt(long_dir, long_file, data));
 }
