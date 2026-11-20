@@ -1,7 +1,7 @@
 //! The model's cuBLASLt picks kept on disk: the bf16 Linears' (n, k) algorithms and the INT8 products'
 //! (rows, n, k) ones, under the GPU's name and driver and cuBLASLt's versions. A start whose file
-//! matches skips every heuristic search; a key mismatch, a missing or a torn file is a miss — the
-//! search runs as before and `save` rewrites the table.
+//! matches skips every heuristic search; a key mismatch, a missing, torn or corrupt file is a miss —
+//! the search runs as before and `save` rewrites the table.
 //!
 //! `TF_H3_ALGO_CACHE` steers the file: a path of its own (the bench's A/B), or `off` to skip it;
 //! otherwise it lives at ~/.cache/tensorfold/h3-cublaslt-algos.bin.
@@ -10,9 +10,10 @@ const platform = @import("sys");
 const cuda = @import("cuda");
 const lt_ = cuda.cublaslt;
 
-const magic = "TFH3LT1\n";
+const magic = "TFH3LT2\n";
 const key_bytes = 256;
-const head_bytes = magic.len + key_bytes;
+/// Magic, key and the record count: a file cut anywhere, even between records, fails the count.
+const head_bytes = magic.len + key_bytes + @sizeOf(u64);
 const max_path = 1024;
 
 /// Which product a record is for: the algo bytes cuBLASLt gives are opaque, so a kind separates a
@@ -131,11 +132,12 @@ pub const Picks = struct {
         };
     }
 
-    /// The file's bytes as written: magic, this device's key, the records.
+    /// The file's bytes as written: magic, this device's key, the record count, the records.
     pub fn bytes(p: *const Picks, gpa: std.mem.Allocator) ![]u8 {
         var out = try gpa.alloc(u8, head_bytes + p.entries.items.len * @sizeOf(Entry));
         @memcpy(out[0..magic.len], magic);
-        @memcpy(out[magic.len..head_bytes], &p.key);
+        @memcpy(out[magic.len..][0..key_bytes], &p.key);
+        std.mem.writeInt(u64, out[magic.len + key_bytes ..][0..8], p.entries.items.len, .little);
         @memcpy(out[head_bytes..], std.mem.sliceAsBytes(p.entries.items));
         return out;
     }
@@ -155,17 +157,24 @@ pub const Picks = struct {
         }
     }
 
-    /// Everything but the identity check and the device, for tests: `data` at `file` becomes the
-    /// table only when its key is `key` — anything else is left for the search to redo.
+    /// Everything but the identity check and the device, for tests: `data` becomes the table only
+    /// when its key is `key`, its count matches its length and every record's kind is known —
+    /// anything else is left for the search to redo.
     pub fn readBytes(p: *Picks, gpa: std.mem.Allocator, data: []const u8) void {
         if (data.len < head_bytes or !std.mem.eql(u8, data[0..magic.len], magic)) return;
-        if (!std.mem.eql(u8, data[magic.len..head_bytes], &p.key)) return;
+        if (!std.mem.eql(u8, data[magic.len..][0..key_bytes], &p.key)) return;
+        const count = std.mem.readInt(u64, data[magic.len + key_bytes ..][0..8], .little);
         const body = data[head_bytes..];
-        if (body.len % @sizeOf(Entry) != 0) return;
-        for (0..body.len / @sizeOf(Entry)) |i| {
+        if (body.len % @sizeOf(Entry) != 0 or body.len / @sizeOf(Entry) != count) return;
+        for (0..count) |i| {
+            const tag = std.mem.readInt(u64, body[i * @sizeOf(Entry) ..][0..8], .little);
+            if (std.enums.fromInt(Kind, tag) == null) return;
+        }
+        p.entries.ensureTotalCapacity(gpa, count) catch return;
+        for (0..count) |i| {
             var e: Entry = undefined;
             @memcpy(std.mem.asBytes(&e), body[i * @sizeOf(Entry) ..][0..@sizeOf(Entry)]);
-            p.entries.append(gpa, e) catch return;
+            p.entries.appendAssumeCapacity(e);
         }
     }
 
@@ -189,14 +198,15 @@ pub const Picks = struct {
     }
 };
 
-/// `data` at `file`, written to a sibling and renamed over it; `dir`'s parents are made first.
+/// `data` at `file`, written to a sibling and renamed over it; `dir`'s parents are made first
+/// (none for a bare filename, which lands in the working directory).
 /// POSIX-only like the rows store's counters: a file this small is one write and one rename.
 pub fn saveAt(dir: []const u8, file: []const u8, data: []const u8) bool {
     var zdir: [max_path]u8 = undefined;
     if (dir.len >= zdir.len) return false;
     @memcpy(zdir[0..dir.len], dir);
     zdir[dir.len] = 0;
-    makeParents(zdir[0..dir.len :0]);
+    if (dir.len > 0) makeParents(zdir[0..dir.len :0]);
     var zfile: [max_path]u8 = undefined;
     var ztmp: [max_path + 8]u8 = undefined;
     if (file.len >= zfile.len) return false;
@@ -263,14 +273,15 @@ test "h3 cublaslt picks: a stored pick answers its shape, kinds separate, and a 
     q.readBytes(a, data);
     try std.testing.expectEqual(@as(usize, 2), q.entries.items.len);
     try std.testing.expectEqual(algo, q.get(.bf16, .{ 16384, 4096, 4096 }).?);
-    // a foreign key, a truncated file and a missing file each leave an empty table
+    // a foreign key, a truncated file (mid-record or between records) and a missing file each
+    // leave an empty table
     var other: Picks = .{ .key = @splat(7) };
     defer other.entries.deinit(a);
     other.readBytes(a, data);
     try std.testing.expectEqual(@as(usize, 0), other.entries.items.len);
     var r: Picks = .{ .key = key };
     defer r.entries.deinit(a);
-    for ([_]usize{ 0, magic.len + 3, data.len - 1 }) |len| {
+    for ([_]usize{ 0, magic.len + 3, data.len - 1, data.len - @sizeOf(Entry) }) |len| {
         r.readBytes(a, data[0..len]);
         try std.testing.expectEqual(@as(usize, 0), r.entries.items.len);
     }
@@ -321,4 +332,35 @@ test "h3 cublaslt picks: a default path that fills the file buffer exactly is of
     try std.testing.expectEqual(@as(usize, max_path - 1), p.file_len);
     try std.testing.expect(std.mem.endsWith(u8, p.file[0..p.file_len], "/h3-cublaslt-algos.bin"));
     try std.testing.expect(std.mem.endsWith(u8, p.dir[0..p.dir_len], "/.cache/tensorfold"));
+}
+
+test "h3 cublaslt picks: a record with an unknown kind tag makes the whole file a miss" {
+    const a = std.testing.allocator;
+    var p: Picks = .{ .key = @splat(1) };
+    defer p.entries.deinit(a);
+    try p.put(a, .bf16, .{ 64, 64, 64 }, .{ .data = @splat(3) });
+    try p.put(a, .int8, .{ 8, 64, 64 }, .{ .data = @splat(4) });
+    const data = try p.bytes(a);
+    defer a.free(data);
+    std.mem.writeInt(u64, data[head_bytes + @sizeOf(Entry) ..][0..8], 7, .little);
+    var q: Picks = .{ .key = @splat(1) };
+    defer q.entries.deinit(a);
+    q.readBytes(a, data);
+    try std.testing.expectEqual(@as(usize, 0), q.entries.items.len);
+}
+
+test "h3 cublaslt picks: a bare TF_H3_ALGO_CACHE filename saves in the working directory" {
+    const a = std.testing.allocator;
+    const name = "h3-picks-bare-test.bin";
+    var p: Picks = .{ .key = @splat(2) };
+    defer p.entries.deinit(a);
+    try std.testing.expect(p.namedPath(name));
+    try std.testing.expectEqual(@as(usize, 0), p.dir_len);
+    try p.put(a, .bf16, .{ 64, 64, 64 }, .{ .data = @splat(5) });
+    p.save(a);
+    defer _ = platform.c.unlink(name);
+    var q: Picks = .{ .key = @splat(2), .file = p.file, .file_len = p.file_len };
+    defer q.entries.deinit(a);
+    q.readFile(a);
+    try std.testing.expectEqual(@as(usize, 1), q.entries.items.len);
 }
