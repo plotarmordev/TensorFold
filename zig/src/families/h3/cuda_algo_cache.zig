@@ -71,7 +71,7 @@ pub const Picks = struct {
             p.off = true;
             return p;
         }
-        std.debug.print("h3 cublaslt picks: file {s}{s}\n", .{ p.file[0..p.file_len], if (p.off) " (off)" else "" });
+        std.debug.print("h3 cublaslt picks: file {s}\n", .{p.file[0..p.file_len]});
         p.readFile(gpa);
         return p;
     }
@@ -146,13 +146,10 @@ pub const Picks = struct {
     /// the new, never a torn one. A foreign-keyed file is rewritten under this device's key, the
     /// cache's whole point; a failed write only costs the next start its searches again.
     pub fn save(p: *Picks, gpa: std.mem.Allocator) void {
-        if (p.off or p.file_len == 0) {
-            std.debug.print("h3 cublaslt picks: not saved (off={} file_len={d})\n", .{ p.off, p.file_len });
-            return;
-        }
+        if (p.off or p.file_len == 0) return;
         const data = p.bytes(gpa) catch return;
         defer gpa.free(data);
-        if (saveAt(p.dir[0..p.dir_len], p.file[0..p.file_len], data)) {
+        if (saveAt(gpa, p.dir[0..p.dir_len], p.file[0..p.file_len], data)) {
             std.debug.print("h3 cublaslt picks: {d} records to {s}\n", .{ p.entries.items.len, p.file[0..p.file_len] });
         }
     }
@@ -198,37 +195,20 @@ pub const Picks = struct {
     }
 };
 
-/// `data` at `file`, written to a sibling and renamed over it; `dir`'s parents are made first
-/// (none for a bare filename, which lands in the working directory).
-/// POSIX-only like the rows store's counters: a file this small is one write and one rename.
-pub fn saveAt(dir: []const u8, file: []const u8, data: []const u8) bool {
+/// `data` at `file`, staged in a unique, exclusively created no-follow sibling and renamed over it
+/// (a planted link is never written through); `dir`'s parents are made first, none for a bare
+/// filename, which lands in the working directory.
+pub fn saveAt(gpa: std.mem.Allocator, dir: []const u8, file: []const u8, data: []const u8) bool {
     var zdir: [max_path]u8 = undefined;
-    if (dir.len >= zdir.len) return false;
+    if (dir.len >= zdir.len or file.len >= max_path) return false;
     @memcpy(zdir[0..dir.len], dir);
     zdir[dir.len] = 0;
     if (dir.len > 0) makeParents(zdir[0..dir.len :0]);
-    var zfile: [max_path]u8 = undefined;
-    var ztmp: [max_path + 8]u8 = undefined;
-    if (file.len >= zfile.len) return false;
-    @memcpy(zfile[0..file.len], file);
-    zfile[file.len] = 0;
-    const tmp = std.fmt.bufPrintSentinel(&ztmp, "{s}.part", .{file}, 0) catch return false;
-    const fd = platform.c.open(tmp, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(platform.c.mode_t, 0o600));
-    if (fd < 0) {
-        std.debug.print("h3 cublaslt picks: open {s}.part failed, errno {t}\n", .{ file, platform.c.errno(fd) });
+    platform.atomic_file.replacePrivate(gpa, file, &.{data}) catch {
+        std.debug.print("h3 cublaslt picks: write {s} failed, {s}\n", .{ file, platform.atomic_file.causeName() });
         return false;
-    }
-    defer _ = platform.c.close(fd);
-    var done: usize = 0;
-    while (done < data.len) {
-        const n = platform.c.write(fd, data.ptr + done, data.len - done);
-        if (n <= 0) {
-            _ = platform.c.unlink(tmp);
-            return false;
-        }
-        done += @intCast(n);
-    }
-    return platform.c.rename(tmp, zfile[0..file.len :0]) == 0;
+    };
+    return true;
 }
 
 /// `dir` made 0700 the way rows_store's parents are — but here the last component is a directory.
@@ -297,7 +277,7 @@ test "h3 cublaslt picks: a stored pick answers its shape, kinds separate, and a 
     @memcpy(r.file[0..file.len], file);
     r.readFile(a);
     try std.testing.expectEqual(@as(usize, 0), r.entries.items.len); // nothing there yet
-    try std.testing.expect(saveAt(nested, file, data));
+    try std.testing.expect(saveAt(a, nested, file, data));
     r.readFile(a);
     try std.testing.expectEqual(@as(usize, 2), r.entries.items.len);
     // a record the device would refuse is dropped and the search's fresh pick replaces it
@@ -311,7 +291,28 @@ test "h3 cublaslt picks: a stored pick answers its shape, kinds separate, and a 
     @memset(long_dir, 'x');
     const long_file = try std.fs.path.join(a, &.{ long_dir, "picks.bin" });
     defer a.free(long_file);
-    try std.testing.expect(!saveAt(long_dir, long_file, data));
+    try std.testing.expect(!saveAt(a, long_dir, long_file, data));
+}
+
+test "h3 cublaslt picks: a link planted at the old .part sibling is never written through" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "victim", .data = "untouched" });
+    try tmp.dir.symLink(io, "victim", "picks.bin.part", .{});
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(dir);
+    const file = try std.fs.path.join(a, &.{ dir, "picks.bin" });
+    defer a.free(file);
+    var p: Picks = .{ .key = @splat(3) };
+    defer p.entries.deinit(a);
+    try p.put(a, .bf16, .{ 64, 64, 64 }, .{ .data = @splat(6) });
+    const data = try p.bytes(a);
+    defer a.free(data);
+    try std.testing.expect(saveAt(a, dir, file, data));
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("untouched", try tmp.dir.readFile(io, "victim", &buf));
 }
 
 test "h3 cublaslt picks: a default path that fills the file buffer exactly is off, never read past" {
