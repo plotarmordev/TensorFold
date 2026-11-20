@@ -194,6 +194,8 @@ pub const Metrics = struct {
         if (status.prompt_cache) |c| {
             try gauge(w, "prompt_cache_states", "gauge", "All retained prompt states, including long-message interior cuts.", c.states);
             try gauge(w, "prompt_cache_bytes", "gauge", "Storage held by retained prompt states and spare buffers, inside their budget.", c.bytes);
+            for (@TypeOf(c).miss_reason_names, c.miss_reasons) |reason, v| if (v > 0)
+                try w.print("{s}prompt_cache_miss_total{{reason=\"{s}\"}} {d}\n", .{ prefix, reason, v });
         }
         const keeps = info.prompt_cache;
         if (keeps) try gauge(w, "prompt_tokens_cached_total", "counter", "Prompt tokens of finished requests restored from kept prompt states.", snap.cached);
@@ -245,33 +247,6 @@ fn family(w: *std.Io.Writer, name: []const u8, kind: []const u8, help: []const u
 fn gauge(w: *std.Io.Writer, name: []const u8, kind: []const u8, help: []const u8, value: u64) !void {
     try family(w, name, kind, help);
     try w.print("{s}{s} {d}\n", .{ prefix, name, value });
-}
-
-pub fn renderConnections(w: *std.Io.Writer, open: u32) !void {
-    try gauge(w, "open_connections", "gauge", "Client TCP connections admitted and not yet closed, including the one serving this scrape; keep-alive idle connections count.", open);
-}
-
-test "open connections export gauge name, type and admitted count" {
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer out.deinit();
-    try renderConnections(&out.writer, 3);
-    var help = false;
-    var gauge_type = false;
-    var sample = false;
-    var lines = std.mem.splitScalar(u8, out.written(), '\n');
-    while (lines.next()) |line| {
-        const help_prefix = "# HELP tensorfold:open_connections ";
-        const sample_prefix = "tensorfold:open_connections ";
-        if (std.mem.startsWith(u8, line, help_prefix))
-            help = std.mem.trim(u8, line[help_prefix.len..], " \t").len > 0;
-        if (std.mem.eql(u8, line, "# TYPE tensorfold:open_connections gauge"))
-            gauge_type = true;
-        if (std.mem.startsWith(u8, line, sample_prefix)) {
-            try std.testing.expectEqual(@as(f64, 3), try std.fmt.parseFloat(f64, line[sample_prefix.len..]));
-            sample = true;
-        }
-    }
-    try std.testing.expect(help and gauge_type and sample);
 }
 
 fn processGauges(w: *std.Io.Writer, sample: ?process.Snapshot) !void {

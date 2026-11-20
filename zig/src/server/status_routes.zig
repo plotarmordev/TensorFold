@@ -7,7 +7,6 @@ const routes = @import("routes.zig");
 const pyrepr = @import("pyrepr.zig");
 const percentDecode = @import("tool_kinds.zig").percentDecode;
 const manifest = @import("benchmark_manifest.zig");
-const metric_text = @import("metrics.zig");
 const Server = @import("server.zig").Server;
 const Conn = @import("http_conn.zig").Conn;
 const Metrics = @import("metrics.zig").Metrics;
@@ -198,9 +197,9 @@ pub fn metrics(srv: *Server, conn: *Conn, a: Allocator) void {
             srv.metrics.render(srv.io, &out.writer, status, streams[0..@min(status.streams, streams.len)], srv.info, srv.engine.memory(false), srv.info.context_window) catch return;
         } else srv.metrics.renderParked(srv.io, &out.writer, parkedView(snap, status, false)) catch return;
     }
-    metric_text.renderConnections(&out.writer, srv.open_connections.load(.acquire)) catch return;
     @import("load_metrics.zig").render(&out.writer, snap, .{ .model = srv.config.served_name, .backend = srv.config.identity.backend, .version = srv.config.identity.version }) catch return;
     if (srv.config.admission.enabled()) @import("metrics.zig").renderAdmission(&out.writer, srv.admission.snapshot(srv.io)) catch return;
+    @import("load_metrics.zig").renderConnections(&out.writer, srv.open_connections.load(.acquire)) catch return;
     const body = out.written();
     conn.startResponse(200, null) catch return;
     conn.addHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8") catch return;
