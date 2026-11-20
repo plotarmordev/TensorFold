@@ -1,6 +1,7 @@
 #!/bin/sh
 # bench-script.sh twice in one GPU window: the picks file absent, then present. The first phase's own
 # cold run writes it, so its second phase is not run (a present file's cold run is the next job's).
+# The two cold latents are compared bit for bit at the end; a difference fails the job.
 set -eu
 model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
@@ -32,4 +33,5 @@ if cmp -s "$out/without-cache/2048-1.latent.f32" "$out/with-cache/2048-1.latent.
     echo "cold latents bit-identical" | tee "$out/latent-cmp.txt"
 else
     echo "cold latents differ" | tee "$out/latent-cmp.txt"
+    exit 1
 fi

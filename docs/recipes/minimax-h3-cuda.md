@@ -141,11 +141,12 @@ records): keyed by GPU name, CUDA driver and cuBLASLt version, so another card, 
 miss, as is a missing or torn file; the searches then run as before and `deinit` rewrites the table
 whole. A record the device still refuses (`cublasLtMatmulAlgoCheck` says no: a bit flip behind a valid
 header, a workspace need that grew) is dropped, the search reruns and its pick replaces it, so a corrupt
-file never survives a start. `TF_H3_ALGO_CACHE` names another file or, as `off`, skips it.
+file never survives a start — `tf-h3-image-cuda --self-test` proves both fallbacks, bf16 and int8, on
+the device. `TF_H3_ALGO_CACHE` names another file or, as `off`, skips it.
 
 [`cache-ab.sh`](minimax-h3-cuda/cache-ab.sh) is the receipt: `bench-script.sh` on TOP twice in one job —
 once with the file absent (the searches write it), once with it — then compares the two cold latents bit
-for bit. On the GB10 (driver 580.173.02, commit `673dec5b7`), the `h3_image_bench.py` tables:
+for bit, failing the job on a difference. On the GB10 (driver 580.173.02, commit `673dec5b7`), the `h3_image_bench.py` tables:
 
 | run | wall s | load s | case s | transformer s | step 1 s | warm mean transformer s |
 |---|---:|---:|---:|---:|---:|---:|

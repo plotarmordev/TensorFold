@@ -10,6 +10,7 @@ pub const modulation = @import("cuda_modulation.zig");
 pub const modulation_test = @import("cuda_modulation_test.zig");
 pub const rows_test = @import("cuda_rows_test.zig");
 pub const fused_test = @import("cuda_fused_test.zig");
+pub const picks_test = @import("cuda_picks_test.zig");
 pub const image_host = @import("image_host.zig");
 const Gemms = @import("cuda_gemm.zig").Gemms;
 pub const Int8 = @import("cuda_int8.zig").Int8;

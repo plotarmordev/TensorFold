@@ -60,45 +60,44 @@ pub const Picks = struct {
             p.off = true;
             return p;
         };
-        var file: []const u8 = undefined;
-        if (spec) |s| {
-            file = s;
-        } else {
-            const home = env("HOME") orelse {
-                p.off = true;
-                return p;
-            };
-            const dir = std.fmt.bufPrint(&p.dir, "{s}/.cache/tensorfold", .{home}) catch {
-                p.off = true;
-                return p;
-            };
-            p.dir_len = dir.len;
-            file = std.fmt.bufPrint(&p.file, "{s}/h3-cublaslt-algos.bin", .{dir}) catch {
-                p.off = true;
-                return p;
-            };
-            p.file_len = file.len;
-        }
-        if (spec != null) {
-            if (file.len >= p.file.len) {
-                p.off = true;
-                return p;
-            }
-            @memcpy(p.file[0..file.len], file);
-            p.file_len = file.len;
-            // a named file's own directory, for the .part sibling
-            if (std.fs.path.dirname(file)) |dir| {
-                if (dir.len >= p.dir.len) {
-                    p.off = true;
-                    return p;
-                }
-                @memcpy(p.dir[0..dir.len], dir);
-                p.dir_len = dir.len;
-            }
+        const placed = if (spec) |s|
+            p.namedPath(s)
+        else if (env("HOME")) |home|
+            p.defaultPath(home)
+        else
+            false;
+        if (!placed) {
+            p.off = true;
+            return p;
         }
         std.debug.print("h3 cublaslt picks: file {s}{s}\n", .{ p.file[0..p.file_len], if (p.off) " (off)" else "" });
         p.readFile(gpa);
         return p;
+    }
+
+    /// The `~/.cache/tensorfold` default into `p`'s fixed buffers, or false when it does not fit
+    /// with a byte to spare: `readFile`'s NUL would land one past a file path exactly `max_path`.
+    fn defaultPath(p: *Picks, home: []const u8) bool {
+        const dir = std.fmt.bufPrint(&p.dir, "{s}/.cache/tensorfold", .{home}) catch return false;
+        p.dir_len = dir.len;
+        const file = std.fmt.bufPrint(&p.file, "{s}/h3-cublaslt-algos.bin", .{dir}) catch return false;
+        if (file.len >= max_path) return false;
+        p.file_len = file.len;
+        return true;
+    }
+
+    /// A `TF_H3_ALGO_CACHE` path into `p`'s fixed buffers, with its own directory for the `.part`
+    /// sibling, under the same rule.
+    fn namedPath(p: *Picks, file: []const u8) bool {
+        if (file.len >= max_path) return false;
+        @memcpy(p.file[0..file.len], file);
+        p.file_len = file.len;
+        if (std.fs.path.dirname(file)) |dir| {
+            if (dir.len >= max_path) return false;
+            @memcpy(p.dir[0..dir.len], dir);
+            p.dir_len = dir.len;
+        }
+        return true;
     }
 
     pub fn deinit(p: *Picks, gpa: std.mem.Allocator) void {
@@ -302,4 +301,24 @@ test "h3 cublaslt picks: a stored pick answers its shape, kinds separate, and a 
     const long_file = try std.fs.path.join(a, &.{ long_dir, "picks.bin" });
     defer a.free(long_file);
     try std.testing.expect(!saveAt(long_dir, long_file, data));
+}
+
+test "h3 cublaslt picks: a default path that fills the file buffer exactly is off, never read past" {
+    const a = std.testing.allocator;
+    var p: Picks = .{ .key = @splat(0) };
+    defer p.entries.deinit(a);
+    // a 984-byte HOME fills `file` with exactly `max_path` bytes (dir 1002 + name 22): readFile's
+    // NUL would write one past; 983 leaves it the last byte, 1006 overflows the dir first
+    var exact: [984]u8 = @splat('x');
+    exact[0] = '/';
+    try std.testing.expect(!p.defaultPath(&exact));
+    var full_dir: [1006]u8 = @splat('x');
+    full_dir[0] = '/';
+    try std.testing.expect(!p.defaultPath(&full_dir));
+    var fits: [983]u8 = @splat('x');
+    fits[0] = '/';
+    try std.testing.expect(p.defaultPath(&fits));
+    try std.testing.expectEqual(@as(usize, max_path - 1), p.file_len);
+    try std.testing.expect(std.mem.endsWith(u8, p.file[0..p.file_len], "/h3-cublaslt-algos.bin"));
+    try std.testing.expect(std.mem.endsWith(u8, p.dir[0..p.dir_len], "/.cache/tensorfold"));
 }
