@@ -546,6 +546,16 @@ cuBLASLt — it recovered to the 128×128 plateau, no better). Three geometries 
 ceiling: a cp.async tile with eight-to-twelve warps and no persistent grid tops out a quarter under cuBLASLt's
 ~152, and mmh3's own 172 comes from TMA plus a persistent grid, not the tile shape — that port is its own card.
 
+The rescope won on coverage, not rate: `out` and `fc2` joined `qkvc` and `fc1` on the cuBLASLt int8 path
+(`bench-129-cublaslt.sh` at `6279e2a2`, job `top-ee9f603eeeed`, 20 November, exit 0, `H3_PROFILE=1` on both
+sides — no CUDA graph, so the warm walls are ~1 s above the graphed 15.3 s). All four projections int8 gave a
+warm 2048² **13.7 s** (13.7, 13.6, 13.7; transformer 12.3) against the same job's main re-measure **14.3 s**
+(14.3, 14.3, 14.3; transformer 12.9): the 286 TFLOP of `out`/`fc2` products moved off bf16 saved 0.6 s of kernel
+time. Every selftest passed on both sides; the same-latent `reference` passed on the after side (85.213% bytes
+identical, 99.875% within 1, at most 7 apart, PSNR 56.31 dB, relative error 3.33e-3 against 3e-2). The Mac-picture
+gates (28.2 dB, 4.1, 0.99) are `h3_image_compare.py`'s run on the fetched files.
+
+
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93; its first picture is 17.6 s, card 80's standing
 goal), in order, each needing its own window:
 
