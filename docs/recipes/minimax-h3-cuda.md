@@ -745,6 +745,32 @@ the distance to mmh3's 0.55 s is `h3d_flash` itself: 195.8 ms over 121 tiles aga
 (tile, head) per block at 40 KiB of shared memory and 128–144 registers, staging every wmma tile through shared
 memory; mma.sync fragments in registers are its next step.
 
+`h3d_flash`'s bf16 weights enter `p·v` and the row sum, so its contract case declares those two roundings
+(`mids = 2`, the bf16-P attentions' one for each place). At `2915d6f7`, [`contract-job.sh`](minimax-h3-cuda/contract-job.sh)
+(job `top-6fd50c9c9c52`) passed all four of its gates: shapes worst 0.664 of the bound at 1×261×64 and 2×64×64.
+The job exited 1 on four gate failures in kernels this card leaves unchanged: `h3d_embed` shapes 1.14, `h3d_rms_norm`
+shapes 1.11, `h3d_layer_norm` shapes 1.36 plus its stress sums, and `h3d_attention` shapes 1.81 plus its stress sums.
+
+**FP16 products, tried and kept out.** [`decoder-144-f16-job.sh`](minimax-h3-cuda/decoder-144-f16-job.sh) at
+`2915d6f7` (job `top-ff79ae402131`, exit 1 from the same four contract failures) ran the bench on this commit, then with
+[`decoder-144-f16.patch`](minimax-h3-cuda/decoder-144-f16.patch) applied: the weights converted once to fp16, each
+product's bf16 input cast to fp16 (`h3d_half`), cuBLASLt fp16 × fp16 with fp32 compute into `acc`, then
+`h3d_finish`'s bias and LayerScale roundings — mmh3's operand type at the Metal rounding points. Both bench phases
+passed every selftest and the same-latent bound held unchanged (56.42 dB, relative 3.27e-3 under 3e-2; 85.530% of
+bytes identical against bf16's 85.543%), with 860,230 weights and 5.9 M product inputs a pass outside fp16's
+normals. It was slower:
+
+| 2048², warm | decoder s (GPU) | products | finish | norms (+ casts) |
+|---|---:|---:|---:|---:|
+| bf16, runs 2-4 | 0.78, 0.78, 0.78 | 0.33 | 0.08–0.09 | 0.04 |
+| fp16 trial, runs 2-4 | 1.10, 1.10, 1.10 | 0.39–0.40 | 0.26 | 0.12 |
+
+fp16 operands didn't speed up the products on the GB10: with an fp32 `acc` the products alone took 0.39 s
+against bf16's 0.33 s with its bias epilogue. cuBLASLt's fp16 bias epilogue would also make fp16 the output type,
+which rounds each product to fp16 instead of the Metal reference's bf16. So fp16 adds the casts and an unfused
+`h3d_finish` per product and saves nothing. bf16 products stay. The remaining 22 ms to mmh3's 307.6 ms comes from
+CUTLASS's kernel choice on these shapes, not from the operand type.
+
 ### Card 154: unseen prompts of every length draw again
 
 An unseen 55-token prompt (the lighthouse, job `top-6f13211c7306`) failed with `NoAlgorithm` on both sides of that
