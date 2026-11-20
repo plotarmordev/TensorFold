@@ -1212,18 +1212,30 @@ throwaway patch not committed; its total runs over the one-buffer pass) put the 
 | `h3d_heads` | 34 ms |
 | `h3d_embed`, `h3d_layer_norm` | 2 ms |
 
-The products are three quarters of it. In the one-buffer pass the GPU meter falls from 1.08 s to 0.56 s: the gemm runs on
-`nax.h`'s fragments (`mma_16x32`, bf16 operands straight from device memory, float32 sums, no threadgroup staging)
-and `h3d_attention` reads k four wide and v two wide. SwiGLU then moved into w1's product: its mode 2 sums the gate
-and value rows of one output side by side, applies `bf16(bf16(SiLU(gate)) * value)` in the epilogue, and writes
-4,096 values a row instead of 8,192. That removes `h3d_swiglu`'s 24 launches a pass and the 2n-wide rows' trip through memory.
-Episode 1's latent decodes to the same PNG bytes as before the fusion (`85098fa9…` both builds), and the GPU meter falls from 0.56 s to 0.49 s.
-The products remain bf16 rather than FP16. bf16 operands give exact products in the fragments' float32 sums at the
-same rounding points, and FP16 measured slower. With the fragments typed `frag<half>`, every bf16 activation and weight
-converts on load: episode 1's latent decoded in 0.68 s of GPU twice, against bf16's 0.54-0.55 s, under the lock at load 21.
-The two builds alternated, and each build's runs were byte-identical. After the pass, unpatchify, the blend and
-`picture_writer`'s PNG take 0.25 s at 2048. Nothing is left to overlap: the PNG needs the whole blended picture, and the
-request ends when its file is written. Parallel deflate bands would change the compressed bytes.
+The products are three quarters of it. Each of the acceptance's four levers, with its result:
+
+- **Wider loads (landed).** The gemm runs on `nax.h`'s fragments (`mma_16x32`, bf16 operands straight from device
+  memory, float32 sums, no threadgroup staging), and `h3d_attention` reads k four wide and v two wide. In the
+  one-buffer pass, the GPU meter falls from 1.08 s to 0.56 s.
+- **Fewer launches (landed).** SwiGLU moved into w1's product. Its mode 2 sums the gate and value rows of one output
+  side by side, applies `bf16(bf16(SiLU(gate)) * value)` in the epilogue, and writes 4,096 values a row instead of
+  8,192. A pass encodes 196 dispatches instead of main's 220 (embed 2, 24 blocks of 8 instead of 9, tail 2), and the
+  2n-wide rows no longer go through memory. Episode 1's latent decodes to the same PNG bytes as before the fusion
+  (`85098fa9…` in both builds), and the GPU meter falls from 0.56 s to 0.49 s.
+- **FP16 products with FP32 sums (measured, not kept).** The fragments typed `frag<half>` convert every bf16
+  activation and weight on load. Episode 1's latent decoded in 0.68 s of GPU twice, against bf16's 0.54-0.55 s,
+  with the two builds alternating under the lock at load 21 and each build's runs byte-identical. The acceptance
+  keeps a change only if it is faster, so the products stay bf16: bf16 operands give exact products in the
+  fragments' float32 sums at the same rounding points.
+- **PNG write overlapped or parallel (not possible under the byte gate).** After the pass, unpatchify, the blend and
+  `picture_writer`'s PNG take 0.25 s at 2048. Nearly all of it is `png.encode`, which on its own took 0.27-0.30 s for
+  a 2048 picture (ReleaseFast, three runs at load 25, so slower than in the server). It writes one zlib stream at the
+  default level through `std.compress.flate`.
+  Splitting it into bands changes the window and block boundaries and therefore the compressed bytes. A changed
+  level or filter has the same effect. The deflate cannot overlap the GPU either: all 121 tiles decode in one pass,
+  and the PNG's first row needs the blend of the first tile row, which arrives only when the pass ends. The request
+  ends when its file is written. Taking this lever needs the owner's approval of a decoded-pixel gate in place of
+  PNG byte identity (Next, ranked #2).
 
 Gates: `tf-h3-image-contract` 31 kernels pass gates 1-4 (`h3d_gemm`'s SwiGLU form in place of `h3d_swiglu`), all 34
 controls go red as planted, and there are no limit problems;
@@ -1254,8 +1266,25 @@ The latents of the two builds are bit-identical request for request, so the step
 Contention spoiled this card's fast unseen 3 twice. Both are kept in the receipt, not dropped. The first session
 recorded decoder 1.23 s, total 9.77 s, with load rising from 3.83 to 6.11. A whole fast session rerun right after met
 other workers' CPU tests: load rose from 5.71 to 21.14, and the session recorded decoder 1.37 / 0.84 / 0.93 / 1.04 s,
-totals 11.03 / 9.83 / 9.95 / 9.93 s. Over the following hour the one-minute load stayed between 12 and 86, and it
-never dropped below 7 long enough for a session, so a clean third rerun is still owed.
+totals 11.03 / 9.83 / 9.95 / 9.93 s. Over the following hour the one-minute load stayed between 12 and 86.
+
+The fast mode was rerun clean once the load fell below 7: main `4f805250e` against this card's head (same decoder
+code), one locked fast session per build back to back (54 s and 39 s, lock held only for the session), the seed-42
+pilot and three new unseen prompts (a blacksmith's forge at night, a lighthouse in a winter storm, a spice stall from
+above; seeds 31-33). The exact text of the earlier unseen prompts was not kept, so all four requests ran again in
+both builds:
+
+| Run | main | load | this card | load |
+|---|---|---|---|---|
+| fast, pilot | 0.28 / 0.86 / 7.81 / 1.35 / 10.32 | 6.47 / 6.15 | 0.28 / 0.58 / 7.70 / 0.75 / 9.31 | 5.15 / 4.81 |
+| fast, unseen 1 | 0.22 / 0.65 / 7.56 / 1.37 / 9.86 | 6.15 / 5.58 | 0.22 / 0.63 / 6.75 / 0.79 / 8.40 | 4.81 / 4.54 |
+| fast, unseen 2 | 0.22 / 0.65 / 7.50 / 1.43 / 9.81 | 5.58 / 5.34 | 0.22 / 0.66 / 7.62 / 0.82 / 9.33 | 4.54 / 4.07 |
+| fast, unseen 3 | 0.22 / 0.63 / 7.57 / 1.32 / 9.75 | 5.34 / 4.98 | 0.22 / 0.66 / 7.59 / 0.72 / 9.20 | 4.07 / 3.98 |
+
+The decoder stage drops by 0.54-0.64 s in each request, and every total comes in lower. The latents are
+bit-identical request for request. The two builds' PNGs differ by the decoder's rounding alone: 53.3-56.6 dB, mean
+0.14-0.29, max 5-9.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
