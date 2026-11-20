@@ -256,7 +256,7 @@ test "serve steps: a decoding reply and prompts in steps == serial; decode round
     defer gpa.free(p0);
     const p1 = try prompt(700, 2);
     defer gpa.free(p1);
-    const w0 = try serial(p0, 120);
+    const w0 = try serial(p0, 400);
     defer gpa.free(w0);
     const w1 = try serial(p1, 40);
     defer gpa.free(w1);
@@ -266,7 +266,7 @@ test "serve steps: a decoding reply and prompts in steps == serial; decode round
     r.x.delay_ms = 1;
     var boxes: [2]Box = @splat(.{});
     defer for (&boxes) |*b| b.out.deinit(gpa);
-    const reqs = [2]api.Request{ .{ .prompt = p0, .max_tokens = 120 }, .{ .prompt = p1, .max_tokens = 40 } };
+    const reqs = [2]api.Request{ .{ .prompt = p0, .max_tokens = 400 }, .{ .prompt = p1, .max_tokens = 40 } };
     try r.submit(1, &reqs[0], &boxes[0]);
     try until(&r.x.windows, 1);
     try r.submit(2, &reqs[1], &boxes[1]);
