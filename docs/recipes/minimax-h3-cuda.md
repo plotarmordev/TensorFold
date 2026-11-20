@@ -143,7 +143,10 @@ whole. `TF_H3_ALGO_CACHE` names another file or, as `off`, skips it.
 
 [`cache-ab.sh`](minimax-h3-cuda/cache-ab.sh) is the receipt: `bench-script.sh` on TOP twice in one job —
 once with the file absent (the searches write it), once with it — then compares the two cold latents bit
-for bit.
+for bit. On the GB10 (driver 580.173.02, commit `673dec5b7`) the cold 2048² picture went 155.9 → 147.1 s
+wall (−8.8 s; load 53.6 → 51.4 s, transformer 41.9 → 40.8 s) with the warm mean unchanged at 12.6 s, and
+the cold latents came back bit-identical. The file held four records — the bf16 shapes collapse to a few
+distinct (n, k) under their canonical rows, the int8 products to theirs.
 
 ### Fewer steps: the draft canvas, not the PDMD LoRA
 
