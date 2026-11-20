@@ -310,8 +310,11 @@ pub const Tiles = struct {
 pub fn tiles(a: std.mem.Allocator, c: *const vae.Config, rows: usize, columns: usize) !Tiles {
     if (rows == 0 or columns == 0) return error.H3BadPictureGrid;
     if (try geometry.product(&.{ rows, columns }) > 1 << 24) return error.H3BadPictureGrid;
-    const r = try vae.split(a, rows * vae.cell_pixels, c.tile, c.overlap);
-    const k = try vae.split(a, columns * vae.cell_pixels, c.tile, c.overlap);
+    // mmh3 tiles its VAE the same way at 32 pixels of overlap, half the checkpoint's floor: the
+    // split still lands every tile whole (a 2,048-pixel side needs 9 spans against 11).
+    const overlap = @min(c.overlap, 2 * vae.cell_pixels);
+    const r = try vae.split(a, rows * vae.cell_pixels, c.tile, overlap);
+    const k = try vae.split(a, columns * vae.cell_pixels, c.tile, overlap);
     const out: Tiles = .{ .rows = r, .cols = k, .h = r[0].len / vae.cell_pixels, .w = k[0].len / vae.cell_pixels };
     _ = try tokens(out.h, out.w);
     return out;

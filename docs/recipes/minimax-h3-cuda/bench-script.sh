@@ -18,6 +18,10 @@ mkdir -p "$out"
     echo "commit: $commit"
     echo "GPU, driver: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader)"
     echo "prompt: $pilot/prompt.txt, sha256 $(sha256sum <"$pilot/prompt.txt" | cut -d' ' -f1)"
+    if [ -n "${H3_BENCH_PROMPTS:-}" ]; then
+        echo "warm prompts (unseen): $H3_BENCH_PROMPTS"
+        for f in $H3_BENCH_PROMPTS; do echo "  $f sha256 $(sha256sum <"$f" | cut -d' ' -f1)"; done
+    fi
     echo "seed: 42"
     echo "sizes: ${H3_BENCH_SIZES:-2048}"
     echo "transformer linear layers: ${H3_LINEAR:-int8}"
@@ -79,7 +83,10 @@ prompt_stage() { # the resident prompt stage writes $case's picture case; its ne
         exec 5>"$out/prompt-requests" 6<"$out/prompt-replies"
         prompt_logged=0
     }
-    echo "$pilot/prompt.txt $case.safetensors ${side}x$side 42" >&5
+    # H3_BENCH_PROMPTS lists prompt files, one a run (unseen prompts for an A/B); else the pilot's
+    prompt_file=$pilot/prompt.txt
+    [ -z "${H3_BENCH_PROMPTS:-}" ] || prompt_file=$(echo "$H3_BENCH_PROMPTS" | cut -d' ' -f"$run")
+    echo "$prompt_file $case.safetensors ${side}x$side 42" >&5
     read -r verdict _ <&6 || verdict=
     tail -c +$((prompt_logged + 1)) "$out/$side.prompt-server.log" >"$case.prompt.log"
     prompt_logged=$(wc -c <"$out/$side.prompt-server.log")
