@@ -256,12 +256,8 @@ pub fn launch(self: *H3, e: mtl.ComputeEncoder) !void {
             bind(self, e, 4, 5);
             e.setValue([6]i32{ @intCast(s.rows), @intCast(s.n), 1, 2, 1, 0 }, 6);
             e.setValue(eps, 7);
-            if (self.which == .norm) {
-                bind(self, e, 5, 8);
-            } else {
-                bind(self, e, 5, 8);
-                bind(self, e, 6, 9);
-            }
+            bind(self, e, 5, 8);
+            if (self.which == .norm_quant) bind(self, e, 6, 9);
             e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));
         },
         .gate_add => {

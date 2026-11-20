@@ -1,3 +1,5 @@
+# MiniMax-H3-Image on the Mac: fuse the norm, quantize and activation passes
+
 - MiniMax-H3-Image's Metal picture path fuses the norm and quantize passes, as card 128 did on the Spark:
   `h3_norm_quant` folds the gated residual add and the modulated RMSNorm straight into the int8 rows `xq`/`xs`
   (the bf16 normed rows are never written — `h3_gemm_32x64_i8` is their only reader). One launch fewer a block
