@@ -1245,14 +1245,14 @@ prompt / transformer bind / 6 steps / decoder / total. Load is the one-minute av
 | fast (`--draft-steps 3`), pilot | 0.28 / 0.59 / 7.79 / 1.45 / 10.11 | 4.29 / 4.06 | 0.23 / 0.79 / 8.08 / 0.85 / 9.96 | 3.37 / 3.94 |
 | fast, unseen 1 | 0.22 / 0.65 / 6.72 / 1.35 / 8.94 | 4.06 / 3.88 | 0.24 / 0.64 / 6.72 / 0.75 / 8.36 | 3.94 / 3.88 |
 | fast, unseen 2 | 0.26 / 0.66 / 7.48 / 1.40 / 9.80 | 3.88 / 3.72 | 0.24 / 0.65 / 7.55 / 0.79 / 9.23 | 3.88 / 3.83 |
-| fast, unseen 3 | 0.28 / 0.64 / 7.56 / 1.32 / 9.80 | 3.72 / 3.23 | RERUN | |
+| fast, unseen 3 | 0.28 / 0.64 / 7.56 / 1.32 / 9.80 | 3.72 / 3.23 | spoiled twice, see below | |
 
-The decoder stage falls from 1.32-1.45 s to 0.72-0.85 s, about 0.6 s a picture, and every warm total is lower. The
-latents of the two builds are bit-identical request for request, so the steps' spread is the machine's. Contention
-spoiled two of this card's fast runs, and both were rerun rather than dropped. Unseen 3 of the first fast session
-recorded decoder 1.23 s, total 9.77 s, with load rising from 3.83 to 6.11. A whole fast session rerun right after
-met other workers' CPU tests: load rose from 5.71 to 21.14, and the session recorded decoder 1.37 / 0.84 / 0.93 /
-1.04 s and totals 11.03 / 9.83 / 9.95 / 9.93 s.
+The decoder stage falls from 1.32-1.45 s to 0.72-0.85 s, about 0.6 s a picture, and every clean warm total is lower.
+The latents of the two builds are bit-identical request for request, so the steps' spread is the machine's.
+Contention spoiled this card's fast unseen 3 twice. Both are kept in the receipt, not dropped. The first session
+recorded decoder 1.23 s, total 9.77 s, with load rising from 3.83 to 6.11. A whole fast session rerun right after met
+other workers' CPU tests: load rose from 5.71 to 21.14, and the session recorded decoder 1.37 / 0.84 / 0.93 / 1.04 s,
+totals 11.03 / 9.83 / 9.95 / 9.93 s. The load then stayed at 12-60 for ten minutes, so a clean third rerun is still owed.
 ### Next, ranked
 
 | # | Idea | Size | Basis |
