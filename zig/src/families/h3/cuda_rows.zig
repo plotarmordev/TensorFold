@@ -134,5 +134,4 @@ pub const Rows = struct {
         try self.model.stream.synchronize();
         try self.velocity.download(0, @import("std").mem.sliceAsBytes(into));
     }
-
 };

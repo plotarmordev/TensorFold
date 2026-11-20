@@ -158,7 +158,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (fields.len == 0) continue;
         var request = std.heap.ArenaAllocator.init(init.gpa);
         defer request.deinit();
-            serve(init, request.allocator(), &encoder, &folder, &vae, &binding, &draft_binding, weights, fields, profile, draft_steps, renoise) catch |err| {
+        serve(init, request.allocator(), &encoder, &folder, &vae, &binding, &draft_binding, weights, fields, profile, draft_steps, renoise) catch |err| {
             std.debug.print("request failed: {s}\n", .{@errorName(err)});
         };
     }
@@ -215,8 +215,9 @@ fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Enc
         break :plan try image_tool.draftPlan(a, folder, &case, draft_steps, renoise);
     };
     if (plan) |p| if (p.heads != null) {
+        const next = try image_tool.Case.write(init, a, folder, &pic, prefix, .{ .sched = p.sched, .video_out = p.heads });
         case.file.deinit();
-        case = try image_tool.Case.write(init, a, folder, &pic, prefix, .{ .sched = p.sched, .video_out = p.heads });
+        case = next;
     };
     const tags = pic.values(i32, try pic.at("text_tags", .i32, case.layout.text), case.layout.text);
     const cased = mtl.clock.seconds();
@@ -344,7 +345,7 @@ fn pictureCase(a: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const 
     @memset(tags, 1);
     try entries.append(a, .{ .name = "text_tags", .dtype = "I32", .shape = &.{text}, .bytes = std.mem.sliceAsBytes(tags) });
     const grid = try h3.picture.gridOf(.{ .width = @intCast(canvas[0]), .height = @intCast(canvas[1]) });
-    try s.add(a, &entries, "noise", "F32", &.{ try h3.picture.gridRows(grid) * s.width }, seed + 100);
+    try s.add(a, &entries, "noise", "F32", &.{try h3.picture.gridRows(grid) * s.width}, seed + 100);
     try dir.writeFile(io, .{ .sub_path = name, .data = try files.image(a, entries.items) });
 }
 
@@ -702,10 +703,10 @@ test "draft plan pools the seed's noise and the draft run is deterministic" {
         for (f.folder.ck.shards) |*shard| shard.deinit();
         testing.allocator.free(f.folder.ck.shards);
     }
-    const case = &f.cases[0].case; // 64x64 canvas: a 32x32 latent grid, whose half is 16x16
+    const case = &f.cases[0].case; // 64x64 canvas: a 4x4 latent grid, whose half is 2x2
 
-    // the draft schedule of a plain 3-step draft is pdd's prefix (steps 0,1,2 then the jump from
-    // sigma[2] to 0); the half-grid noise is cascade.pool of the unpatchified seed noise
+    // the draft schedule of a plain 3-step draft is pdd's prefix (steps 0,1,2 then the lift from
+    // sigma[2] to sigma[3]); the half-grid noise is cascade.pool of the unpatchified seed noise
     const plan = try image_tool.draftPlan(a, &f.folder, case, 3, null);
     try testing.expectEqual(f.folder.pdd.steps(), plan.sched.steps());
     try testing.expect(plan.heads == null); // no renoise: distilled heads as they stand
@@ -733,8 +734,55 @@ test "draft plan pools the seed's noise and the draft run is deterministic" {
     const second = try image_tool.drafted(a, b.model, db.model, case, &draft_case, plan.sched, 3, plan.noise_latent, try std.fmt.allocPrint(a, "{s}/two", .{dir_path}));
     try expectSameLatent(first.latent, second.latent);
 
+    // a renoise at sigma .5 runs the 3 drafts to .6, lifts to .5, then resumes the grid under it:
+    // seven steps, each video_out row the headSpan blend of the distilled heads it covers
     const renoised = try image_tool.draftPlan(a, &f.folder, case, 3, 0.5);
-    try testing.expectEqual(@as(usize, 7), renoised.sched.steps()); // the renoise adds a step to the run
+    try testing.expectEqual(@as(usize, 7), renoised.sched.steps());
+    const blended = renoised.heads orelse return error.TestUnexpectedResult;
+    const sw = synthetic.width;
+    const hidden = f.folder.hidden;
+    const hw = f.folder.heads.values(f32, try f.folder.heads.at("video_out.weight", .f32, f.folder.pdd.steps() * sw * hidden), f.folder.pdd.steps() * sw * hidden);
+    const hb = f.folder.heads.values(f32, try f.folder.heads.at("video_out.bias", .f32, f.folder.pdd.steps() * sw), f.folder.pdd.steps() * sw);
+    var saw_off_grid = false;
+    for (0..renoised.sched.steps()) |s| {
+        const span = try h3.picture.headSpan(f.folder.pdd.sigmas, renoised.sched.sigmas, s);
+        saw_off_grid = saw_off_grid or span.first != s;
+        const want_w = try a.alloc(f32, sw * hidden);
+        @memset(want_w, 0);
+        const want_b = try a.alloc(f32, sw);
+        @memset(want_b, 0);
+        for (span.first..span.last + 1, 0..) |head, j| {
+            for (want_w, hw[head * sw * hidden ..][0 .. sw * hidden]) |*o, v| o.* += span.weights[j] * v;
+            for (want_b, hb[head * sw ..][0..sw]) |*o, v| o.* += span.weights[j] * v;
+        }
+        try testing.expectEqualSlices(f32, want_w, blended.w[s * sw * hidden ..][0 .. sw * hidden]);
+        try testing.expectEqualSlices(f32, want_b, blended.b[s * sw ..][0..sw]);
+    }
+    try testing.expect(saw_off_grid); // the .5 step's head is a mid-grid blend
+
+    // the run case with the blended heads and its rescheduled binding, then the renoised draft run
+    const run_prefix = try std.fmt.allocPrint(a, "{s}/run", .{dir_path});
+    var run_case = try image_tool.Case.write(init, a, &f.folder, &pic, run_prefix, .{ .sched = renoised.sched, .video_out = renoised.heads });
+    defer run_case.file.deinit();
+    const renoised_draft_prefix = try std.fmt.allocPrint(a, "{s}/draft-renoised", .{dir_path});
+    var renoised_draft_case = try image_tool.Case.write(init, a, &f.folder, &pic, renoised_draft_prefix, .{ .sched = renoised.sched, .grid = renoised.draft_grid, .noise = renoised.draft_noise, .video_out = renoised.heads });
+    defer renoised_draft_case.file.deinit();
+    var rb = try Binding.init(testing.allocator, &f.folder, &run_case, f.cases[0].tags, null, renoised.sched);
+    defer rb.release();
+    var rdb = try Binding.init(testing.allocator, &f.folder, &renoised_draft_case, f.cases[0].tags, null, renoised.sched);
+    defer rdb.release();
+    const done_a = try image_tool.drafted(a, rb.model, rdb.model, &run_case, &renoised_draft_case, renoised.sched, 3, renoised.noise_latent, try std.fmt.allocPrint(a, "{s}/done-a", .{dir_path}));
+    const done_b = try image_tool.drafted(a, rb.model, rdb.model, &run_case, &renoised_draft_case, renoised.sched, 3, renoised.noise_latent, try std.fmt.allocPrint(a, "{s}/done-b", .{dir_path}));
+    try expectSameLatent(done_a.latent, done_b.latent);
+
+    // serve's rewrite is write-then-deinit: a failed rewrite leaves the first case alone, deinited once
+    var keep = try image_tool.Case.write(init, a, &f.folder, &pic, try std.fmt.allocPrint(a, "{s}/keep", .{dir_path}), null);
+    defer keep.file.deinit();
+    var oom_init = init;
+    var oom_gpa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    oom_init.gpa = oom_gpa.allocator();
+    try testing.expectError(error.OutOfMemory, image_tool.Case.write(oom_init, a, &f.folder, &pic, run_prefix, .{ .sched = renoised.sched, .video_out = renoised.heads }));
+    try testing.expect(oom_gpa.has_induced_failure);
 
     // refusals: no draft steps, more than pdd has, all of them without a renoise, a renoise that
     // doesn't sit under sigma[drafts-1]
@@ -746,4 +794,3 @@ test "draft plan pools the seed's noise and the draft run is deterministic" {
     // a canvas whose latent grid doesn't halve cleanly refuses: 96x96 is a 6x6 latent grid
     try testing.expectError(error.H3BadCascadeGrid, image_tool.draftPlan(a, &f.folder, &f.cases[3].case, 3, null));
 }
-

@@ -20,7 +20,8 @@ const usage =
     \\  --draft-steps N runs the first N of the checkpoint's steps on the half-size canvas, as mmh3's
     \\               --draft-steps does (the free run only): the clean draft is enlarged bilinearly, noised to
     \\               the next step's sigma (or to --renoise-sigma X) and redrawn at full size for the rest.
-    \\               It draws a different picture, not a faster copy of the six-step one.
+    \\               It draws a different picture, not a faster copy of the six-step one; an off-grid
+    \\               renoise writes OUT_PREFIX.renoise.h3case.safetensors, the run schedule's case.
     \\Exit 0: every gate passed (or a free run had none); 1: a gate failed; 2: no reference to gate (inconclusive).
     \\Between transformer blocks it waits while the speech server speaks. Exclude timing_valid=false steps
     \\from benchmarks, even when their wait is 0: speech can start and finish between polls.
@@ -462,7 +463,20 @@ pub fn main(init: std.process.Init) !void {
     const reference = try optional(&pic, f32, "velocity", .f32, steps * target * width);
     const step_in = try optional(&pic, f32, "step_in", .f32, steps * target * width);
     const latent = try optional(&pic, f32, "latent", .f32, target * width);
-    const model = try folder.bind(gpa, a, &case, null);
+    // a draft's full-size steps need their own case and binding only when a renoise moved a step off
+    // the distilled grid (other AdaLN lines and blended heads); the plain draft keeps pdd's
+    const plan: ?DraftPlan = if (draft_steps == 0) null else plan: {
+        if (try case.layout.referenceRows() != 0) return error.H3DraftWithReferences;
+        break :plan try draftPlan(a, &folder, &case, draft_steps, renoise);
+    };
+    var run_case: ?Case = null;
+    defer if (run_case) |*rc| rc.file.deinit();
+    const model = if (plan == null or plan.?.heads == null)
+        try folder.bind(gpa, a, &case, if (plan) |p| p.sched else null)
+    else bound: {
+        run_case = try Case.write(init, a, &folder, &pic, try std.fmt.allocPrint(a, "{s}.renoise", .{args[2]}), .{ .sched = plan.?.sched, .video_out = plan.?.heads });
+        break :bound try folder.bind(gpa, a, &run_case.?, plan.?.sched);
+    };
     const layout = case.layout;
     std.debug.print("{s}: {d}x{d} canvas, {d} rows (text {d}, references {d}, target {d}), {d} tiles, {d} blocks, {d} steps, {d} timesteps, loaded in {d:.1} s\n", .{ model.device.name(), case.canvas.width, case.canvas.height, rows, layout.text, try layout.referenceRows(), target, model.tiles, model.blocks.len, steps, model.lines / h3.schedule.modalities, mtl.clock.seconds() - loading });
 
@@ -489,27 +503,16 @@ pub fn main(init: std.process.Init) !void {
     // free-running: our own rows from the noise through every step — the first `draft_steps` of them
     // on the half-size canvas with --draft-steps, mmh3's fewer-steps path
     if (mode != .once) {
-        const out = if (draft_steps == 0)
+        const out = if (plan == null)
             try free(a, model, &folder, &case, args[2])
         else draft: {
-            if (try case.layout.referenceRows() != 0) return error.H3DraftWithReferences;
-            const plan = try draftPlan(a, &folder, &case, draft_steps, renoise);
+            const p = plan.?;
             const draft_prefix = try std.fmt.allocPrint(a, "{s}.draft", .{args[2]});
-            const draft_case = try Case.write(init, a, &folder, &pic, draft_prefix, .{ .sched = plan.sched, .grid = plan.draft_grid, .noise = plan.draft_noise, .video_out = plan.heads });
+            const draft_case = try Case.write(init, a, &folder, &pic, draft_prefix, .{ .sched = p.sched, .grid = p.draft_grid, .noise = p.draft_noise, .video_out = p.heads });
             defer draft_case.file.deinit();
-            const draft_model = try folder.bind(gpa, a, &draft_case, plan.sched);
+            const draft_model = try folder.bind(gpa, a, &draft_case, p.sched);
             defer draft_model.release();
-            // the full-size steps of the draft schedule need their own binding when a renoise moved
-            // a step off the distilled grid (other AdaLN lines and blended heads); the plain draft
-            // keeps pdd's, so the normal binding's tables and heads serve it as it stands
-            var full = model;
-            if (plan.heads != null) {
-                const run_case = try Case.write(init, a, &folder, &pic, try std.fmt.allocPrint(a, "{s}.renoise", .{args[2]}), .{ .sched = plan.sched, .video_out = plan.heads });
-                defer run_case.file.deinit();
-                full = try folder.bind(gpa, a, &run_case, plan.sched);
-            }
-            defer if (full != model) full.release();
-            break :draft try drafted(a, full, draft_model, &case, &draft_case, plan.sched, draft_steps, plan.noise_latent, args[2]);
+            break :draft try drafted(a, model, draft_model, if (run_case) |*rc| rc else &case, &draft_case, p.sched, draft_steps, p.noise_latent, args[2]);
         };
         // a draft draws a different picture on purpose: nothing to gate its latent against
         if (latent != null and draft_steps == 0) {
