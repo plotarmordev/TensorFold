@@ -1213,20 +1213,26 @@ throwaway patch not committed; its total runs over the one-buffer pass) put the 
 | `h3d_embed`, `h3d_layer_norm` | 2 ms |
 
 The products are three quarters of it. In the one-buffer pass the GPU meter falls from 1.08 s to 0.56 s: the gemm runs on
-`nax.h`'s fragments (`mma_16x32`, bf16 operands straight from device memory, float32 sums, no threadgroup staging),
-`h3d_swiglu` takes four values a thread and `h3d_attention` reads k four wide and v two wide. Launch counts were unchanged: one pass already batches all 121
-tiles. The products remain bf16 rather than FP16: bf16 operands give exact products in the fragments' float32 sums at the
+`nax.h`'s fragments (`mma_16x32`, bf16 operands straight from device memory, float32 sums, no threadgroup staging)
+and `h3d_attention` reads k four wide and v two wide. SwiGLU then moved into w1's product: its mode 2 sums the gate
+and value rows of one output side by side, applies `bf16(bf16(SiLU(gate)) * value)` in the epilogue, and writes
+4,096 values a row instead of 8,192. That removes `h3d_swiglu`'s 24 launches a pass and the 2n-wide rows' trip through memory.
+Episode 1's latent decodes to the same PNG bytes as before the fusion (`85098fa9…` both builds), and the GPU meter falls from 0.56 s to 0.49 s.
+The products remain bf16 rather than FP16: bf16 operands give exact products in the fragments' float32 sums at the
 same rounding points. FP16 would add a conversion on every bf16 activation and weight, and narrow their range. After the pass, unpatchify, the blend and
 `picture_writer`'s PNG take 0.25 s at 2048. The writer is outside this card's files, and parallel deflate bands
 would change the compressed bytes.
 
-Gates: `tf-h3-image-contract` 31 kernels pass gates 1-4, all 34 controls go red as planted, and there are no limit problems;
+Gates: `tf-h3-image-contract` 31 kernels pass gates 1-4 (`h3d_gemm`'s SwiGLU form in place of `h3d_swiglu`), all 34
+controls go red as planted, and there are no limit problems;
 `tf-h3-image-decoder selftest` passes (24 blocks relative 1.48e-2, picture bytes at most 1 apart); `zig build test
 test-golden` exits 0. Episode 1's latent decoded by this card versus main: 56.6 dB, mean 0.14, max 5. The warm
 latents are bit-identical to main's on every request below. The cold picture against episode 1's Mac PNG
 (`904814d6…`): latent cosine 0.9955, 28.67 dB, mean 3.90 for both builds.
 
-Warm A/B, M5 Ultra, ReleaseFast `tf-h3-image-server` per build, base `fc8aa2d45`, one session per build and mode.
+Warm A/B before the SwiGLU fusion, M5 Ultra, ReleaseFast `tf-h3-image-server` per build, base `fc8aa2d45`, one session per build and mode.
+These runs did not record taking `/tmp/tensorfold-model.lock` or each run's load average, so they do not meet
+the card's bench rule. A locked rerun with per-run load waits for a GPU window.
 Each session ran the seed-42 pilot once, then three unseen prompts (a lighthouse keeper, an autumn market, a rooftop
 greenhouse; seeds 11-13). Stage seconds: prompt / transformer bind / 6 steps / decoder / total:
 

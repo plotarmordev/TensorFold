@@ -24,7 +24,6 @@ pub const decoder = [_]M{
     .{ .name = "minimax image decoder h3d_gemm", .threads = 128, .tg_memory = 0, .reserved = 128 },
     .{ .name = "minimax image decoder h3d_heads", .threads = 32, .tg_memory = 0, .reserved = 32 },
     .{ .name = "minimax image decoder h3d_attention", .threads = 256, .tg_memory = 11264, .reserved = 256 },
-    .{ .name = "minimax image decoder h3d_swiglu", .threads = 256, .tg_memory = 0, .reserved = 256 },
 };
 pub const records = encoder ++ prompt ++ decoder;
 

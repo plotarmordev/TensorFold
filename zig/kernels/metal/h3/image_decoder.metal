@@ -122,7 +122,8 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
 }
 
 // y = bf16(x w^T + b), x [m, k] and w [n, k] bf16, fp32 sums on nax.h's fragments; mode 1 adds bf16(y s) into y's
-// old value (LayerScale). A threadgroup spans 64 rows x 64 columns, each of its four warps 32 x 32.
+// old value (LayerScale); mode 2 is w1's SwiGLU: w and b hold [gate n | value n] and y = bf16(bf16(SiLU(gate)) * value),
+// so the 2n-wide rows never reach memory. A threadgroup spans 64 rows x 64 columns, each of its four warps 32 x 32.
 [[max_total_threads_per_threadgroup(128)]] [[kernel]] void h3d_gemm(
     const device bfloat* x [[buffer(0)]], const device bfloat* w [[buffer(1)]], const device bfloat* b [[buffer(2)]],
     const device bfloat* s [[buffer(3)]], device bfloat* y [[buffer(4)]], constant H3dShape& p [[buffer(5)]],
@@ -131,12 +132,18 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
   using namespace tfp;
   const int row = int(tg.y) * 64 + 32 * int(sg >> 1);
   const int col = int(tg.x) * 64 + 32 * int(sg & 1);
+  const bool gated = p.mode == 2;
   const short2 home = frag_home(ushort(lane));
   const device bfloat* A = x + ulong(row) * p.k;
   const device bfloat* B = w + ulong(col) * p.k;
+  const device bfloat* V = B + ulong(p.n) * p.k;
   frag<float> acc[2][2];
+  frag<float> val[2][2];
   TF_UNROLL
-  for (short m = 0; m < 2; m++) TF_UNROLL for (short n = 0; n < 2; n++) acc[m][n] = frag<float>(0.0f);
+  for (short m = 0; m < 2; m++) TF_UNROLL for (short n = 0; n < 2; n++) {
+    acc[m][n] = frag<float>(0.0f);
+    val[m][n] = frag<float>(0.0f);
+  }
   for (int k0 = 0; k0 < int(p.k); k0 += 32) {
     frag<bfloat> a[2][2];
     frag<bfloat> wb[2][2];
@@ -149,6 +156,14 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
     TF_UNROLL
     for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short m = 0; m < 2; m++)
       mma_16x32<false, true>(acc[m][0], acc[m][1], a[m][k2], wb[k2][0], wb[k2][1]);
+    if (gated) {
+      TF_UNROLL
+      for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short n = 0; n < 2; n++)
+        frag_get(wb[k2][n], V, int(p.k), 16 * n, k0 + 16 * k2, home);
+      TF_UNROLL
+      for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short m = 0; m < 2; m++)
+        mma_16x32<false, true>(val[m][0], val[m][1], a[m][k2], wb[k2][0], wb[k2][1]);
+    }
   }
   TF_UNROLL
   for (short m = 0; m < 2; m++) TF_UNROLL for (short h2 = 0; h2 < 2; h2++) TF_UNROLL for (short e = 0; e < 8; e++) {
@@ -159,6 +174,9 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
     const ulong at = ulong(rr) * p.n + uint(cc);
     if (p.mode == 0) {
       y[at] = bfloat(out);
+    } else if (gated) {
+      const float value = float(bfloat(val[m][h2][e] + float(b[p.n + cc])));
+      y[at] = bfloat(float(bfloat(out / (1.0f + precise::exp(-out)))) * value);
     } else {
       y[at] = bfloat(float(y[at]) + float(bfloat(out * float(s[cc]))));
     }
@@ -249,20 +267,4 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
   const ulong at = (ulong(tile) * T + query) * 1024 + head * 64 + 2 * lane;
   o[at] = bfloat(a.x / total);
   o[at + 1] = bfloat(a.y / total);
-}
-
-// act = bf16(bf16(SiLU(gate)) * value), w1's rows read as [gate 4,096 | value 4,096]. Threads [1,024, m], 4 wide.
-[[max_total_threads_per_threadgroup(256)]] [[kernel]] void h3d_swiglu(
-    const device bfloat* wide [[buffer(0)]], device bfloat* act [[buffer(1)]], constant H3dShape& p [[buffer(2)]],
-    uint2 at [[thread_position_in_grid]]) {
-  if (at.x >= 1024 || at.y >= p.m) return;
-  const float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);
-  const float4 v = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192 + 4096))[at.x]);
-  bfloat4 out;
-  H3D_UNROLL
-  for (uint e = 0; e < 4; e++) {
-    const float silu = float(bfloat(g[e] / (1.0f + precise::exp(-g[e]))));
-    out[e] = bfloat(silu * v[e]);
-  }
-  ((device bfloat4*)(act + ulong(at.y) * 4096))[at.x] = out;
 }

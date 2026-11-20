@@ -10,10 +10,10 @@ const gemm = @import("metal_h3_image_decoder_gemm.zig");
 const heads = @import("metal_h3_image_decoder_heads.zig");
 const g = contract.gates;
 
-/// A registration: one kernel at one form; the gemm's LayerScale form is mode 1 of h3d_gemm.
-const Kind = enum { post_quant, embed, rms_norm, layer_norm, gemm, gemm_scale, heads, attention, swiglu };
+/// A registration: one kernel at one form; the gemm's LayerScale and SwiGLU forms are modes 1 and 2 of h3d_gemm.
+const Kind = enum { post_quant, embed, rms_norm, layer_norm, gemm, gemm_scale, gemm_swiglu, heads, attention };
 
-const kinds = [_]Kind{ .post_quant, .embed, .rms_norm, .layer_norm, .gemm, .gemm_scale, .heads, .attention, .swiglu };
+const kinds = [_]Kind{ .post_quant, .embed, .rms_norm, .layer_norm, .gemm, .gemm_scale, .gemm_swiglu, .heads, .attention };
 
 fn Of(comptime kind: Kind) type {
     return switch (kind) {
@@ -21,28 +21,32 @@ fn Of(comptime kind: Kind) type {
         .embed => rows.Embed,
         .rms_norm => norms.RmsNorm,
         .layer_norm => norms.LayerNorm,
-        .gemm, .gemm_scale => gemm.Gemm,
+        .gemm, .gemm_scale, .gemm_swiglu => gemm.Gemm,
         .heads => heads.Heads,
         .attention => heads.Attention,
-        .swiglu => rows.Swiglu,
     };
 }
 
 fn function(comptime kind: Kind) []const u8 {
     return switch (kind) {
-        .gemm, .gemm_scale => "h3d_gemm",
+        .gemm, .gemm_scale, .gemm_swiglu => "h3d_gemm",
         else => "h3d_" ++ @tagName(kind),
     };
 }
 
 fn label(comptime kind: Kind) []const u8 {
-    return comptime common.name(.decoder, function(kind)) ++ (if (kind == .gemm_scale) " layer scale" else "");
+    return comptime common.name(.decoder, function(kind)) ++ switch (kind) {
+        .gemm_scale => " layer scale",
+        .gemm_swiglu => " swiglu",
+        else => "",
+    };
 }
 
 fn initial(comptime kind: Kind) Of(kind) {
     return switch (kind) {
-        .gemm => .{ .layer_scale = false },
-        .gemm_scale => .{ .layer_scale = true },
+        .gemm => .{ .form = .plain },
+        .gemm_scale => .{ .form = .layer_scale },
+        .gemm_swiglu => .{ .form = .swiglu },
         else => .{},
     };
 }
@@ -59,8 +63,8 @@ const controls = [_]Control{
     .{ .kind = .gemm_scale, .gate = .shapes, .what = "adds LayerScale's product unrounded", .old = "float(bfloat(out * float(s[cc])))", .new = "out * float(s[cc])" },
     .{ .kind = .heads, .gate = .shapes, .what = "turns the second half of each head", .old = "const float a = float(src[part * 64 + lane]);\n    const float z = float(src[part * 64 + 32 + lane]);", .new = "const float a = float(src[part * 64 + 32 + lane]);\n    const float z = float(src[part * 64 + lane]);" },
     .{ .kind = .attention, .gate = .shapes, .what = "drops its last key", .old = "for (uint key = 0; key < T; key++) {", .new = "for (uint key = 0; key + 1 < T; key++) {" },
-    .{ .kind = .swiglu, .gate = .shapes, .what = "swaps gate and value", .old = "const float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);\n  const float4 v = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192 + 4096))[at.x]);", .new = "const float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192 + 4096))[at.x]);\n  const float4 v = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);" },
-    .{ .kind = .swiglu, .gate = .nonfinite, .what = "takes a NaN gate as zero", .old = "const float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);", .new = "float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);\n  g = select(float4(0.0f), g, !isnan(g));" },
+    .{ .kind = .gemm_swiglu, .gate = .shapes, .what = "swaps gate and value", .old = "const float out = float(bfloat(acc[m][h2][e] + float(b[cc])));", .new = "const float out = float(bfloat(val[m][h2][e] + float(b[p.n + cc])));" },
+    .{ .kind = .gemm_swiglu, .gate = .shapes, .what = "drops SiLU's bf16 rounding point", .old = "bfloat(float(bfloat(out / (1.0f + precise::exp(-out)))) * value)", .new = "bfloat(out / (1.0f + precise::exp(-out)) * value)" },
 };
 
 pub const Suite = struct {

@@ -12,7 +12,7 @@ const read_ahead = @import("read_ahead.zig");
 const W = host.width;
 const F = host.ffn;
 
-pub const Kernel = enum { post_quant, embed, rms_norm, layer_norm, gemm, heads, attention, swiglu };
+pub const Kernel = enum { post_quant, embed, rms_norm, layer_norm, gemm, heads, attention };
 const kernel_names = @typeInfo(Kernel).@"enum".field_names;
 
 /// image_decoder.metal's H3dShape.
@@ -43,7 +43,7 @@ pub const most_batch = 128;
 
 const Ref = struct { buf: mtl.Buffer, off: usize = 0 };
 
-/// A pass's buffers: the stream, normed rows, q | k | v (and later w1's rows), heads, attention, FFN, outputs.
+/// A pass's buffers: the stream, normed rows, q | k | v, heads, attention, the FFN's activations, outputs.
 const Views = struct { x: Ref, xn: Ref, wide: Ref, q: Ref, k: Ref, v: Ref, o: Ref, act: Ref, out: Ref, tok: Ref, cos: Ref, sin: Ref, origins: Ref };
 
 pub const Decoder = struct {
@@ -146,7 +146,7 @@ pub const Decoder = struct {
         if (d.scratch) |s| s.deinit();
         d.scratch = null;
         const m = batch * n;
-        const sizes = [_]usize{ m * W * 2, m * W * 2, m * 2 * F * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8 };
+        const sizes = [_]usize{ m * W * 2, m * W * 2, m * 3 * W * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8 };
         var total: usize = 0;
         for (sizes) |s| total += std.mem.alignForward(usize, s, 256);
         const buf = try d.device.buffer(total, mtl.ResourceOptions.shared);
@@ -204,7 +204,7 @@ pub const Decoder = struct {
         for (stages.from..stages.to) |i| d.layer(e, s, i);
         if (stages.final) {
             d.run(e, .layer_norm, &.{ v.x, d.param(d.plan.tail(.norm_w)), d.param(d.plan.tail(.norm_b)), v.xn }, s, mtl.Size.of(s.m, 1, 1), mtl.Size.of(256, 1, 1), true);
-            d.gemm(e, s, v.xn, d.plan.tail(.proj_w), d.plan.tail(.proj_b), null, v.out, host.patch, W);
+            d.gemm(e, s, v.xn, d.plan.tail(.proj_w), d.plan.tail(.proj_b), .plain, v.out, host.patch, W);
         }
         e.end();
         cb.commit();
@@ -227,13 +227,21 @@ pub const Decoder = struct {
         if (whole) e.dispatchGroups(grid, group) else e.dispatchThreads(grid, group);
     }
 
-    /// y = bf16(x w^T + b) for w [n, k] at `w`, or with `scale` y += bf16(that * scale) (the LayerScale residual).
-    fn gemm(d: *const Decoder, e: mtl.ComputeEncoder, s: Shape, x: Ref, w: usize, b: usize, scale: ?usize, y: Ref, n: usize, k: usize) void {
+    /// How a product's epilogue writes y: its rounded sum, added through LayerScale `scale` into y (mode 1), or
+    /// w1's SwiGLU over [gate n | value n] rows of w (mode 2).
+    const Epilogue = union(enum) { plain, layer_scale: usize, swiglu };
+
+    /// y = bf16(x w^T + b) for w [n, k] at `w`, finished as `how` says.
+    fn gemm(d: *const Decoder, e: mtl.ComputeEncoder, s: Shape, x: Ref, w: usize, b: usize, how: Epilogue, y: Ref, n: usize, k: usize) void {
         var p = s;
         p.n = @intCast(n);
         p.k = @intCast(k);
-        p.mode = @intFromBool(scale != null);
-        d.run(e, .gemm, &.{ x, d.param(w), d.param(b), d.param(scale orelse b), y }, p, mtl.Size.of(n / 64, (s.m + 63) / 64, 1), mtl.Size.of(128, 1, 1), true);
+        p.mode = @intFromEnum(std.meta.activeTag(how));
+        const scale = switch (how) {
+            .layer_scale => |at| at,
+            else => b,
+        };
+        d.run(e, .gemm, &.{ x, d.param(w), d.param(b), d.param(scale), y }, p, mtl.Size.of(n / 64, (s.m + 63) / 64, 1), mtl.Size.of(128, 1, 1), true);
     }
 
     /// Block `i` on the pass's stream in place.
@@ -243,14 +251,13 @@ pub const Decoder = struct {
         const rows = mtl.Size.of(s.m, 1, 1);
         const row_group = mtl.Size.of(256, 1, 1);
         d.run(e, .rms_norm, &.{ v.x, d.param(p.block(i, .norm1)), v.xn }, s, rows, row_group, true);
-        d.gemm(e, s, v.xn, p.block(i, .qkv_w), p.block(i, .qkv_b), null, v.wide, 3 * W, W);
+        d.gemm(e, s, v.xn, p.block(i, .qkv_w), p.block(i, .qkv_b), .plain, v.wide, 3 * W, W);
         d.run(e, .heads, &.{ v.wide, v.cos, v.sin, v.q, v.k, v.v }, s, mtl.Size.of(s.m, host.heads, 1), mtl.Size.of(32, 1, 1), true);
         d.run(e, .attention, &.{ v.q, v.k, v.v, v.o }, s, mtl.Size.of((s.tokens + 7) / 8, host.heads, s.tiles), mtl.Size.of(256, 1, 1), true);
-        d.gemm(e, s, v.o, p.block(i, .out_w), p.block(i, .out_b), p.block(i, .scale1), v.x, W, W);
+        d.gemm(e, s, v.o, p.block(i, .out_w), p.block(i, .out_b), .{ .layer_scale = p.block(i, .scale1) }, v.x, W, W);
         d.run(e, .rms_norm, &.{ v.x, d.param(p.block(i, .norm2)), v.xn }, s, rows, row_group, true);
-        d.gemm(e, s, v.xn, p.block(i, .w1_w), p.block(i, .w1_b), null, v.wide, 2 * F, W);
-        d.run(e, .swiglu, &.{ v.wide, v.act }, s, mtl.Size.of(F / 4, s.m, 1), mtl.Size.of(256, 1, 1), false);
-        d.gemm(e, s, v.act, p.block(i, .w2_w), p.block(i, .w2_b), p.block(i, .scale2), v.x, W, F);
+        d.gemm(e, s, v.xn, p.block(i, .w1_w), p.block(i, .w1_b), .swiglu, v.act, F, W);
+        d.gemm(e, s, v.act, p.block(i, .w2_w), p.block(i, .w2_b), .{ .layer_scale = p.block(i, .scale2) }, v.x, W, F);
     }
 
     /// The decoded picture [3, 16 rows, 16 cols] (normalised) of a raw latent: tiles in batches, blended in fp32.
