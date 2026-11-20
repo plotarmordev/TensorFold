@@ -186,10 +186,7 @@ pub const Model = struct {
 };
 
 pub fn parse(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(Model) {
-    const parsed = try std.json.parseFromSlice(Model, allocator, bytes, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
+    const parsed = try @import("core").json_read.parse(Model, allocator, bytes);
     errdefer parsed.deinit();
     try parsed.value.validate();
     return parsed;
