@@ -53,6 +53,7 @@ pub const Generation = struct {
     ignore_eos: bool,
     max_tokens: u32,
     single: bool, // parallel_tool_calls: false: a cut call is no call, so its prose ends as the whole reply's does
+    required: bool = false, // tool_choice "required" or a named function: the reply must call a tool
     token_ids: bool, // "return_token_ids": the response's tensorfold block carries the reply's token ids
     tools: []const Value,
     calls: ?tool_stream.Streamer = null,
@@ -322,10 +323,18 @@ pub const Generation = struct {
             reasoning = h.reasoning;
         }
         if (native == null) content = try tool_lfm2.dsml(a, content, g.tools, true);
-        // the model ended its turn inside a think block that never closed: its reasoning is also its answer (#3687)
-        const recovered = g.recover and reasoning != null and reply_text.pyStrip(content).len == 0 and g.endedOnEos(reason, raw, stopped) and
-            (if (native) |n| n.open_think and n.calls == null else neverClosed(text, g.srv.markers, close_at)) and !try g.callIn(reasoning.?);
-        if (recovered) content = reasoning.?;
+        // Recovery only when reasoning was asked: no tools, no grammar; the unclosed-think EOS text becomes content.
+        const recovered = g.recover and g.thinking and reasons and reasoning != null and
+            reply_text.pyStrip(content).len == 0 and
+            g.endedOnEos(reason, raw, stopped) and
+            !g.required and m.stats.grammar == null and
+            (g.calls == null or !g.calls.?.streamed) and
+            (if (native) |n| n.open_think and n.calls == null else neverClosed(text, g.srv.markers, close_at)) and
+            !try g.callIn(reasoning.?);
+        if (recovered) {
+            log.line("warning: a reply ended inside an unclosed think block on its own end-of-sequence, so its text is returned as the answer too", .{});
+            content = reasoning.?;
+        }
         if (g.sink) |sink| {
             const thought = g.streamed_reasoning.text.items;
             if (reasoning) |r| if (std.mem.startsWith(u8, r, thought) and r.len > thought.len)
