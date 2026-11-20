@@ -35,7 +35,8 @@ pub const Gemms = struct {
         try p.run(x, w, y, g.workspace.ptr, workspace_bytes, stream.handle);
     }
 
-    /// The shape's plan, running the algorithm cuBLASLt's heuristic picks for (canonical_rows, n, k).
+    /// The shape's plan, running the algorithm cuBLASLt's heuristic picks for (canonical_rows, n, k) when it
+    /// accepts this shape, else the one it picks for the shape itself.
     pub fn plan(g: *Gemms, rows: usize, n: usize, k: usize) !*const lt_.Linear {
         const got = try g.plans.getOrPut(g.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
@@ -45,9 +46,10 @@ pub const Gemms = struct {
         errdefer l.deinit();
         var checked: lt_.Heuristic = undefined;
         const s = g.lt.api.cublasLtMatmulAlgoCheck(l.handle, l.desc, l.a, l.b, l.c, l.c, &chosen, &checked);
-        if (s != 0 or checked.state != 0 or checked.workspace_size > workspace_bytes) return error.NoAlgorithm;
-        l.algo = chosen;
-        l.workspace_need = checked.workspace_size;
+        if (s == 0 and checked.state == 0 and checked.workspace_size <= workspace_bytes) {
+            l.algo = chosen;
+            l.workspace_need = checked.workspace_size;
+        }
         got.value_ptr.* = l;
         return got.value_ptr;
     }
