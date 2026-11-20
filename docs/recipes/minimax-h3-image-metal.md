@@ -48,6 +48,12 @@ the canvas, row count, reference count and tags; it assumes there are no referen
 rotary positions. Supporting edits would also require checking reference geometry and refreshing reference
 conditioning, not just comparing row counts.
 Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
+A reference-free prompt's states — its rows' ids, tags and the refiner's text rows — are kept across requests
+keyed by the prompt's exact bytes, least recently used inside a byte budget (`H3_PROMPT_CACHE` MiB, 256 by
+default; 0 keeps nothing). A repeated prompt skips the text encoder and refiner; an edit case's never leave the
+cache alone, so `--reference` prompts always encode. The key is the prompt bytes alone because the tokenizer,
+marks and geometry are checked at load and H3-Image has no negative prompt or CFG.
+
 A bad request prints its error and the server reads the next line.
 Start it with `profile` after `MODEL_DIR` to print each request's six steps by stage, each stage in its own command
 buffer: `rows in`, `norms`, `q k v gate`, `heads`, `attention`, `attention out`, `mlp in`, `mlp out`, `final`. The
@@ -1038,9 +1044,10 @@ outliers that one row scale cannot cover. fc1's weights grouped per 256 values o
 (`h3_gemm_32x64_i8`): `bind` quantizes every block's fc1 rows once (`h3_quantize_rows`, one simdgroup a row, its
 groups in turn) into a private 7.7 GiB copy, each block quantizes `xn` a row before its product, and each 256-deep
 block's int32 sums fold into fp32 at the weights' scales for that block, the row's scale last. The fold costs about
-0.10 s a step against the ungrouped quantizer. The other products stay bf16 and byte-identical. Only the released
-layout's (a picture's) fc1 runs in int8: a FastH3 clip's binding makes no copy and its fc1 stays the bf16 product,
-which `test-h3-gemm` holds bit for bit against MLX's kernel at whole and ragged rows.
+0.10 s a step against the ungrouped quantizer. The other products stay bf16 and byte-identical (until card 136 put
+them on the same kernel). Only the released layout's (a picture's) fc1 ran in int8: a FastH3 clip's binding makes no
+copy and its linears stay the bf16 product, which `test-h3-gemm` holds bit for bit against MLX's kernel at whole and
+ragged rows.
 
 `tf-h3-image-server` joins each binding's int8 copy to its weights' residency set while the binding lives: in shared
 storage a step's encode took 0.42 s, private 0.19 s, joined 0.04 s. Cold and warm requests give the same latent
@@ -1051,6 +1058,87 @@ Built from this card's head, the same server and request lines: warm 2048 pictur
 9.54 and 9.47, decoder 1.37 and 1.43), against 12.12 s in bf16 and episode 1's 13.03 s; the cold one 16.05 s with a 3.78 s bind. The
 receipts are kept outside the repo in `h3-image-runs/84/rec/ship*`. The 11 s target is not met; the decision on this
 card took the same picture at about 11.1-11.4 s over a changed one under 11 s.
+
+### Card 124: the Spark's wins on the Metal path
+
+Card 124 tried each Spark (CUDA) technique on this path. Same prompt, seed 42, six steps, one resident server; the
+gates are card 80's (cosine >= 0.99, PSNR >= 28.2 dB, mean pixel diff <= 4.1) plus byte-identity where arithmetic is
+unchanged. The stage table is `tf-h3-image-server profile` (the diagnostic mode: each stage waits, so its sum tracks
+GPU work, not wall): card 84's column is the profile recorded when the switch landed (a warm request on that tree at
+load 12, six steps summed); card 124's is the `runV`/`runW` profile on the shipped tree. Both columns are bf16
+everywhere but fc1's int8 — the stage deltas are run-to-run spread on a loaded machine, not the change's effect.
+
+| Stage | Card 84 (bf16 + int8 fc1) | Card 124 (shipped) |
+|---|---|---|
+| rows in | 0.02 s | 0.015 s |
+| norms | 0.14 s | 0.137 s |
+| q k v gate | 2.48 s | 2.436 s |
+| heads | 0.10 s | 0.102 s |
+| attention | 1.54 s | 1.529 s |
+| attention out | 0.89 s | 0.886 s |
+| mlp in | 2.40 s | 2.527 s |
+| mlp out | 2.20 s | 1.820 s |
+| final | 0.04 s | 0.012 s |
+
+1. **Block-scaled low-precision projections.** int8 qkv at a row's activation scale: warm totals 10.51/10.68/10.95 s
+   but PSNR 26.16, mean pixel diff 5.40, cosine 0.9915 — under the PSNR floor; reverted. The same product with
+   activation scales per 256 values of K (a `sa_groups` variant, `h3_gemm_32x64_i8s`, folding each block's int32 sums
+   at both operands' block scales): gates pass (cosine 0.9962, PSNR 29.81, mean 4.10) but warm totals 11.43/11.48/11.73
+   s — qkv's product saved only ~0.17 s against ~1 s of extra quantize and fold work; reverted. Extending the grouped
+   scheme to attention out and fc2 (all four projections int8): 11.74/12.85/13.32 s; reverted. On these shapes and
+   this GPU the int8 product's win (~2.2x on a probe) is smaller than the grouped fold's cost; only fc1's ungrouped
+   row scale still nets a saving (card 84).
+2. **Fused attention.** Already fused: `h3_attention` is one online-softmax kernel; nothing to port. It runs at
+   1.52-1.54 s of a ~9.5 s six-step total — about 96 TFLOP/s, the products' own rate, so a deeper pipeline is not the
+   next saving either.
+3. **One command buffer a step.** Tried as four blocks a buffer while the speech lock is free (a Spark-style larger
+   submit without queueing the whole forward ahead of speech), a block its own buffer once speech takes the lock.
+   Two findings: no wall gain (a step is GPU-bound at ~1.5 s; host encode already hides), and a latent change —
+   `.concurrent` encoders do not order dispatches, and the blocks rely on a buffer boundary for the last-writer
+   dependency into the next block's norm. Reverted; the per-block commit stands.
+4. **Prompt-row work.** `h3_gate_add` and `h3_final_norm` skip the `media` un-stepped rows via buffer offsets (the
+   kernels index `LINE`/`TIME` and `X`/`Y`/`normed` by their grid row, so offsetting every row-indexed buffer
+   keeps the stepped rows bit for bit; prompt rows are re-copied into `x` and condition rows re-projected by
+   `rows in` each step, and `normed` is read only by `rows out`). Latent sha1 `8b9e75b5…` before and after, warm
+   totals 11.57-11.96 s against card 84's 11.14-11.16 — the ~0.6% of rows is below run noise.
+
+The shipped tree's three warm runs, quoted (card 84's lines are `prompt 0.22, 6 steps 9.54/9.47, decoder 1.37/1.43`,
+above): `runU: prompt 0.22 s, case 0.01 s, transformer reused 0.00 s, 6 steps 10.32 s, decoder 1.41 s, total 11.96
+s`; `runV: prompt 0.22 s, case 0.01 s, transformer reused 0.00 s, 6 steps 10.03 s, decoder 1.36 s, total 11.62 s`;
+`runW: prompt 0.22 s, case 0.01 s, transformer reused 0.00 s, 6 steps 9.98 s, decoder 1.35 s, total 11.57 s`.
+Selftests pass (`zig build test test-golden`, h3 gemm/prompt/decoder selftests included).
+
+The 10% bar (about 10.0 s) is not met on this silicon: the step is GPU-bound at the products' rate, the remaining
+wall-GPU gap is ~0.1 s a step of host round-trips (latent up, velocity down, host Euler), and every int8 widening
+either fails the picture or costs its win in the fold. The lever worth a next card is a GPU-side Euler with the
+latent resident across steps (`h3_euler` exists on the CUDA path); that also deletes the per-step velocity
+download.
+
+### Card 136: int8 on all four linears
+
+Every picture linear — the fused qkv projection, attention out, fc1 and fc2 — runs on `h3_gemm_32x64_i8`, now with a
+scale per 256 values of K on **both** operands: card 124's measurements showed a row's activation scale breaks the
+picture (26.16 dB on qkv) while the grouped fold held the gates, and the same applies to SwiGLU's outliers on fc2's
+input. `bind` quantizes all four projections of every block once into private `wq`/`ws` (~20 GiB of int8 weights for
+the release checkpoint, joined to the weights' residency set as the fc1 copy was); each product quantizes its input
+into the shared `xq`/`xs` scratch, ordered by the same stage barriers that already bound the block. A clip's FastH3
+blocks make no copy and keep their bf16 products.
+
+A/B on this Mac, card 34's prompt, seed 42, warm 2048 requests on one resident server each (the latents below are
+the second of two warm requests; every run's latent was byte-identical within its own build):
+
+| | latent sha1 | cosine vs main | PSNR | mean diff | steps | total |
+|---|---|---|---|---|---|---|
+| main | `8b9e75b5…` (the pinned value) | — | — | — | 9.63/9.64 s | 12.50/13.27 s |
+| int8 all four | `776b443a…` | 0.996884 | 30.613 dB | 3.451 | 9.33 s | 11.18 s |
+
+The picture holds card 80's rule with more headroom than fc1's row-scaled landing (28.240 dB): the grouped fold pays
+its accuracy back. The steps run ~0.3 s faster than this main build's, where card 124's all-four trial measured
+slower (11.74-13.32 s totals) — this kernel takes one activation scale per lane row per K block, beside the column
+scales it already read. The bind pays ~5 s once (20 GiB to quantize against 7.7); a resident server amortizes it.
+`zig build test test-golden` is green apart from `message_starts_proof_test`'s timing bound, which fails identically
+on unmodified main; the contract's int8 product serves all four projection shapes against float64 (worst 0.995 of
+the bound).
 
 ### Next, ranked
 

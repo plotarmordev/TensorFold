@@ -1,7 +1,7 @@
 // H3's products at 64 rows x 128 columns a threadgroup, each warp 32 x 64: every loaded fragment feeds two MMAs
-// instead of one. Each output's K chain is MLX's, 32-deep steps in order. The int8 form (fc1) takes A quantized a row
-// and B a row per 256 values of K, both by h3_quantize_rows: each 256-deep block's int32 sums fold into fp32 at B's
-// scales for that block, A's row scale last.
+// instead of one. Each output's K chain is MLX's, 32-deep steps in order. The int8 form takes both operands
+// quantized by h3_quantize_rows a scale per 256 values of K: each 256-deep block's int32 sums fold into fp32 at
+// both scales for that block.
 namespace tfp {
 
 template <bool BOUND, typename T, typename C>
@@ -35,7 +35,7 @@ inline void h3_step(thread frag<C> (&acc)[2][4], const device T* A, const device
 }
 
 // D [P[0], P[1]] = A [P[0], P[2]] * B^T [P[1], P[2]], N a multiple of 128; AM false bounds the rows. Int8 operands
-// come with SA [P[0]], A's row scales, and SB [P[1], P[9]], B's per 256-deep block, K a multiple of 256.
+// come with SA [P[0], P[9]] and SB [P[1], P[9]], a scale per 256-deep block of K, K a multiple of 256.
 template <bool AM, typename T, typename C>
 inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, const device int* P, const device float* SA,
                     const device float* SB, uint3 tg, uint sg, uint lane) {
@@ -68,14 +68,17 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
       for (int kk = 0; kk < 256; kk += 32) h3_step<true>(acc, A, B, lda, ldb, kk, 32, rows, cols, home);
     }
     if (I8 && live) {
-      // lane columns col + 16 n + home.x + (e & 3), each with its scale for this block
+      // lane columns col + 16 n + home.x + (e & 3), each with its scale for this block, and rows row + 16 m +
+      // home.y or 8 below; a ragged tile's dead rows read the last row's scale
       TF_UNROLL
       for (short n = 0; n < 4; n++) {
         const device float* s = SB + long(col + 16 * n + home.x) * kblocks + kb;
         TF_UNROLL
         for (short m = 0; m < 2; m++) {
+          const int r = row + 16 * m + home.y, last = P[0] - 1;
+          const float r0 = SA[long(min(r, last)) * kblocks + kb], r1 = SA[long(min(r + 8, last)) * kblocks + kb];
           TF_UNROLL
-          for (short e = 0; e < 8; e++) total[m][n][e] += float(acc[m][n][e]) * s[(e & 3) * kblocks];
+          for (short e = 0; e < 8; e++) total[m][n][e] += float(acc[m][n][e]) * s[(e & 3) * kblocks] * (e < 4 ? r0 : r1);
           acc[m][n] = frag<C>(0);
         }
       }
@@ -94,13 +97,9 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
   if (!live) return;
   TF_UNROLL
   for (short m = 0; m < 2; m++) {
-    // the lane's rows row + 16 m + home.y and 8 below; a ragged tile's dead rows read the last row's scale
-    const int r = row + 16 * m + home.y, last = P[0] - 1;
-    const float r0 = I8 ? SA[min(r, last)] : 1, r1 = I8 ? SA[min(r + 8, last)] : 1;
     TF_UNROLL
     for (short n = 0; n < 4; n++) {
-      frag<float> f = frag<float>(acc[m][n]);
-      if (I8) TF_UNROLL for (short e = 0; e < 8; e++) f[e] = total[m][n][e] * (e < 4 ? r0 : r1);
+      const frag<float> f = I8 ? total[m][n] : frag<float>(acc[m][n]);
       if (full) frag_put(f, D, ldd, 16 * m, 16 * n, home);
       else frag_put_in(f, D, ldd, 16 * m, 16 * n, home, rows, cols);
     }

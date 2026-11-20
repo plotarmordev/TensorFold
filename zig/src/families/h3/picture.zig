@@ -108,6 +108,70 @@ pub fn roundTrip(a: std.mem.Allocator, raw: []const f64) !Pdd {
 pub fn euler(x: []f32, velocity: []const f32, delta: f32) void {
     for (x, velocity) |*o, v| o.* += delta * v;
 }
+/// The schedule mmh3's `--draft-steps` runs (its `renoised_schedule` in src/image.rs): the first
+/// `drafts` steps of `pdd` on the half-size canvas, the enlarged draft noised to `renoise` (or to the
+/// next step's sigma when `renoise` is null), and the rest of the steps at full size. `drafts` may
+/// cover every step only with `renoise`, which leaves one full-size step from it to 0. Sigmas keep
+/// pdd's float32 round trip: each renoised sigma is itself a distilled head's sigma or a mid-sigma,
+/// and timesteps are `1 - sigma` exactly.
+pub fn draftSchedule(a: std.mem.Allocator, p: Pdd, drafts: usize, renoise: ?f32) !Pdd {
+    const steps = p.steps();
+    if (drafts == 0 or drafts > steps) return error.H3BadDraftSteps;
+    if (drafts == steps and renoise == null) return error.H3DraftLeavesNoStep;
+    // mmh3's bounds: the renoise sits strictly below the last draft step's sigma; the full-size
+    // sigmas resume from the first undrafted entry under it (sigmas[draft_steps..], filtered)
+    if (renoise) |r| if (!std.math.isFinite(r) or r <= 0 or r >= p.sigmas[drafts - 1]) return error.H3BadRenoiseSigma;
+    var sigmas: std.ArrayList(f32) = .empty;
+    try sigmas.appendSlice(a, p.sigmas[0..drafts]);
+    try sigmas.append(a, renoise orelse p.sigmas[drafts]);
+    const base = sigmas.items[drafts];
+    for (p.sigmas[drafts..]) |s| if (s < base) try sigmas.append(a, s);
+    const out = try sigmas.toOwnedSlice(a);
+    const timesteps = try a.alloc(f32, out.len - 1);
+    const deltas = try a.alloc(f32, out.len - 1);
+    for (timesteps, out[0 .. out.len - 1]) |*t, s| t.* = 1.0 - s;
+    for (deltas, 0..) |*d, k| d.* = out[k] - out[k + 1];
+    return .{ .sigmas = out, .timesteps = timesteps, .deltas = deltas };
+}
+
+/// One step's video output head mix, mmh3's `step_heads` (crates/mmh3-core/src/dit/config.rs): the
+/// heads of the distilled grid intervals the step's [next, sigma] span covers, weighted by interval
+/// length. An on-grid step gets its own head alone; an off-grid one blends the spanned heads, as
+/// ComfyUI takes them. `first`..`last` are the contiguous distilled heads, `weights` their shares
+/// (sum 1); the leading `last - first + 1` entries hold them.
+pub const HeadSpan = struct { first: usize, last: usize, weights: [8]f32 };
+
+/// `grid` is the checkpoint's distilled sigmas with the 0, `schedule` the run's sigmas.
+pub fn headSpan(grid: []const f32, schedule: []const f32, s: usize) !HeadSpan {
+    const nearest = struct {
+        fn of(points: []const f32, value: f32) usize {
+            var best: usize = 0;
+            var gap: f32 = std.math.floatMax(f32);
+            for (points, 0..) |p, i| {
+                const g = @abs(p - value);
+                if (g < gap) {
+                    gap = g;
+                    best = i;
+                }
+            }
+            return best;
+        }
+    }.of;
+    const heads = grid.len - 1; // the last grid entry is the 0, not a head
+    if (heads < 2 or schedule.len < 2 or s >= schedule.len - 1) return error.H3BadSchedule;
+    const sigma = schedule[s];
+    const next = schedule[@min(nearest(schedule, sigma) + 1, schedule.len - 1)];
+    const first = @min(nearest(grid, sigma), heads - 1);
+    // mmh3's stop: the first grid index past the step's end, at least one past the span's start
+    const last = @max(nearest(grid, next), first + 1) - 1;
+    if (last < first or last - first + 1 > 8) return error.H3BadHeadSpan;
+    var weights: [8]f32 = @splat(0);
+    var total: f64 = 0;
+    for (first..last + 1) |i| total += @as(f64, grid[i]) - @as(f64, grid[i + 1]);
+    if (total <= 0) return error.H3BadHeadSpan;
+    for (first..last + 1, 0..) |i, w| weights[w] = @floatCast((@as(f64, grid[i]) - @as(f64, grid[i + 1])) / total);
+    return .{ .first = first, .last = last, .weights = weights };
+}
 
 /// A picture block's latent grid, in cells (each side even: two cells a row's side).
 pub const Grid = struct { rows: usize, columns: usize };

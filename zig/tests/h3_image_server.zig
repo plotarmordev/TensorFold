@@ -12,7 +12,8 @@ const usage =
     \\  then one request a line on stdin: WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt
     \\  each writes OUT_PREFIX.safetensors, .h3case.safetensors, .rows.f32, .latent.f32 and .png as
     \\  tf-h3-image-prompt, tf-h3-image (free) and tf-h3-image-decoder do, and prints a timing line;
-    \\  a request with the last one's canvas, rows and tags reuses its transformer binding
+    \\  a request with the last one's canvas, rows and tags reuses its transformer binding;
+    \\  a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256)
     \\  profile: each request's six steps by stage, each stage in its own command buffer (slower; diagnostic)
     \\
 ;
@@ -35,11 +36,11 @@ const Binding = struct {
         const model = try folder.bind(arena.allocator(), arena.allocator(), case);
         errdefer model.release();
         const own_tags = try arena.allocator().dupe(i32, tags);
-        // the binding's int8 fc1 copy joins the weights' set while it lives: a step's encode drops from 0.19 to 0.04 s
+        // the binding's int8 weights join the weights' set while it lives: a step's encode drops from 0.19 to 0.04 s
         if (weights) |set| {
             model.queue.addResidencySet(set);
-            set.add(model.fc1_q);
-            set.add(model.fc1_s);
+            set.add(model.wq);
+            set.add(model.ws);
             set.commit();
         }
         return .{ .arena = arena, .model = model, .canvas = case.canvas, .rows = case.rows, .references = case.layout.references.len, .tags = own_tags, .weights = weights };
@@ -52,8 +53,8 @@ const Binding = struct {
 
     fn release(b: *Binding) void {
         if (b.weights) |set| {
-            set.remove(b.model.fc1_q);
-            set.remove(b.model.fc1_s);
+            set.remove(b.model.wq);
+            set.remove(b.model.ws);
             set.commit();
         }
         b.model.release();
