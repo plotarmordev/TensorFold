@@ -1320,6 +1320,44 @@ The window confirms the quiet round: even on pure step GPU time (9.24 vs 9.24 s 
 normal / 7.8 s fast totals under this host load (8.8-45.0); the best warm totals in the window were main 12.40 s and
 head 12.32 s at six steps, and main 11.00 s (`timing_valid=false`; 11.62 s valid) and head 12.20 s in fast mode.
 
+### Card 151: a faster `h3_attention`, measured and reverted
+
+`h3_attention` already runs q·kᵀ and p·v on the tensor units (`matmul2d`, 8 simdgroups, 64-row query tiles) with an
+fp32 online softmax. A throwaway microbench ran it at the warm 2048 fox geometry (56 heads, 65 key tiles, 4,122 rows,
+0.50 TFLOP a call): **5.27-5.29 ms, 94 TFLOP/s**. Times 300 block calls that is 1.58 s, matching card 124's profile
+stage (1.53 s of ~9.5 s, about 16% of the six steps). Two variants under `/tmp/tensorfold-model.lock`, load 7-9:
+
+| Variant | Best | TFLOP/s | Output vs current |
+|---|---|---|---|
+| current: 3 barriers a key tile | 5.27-5.29 ms | 94 | — |
+| row max and sum by `simd_shuffle_xor` (the row's 4 threads are lane neighbours): 2 barriers, no `tops` tile | 4.83-4.89 ms | 102 | max relative 7e-5 |
+| 32-row tiles on 16x32 simdgroup fragments, 2 simdgroups (the Spark kernel's shape) | 21.5 ms | 23 | abandoned: 4x slower |
+
+The shuffle variant, end to end: warm 2048 on a resident `tf-h3-image-server`, seed 42, two prompts not used before
+(an origami crane, a teapot), one cold and three warm requests each, against current main's build in the same
+session. Each server held the lock for its own lifetime. Load average is shown before → after each request:
+
+| Build, prompt | Warm request (6 steps, decoder, total) | Load |
+|---|---|---|
+| main, crane | 9.23 / 1.44 / 10.67 s; 9.21 / 1.46 / 10.68 s; 9.23 / 1.45 / 10.68 s | 6.0 → 7.8 |
+| shuffles, crane | 9.20 / 1.46 / 10.66 s; 9.22 / 1.45 / 10.68 s; 9.20 / 1.45 / 10.65 s | 8.6 → 10.9 |
+| main, teapot | 9.26 / 1.37 / 10.64 s; 9.21 / 1.39 / 10.61 s; 9.21 / 1.37 / 10.58 s | 9.5 → 6.4 |
+| shuffles, teapot | 9.24 / 1.36 / 10.62 s; 9.18 / 1.36 / 10.55 s; 9.18 / 1.36 / 10.55 s | 12.1 → 10.0 |
+| main, crane, `--draft-steps 3` | 6.08 / 1.40 / 7.49 s; 6.09 / 1.38 / 7.48 s; 6.14 / 1.39 / 7.55 s | 5.6 → 4.2 |
+| shuffles, crane, `--draft-steps 3` | 6.15 / 1.39 / 7.55 s; 6.09 / 1.38 / 7.48 s; 6.08 / 1.39 / 7.49 s | 4.2 → 4.0 |
+
+The colds were 11.86-11.96 s (main) and 11.62-11.88 s (shuffles). Contention spoiled the first teapot pair (main's
+steps 9.36-9.63 s with decoder 2.0 s; the shuffles' cold 18.2 s). Both builds were rerun, and the spoiled logs sit next
+to the receipts as `*.spoiled.server.log`.
+
+**Not kept.** The 0.4 ms a call measured alone would save ~0.13 s a picture, but warm steps differ by at most 0.04 s.
+The rows' max and sum are reduced in a different order, so the picture also changes: against main's warm latent and
+PNG on the same prompt, the crane has cosine 0.9923 with mean pixel diff 5.17. The teapot has cosine **0.9889** with mean
+pixel diff 6.38, under card 80's 0.99 and over its 4.1. Six steps amplify the 7e-5 per-call difference. Larger
+query tiles were not tried: a 64 x 64 tile's fp32 scores and bf16 probabilities take 24 KiB of threadgroup memory,
+and 128 query rows would need 48 KiB against the 32 KiB limit. The kernel is unchanged from main. The receipts
+(`ab151.sh`, server logs, latents and PNGs) are in `h3-image-runs/151`, outside the repo.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
