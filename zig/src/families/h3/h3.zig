@@ -10,6 +10,7 @@ pub const modulation = @import("modulation.zig");
 pub const schedule = @import("schedule.zig");
 pub const geometry = @import("geometry.zig");
 pub const picture = @import("picture.zig");
+pub const cascade = @import("cascade.zig");
 pub const picture_vae = @import("picture_vae.zig");
 
 pub const Tensors = tensors.Tensors;
