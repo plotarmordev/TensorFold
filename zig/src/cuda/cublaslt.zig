@@ -21,9 +21,11 @@ pub const Heuristic = extern struct {
     reserved: [4]c_int,
 };
 
-pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14 };
+pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14, e4m3 = 28, f4 = cuda_r_4f_e2m1 };
 pub const compute_32f: c_int = 68;
 pub const compute_32i: c_int = 72;
+/// CUDA_R_4F_E2M1 (library_types.h): e2m1 values, two a byte, cuBLASLt's block-scaled FP4 operand.
+pub const cuda_r_4f_e2m1: c_int = 33;
 pub const Op = enum(c_int) { n = 0, t = 1 };
 pub const Order = enum(c_int) { col = 0, row = 1 };
 
@@ -31,6 +33,15 @@ pub const desc_transa: c_int = 3;
 pub const desc_transb: c_int = 4;
 pub const desc_epilogue: c_int = 7;
 pub const desc_bias_pointer: c_int = 8;
+pub const desc_a_scale_pointer: c_int = 17;
+pub const desc_b_scale_pointer: c_int = 18;
+pub const desc_a_scale_mode: c_int = 31;
+pub const desc_b_scale_mode: c_int = 32;
+/// cublasLtMatmulMatrixScale_t's CUBLASLT_MATMUL_MATRIX_SCALE_VEC16_UE4M3: one e4m3 scale every 16 values.
+pub const scale_vec16_ue4m3: c_int = 1;
+/// cublasLtMatmulMatrixScale_t's CUBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0.
+pub const scale_vec32_ue8m0: c_int = 2;
+
 pub const layout_order: c_int = 1;
 pub const layout_batch_count: c_int = 5;
 pub const layout_batch_stride: c_int = 6;
@@ -239,6 +250,9 @@ pub const Spec = struct {
     sa: u64 = 0,
     sb: u64 = 0,
     sc: u64 = 0,
+    /// The block-scaled operands' scale vectors (`.f4`): needed inside `init`, the heuristic refuses them without.
+    scale_a: abi.DevicePtr = 0,
+    scale_b: abi.DevicePtr = 0,
 };
 
 /// A planned `Spec` on a shared handle: the heuristic's first algorithm within the workspace limit.
@@ -265,7 +279,11 @@ pub const Gemm = struct {
         const tb: c_int = @backingInt(s.tb);
         try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transa, &ta, @sizeOf(c_int)), "set transa");
         try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, desc_transb, &tb, @sizeOf(c_int)), "set transb");
-        // op(A) is m x k and op(B) k x n: a transposed operand is stored the other way round
+        if (s.a == .f4) {
+            for ([_]c_int{ desc_a_scale_mode, desc_b_scale_mode }) |mode|
+                try lt.check(api.cublasLtMatmulDescSetAttribute(g.desc, mode, &scale_vec16_ue4m3, @sizeOf(c_int)), "set scale mode");
+            try g.setScales(s.scale_a, s.scale_b);
+        }
         g.a = try layout(lt, s.a, if (s.ta == .n) s.m else s.k, if (s.ta == .n) s.k else s.m, s.lda, s.batch, s.sa);
         errdefer _ = api.cublasLtMatrixLayoutDestroy(g.a);
         g.b = try layout(lt, s.b, if (s.tb == .n) s.k else s.n, if (s.tb == .n) s.n else s.k, s.ldb, s.batch, s.sb);
@@ -307,6 +325,21 @@ pub const Gemm = struct {
         const one: i32 = 1;
         const zero: i32 = 0;
         try g.lt.check(g.lt.api.cublasLtMatmul(g.handle, g.desc, &one, a, g.a, b, g.b, &zero, c, g.c, c, g.c, &g.algo, workspace, workspace_len, stream), "cublasLtMatmul");
+    }
+
+    /// C = op(A) op(B) of NVFP4 operands, on a plan whose A and B are `.f4`: `sa` and `sb` are their e4m3
+    /// scales in cuBLASLt's 128 x 4 tiled layout, set per run (the buffers can move between reserves).
+    pub fn runNvfp4(g: *const Gemm, a: abi.DevicePtr, sa: abi.DevicePtr, b: abi.DevicePtr, sb: abi.DevicePtr, c: abi.DevicePtr, workspace: abi.DevicePtr, workspace_len: usize, stream: abi.Stream) Error!void {
+        if (workspace_len < g.workspace_need) return error.Invalid;
+        try g.setScales(sa, sb);
+        const one: f32 = 1;
+        const zero: f32 = 0;
+        try g.lt.check(g.lt.api.cublasLtMatmul(g.handle, g.desc, &one, a, g.a, b, g.b, &zero, c, g.c, c, g.c, &g.algo, workspace, workspace_len, stream), "cublasLtMatmul");
+    }
+
+    fn setScales(g: *const Gemm, sa: abi.DevicePtr, sb: abi.DevicePtr) Error!void {
+        try g.lt.check(g.lt.api.cublasLtMatmulDescSetAttribute(g.desc, desc_a_scale_pointer, &sa, @sizeOf(abi.DevicePtr)), "set A scales");
+        try g.lt.check(g.lt.api.cublasLtMatmulDescSetAttribute(g.desc, desc_b_scale_pointer, &sb, @sizeOf(abi.DevicePtr)), "set B scales");
     }
 
     fn layout(lt: *const Library, t: DataType, rows: u64, cols: u64, ld: u64, batch: u32, stride: u64) Error!Layout {
