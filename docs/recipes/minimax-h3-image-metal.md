@@ -449,8 +449,8 @@ Attention here is dense, so no routing floor applies. FastH3's 0.990 at step 1 c
 ## Decoder
 
 `tf-h3-image-decoder` turns `tf-h3-image`'s latent into a picture on Metal. It runs the VAE's 2D ViT decoder (24 blocks
-of 1,024, 16 heads of 64, 4 register tokens) on any Apple GPU. Its kernels compile from source when it loads and use no
-tensor units.
+of 1,024, 16 heads of 64, 4 register tokens) on any Apple GPU. Its kernels compile from source when it loads; the
+products run on `nax.h`'s fragments, the M5's tensor units where the GPU has them and simdgroup matrices elsewhere.
 
 **What runs:**
 
@@ -473,7 +473,7 @@ tensor units.
 
 - Every parameter is rounded from the file's F32 to bf16 when loaded, and the latent is rounded to bf16 at
   `post_quant_conv`.
-- Products are bf16 with float32 sums, the bias added before the one rounding.
+- Products are bf16 (exact in the fragments' float32) with float32 sums, the bias added before the one rounding.
 - RMSNorm's statistics and weight are float32, rounded once; q and k are RMS-normed with no weight.
 - The rotary ids and 2π·id are in bf16 arithmetic, the angles in float32, cos and sin in bf16.
 - Rotation, LayerScale, the residuals and SiLU are bf16 elementwise.
@@ -1196,6 +1196,57 @@ cold then three warm requests each, load average 24-40: head warm 11.13-11.74 s 
 change is flat — the ~0.1 s a step of host round-trips is small next to a 1.6 s step — while the GPU-pass meter
 shows the decoder's 121 tiles at 1.08 s in one pass against 1.36 s over two, and the tail kernels' launches replace
 two dispatches and a buffer. The win is structural, not a new warm number.
+
+### Card 152: the decoder on the tensor units
+
+A per-kernel trace of main's warm 2048 decode (`fc8aa2d45`, one dispatch a command buffer timed to completion, a
+throwaway patch not committed; its total runs over the one-buffer pass) put the 1.4 s here:
+
+| Kernel | main |
+|---|---|
+| `h3d_gemm` (qkv, out, w1, w2 of 24 blocks, `proj_out`) | 1,046 ms |
+| `h3d_attention` | 201 ms |
+| `h3d_post_quant` | 51 ms |
+| `h3d_rms_norm` | 42 ms |
+| `h3d_swiglu` | 40 ms |
+| `h3d_heads` | 34 ms |
+| `h3d_embed`, `h3d_layer_norm` | 2 ms |
+
+The products are three quarters of it. In the one-buffer pass the GPU meter falls from 1.08 s to 0.56 s: the gemm runs on
+`nax.h`'s fragments (`mma_16x32`, bf16 operands straight from device memory, float32 sums, no threadgroup staging),
+`h3d_swiglu` takes four values a thread and `h3d_attention` reads k four wide and v two wide. Launch counts were unchanged: one pass already batches all 121
+tiles. The products remain bf16 rather than FP16: bf16 operands give exact products in the fragments' float32 sums at the
+same rounding points. FP16 would add a conversion on every bf16 activation and weight, and narrow their range. After the pass, unpatchify, the blend and
+`picture_writer`'s PNG take 0.25 s at 2048. The writer is outside this card's files, and parallel deflate bands
+would change the compressed bytes.
+
+Gates: `tf-h3-image-contract` 31 kernels pass gates 1-4, all 34 controls go red as planted, and there are no limit problems;
+`tf-h3-image-decoder selftest` passes (24 blocks relative 1.48e-2, picture bytes at most 1 apart); `zig build test
+test-golden` exits 0. Episode 1's latent decoded by this card versus main: 56.6 dB, mean 0.14, max 5. The warm
+latents are bit-identical to main's on every request below. The cold picture against episode 1's Mac PNG
+(`904814d6…`): latent cosine 0.9955, 28.67 dB, mean 3.90 for both builds.
+
+Warm A/B, M5 Ultra, ReleaseFast `tf-h3-image-server` per build, base `fc8aa2d45`, one session per build and mode.
+Each session ran the seed-42 pilot once, then three unseen prompts (a lighthouse keeper, an autumn market, a rooftop
+greenhouse; seeds 11-13). Stage seconds: prompt / transformer bind / 6 steps / decoder / total:
+
+| Run | Load | main | this card |
+|---|---|---|---|
+| normal, pilot | 9.2 / 6.8 | 0.28 / 0.65 / 9.25 / 1.37 / 11.56 | 0.29 / 0.65 / 9.81 / 0.85 / 11.60 |
+| normal, unseen 1 | | 0.22 / 0.75 / 9.27 / 1.36 / 11.61 | 0.22 / 0.71 / 9.54 / 0.82 / 11.30 |
+| normal, unseen 2 | | 0.22 / 0.75 / 9.27 / 1.35 / 11.59 | 0.22 / 0.72 / 9.53 / 0.80 / 11.28 |
+| normal, unseen 3 | | 0.22 / 0.74 / 9.27 / 1.37 / 11.61 | 0.22 / 0.71 / 9.53 / 0.81 / 11.28 |
+| fast (`--draft-steps 3`), pilot | 11.6 / 11.7 | 0.23 / 0.88 / 7.97 / 1.41 / 10.50 | 0.29 / 0.67 / 7.58 / 0.77 / 9.31 |
+| fast, unseen 1 | | 0.22 / 0.68 / 7.74 / 1.39 / 10.04 | 0.22 / 0.72 / 7.72 / 0.80 / 9.46 |
+| fast, unseen 2 | | 0.22 / 0.76 / 8.19 / 1.35 / 10.53 | 0.22 / 0.76 / 7.66 / 0.78 / 9.42 |
+| fast, unseen 3 | | 0.22 / 0.71 / 7.69 / 1.37 / 10.00 | 0.22 / 0.78 / 7.73 / 0.77 / 9.51 |
+
+Load is the one-minute average at the start of each session (main / this card). The decoder stage falls from
+1.35-1.41 s to 0.77-0.85 s, about 0.55 s per picture. The transformer is unchanged, and its latents are
+bit-identical. The normal session's steps ran 0.26 s slower on this card's side; the fast sessions' steps match.
+That drift is not this card's code. The first pass of all four sessions ran at load 40-65, while this worktree's
+own `zig build test` was running, and the base fast session reached 21.7-26.1 s. All four were rerun after the suite
+finished, and the table shows those reruns. The first pass's decoder stage matched them: 1.51-2.09 s on main, 1.32-1.50 s here.
 ### Next, ranked
 
 | # | Idea | Size | Basis |
