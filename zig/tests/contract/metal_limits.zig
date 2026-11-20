@@ -244,10 +244,13 @@ fn resolve(a: std.mem.Allocator, device: mtl.Device, d: limits.MetalLaunch, comp
         if (!assemble) return undefined;
         text = if (std.mem.eql(u8, fun, "tf_sattn_nax")) sources.flashnext_attn else sources.flashnext_qmm6;
         frags = true;
+    } else if (std.mem.startsWith(u8, d.name, "minimax image decoder ")) {
+        if (!assemble) return undefined;
+        const decoder = @import("h3_image_decoder_kernels");
+        return .{ .decl = d, .function = fun, .here = try decoder.assemble(a, device.tensorUnits(), decoder.source), .pre_m5 = decoder.source };
     } else if (std.mem.startsWith(u8, d.name, "minimax image ")) {
         if (!assemble) return undefined;
-        text = if (has(d.name, " encoder ")) @import("h3_image_encoder_kernels").source else if (has(d.name, " prompt ")) @import("h3_prompt_kernels").source else @import("h3_image_decoder_kernels").source;
-        frags = !has(d.name, " encoder ") and !has(d.name, " prompt ");
+        text = if (has(d.name, " encoder ")) @import("h3_image_encoder_kernels").source else @import("h3_prompt_kernels").source;
     } else if (std.mem.startsWith(u8, d.name, "h3 product ")) {
         if (!assemble) return undefined;
         // h3_gemm.metal's products use gemm_nax's fragments, joined ahead of it as source.zig joins them at load

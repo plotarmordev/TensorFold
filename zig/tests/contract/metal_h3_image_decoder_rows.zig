@@ -1,4 +1,4 @@
-//! h3d_post_quant and h3d_embed under the contract: each output against float64 at its bf16 points.
+//! h3d_post_quant, h3d_embed and h3d_swiglu under the contract: each output against float64 at its bf16 points.
 const std = @import("std");
 const mtl = @import("metal");
 const parts = @import("metal_h3_image_decoder_parts.zig");
@@ -11,6 +11,7 @@ const bf = parts.bf;
 const value = parts.value;
 const C = parts.channels;
 const W = parts.W;
+const F = parts.F;
 
 /// Gate 4's weights: channels 12-23 negate 0-11 plus 1 on 4, against inputs repeating 0-11: exact fp32, small sums.
 fn mirror(rng: std.Random, w: []u16, outs: usize) void {
@@ -224,5 +225,80 @@ pub const Embed = struct {
                 ends.put(want, mag, row + j, v, Range.of(v));
             }
         };
+    }
+};
+
+// --- h3d_swiglu: act = bf16(bf16(SiLU(gate)) * value), each row [gate 4,096 | value 4,096] -------------------------
+
+pub const Swiglu = struct {
+    wide: []u16 = &.{},
+
+    fn none(_: c.Shape) usize {
+        return 0;
+    }
+
+    /// Rows: rows (one tile, the batch of 16, a small tile); n: the 4,096 outputs a row; k: 1, no sums.
+    pub fn spec(name: []const u8, _: Swiglu) c.Spec {
+        return .{
+            .name = name,
+            .accum = .none,
+            .depth = none,
+            .ops = 2 * (parts.exp_ulps + parts.div_ulps) + 2,
+            .mids = 1,
+            .out = .bf16,
+            .served = &.{ .{ .rows = 261, .n = F, .k = 1 }, .{ .rows = 4176, .n = F, .k = 1 }, .{ .rows = 65, .n = F, .k = 1 } },
+        };
+    }
+
+    pub fn prepare(k: *Swiglu, t: anytype, rng: std.Random) !bool {
+        const s = t.shape;
+        if (s.rows == 0 or s.n != F or s.k != 1) return false;
+        k.wide = try t.host().alloc(u16, s.rows * 2 * F);
+        for (0..s.rows) |r| {
+            parts.uniform(rng, k.wide[r * 2 * F ..][0..F], -6, 6);
+            parts.uniform(rng, k.wide[r * 2 * F + F ..][0..F], -3, 3);
+        }
+        if (t.fill == .nonfinite) {
+            // NaN, +Inf and -Inf gates, then both infinities as values in one row
+            const at = [_][2]usize{ .{ 0, 5 }, .{ 1, 9 }, .{ 2, 100 }, .{ 3, F + 7 }, .{ 3, F + 8 } };
+            for (at, parts.plants) |p, b| if (p[0] < s.rows) {
+                k.wide[p[0] * 2 * F + p[1]] = b;
+            };
+        }
+        try t.input(k.wide);
+        try t.output(s.rows * F * 2);
+        return true;
+    }
+
+    /// A block's FFN: threads [4,096, rows] in groups of 256.
+    pub fn launch(_: *Swiglu, t: anytype, e: mtl.ComputeEncoder) void {
+        const s = t.shape;
+        for (0..2) |i| t.bind(e, i, i);
+        e.setValue(parts.Shape{ .m = @intCast(s.rows) }, 2);
+        e.dispatchThreads(mtl.Size.of(F, s.rows, 1), mtl.Size.of(256, 1, 1));
+    }
+
+    pub fn count(_: *Swiglu, s: c.Shape) usize {
+        return s.rows * F;
+    }
+
+    const Job = struct {
+        wide: []const u16,
+        ends: *Ends,
+        want: []f64,
+        mag: []f64,
+
+        fn rows(j: Job, from: usize, to: usize) void {
+            for (from..to) |r| for (0..F) |i| {
+                const gv = value(j.wide[r * 2 * F + i]);
+                const vv = value(j.wide[r * 2 * F + F + i]);
+                const act = parts.silu(gv).bf16().mul(Range.of(vv)).fp32(0.5).bf16();
+                j.ends.put(j.want, j.mag, r * F + i, bf(bf(gv / (1 + @exp(-gv))) * vv), act);
+            };
+        }
+    };
+
+    pub fn outputs(k: *Swiglu, t: anytype, _: Sum, ends: *Ends, want: []f64, mag: []f64) !void {
+        parts.parallel(t.shape.rows, Job{ .wide = k.wide, .ends = ends, .want = want, .mag = mag }, Job.rows);
     }
 };

@@ -1,4 +1,5 @@
-//! MiniMax-H3-Image's image decoder on Metal: the VAE's 2D ViT decoder in bf16 on any Apple GPU, tiles in batches.
+//! MiniMax-H3-Image's image decoder on Metal: the VAE's 2D ViT decoder in bf16, tiles in batches. Tensor-unit
+//! products with SwiGLU folded into w1's on the M5; main's simdgroup-matrix products and separate SwiGLU elsewhere.
 const std = @import("std");
 const mtl = @import("metal");
 const kernels = @import("h3_image_decoder_kernels");
@@ -12,7 +13,7 @@ const read_ahead = @import("read_ahead.zig");
 const W = host.width;
 const F = host.ffn;
 
-pub const Kernel = enum { post_quant, embed, rms_norm, layer_norm, gemm, heads, attention };
+pub const Kernel = enum { post_quant, embed, rms_norm, layer_norm, gemm, heads, attention, swiglu };
 const kernel_names = @typeInfo(Kernel).@"enum".field_names;
 
 /// image_decoder.metal's H3dShape.
@@ -43,7 +44,8 @@ pub const most_batch = 128;
 
 const Ref = struct { buf: mtl.Buffer, off: usize = 0 };
 
-/// A pass's buffers: the stream, normed rows, q | k | v, heads, attention, the FFN's activations, outputs.
+/// A pass's buffers: the stream, normed rows, q | k | v (and, without tensor units, w1's rows), heads, attention, FFN,
+/// outputs.
 const Views = struct { x: Ref, xn: Ref, wide: Ref, q: Ref, k: Ref, v: Ref, o: Ref, act: Ref, out: Ref, tok: Ref, cos: Ref, sin: Ref, origins: Ref };
 
 pub const Decoder = struct {
@@ -54,6 +56,8 @@ pub const Decoder = struct {
     pipes: [kernel_names.len]mtl.Pipeline,
     plan: host.Plan,
     theta: f32,
+    /// This GPU has tensor units (the M5): its products run on them, SwiGLU in w1's epilogue.
+    tensor: bool,
     /// Every parameter in bf16, laid out as `plan` says.
     weights: mtl.Buffer,
     /// The raw latent [24, rows, cols] in fp32 that passes read their tiles from.
@@ -71,15 +75,14 @@ pub const Decoder = struct {
     give_way: ?gpu_turn.Turn = null,
 
     /// `layers` blocks and the rotary `theta`, the kernels compiled from source, the weights' buffer unfilled.
-    /// The gemm's fragments come from nax.h: the tensor units where this GPU has them, simdgroup matrices
-    /// elsewhere, picked when the library compiles.
+    /// The library is assembled for this GPU (image_decoder.zig's `assemble`).
     pub fn init(gpa: std.mem.Allocator, device: mtl.Device, layers: usize, theta: f32) !*Decoder {
         const plan = try host.Plan.init(layers);
         const d = try gpa.create(Decoder);
         errdefer gpa.destroy(d);
-        d.* = .{ .gpa = gpa, .device = device, .queue = try device.queue(), .lib = undefined, .pipes = undefined, .plan = plan, .theta = theta, .weights = undefined };
+        d.* = .{ .gpa = gpa, .device = device, .queue = try device.queue(), .lib = undefined, .pipes = undefined, .plan = plan, .theta = theta, .tensor = device.tensorUnits(), .weights = undefined };
         errdefer d.queue.deinit();
-        const source = try kernels.assemble(gpa, device.tensorUnits(), kernels.source);
+        const source = try kernels.assemble(gpa, d.tensor, kernels.source);
         defer gpa.free(source);
         d.lib = try mtl.Library.fromSource(device, source, mtl.CompileOptions.mlx());
         errdefer d.lib.deinit();
@@ -146,7 +149,8 @@ pub const Decoder = struct {
         if (d.scratch) |s| s.deinit();
         d.scratch = null;
         const m = batch * n;
-        const sizes = [_]usize{ m * W * 2, m * W * 2, m * 3 * W * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8 };
+        const wide: usize = if (d.tensor) 3 * W else 2 * F;
+        const sizes = [_]usize{ m * W * 2, m * W * 2, m * wide * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8 };
         var total: usize = 0;
         for (sizes) |s| total += std.mem.alignForward(usize, s, 256);
         const buf = try d.device.buffer(total, mtl.ResourceOptions.shared);
@@ -228,7 +232,7 @@ pub const Decoder = struct {
     }
 
     /// How a product's epilogue writes y: its rounded sum, added through LayerScale `scale` into y (mode 1), or
-    /// w1's SwiGLU over [gate n | value n] rows of w (mode 2).
+    /// w1's SwiGLU over [gate n | value n] rows of w (mode 2, tensor units only).
     const Epilogue = union(enum) { plain, layer_scale: usize, swiglu };
 
     /// y = bf16(x w^T + b) for w [n, k] at `w`, finished as `how` says.
@@ -236,7 +240,7 @@ pub const Decoder = struct {
         var p = s;
         p.n = @intCast(n);
         p.k = @intCast(k);
-        p.mode = @intFromEnum(std.meta.activeTag(how));
+        p.mode = @backingInt(std.meta.activeTag(how));
         const scale = switch (how) {
             .layer_scale => |at| at,
             else => b,
@@ -256,7 +260,12 @@ pub const Decoder = struct {
         d.run(e, .attention, &.{ v.q, v.k, v.v, v.o }, s, mtl.Size.of((s.tokens + 7) / 8, host.heads, s.tiles), mtl.Size.of(256, 1, 1), true);
         d.gemm(e, s, v.o, p.block(i, .out_w), p.block(i, .out_b), .{ .layer_scale = p.block(i, .scale1) }, v.x, W, W);
         d.run(e, .rms_norm, &.{ v.x, d.param(p.block(i, .norm2)), v.xn }, s, rows, row_group, true);
-        d.gemm(e, s, v.xn, p.block(i, .w1_w), p.block(i, .w1_b), .swiglu, v.act, F, W);
+        if (d.tensor) {
+            d.gemm(e, s, v.xn, p.block(i, .w1_w), p.block(i, .w1_b), .swiglu, v.act, F, W);
+        } else {
+            d.gemm(e, s, v.xn, p.block(i, .w1_w), p.block(i, .w1_b), .plain, v.wide, 2 * F, W);
+            d.run(e, .swiglu, &.{ v.wide, v.act }, s, mtl.Size.of(F, s.m, 1), mtl.Size.of(256, 1, 1), false);
+        }
         d.gemm(e, s, v.act, p.block(i, .w2_w), p.block(i, .w2_b), .{ .layer_scale = p.block(i, .scale2) }, v.x, W, F);
     }
 

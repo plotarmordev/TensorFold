@@ -24,14 +24,14 @@ fn served(comptime nk: []const [2]usize) [passes.len * nk.len]c.Shape {
     return out;
 }
 
-/// to_qkv (3,072 x 1,024) and proj_out (768 x 1,024).
-const plain = served(&.{ .{ 3 * W, W }, .{ 768, W } });
+/// to_qkv (3,072 x 1,024), w1 without tensor units (8,192 x 1,024) and proj_out (768 x 1,024).
+const plain = served(&.{ .{ 3 * W, W }, .{ 2 * F, W }, .{ 768, W } });
 /// to_out (1,024 x 1,024) and w2 (1,024 x 4,096), each added to the stream through its LayerScale.
 const scaled = served(&.{ .{ W, W }, .{ W, F } });
-/// w1: 4,096 outputs from 8,192 weight rows over 1,024 inputs.
+/// w1 on tensor units: 4,096 outputs from 8,192 weight rows over 1,024 inputs.
 const gated = served(&.{.{ F, W }});
 
-/// The k-deep chain of the fragments' fp32 sums (exact bf16 products either way), then the bias.
+/// The k-deep chain of the products' fp32 sums (exact bf16 products either way), then the bias.
 fn chain(s: c.Shape) usize {
     return s.k + 1;
 }
@@ -180,7 +180,7 @@ pub const Gemm = struct {
         for (0..3) |i| t.bind(e, i, i);
         t.bind(e, if (scaled_form) 3 else 2, 3);
         t.bind(e, out, 4);
-        e.setValue(parts.Shape{ .m = @intCast(s.rows), .n = @intCast(s.n), .k = @intCast(s.k), .mode = @intFromEnum(k.form) }, 5);
+        e.setValue(parts.Shape{ .m = @intCast(s.rows), .n = @intCast(s.n), .k = @intCast(s.k), .mode = @backingInt(k.form) }, 5);
         e.dispatchGroups(mtl.Size.of(s.n / 64, (s.rows + 63) / 64, 1), mtl.Size.of(128, 1, 1));
     }
 
