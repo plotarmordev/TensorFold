@@ -90,7 +90,7 @@ def summary(out):
     lines += [f"- {line}" for line in (out / "settings").read_text().splitlines()]
     lines += ["", "Selftests:", ""]
     lines += [f"- {line}" for line in selftests]
-    lines += ["", "Run 1 is cold (start to first picture); 2-4 are warm repeats. Energy is average power times wall.", ""]
+    lines += ["", "Run 1 is cold (start to first picture); the rest are warm repeats (a repeated prompt in the list is a kept-states hit). Energy is average power times wall.", ""]
     lines += ["| run | " + " | ".join(COLUMNS) + " |", "|---|" + "---:|" * len(COLUMNS)]
     sides = {}
     for path in out.glob("*-*.time"):
@@ -98,13 +98,15 @@ def summary(out):
         sides.setdefault(side, {})[n] = measure(out / path.stem)
     for side, runs in sorted(sides.items()):
         lines += [row(f"{side}² {'cold' if n == 1 else f'warm {n - 1}'}", runs[n]) for n in sorted(runs)]
+        # warm mean folds every run after the cold one; a run list that ends on a repeated prompt
+        # shows that figure in the mean — the per-run rows beside it keep it visible
         warm = [runs[n] for n in sorted(runs) if n > 1]
         if warm:
             mean = {}
             for column in COLUMNS:
                 values = [run[column] for run in warm if run[column] is not None]
                 mean[column] = statistics.fmean(values) if len(values) == len(warm) else None
-            lines.append(row(f"{side}² warm mean", mean))
+            lines.append(row(f"{side}² warm mean (all repeats)", mean))
     return "\n".join(lines) + "\n"
 
 

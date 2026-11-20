@@ -25,7 +25,7 @@ cat >/work/h3-prompts/unseen-3.txt <<'EOF'
 A night market alley in the rain: paper lanterns reflecting off wet pavement, a vendor closing a
 noodle stall, steam rising, bicycles leaning on shutters, cinematic grain, deep shadows.
 EOF
-export H3_BENCH_PROMPTS="/work/h3-prompts/unseen-1.txt /work/h3-prompts/unseen-2.txt /work/h3-prompts/unseen-3.txt"
+export H3_BENCH_PROMPTS="/assets/drama3-pilot/h3-image-pilot/prompt.txt /work/h3-prompts/unseen-1.txt /work/h3-prompts/unseen-2.txt /work/h3-prompts/unseen-3.txt"
 status=0
 echo "=== after: this commit $(git -c safe.directory='*' rev-parse --short HEAD) ==="
 H3_PROFILE=1 sh docs/recipes/minimax-h3-cuda/bench-script.sh || status=$?
