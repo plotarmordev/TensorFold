@@ -641,6 +641,40 @@ costs G n-sized round trips — only an own-mma product folding scales in regist
 Card 129's three tile geometries plateaued at 0.74–0.79× of cuBLASLt's int8 rate, so the round's open part stays a
 TMA + persistent-grid int8 product at mmh3's ~172 TOPS, not a library call.
 
+### Card 143: the prompt encoder resident in int8 per-row products — measured and reverted
+
+Qwen3-VL's 50 text layers went resident as int8 products through the cuBLASLt int8 path the transformer already
+runs: q/k/v as one (n, 5,376) product and gate/up as one, each with a scale per output row; every activation row
+Hadamard-128 rotated and quantized at its own absmax (`h3_quantize`'s math, streamed so `down`'s 25,600-wide rows
+fit); o and down folded back as residuals at `h3p_add`'s rounding; the embedding table off the device, each prompt's
+rows gathered from the mapped shard as mmh3 does. The bf16 encoder stayed behind `--bf16`.
+
+`bench-143-ab.sh` at `4f4731a7` (job `top-e69b3bb9e6c2`, 20 November, exit 0, `H3_PROFILE=1`) ran the bench on that
+commit, then on its base patch reverse-applied (main's bf16 encoder), each side on the pilot's fox (run 1) and the
+three unseen `prompts/` files (harbour, meadow, steam; runs 2–4). Every selftest passed on both sides.
+
+| 2048², warm, unseen | wall s | prompt s | encoder s (GPU) | transformer s | decoder s | peak MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| int8 encoder, run 2 | 14.1 | 0.17 | 0.14 | 12.6 | 1.3 | 53,841 |
+| int8 encoder, run 3 | 14.1 | 0.17 | 0.14 | 12.6 | 1.3 | 53,841 |
+| int8 encoder, run 4 | 14.2 | 0.16 | 0.15 | 12.7 | 1.3 | 53,841 |
+| main (bf16), run 2 | 15.1 | 1.26 | 1.23 | 12.7 | 1.2 | 78,561 |
+| main (bf16), run 3 | 15.2 | 1.22 | 1.21 | 12.7 | 1.3 | 78,561 |
+| main (bf16), run 4 | 15.2 | 1.23 | 1.21 | 12.7 | 1.3 | 78,561 |
+
+Resident prompt weights fell from 48.35 to 24.21 GiB (cold peak 61,946 against 86,666 MiB). The int8 encode's
+stage laps (run 3): products 0.122 s, norms 0.007, attention 0.007, glu 0.004, quantize 0.002, dequantize 0.002,
+heads 0.001. The prompt states held against the same job's bf16 encoder: text cosine 0.99986 (fox), 0.99975,
+0.99984, 0.99982 (unseen), ids and tags byte-equal. The decoder's same-latent `reference` passed (56.31 dB,
+relative 3.34e-3 under 3e-2).
+
+The picture did not: `h3_image_compare.py` on the fox's `2048-1` against episode 1's Mac latent and PNG measured
+**latent cosine 0.9936, PSNR 27.47 dB, mean diff 4.44**. Latent cosine clears 0.99; PSNR and mean diff miss 28.2 dB
+and 4.1. Main's side of the same job measured 0.9952, 28.69 dB, 4.01. A state cosine of 0.9998 still moves the
+six-step picture past the gates, so per-row int8 on the encoder is reverted and the bf16 encoder stays.
+Card 139 found the same for the transformer: per-row scales are the only fold cuBLASLt's int32 C supports, so finer
+scales need an own-mma product.
+
 ### The side-by-side: mmh3's warm server beside ours, unseen prompts (20 November)
 
 [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) puts both engines' resident servers
