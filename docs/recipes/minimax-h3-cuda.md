@@ -125,7 +125,11 @@ build, six cold runs with every weight file evicted (`posix_fadvise(DONTNEED)`),
 0/8/0/8/0/8 threads, plus a resident transformer a count for the warm picture, every latent and
 PNG `cmp`ed against the 0-thread run.
 
-TBD — job receipt goes here.
+Measured on TOP (job `top-aa70eb7fd52e`, commit `b298850`): the transformer's `model loaded in` fell
+from **49.5 s** mean (48.8, 49.5, 52.1) cold at `--load-threads 0` to **17.9 s** (17.8, 17.9, 18.2)
+at 8 threads — the cold 2048² picture's wall went 92.0 s mean to 60.6 s. The warm picture held
+(13.65 s vs 13.61 s wall, transformer 12.33 vs 12.30 s) and every latent and PNG was
+byte-identical.
 
 ### Benchmark run
 
