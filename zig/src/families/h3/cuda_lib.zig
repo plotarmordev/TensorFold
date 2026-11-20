@@ -137,6 +137,7 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
     m.heads = 1;
     m.mlp = 128;
     m.gated = true;
+    m.int8 = null;
     var block: [1]h3.Block = undefined;
     m.blocks = &block;
     if (@hasField(h3.Model, "tp")) m.tp = null;
@@ -173,6 +174,21 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
     in.sin = 0x1000;
     in.keep = 1;
     _ = try m.plan(&in);
+    // bf16 forwards take any rotary width up to 64 and 4-byte tables; int8's h3_heads_i8 reads them as float4
+    in.rot = 6;
+    in.cos = 0x1004;
+    _ = try m.plan(&in);
+    var t: h3.Int8 = undefined;
+    m.int8 = &t;
+    try std.testing.expectError(error.BadH3Rotary, m.plan(&in));
+    in.rot = 8;
+    try std.testing.expectError(error.BadH3Address, m.plan(&in));
+    in.cos = 0x1000;
+    in.sin = 0x1008;
+    try std.testing.expectError(error.BadH3Address, m.plan(&in));
+    in.sin = 0x1010;
+    _ = try m.plan(&in);
+    m.int8 = null;
     m.hidden = std.math.maxInt(usize);
     try std.testing.expectEqual(@as(f64, -1), tf_h3_forward_host(&m, &valid));
     try report.expect("tf_h3_forward_host", error.BadH3Scalar);

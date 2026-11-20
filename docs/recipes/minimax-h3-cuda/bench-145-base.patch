@@ -5,7 +5,7 @@ index 8d36c1d75..1e00ce1f4 100644
 @@ -113,10 +113,20 @@ __global__ void __launch_bounds__(256) h3_heads(
      }
  }
- 
+
 +// A bf16 from a pack2 word by element index.
 +__device__ __forceinline__ float unpack(const uint32_t* p, int e) {
 +    const __nv_bfloat162 v = *reinterpret_cast<const __nv_bfloat162*>(p + (e >> 1));
@@ -139,7 +139,7 @@ index 8d36c1d75..1e00ce1f4 100644
 @@ -291,15 +343,32 @@ __global__ void __launch_bounds__(256) h3_swiglu(const __nv_bfloat16* F, __nv_bf
      }
  }
- 
+
 +// A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336 (fc1's half-row, the widest input).
 +constexpr int quantize_chunks = 14;
 +
@@ -176,11 +176,11 @@ index 8d36c1d75..1e00ce1f4 100644
 +        }
      }
  }
- 
+
 @@ -335,9 +404,6 @@ __device__ __forceinline__ void rotated_chunk(const __nv_bfloat16* x, int c, flo
      hadamard128(v);
  }
- 
+
 -// A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336, the widest projection input.
 -constexpr int quantize_chunks = 14;
 -
@@ -203,7 +203,7 @@ index adccece80..38518bb50 100644
 @@ -171,6 +171,30 @@ pub fn run(a: std.mem.Allocator) !void {
      }
      try stream.synchronize();
- 
+
 +    // ---- swiglu: the unfused chain runs h3_dequantize then h3_swiglu; the fused kernel does both on int32 sums
 +    const n = C / 2; // the act row's width
 +    var wide = try cuda.DeviceBuffer.alloc(&driver, rows * 2 * n * 2);
@@ -252,7 +252,7 @@ index d17477ca4..40f3dbd24 100644
 +++ b/zig/src/families/h3/cuda_int8.zig
 @@ -57,7 +57,7 @@ pub const Int8 = struct {
      }
- 
+
      fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize) !Weight {
 -        if (k % 128 != 0 or k > 14336 or n % 4 != 0) return error.BadGeometry; // h3_quantize's quantize_chunks
 +        if (k % 128 != 0 or k > 14336 or n % 8 != 0) return error.BadGeometry; // h3_quantize's and h3_swiglu_int8's groups
@@ -260,7 +260,7 @@ index d17477ca4..40f3dbd24 100644
          try launchQuantize(self, bf16.ptr, w.q.ptr, w.scales(), n, k);
          try self.stream.synchronize();
 @@ -94,12 +94,12 @@ pub const Int8 = struct {
- 
+
      /// act (rows, w.n / 2) = swiglu of x . w^T [gate | value], the int32 sums scaled in h3_swiglu_int8 itself.
      pub fn mlpIn(t: *Int8, self: *Model, lay: Scratch, w: Weight, act: u64, rows: usize) !void {
 +        if (w.n / 2 > 14336) return error.BadGeometry; // h3_swiglu_int8's quantize_chunks
@@ -272,20 +272,66 @@ index d17477ca4..40f3dbd24 100644
 -        try self.launch("h3_swiglu_int8", .{ .x = 1024 }, 256, 0, &args);
 +        try self.launch("h3_swiglu_int8", .{ .x = @intCast(rows) }, 256, 0, &args);
      }
- 
+
      /// Room and plans for `rows` before a step is captured: `layout` then only hands out buffers.
+diff --git a/zig/src/families/h3/cuda_lib.zig b/zig/src/families/h3/cuda_lib.zig
+index 875f15dad..9ff3aaf0a 100644
+--- a/zig/src/families/h3/cuda_lib.zig
++++ b/zig/src/families/h3/cuda_lib.zig
+@@ -137,6 +137,7 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
+     m.heads = 1;
+     m.mlp = 128;
+     m.gated = true;
++    m.int8 = null;
+     var block: [1]h3.Block = undefined;
+     m.blocks = &block;
+     if (@hasField(h3.Model, "tp")) m.tp = null;
+@@ -173,6 +174,21 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
+     in.sin = 0x1000;
+     in.keep = 1;
+     _ = try m.plan(&in);
++    // bf16 forwards take any rotary width up to 64 and 4-byte tables; int8's h3_heads_i8 reads them as float4
++    in.rot = 6;
++    in.cos = 0x1004;
++    _ = try m.plan(&in);
++    var t: h3.Int8 = undefined;
++    m.int8 = &t;
++    try std.testing.expectError(error.BadH3Rotary, m.plan(&in));
++    in.rot = 8;
++    try std.testing.expectError(error.BadH3Address, m.plan(&in));
++    in.cos = 0x1000;
++    in.sin = 0x1008;
++    try std.testing.expectError(error.BadH3Address, m.plan(&in));
++    in.sin = 0x1010;
++    _ = try m.plan(&in);
++    m.int8 = null;
+     m.hidden = std.math.maxInt(usize);
+     try std.testing.expectEqual(@as(f64, -1), tf_h3_forward_host(&m, &valid));
+     try report.expect("tf_h3_forward_host", error.BadH3Scalar);
 diff --git a/zig/src/families/h3/cuda_validation.zig b/zig/src/families/h3/cuda_validation.zig
-index e88c7e367..e9ef24658 100644
+index e88c7e367..b60c25d2a 100644
 --- a/zig/src/families/h3/cuda_validation.zig
 +++ b/zig/src/families/h3/cuda_validation.zig
-@@ -33,8 +33,8 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
+@@ -33,8 +33,10 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
      if (own0 >= own1 or own1 > tiles or rows > try product(&.{ own1 - own0, 64 }) or rows < own1 - own0) return error.BadH3Dimensions;
      if (in.prefix_tiles > tiles or (in.keep != 0 and in.keep > tiles - in.prefix_tiles)) return error.BadH3Keep;
      if (in.keep != 0 and !m.gated) return error.BadH3Ungated;
 -    // CUDA's rotary argument is a half-width within a 128-wide head.
 -    if (in.rot > 64) return error.BadH3Rotary;
-+    // CUDA's rotary argument is a half-width within a 128-wide head, a four-multiple for h3_heads_i8's groups.
-+    if (in.rot > 64 or in.rot % 4 != 0) return error.BadH3Rotary;
++    // CUDA's rotary argument is a half-width within a 128-wide head; h3_heads_i8 (int8 forwards) reads cos and
++    // sin as float4 groups, so there it must be a four-multiple and the tables 16-byte aligned.
++    const grouped = m.int8 != null;
++    if (in.rot > 64 or (grouped and in.rot % 4 != 0)) return error.BadH3Rotary;
      const count: usize = if (in.blocks == 0) m.blocks.len else in.blocks;
      if (count > m.blocks.len) return error.BadH3Blocks;
      const prefix: usize = if (in.keep == 0) tiles else in.prefix_tiles;
+@@ -49,7 +51,8 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
+         try product(&.{ tiles, 4 }),        if (in.attention_out == 0) 0 else try product(&.{ rows, i, 2 }),
+     };
+     const pointers = [8]u64{ in.x, in.tables, in.line, in.cos, in.sin, in.slot, in.sizes, in.attention_out };
+-    for (pointers, input, [_]usize{ 2, 4, 4, 4, 4, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
++    const table: usize = if (grouped) 16 else 4;
++    for (pointers, input, [_]usize{ 2, 4, 4, table, table, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
+     const padded = try product(&.{ heads, tiles, 64, 128, 2 });
+     const means = try product(&.{ heads, tiles, 128, 4 });
+     return .{ .count = count, .prefix = prefix, .keep = keep, .own0 = own0, .own1 = own1, .input = input, .buffers = .{

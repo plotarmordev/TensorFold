@@ -33,8 +33,10 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
     if (own0 >= own1 or own1 > tiles or rows > try product(&.{ own1 - own0, 64 }) or rows < own1 - own0) return error.BadH3Dimensions;
     if (in.prefix_tiles > tiles or (in.keep != 0 and in.keep > tiles - in.prefix_tiles)) return error.BadH3Keep;
     if (in.keep != 0 and !m.gated) return error.BadH3Ungated;
-    // CUDA's rotary argument is a half-width within a 128-wide head, a four-multiple for h3_heads_i8's groups.
-    if (in.rot > 64 or in.rot % 4 != 0) return error.BadH3Rotary;
+    // CUDA's rotary argument is a half-width within a 128-wide head; h3_heads_i8 (int8 forwards) reads cos and
+    // sin as float4 groups, so there it must be a four-multiple and the tables 16-byte aligned.
+    const grouped = m.int8 != null;
+    if (in.rot > 64 or (grouped and in.rot % 4 != 0)) return error.BadH3Rotary;
     const count: usize = if (in.blocks == 0) m.blocks.len else in.blocks;
     if (count > m.blocks.len) return error.BadH3Blocks;
     const prefix: usize = if (in.keep == 0) tiles else in.prefix_tiles;
@@ -49,7 +51,8 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
         try product(&.{ tiles, 4 }),        if (in.attention_out == 0) 0 else try product(&.{ rows, i, 2 }),
     };
     const pointers = [8]u64{ in.x, in.tables, in.line, in.cos, in.sin, in.slot, in.sizes, in.attention_out };
-    for (pointers, input, [_]usize{ 2, 4, 4, 4, 4, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
+    const table: usize = if (grouped) 16 else 4;
+    for (pointers, input, [_]usize{ 2, 4, 4, table, table, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
     const padded = try product(&.{ heads, tiles, 64, 128, 2 });
     const means = try product(&.{ heads, tiles, 128, 4 });
     return .{ .count = count, .prefix = prefix, .keep = keep, .own0 = own0, .own1 = own1, .input = input, .buffers = .{

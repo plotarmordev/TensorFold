@@ -13,7 +13,6 @@ model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
 patch_file=docs/recipes/minimax-h3-cuda/bench-145-base.patch
 out=/work/out/h3-145-ab
-commit=$(git -c safe.directory='*' rev-parse HEAD)
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 # the toolchain once, as cuda-build.sh stages it (the job has neither zig nor gcc in PATH)
 staged=/assets/drama3-pilot/cuda-build-toolchain
@@ -31,6 +30,7 @@ export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACH
     NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++" H3_PROFILE=1
 
 mkdir -p "$out"
+rm -f "$out/limits-failed"
 # three prompts the server has not seen, the same files in both phases, after a warm-up (variant 0) each phase
 for n in 0 1 2 3; do { cat "$pilot/prompt.txt"; printf ' — variant %s of the same scene\n' "$n"; } >"$out/prompt-$n.txt"; done
 
@@ -51,7 +51,9 @@ phase() {
     zig build tf-cuda-limits -Dsm=80,86,89,120,121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast \
         --prefix "/work/sm-all-$name" >"$dir/limits-build.log" 2>&1 || { tail -20 "$dir/limits-build.log" >&2; exit 1; }
     fatdir=$(find "/work/sm-all-$name" -name h3.fatbin -exec dirname {} \; -quit)
-    "/work/sm-all-$name/bin/tf-cuda-limits" "$fatdir" h3 >"$dir/limits.log" 2>&1 || true
+    # the audit's verdict fails the job at the end, after both phases' timings
+    "/work/sm-all-$name/bin/tf-cuda-limits" "$fatdir" h3 >"$dir/limits.log" 2>&1 \
+        || { echo "$name limits audit FAILED" | tee -a "$out/limits-failed" >&2; tail -20 "$dir/limits.log" >&2; }
     grep "RECORD h3" "$dir/limits.log" >"$dir/records.txt" || true
     selftest() {
         tname=$1
@@ -134,8 +136,9 @@ phase candidate
 echo "=== main: the card's files at main ==="
 git -c safe.directory='*' apply -R "$patch_file"
 status=0
-phase baseline || status=$?
+(phase baseline) || status=$?
 git -c safe.directory='*' apply "$patch_file"
+[ ! -e "$out/limits-failed" ] || status=1
 
 # every latent must be byte-identical between the phases: the card's products and rounding do not change
 for n in 1 2 3; do
