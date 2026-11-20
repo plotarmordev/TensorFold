@@ -20,10 +20,6 @@ fn gemm(m: *const Model, enc: mtl.ComputeEncoder, x: mtl.Buffer, w: Ref, d: mtl.
 }
 
 fn product(enc: mtl.ComputeEncoder, pipe: mtl.Pipeline, s: usize, x: mtl.Buffer, w: Ref, d: mtl.Buffer, rows: usize, n: usize, k: usize, comptime threads: usize) void {
-    productP(enc, pipe, s, x, w, d, rows, n, k, 0, threads);
-}
-
-fn productP(enc: mtl.ComputeEncoder, pipe: mtl.Pipeline, s: usize, x: mtl.Buffer, w: Ref, d: mtl.Buffer, rows: usize, n: usize, k: usize, voff: usize, comptime threads: usize) void {
     const band = @as(usize, 1) << @intCast(s);
     const tn = n / 128;
     const tm = (rows + 63) / 64;
@@ -33,7 +29,6 @@ fn productP(enc: mtl.ComputeEncoder, pipe: mtl.Pipeline, s: usize, x: mtl.Buffer
     var p: [16]i32 = @splat(0);
     const values = [_]usize{ rows, n, k, k, k, n, tn, tm, s, k / 256 };
     for (values, 0..) |v, i| p[i] = @intCast(v);
-    p[15] = @intCast(voff);
     enc.setBytes(std.mem.asBytes(&p), 2);
     enc.setBuffer(d, 0, 3);
     enc.dispatchGroups(mtl.Size.of(tn * band, (tm + band - 1) / band, 1), mtl.Size.of(32, 4, threads / 128));
@@ -52,25 +47,14 @@ pub fn quantize(m: *const Model, enc: mtl.ComputeEncoder, x: Ref, rows: usize, k
     enc.dispatchGroups(mtl.Size.of(rows, 1, 1), mtl.Size.of(32, 1, 1));
 }
 
-/// m.act = silu(gate)·value of xn fc1^T for block `index`. A picture's: norm2 wrote int8 xq/xs through
-/// h3_norm_quant and the activation runs in the product's epilogue — the bf16 wide rows are never written.
-/// A clip's stays bf16: xn fc1^T then h3_swiglu over m.wide.
+/// m.wide = xn fc1^T for block `index`. A picture's: norm2 wrote int8 xq/xs through h3_norm_quant; a clip's in bf16.
 fn fc1(m: *const Model, enc: mtl.ComputeEncoder, w: Ref, index: usize) void {
     const n = 2 * m.mlp;
-    if (!m.base) {
-        gemm(m, enc, m.xn, w, m.wide, n, m.hidden);
-        enc.barrier();
-        enc.setPipeline(m.pipeline("h3_swiglu"));
-        enc.setBuffer(m.wide, 0, 0);
-        enc.setValue([3]i32{ @intCast(m.rows), @intCast(m.mlp), @intFromBool(m.base) }, 1);
-        enc.setBuffer(m.act, 0, 2);
-        enc.dispatchThreads(mtl.Size.of(m.mlp, m.rows, 1), mtl.Size.of(256, 1, 1));
-        return;
-    }
+    if (!m.base) return gemm(m, enc, m.xn, w, m.wide, n, m.hidden);
     // the scales' slots are past product's own; an encoder keeps them across its pipeline change
     enc.setBuffer(m.xs, 0, 4);
     enc.setBuffer(m.fc1_s, index * n * (m.hidden / fc1_group) * 4, 5);
-    productP(enc, m.pipeline(kernels.gemm_32x64_i8_act), swizzle, m.xq, .{ .buffer = m.fc1_q, .offset = index * n * m.hidden }, m.act, m.rows, m.mlp, m.hidden, m.mlp, 128);
+    product(enc, m.pipeline(kernels.gemm_32x64_i8), swizzle, m.xq, .{ .buffer = m.fc1_q, .offset = index * n * m.hidden }, m.wide, m.rows, n, m.hidden, 128);
 }
 
 /// The stream's modulated norm to bf16 rows in xn; with `gates` it first adds the branch in `y` gated by that part.
@@ -188,6 +172,12 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
     m.lap(pass, "norms");
     // the first projection's rows are [value | gate] ([gate | value] in the released layout), one product
     fc1(m, enc.*, b.fc1, index);
+    enc.barrier();
+    enc.setPipeline(m.pipeline("h3_swiglu"));
+    enc.setBuffer(m.wide, 0, 0);
+    enc.setValue([3]i32{ @intCast(m.rows), @intCast(m.mlp), @intFromBool(m.base) }, 1);
+    enc.setBuffer(m.act, 0, 2);
+    enc.dispatchThreads(mtl.Size.of(m.mlp, m.rows, 1), mtl.Size.of(256, 1, 1));
     m.lap(pass, "mlp in");
     gemm(m, enc.*, m.act, b.fc2, m.y, m.hidden, m.mlp);
     m.lap(pass, "mlp out");
@@ -462,86 +452,7 @@ test "h3 fused: h3_norm_quant's rows are bit-identical to h3_norm then h3_quanti
     try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(xs.slice(f32, rows)), std.mem.sliceAsBytes(xs2.slice(f32, rows)));
 }
 
-test "h3 fused: the int8 act product's rows are bit-identical to the int8 product then h3_swiglu" {
-    const device = mtl.Device.init() catch return error.SkipZigTest;
-    defer device.deinit();
-    if (!device.tensorUnits()) return error.SkipZigTest;
-    const pool = mtl.objc.Pool.push();
-    defer pool.pop();
-    const queue = try device.queue();
-    defer queue.deinit();
-    const a = std.testing.allocator;
-    const text = try @import("source.zig").library(a, 56, 18432, 288, "");
-    defer a.free(text);
-    const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
-    defer lib.deinit();
-    var m: Model = undefined;
-    inline for (kernels.names, 0..) |name, i| m.pipelines[i] = try mtl.Pipeline.init(device, lib, name, false);
-    defer for (m.pipelines) |p| p.deinit();
-    const rows = 64 * 3 + 24;
-    const mlp = 256;
-    const n = 2 * mlp;
-    const k = 2 * fc1_group;
-    const groups = k / fc1_group;
-    const shared = mtl.ResourceOptions.shared;
-    var prng = std.Random.DefaultPrng.init(85);
-    const w = try device.buffer(n * k * 2, shared);
-    defer w.deinit();
-    for (w.slice(u16, n * k), 0..) |*v, i| v.* = (0x3c00 + @as(u16, @intCast(i / fc1_group % 16)) * 0x80) | (prng.random().int(u16) & 0x807f);
-    const wq = try device.buffer(n * k, shared);
-    defer wq.deinit();
-    const ws = try device.buffer(n * groups * 4, shared);
-    defer ws.deinit();
-    const x = try device.buffer(rows * k * 2, shared);
-    defer x.deinit();
-    for (x.slice(u16, rows * k), 0..) |*v, i| v.* = (0x3f80 + @as(u16, @intCast(i / k % 8)) * 0x80) | (prng.random().int(u16) & 0x807f);
-    const xq = try device.buffer(rows * k, shared);
-    defer xq.deinit();
-    const xs = try device.buffer(rows * 4, shared);
-    defer xs.deinit();
-    const wide = try device.buffer(rows * n * 2, shared);
-    defer wide.deinit();
-    const act1 = try device.buffer(rows * mlp * 2, shared);
-    defer act1.deinit();
-    const act2 = try device.buffer(rows * mlp * 2, shared);
-    defer act2.deinit();
-    @memset(act2.slice(u16, rows * mlp), 0xffff);
-    {
-        // unfused: int8 product to bf16 wide rows, then h3_swiglu
-        const cb = queue.commandBuffer();
-        const enc = cb.compute(.concurrent);
-        quantize(&m, enc, .{ .buffer = x }, rows, k, k, .{ .buffer = xq }, .{ .buffer = xs });
-        quantize(&m, enc, .{ .buffer = w }, n, k, fc1_group, .{ .buffer = wq }, .{ .buffer = ws });
-        enc.barrier();
-        enc.setBuffer(xs, 0, 4);
-        enc.setBuffer(ws, 0, 5);
-        product(enc, m.pipeline(kernels.gemm_32x64_i8), swizzle, xq, .{ .buffer = wq }, wide, rows, n, k, 128);
-        enc.barrier();
-        enc.setPipeline(m.pipeline("h3_swiglu"));
-        enc.setBuffer(wide, 0, 0);
-        enc.setValue([3]i32{ @intCast(rows), @intCast(mlp), @intFromBool(true) }, 1);
-        enc.setBuffer(act1, 0, 2);
-        enc.dispatchThreads(mtl.Size.of(mlp, rows, 1), mtl.Size.of(256, 1, 1));
-        enc.end();
-        cb.commit();
-        cb.wait();
-        try std.testing.expect(cb.failure() == null);
-    }
-    {
-        const cb = queue.commandBuffer();
-        const enc = cb.compute(.concurrent);
-        enc.setBuffer(xs, 0, 4);
-        enc.setBuffer(ws, 0, 5);
-        productP(enc, m.pipeline(kernels.gemm_32x64_i8_act), swizzle, xq, .{ .buffer = wq }, act2, rows, mlp, k, mlp, 128);
-        enc.end();
-        cb.commit();
-        cb.wait();
-        try std.testing.expect(cb.failure() == null);
-    }
-    try std.testing.expectEqualSlices(u16, act1.slice(u16, rows * mlp), act2.slice(u16, rows * mlp));
-}
-
-test "h3 fused: a clip's fc1 keeps its bf16 product and its swiglu launch, bit for bit main's MLX product" {
+test "h3 gemm: a clip's fc1 stays bf16, bit for bit main's MLX product, whole and ragged" {
     const device = mtl.Device.init() catch return error.SkipZigTest;
     defer device.deinit();
     if (!device.tensorUnits()) return error.SkipZigTest;
@@ -559,7 +470,7 @@ test "h3 fused: a clip's fc1 keeps its bf16 product and its swiglu launch, bit f
     inline for (kernels.names, 0..) |name, i| m.pipelines[i] = try mtl.Pipeline.init(device, lib, name, false);
     defer for (m.pipelines) |p| p.deinit();
     m.base = false;
-    m.mlp = 256; // swiglu's threadgroup is 256 wide: a smaller mlp would make its dispatch a no-op
+    m.mlp = 128;
     m.hidden = 2 * fc1_group;
     const n = 2 * m.mlp;
     const k = m.hidden;
@@ -578,9 +489,6 @@ test "h3 fused: a clip's fc1 keeps its bf16 product and its swiglu launch, bit f
         defer old.deinit();
         m.wide = try device.buffer(rows * n * 2, shared);
         defer m.wide.deinit();
-        m.act = try device.buffer(rows * m.mlp * 2, shared);
-        defer m.act.deinit();
-        @memset(m.act.slice(u16, rows * m.mlp), 0xaaaa);
         const mlx = try mtl.Pipeline.init(device, lib, if (rows % 64 == 0) kernels.gemm_whole else kernels.gemm_ragged, false);
         defer mlx.deinit();
         const cb = queue.commandBuffer();
@@ -592,17 +500,5 @@ test "h3 fused: a clip's fc1 keeps its bf16 product and its swiglu launch, bit f
         cb.wait();
         try std.testing.expect(cb.failure() == null);
         try std.testing.expectEqualSlices(u16, old.slice(u16, rows * n), m.wide.slice(u16, rows * n));
-        // act[r, i] = silu(wide[r, gate+i])·wide[r, i] — the [value | gate] clip layout, bf16-rounded as h3_swiglu
-        const round = @import("bf16_round");
-        const wide16 = m.wide.slice(u16, rows * n);
-        const act16 = m.act.slice(u16, rows * m.mlp);
-        for (0..rows) |r| for (0..m.mlp) |i| {
-            const g = round.value(wide16[r * n + m.mlp + i]);
-            const v = round.value(wide16[r * n + i]);
-            const sigmoid = 1.0 / (1.0 + @exp(-g));
-            const want = round.bits(round.round32(round.round32(g * round.round32(sigmoid)) * v));
-            // a subnormal sigmoid or product flushes to zero in the kernel's bfloat conversion; skip that tail
-            if (sigmoid >= std.math.floatMin(f32) and want != 0 and want != 0x8000) try std.testing.expectEqual(want, act16[r * m.mlp + i]);
-        };
     }
 }

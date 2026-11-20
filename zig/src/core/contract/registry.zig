@@ -357,7 +357,6 @@ pub const metal = joins.metal_before ++ [_]M{
     .{ .name = "h3 product 32x64 h3_gemm_32x64", .threads = 128, .tg_memory = 0, .reserved = 128 },
     .{ .name = "h3 product 32x64 ragged h3_gemm_32x64_ragged", .threads = 128, .tg_memory = 0, .reserved = 128 },
     .{ .name = "h3 product 32x64 int8 h3_gemm_32x64_i8", .threads = 128, .tg_memory = 0, .reserved = 128 },
-    .{ .name = "h3 product 32x64 int8 act h3_gemm_32x64_i8_act", .threads = 128, .tg_memory = 0, .reserved = 128 },
     .{ .name = "h3 product row quantizer h3_quantize_rows", .threads = 32, .tg_memory = 0, .m1 = 1024, .m2 = 1024 },
     .{ .name = "qwen vision qwv_gemm_bf16_nt_00", .threads = 256, .tg_memory = 0, .reserved = 256 },
     .{ .name = "qwen vision qwv_gemm_bf16_nt_01", .threads = 256, .tg_memory = 0, .reserved = 256 },

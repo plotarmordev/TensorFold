@@ -231,7 +231,7 @@ pub const Model = struct {
         inline for (.{ "x", "y", "xn" }) |f| @field(self, f) = try device.buffer(rows * hidden * 2, shared);
         inline for (.{ "qr", "kr", "vr", "cr" }) |f| @field(self, f) = try device.buffer(rows * inner * 2, shared);
         self.qkv = try device.buffer(if (self.base) rows * 3 * inner * 2 else 16, shared);
-        self.wide = try device.buffer(if (self.base) 16 else rows * 2 * self.mlp * 2, shared);
+        self.wide = try device.buffer(rows * 2 * self.mlp * 2, shared);
         self.act = try device.buffer(rows * self.mlp * 2, shared);
         // padding slots are never written and must read as zeros
         const slot_bytes = heads * total * head_dim * 2;
