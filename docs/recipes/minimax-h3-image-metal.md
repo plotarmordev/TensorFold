@@ -1237,7 +1237,11 @@ The 4-byte-load candidate is the card's cautionary receipt. It was gated before 
 byte-identical (`776b443a…`, the pinned value), card 80's rule passed against episode 1's Mac latent and PNG
 (`h3-image-runs/34/t2i-2048.latent.f32`, `fox-2048-seed42.png`: cosine 0.995459, PSNR 28.673 dB, mean pixel diff
 3.903, every step `timing_valid=true`), `test-h3-gemm`, `test-h3-image-server`, `test-h3-image-prompt` and the
-kernel contract's `h3 product` set (gates 1-4, 0 limit problems) were green. But the served A/B — two resident
+kernel contract's `h3 product` set (gates 1-4, 0 limit problems) were green. The decoder's products are `h3d_gemm`,
+not `h3_gemm_32x64_i8`, so its same-latent bound holds by construction: the candidate's byte-identical latent is the
+decoder's same input (the candidate's PNG hash itself was not kept). `tf-h3-image-decoder selftest` on this M5 Ultra
+(one lock hold, 40 s, load 7.5) passed every bound: 24 blocks relative 1.49e-2, worst 16.5 ULP, picture bytes at
+most 1 apart, 121 tiles in passes of 128 bit-identical to passes of 16. But the served A/B — two resident
 ReleaseFast servers, one a side, cold on card 34's prompt then three warm runs on unseen prompts (harbour, meadow,
 steam; `docs/recipes/minimax-h3-cuda/prompts/`), one request a lock hold, seed 42, six steps — reversed it:
 
