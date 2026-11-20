@@ -37,8 +37,9 @@ pub const Timing = struct { wall: f64 = 0, gpu: f64 = 0, paused: f64 = 0 };
 /// What one pass runs: the embedding, blocks [from, to), then norm_out and proj_out.
 pub const Stages = struct { embed: bool = true, from: usize = 0, to: usize, final: bool = true };
 
-/// Tiles a pass holds at most.
-pub const most_batch = 64;
+/// Tiles a pass holds at most; `scratch` is sized at `prepare`. 128 covers a 2048² picture's
+/// 121 tiles in one pass, the way mmh3 decodes its whole canvas at once.
+pub const most_batch = 128;
 
 const Ref = struct { buf: mtl.Buffer, off: usize = 0 };
 
