@@ -675,6 +675,42 @@ six-step picture past the gates, so per-row int8 on the encoder is reverted and 
 Card 139 found the same for the transformer: per-row scales are the only fold cuBLASLt's int32 C supports, so finer
 scales need an own-mma product.
 
+### Card 154: unseen prompts of every length draw again
+
+An unseen 55-token prompt (the lighthouse, job `top-6f13211c7306`) failed with `NoAlgorithm` on both sides of that
+job. I probed the prompt server over 1 to 4,096 tokens (`top-6b06d02a7e21`, a throwaway branch logging each
+product's plan): the failing product is condition_proj, `Products.run` at (T, 5,376, 5,120) with its bias fused.
+Prompts of 1-32 and 65-90 tokens drew; 33-64 and 100 and up failed — 55, 128, 300 and 4,096 among them. At those
+lengths cuBLASLt refuses the canonical algorithm (`AlgoCheck` status 15, `NOT_SUPPORTED`), and the fallback that
+`bb46c418` added on 15 November checked the shape's own algorithm — picked by the heuristic *without* the bias
+epilogue, because `fuse` leaves it unfused when it cannot take one — against a descriptor that now carries the bias.
+No commit broke a passing prompt: card 132's unseen prompts were 31-32 tokens, inside the band that draws, and the
+fused bias with a canonical-only plan dates from `a3755cbb` the same day.
+
+The fallback now asks the heuristic again with the bias epilogue set (`Linear.pick`), so every length gets an
+algorithm that adds the bias in its epilogue; the canonical algorithm still runs wherever cuBLASLt accepts it, and
+an unanswered shape still fails with its (rows, n, k, bias) logged. The transformer's `Gemms.plan` keeps the shape's
+own algorithm the same way instead of refusing. `prompt_cuda_lengths_test.zig` replays GB10's answers on a cuBLASLt
+stub at 1, 55, 77, 301 and 4,096 rows; it fails on main and passes here.
+
+[`bench-154.sh`](minimax-h3-cuda/bench-154.sh) at `912e9d9f` (job `top-473d0aacdf51`, GB10, driver 580.173.02,
+20 November, exit 0) drew the pilot prompt and five unseen ones through the resident servers, `H3_PROMPT_CHECK=1`
+checking each encode's refiner rows against the BF16 host reference (`prompt_reference.refine`, f32 sums, on the
+GPU encoder's rows). All selftests passed.
+
+| 2048² run | prompt | tokens | refiner rows against the host reference | wall s |
+|---|---|---:|---|---:|
+| cold | pilot (fox) | 24 | cosine 0.9999922, relative 3.95e-3 | 156.0 |
+| warm 1 | one word | 1 | cosine 0.9999998, relative 6.17e-4 | 17.0 |
+| warm 2 | lighthouse | 55 | cosine 0.9999917, relative 4.08e-3 | 19.8 |
+| warm 3 | workshop | 81 | cosine 0.9999914, relative 4.15e-3 | 22.1 |
+| warm 4 | glacier | 134 | cosine 0.9999929, relative 3.76e-3 | 27.3 |
+| warm 5 | station | 316 | cosine 0.9999921, relative 3.98e-3 | 48.9 |
+
+The prompt column includes the host check (316 tokens: 18.0 s encoding, 15.0 s reference), so these walls are not
+speed receipts. The second phase reverse-applied `bench-154-base.patch` (main's products) and drew the pilot prompt
+again: both 2048-1 latents are sha256 `8d067d75…`, byte-equal — the canonical algorithm still runs at 24 rows.
+
 ### The side-by-side: mmh3's warm server beside ours, unseen prompts (20 November)
 
 [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) puts both engines' resident servers

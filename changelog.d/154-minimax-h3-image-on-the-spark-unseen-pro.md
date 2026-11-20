@@ -1,6 +1,6 @@
 # MiniMax-H3-Image on the Spark: unseen prompts of every length draw again
 
-Prompts of 33-64 and 100+ tokens failed in the CUDA prompt stage with `NoAlgorithm` at condition_proj, the
+Prompts of 33–64 and 100+ tokens failed in the CUDA prompt stage with `NoAlgorithm` at condition_proj, the
 (rows, 5,376, 5,120) product with its bias fused: when cuBLASLt refused the canonical algorithm at the prompt's
 shape, the fallback checked the shape's plain algorithm against a descriptor carrying the bias epilogue. The
 fallback now asks the heuristic again with the bias epilogue set, so every length from 1 token to the encoder's
