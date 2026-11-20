@@ -338,12 +338,11 @@ __device__ __forceinline__ void rotated_chunk(const __nv_bfloat16* x, int c, flo
 // A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336, the widest projection input.
 constexpr int quantize_chunks = 14;
 
-// Each bf16 row of X (M, K) Hadamard-rotated in 128-wide chunks, then to int8 Q, each 256-wide group (two chunks,
-// K / 256 scales a row in S) at its absmax / 127; G = 1 is one scale a row. A row and its weights' rows rotate
-// alike, so their products' sums are the unrotated ones. The rotated chunks stay in registers between the absmax
-// and the rounding, so X is read once. Grid [M], 256 threads; chunk maxes staged in smax for the group reduce.
-__global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_t* Q, float* S, int K, int G) {
-    __shared__ float smax[8 * quantize_chunks];
+// Each bf16 row of X (M, K) Hadamard-rotated in 128-wide chunks, then to int8 Q at the row's absmax / 127 in S.
+// A row and its weights' rows rotate alike, so their products' sums are the unrotated ones. The rotated chunks stay in
+// registers between the absmax and the rounding, so X is read once. Grid [M], 256 threads.
+__global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_t* Q, float* S, int K) {
+    __shared__ float scratch[32];
     const size_t row = blockIdx.x;
     const __nv_bfloat16* x = X + row * K;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = K >> 7;
@@ -353,26 +352,16 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
         const int c = warp + 8 * i;
         if (c < chunks) {
             rotated_chunk(x, c, v[i]);
-            float hi = 0.f;
-            for (int j = 0; j < 4; ++j) hi = fmaxf(hi, fabsf(v[i][j]));
-            smax[c] = warp_max(hi);
+            for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[i][j]));
         }
     }
-    __syncthreads();
-    float all = 0.f;
-    if (G == 1) {
-        for (int c = 0; c < chunks; ++c) all = fmaxf(all, smax[c]);
-        const float scale = all > 0.f ? all / 127.f : 1.f;
-        if (threadIdx.x == 0) S[row] = scale;
-    }
+    most = tf_common::block_max_tree(most, scratch, 8);
+    const float scale = most > 0.f ? most / 127.f : 1.f;
+    if (threadIdx.x == 0) S[row] = scale;
 #pragma unroll
     for (int i = 0; i < quantize_chunks; ++i) {
         const int c = warp + 8 * i;
         if (c < chunks) {
-            const int g = c >> 1;
-            const float top = G == 1 ? all : (2 * g + 1 < chunks ? fmaxf(smax[2 * g], smax[2 * g + 1]) : smax[2 * g]);
-            const float scale = top > 0.f ? top / 127.f : 1.f;
-            if (G > 1 && lane == 0) S[row * G + g] = scale;
             const char4 q = make_char4(__float2int_rn(v[i][0] / scale), __float2int_rn(v[i][1] / scale), __float2int_rn(v[i][2] / scale), __float2int_rn(v[i][3] / scale));
             *reinterpret_cast<char4*>(Q + row * K + c * 128 + lane * 4) = q;
         }
@@ -444,27 +433,6 @@ __global__ void __launch_bounds__(256) h3_dequantize(const int* ACC, const float
         __nv_bfloat162* y = reinterpret_cast<__nv_bfloat162*>(Y + at);
         y[0] = __floats2bfloat162_rn(a.x * s * w.x, a.y * s * w.y);
         y[1] = __floats2bfloat162_rn(a.z * s * w.z, a.w * s * w.w);
-    }
-}
-
-// h3_dequantize for a product batched over G 256-wide groups of K: ACC's G planes of (M, N) int32 sums fold at
-// SX's and SW's scale for each group, to one bf16 row a value. Grid-stride, four a thread.
-__global__ void __launch_bounds__(256) h3_dequantize_grouped(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* Y, int M, int N, int G) {
-    const size_t quads = static_cast<size_t>(M) * N / 4, plane = static_cast<size_t>(M) * N;
-    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < quads; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
-        const size_t at = i * 4, r = at / N, n = at % N;
-        float4 sum = {0.f, 0.f, 0.f, 0.f};
-        for (int g = 0; g < G; ++g) {
-            const int4 a = *reinterpret_cast<const int4*>(ACC + g * plane + at);
-            const float s = SX[r * G + g];
-            sum.x = fmaf(a.x * s, SW[n * G + g], sum.x);
-            sum.y = fmaf(a.y * s, SW[(n + 1) * G + g], sum.y);
-            sum.z = fmaf(a.z * s, SW[(n + 2) * G + g], sum.z);
-            sum.w = fmaf(a.w * s, SW[(n + 3) * G + g], sum.w);
-        }
-        __nv_bfloat162* y = reinterpret_cast<__nv_bfloat162*>(Y + at);
-        y[0] = __floats2bfloat162_rn(sum.x, sum.y);
-        y[1] = __floats2bfloat162_rn(sum.z, sum.w);
     }
 }
 

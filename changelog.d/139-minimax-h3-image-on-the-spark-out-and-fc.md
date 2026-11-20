@@ -1,13 +1,11 @@
-# MiniMax-H3-Image on the Spark: `out` and `fc2` int8 at a scale per 256 of K
+# MiniMax-H3-Image on the Spark: per-256-of-K int8 scales on `out`/`fc2` measured and reverted
 
-A picture's four transformer linears now all run the rotated-int8 cuBLASLt path on CUDA: `qkvc` and `fc1` keep their
-per-row scales while `out` and `fc2` carry card 136's finer scales — one per 256 values of K on both operands — the
-fold that held card 136's picture gates where card 129's per-row fold failed them (28.15 dB, mean 4.23 against
-28.2 dB and 4.1). `h3_quantize` takes a group count (1 is a row's scale, K/256 the grouped one) and a grouped
-product is one strided-batched cuBLASLt call — a batch per 256-deep slice of K writing its own (rows, n) int32
-plane — whose partials `h3_dequantize_grouped` folds at both operands' per-group scales. `tf-h3-image-cuda`'s
-default and `--bf16` switch are unchanged in shape; `--bf16` still runs every projection in bf16.
-
-Card 129's same-shape measurement had all-four int8 0.6 s warm faster than qkvc+fc1 int8 at 2048²; this card's
-picture gates and warm A/B against main are in `docs/recipes/minimax-h3-cuda.md` under card 139, job script
-`bench-139.sh` (the base side reverse-applies the card's h3 diff inside the job).
+Card 136's grouped scales (one per 256 values of K on both operands) held the Mac's picture gates where card 129's
+per-row scales failed the Spark's. Through cuBLASLt the grouped fold is a strided batch — batch `g` sums the
+[g·256, g·256+256) slice of K into its own (rows, n) int32 plane, and a fold kernel scales the planes back — so at
+2048² `out` and `fc2` wrote and read ~4 TiB of partial sums a picture. The same-job A/B (job `top-1c32bccda27d`,
+`bench-139.sh` at `6bf561216`) measured **34.8 s warm** against main's **14.3 s** (transformer 33.6 vs 13.0), and
+the picture gates failed regardless (latent cosine 0.9935, PSNR 28.02 dB, mean 4.27 against 28.2 dB and 4.1). Per
+the card's rule the forward path is reverted: `out` and `fc2` stay bf16, `qkvc` and `fc1` keep their per-row int8.
+Per-256 scales through the library are closed — only an own-mma tile folding scales in registers can hold both the
+gates and the rate; receipts and method in `docs/recipes/minimax-h3-cuda.md` under card 139.

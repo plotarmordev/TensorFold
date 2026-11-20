@@ -15,8 +15,8 @@ const usage =
     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
     \\--serve loads the model once, then renders one `picture.safetensors OUT_PREFIX` line of stdin at a time,
     \\answering each on stdout with `done OUT_PREFIX` or `failed OUT_PREFIX`.
-    \\--bf16 runs every projection in bf16; by default the four projections run as mmh3 does: rotated int8 weights and
-    \\rows, exact int32 sums, out and fc2 at a scale per 256 of K — the picture passes episode 1's gates.
+    \\--bf16 runs every projection in bf16; by default qkvc and fc1 run as mmh3 does: rotated int8 weights and
+    \\rows, exact int32 sums, and the picture passes episode 1's gates.
     \\--draft-steps N runs the first N of the checkpoint's steps on the half-size canvas, as mmh3's
     \\--draft-steps does: the clean draft is enlarged bilinearly, noised to the next step's sigma (or
     \\to --renoise-sigma X) and redrawn at full size for the rest. It draws a different picture, not a

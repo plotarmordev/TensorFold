@@ -325,15 +325,9 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     var h3_quantize = h3_int8_k.Quantize{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_quantize"), .arena = std.heap.ArenaAllocator.init(a) };
     defer h3_quantize.deinit();
     try kernels.append(a, h3_quantize.kernel());
-    var h3_quantize_grouped = h3_int8_k.Quantize{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_quantize"), .arena = std.heap.ArenaAllocator.init(a), .grouped = true };
-    defer h3_quantize_grouped.deinit();
-    try kernels.append(a, h3_quantize_grouped.kernel());
     var h3_dequantize = h3_int8_k.Dequantize{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_dequantize"), .arena = std.heap.ArenaAllocator.init(a) };
     defer h3_dequantize.deinit();
     try kernels.append(a, h3_dequantize.kernel());
-    var h3_dequantize_grouped = h3_int8_k.DequantizeGrouped{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_dequantize_grouped"), .arena = std.heap.ArenaAllocator.init(a) };
-    defer h3_dequantize_grouped.deinit();
-    try kernels.append(a, h3_dequantize_grouped.kernel());
     var h3d_mod = try cuda.Module.load(gpu.d, &images.h3_image_decoder);
     defer h3d_mod.unload();
     const h3d_which = comptime std.enums.values(h3d_k.Which);
