@@ -449,13 +449,15 @@ Attention here is dense, so no routing floor applies. FastH3's 0.990 at step 1 c
 ## Decoder
 
 `tf-h3-image-decoder` turns `tf-h3-image`'s latent into a picture on Metal. It runs the VAE's 2D ViT decoder (24 blocks
-of 1,024, 16 heads of 64, 4 register tokens) on any Apple GPU. Its kernels compile from source when it loads; the
-products run on `nax.h`'s fragments, the M5's tensor units where the GPU has them and simdgroup matrices elsewhere.
-The products moved to `nax.h` with card 152. Their transposed weights load through `frag_get_t`, the loader that
-`frags.check` proves on pre-M5 GPUs. The M3 Ultra receipts below predate that move, and the simdgroup-matrix form
-of the new products has not yet run on a pre-M5 GPU. Forcing that form on an M5 is no stand-in: there `nax.h`'s own
-`tf_frag_check` (`core/frags.zig`), compiled with `TF_SIMD_FRAGS`, gets 512 of 512 transposed sums and 510 of 512
-plain ones wrong (21 Nov), while the tensor-unit form gets all of them right.
+of 1,024, 16 heads of 64, 4 register tokens) on any Apple GPU. Its kernels compile from source when it loads, in one of
+two builds of `image_decoder.metal`. With tensor units (the M5), `H3D_TENSOR` is set and `nax.h` inlined: card 152's
+products on the tensor units, SwiGLU folded into w1's, vector attention loads. Every other Apple GPU compiles the
+source as written, which is main's decoder before card 152 token for token (simdgroup-matrix products staged through
+threadgroup memory, a separate `h3d_swiglu`), with main's dispatches. Card 152's products stay off pre-M5 GPUs:
+`nax.h`'s simdgroup-matrix form could not be run on one, and forcing it on an M5 is no stand-in, since there
+`nax.h`'s own `tf_frag_check` (`core/frags.zig`), compiled with `TF_SIMD_FRAGS`, gets 512 of 512 transposed sums and
+510 of 512 plain ones wrong (21 Nov), while the tensor-unit form gets all of them right. The M3 Ultra receipts below
+ran main's decoder, which is still the pre-M5 build.
 
 **What runs:**
 
@@ -1239,8 +1241,9 @@ The products are three quarters of it. Each of the acceptance's four levers, wit
   It was built and timed only in the standalone tool, never in a locked warm server A/B, so it was reverted; it goes
   to a later Mac card with its own A/B.
 
-Gates: `tf-h3-image-contract` 31 kernels pass gates 1-4 (`h3d_gemm`'s SwiGLU form in place of `h3d_swiglu`), all 34
-controls go red as planted, and there are no limit problems;
+Gates: `tf-h3-image-contract` on the M5 runs the tensor-unit build (`h3d_gemm`'s SwiGLU form beside `h3d_swiglu`,
+which every build still compiles) and that build's controls; a GPU without tensor units runs main's build and main's
+controls. All controls go red as planted, and there are no limit problems;
 `tf-h3-image-decoder selftest` passes (24 blocks relative 1.48e-2, picture bytes at most 1 apart); `zig build test
 test-golden` exits 0. Episode 1's latent decoded by this card versus main: 56.6 dB, mean 0.14, max 5. The warm
 latents are bit-identical to main's on every request below. The cold picture against episode 1's Mac PNG
