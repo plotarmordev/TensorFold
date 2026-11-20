@@ -74,7 +74,8 @@ prompt_stage() { # the resident prompt stage writes $case's picture case from $1
     prompt_file=$1
     [ -n "$prompt_server" ] || {
         mkfifo "$out/prompt-requests" "$out/prompt-replies"
-        "$bin/tf-h3-image-prompt-cuda" "$model/text_encoder" "$model" --serve <"$out/prompt-requests" >"$out/prompt-replies" 2>"$out/$side.prompt-server.log" \
+        # H3_PROFILE laps the int8 encode's stages with events only (no waits); main's bf16 encoder ignores it
+        H3_PROFILE=${H3_PROFILE-} "$bin/tf-h3-image-prompt-cuda" "$model/text_encoder" "$model" --serve <"$out/prompt-requests" >"$out/prompt-replies" 2>"$out/$side.prompt-server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         prompt_server=$!
         exec 5>"$out/prompt-requests" 6<"$out/prompt-replies"
