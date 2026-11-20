@@ -136,13 +136,15 @@ non-zero past the bound. The host decoder needs the memory the servers held, so 
 Every projection's plan starts as a `cublasLtMatmulAlgoGetHeuristic` search: the bf16 products probe once
 at a canonical 16,384 rows per (n, k) and each int8 product once at the picture's own (rows, n, k), all
 inside `warm` before the first step. `tf-h3-image-cuda` keeps the picks
-in `~/.cache/tensorfold/h3-cublaslt-algos.bin` (a `TFH3LT1` header, the identity line, then fixed
-records): keyed by GPU name, CUDA driver and cuBLASLt version, so another card, driver or toolkit is a
-miss, as is a missing or torn file; the searches then run as before and `deinit` rewrites the table
+in `~/.cache/tensorfold/h3-cublaslt-algos.bin` (a `TFH3LT2` header, the identity line and the record
+count, then fixed records): keyed by GPU name, CUDA driver and cuBLASLt version, so another card, driver
+or toolkit is a miss, as is a missing file, one cut short of its count (even between records) or a record
+of unknown kind; the searches then run as before and `deinit` rewrites the table
 whole. A record the device still refuses (`cublasLtMatmulAlgoCheck` says no: a bit flip behind a valid
 header, a workspace need that grew) is dropped, the search reruns and its pick replaces it, so a corrupt
 file never survives a start — `tf-h3-image-cuda --self-test` proves both fallbacks, bf16 and int8, on
-the device. `TF_H3_ALGO_CACHE` names another file or, as `off`, skips it.
+the device. `TF_H3_ALGO_CACHE` names another file (a bare name lands in the working directory) or, as
+`off`, skips it.
 
 [`cache-ab.sh`](minimax-h3-cuda/cache-ab.sh) is the receipt: `bench-script.sh` on TOP twice in one job —
 once with the file absent (the searches write it), once with it — then compares the two cold latents bit
@@ -165,8 +167,8 @@ is unchanged at 12.6 s, and the cold latents are bit-identical). The wall gap is
 but only ~3.3 s of it is accounted for by load (−2.2 s) and transformer (−1.2 s); the rest is
 prompt-stage noise the cache does not touch, and phase B runs on page caches phase A warmed, so wall is
 not the cache's receipt. The file held four records — the bf16 shapes collapse to a few distinct (n, k)
-under their canonical rows, the int8 products to theirs. The ~1.2 s it saves does not reach the card's
-3 s cold bar; that needs a faster `warm`/`load` path, not a picks file.
+under their canonical rows, the int8 products to theirs. A faster cold start past these ~1.2 s needs a
+faster `warm`/`load` path, not a picks file.
 
 ### Fewer steps: the draft canvas, not the PDMD LoRA
 
