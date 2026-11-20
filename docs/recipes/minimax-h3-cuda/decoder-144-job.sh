@@ -7,5 +7,5 @@ status=0
 sh docs/recipes/minimax-h3-cuda/decoder-trace-job.sh || status=$?
 sh docs/recipes/minimax-h3-cuda/bench-144-ab.sh || status=$?
 sh docs/recipes/minimax-h3-cuda/limits-job.sh || status=$?
-grep "h3d_flash" /work/out/*/limits.log || true
+grep "h3d_flash" /work/out/limits.log || true
 exit "$status"
