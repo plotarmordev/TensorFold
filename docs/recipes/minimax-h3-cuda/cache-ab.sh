@@ -24,8 +24,10 @@ runbench() { # runbench OUTDIR: the bench's four 2048 runs into its own out, the
 rm -f "$cachefile"
 H3_BENCH_SKIP_COMPARE=1 runbench "$out/without-cache"
 # B: the same binary with the picks file A left: cold and warm reads
+grep -h 'h3 cublaslt picks\|retained at close' "$out/without-cache"/*.server.log 2>/dev/null | sort -u || true
 ls -l "$cachefile" || { echo "the run wrote no picks file" >&2; exit 1; }
 runbench "$out/with-cache"
+grep -h 'h3 cublaslt picks' "$out/with-cache"/*.server.log 2>/dev/null | sort -u || true
 if cmp -s "$out/without-cache/2048-1.latent.f32" "$out/with-cache/2048-1.latent.f32"; then
     echo "cold latents bit-identical" | tee "$out/latent-cmp.txt"
 else

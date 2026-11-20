@@ -96,6 +96,7 @@ pub const Picks = struct {
                 p.dir_len = dir.len;
             }
         }
+        std.debug.print("h3 cublaslt picks: file {s}{s}\n", .{ p.file[0..p.file_len], if (p.off) " (off)" else "" });
         p.readFile(gpa);
         return p;
     }
@@ -132,10 +133,14 @@ pub const Picks = struct {
     /// the new, never a torn one. A foreign-keyed file is rewritten under this device's key, the
     /// cache's whole point; a failed write only costs the next start its searches again.
     pub fn save(p: *Picks, gpa: std.mem.Allocator) void {
-        if (p.off or p.file_len == 0) return;
+        if (p.off or p.file_len == 0) {
+            std.debug.print("h3 cublaslt picks: not saved (off={} file_len={d})\n", .{ p.off, p.file_len });
+            return;
+        }
         const data = p.bytes(gpa) catch return;
         defer gpa.free(data);
         saveAt(p.dir[0..p.dir_len], p.file[0..p.file_len], data);
+        std.debug.print("h3 cublaslt picks: {d} records to {s}\n", .{ p.entries.items.len, p.file[0..p.file_len] });
     }
 
     /// Everything but the identity check and the device, for tests: `data` at `file` becomes the
@@ -187,7 +192,10 @@ pub fn saveAt(dir: []const u8, file: []const u8, data: []const u8) void {
     zfile[file.len] = 0;
     const tmp = std.fmt.bufPrintSentinel(&ztmp, "{s}.part", .{file}, 0) catch return;
     const fd = platform.c.open(tmp, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(platform.c.mode_t, 0o600));
-    if (fd < 0) return;
+    if (fd < 0) {
+        std.debug.print("h3 cublaslt picks: open {s}.part failed, errno {t}\n", .{ file, platform.c.errno(fd) });
+        return;
+    }
     defer _ = platform.c.close(fd);
     var done: usize = 0;
     while (done < data.len) {
