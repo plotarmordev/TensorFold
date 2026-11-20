@@ -1,8 +1,9 @@
 #!/bin/sh
 # Drama 3 compact NVFP4 (#4144) and semantic CFG (#4153) merged, on TOP's Spark through the Desk's GPU door:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/drama3-cuda/combined-gb10.sh
-# Inside the Desk's 20 minutes, sm_121 only: both new kernels' contracts with their planted controls, the compact
-# checkpoint loaded as stored, then the CFG guidance check. Each check prints CHECK name PASS|FAIL; any FAIL fails the job.
+# Inside the Desk's 20 minutes, sm_121 only: the Desk's copy of the compact checkpoint against the published manifest,
+# both new kernels' contracts with their planted controls, the compact checkpoint loaded as stored and replayed, then
+# the CFG guidance check. Each check prints CHECK name PASS|FAIL; any FAIL fails the job.
 set -u
 staged=/assets/drama3-pilot/cuda-build-toolchain
 pilot=/assets/drama3-pilot
@@ -13,6 +14,13 @@ gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
 nvcc=/usr/local/cuda/bin/nvcc
 out=/work/out/drama3-combined
 set -e
+# the published MANIFEST.sha256 (revision f3de2250), then every file it lists; any mismatch ends the job here
+cd "$compact"
+echo 'f447d4ba6cbb79ddadbd4148ec3b8eb6b5ea8bf54a13d24f552f93474b0dd07d  MANIFEST.sha256' | sha256sum -c
+sha256sum -c MANIFEST.sha256 >/work/manifest.log
+cat /work/manifest.log
+echo "manifest: $(grep -c ': OK$' /work/manifest.log) OK"
+cd - >/dev/null
 tar -C /work -xJf "$staged/$zig.tar.xz"
 tar -C /work -xJf "$staged/$gcc.tar.xz"
 export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
@@ -34,28 +42,19 @@ check() { # NAME STATUS
 "$bin/tf-cuda-test" kernel-contract 'compact router' 'd3_cfg_mix' 2>&1 | tee "$out/contract.log"
 grep -Eq '^\(filtered\) SUMMARY .* 0 fail, .* [1-9][0-9]* red as planted, 0 missed; 0 limit problems' "$out/contract.log"
 check contract $?
-# the restaged compact checkpoint, checked against the published MANIFEST.sha256 (revision f3de2250)
-(cd "$compact" && sha256sum -c) <<'EOF'
-d02b64a75fd47bae94d2fb1d8687f502a255efdeca9f55d3c37a630fe5ed2c4f  model-00001-of-00008.safetensors
-a79909a7b43219e42daccdd4740a4ff28908e68519e84b26284a2a76af8b9400  model-00002-of-00008.safetensors
-525be638744ae030c9e3bb3d58ef6e8e281082d18a9a30473e7421507901ee8d  model-00003-of-00008.safetensors
-a14de9dec3ccedee4a9d3b2e622435bc44696b8f5cf4bee6a4dd0d33e1530855  model-00004-of-00008.safetensors
-768e2818b834daf1a06588c0cdeff1e159b426f0fd32b4203fad551d5d816ff8  model-00005-of-00008.safetensors
-330d16af1b202a5517fd1f88c27abb8400d8be80ad571161564fdd9302d5168e  model-00006-of-00008.safetensors
-80b5caac7da73489d7f3e177adf8d4e7e91e9972d5a47a818e32f7fff024e8b3  model-00007-of-00008.safetensors
-aad2f494b1359fe2ab7a2e55eb6ba819c747149263d36e23b6d0409d49e47592  model-00008-of-00008.safetensors
-125d92992e0ab23363b5ee212c45fccf8200053bc43c42884c6eb5bd5b4a7cbe  model.safetensors.index.json
-0e9b9db76b2f0389b04b6ef057a2ac3b89100b7e96f2dd7034d19580a09654d6  tokenizer.json
-EOF
-check checkpoint $?
 # the compact checkpoint as stored: NVFP4 in every layer, compact routers where experts were dropped
-"$bin/drama3-generate" --model "$compact" --codec "$fp8/codec.pth" --text 'The quick brown fox jumps over the lazy dog.' \
-    --greedy --max-frames 200 --out "$out/compact.codes" --replay 1 2>"$out/compact.log"
-tail -n 1 "$out/compact.log" | grep -q '^RESULT drama3 OK' &&
-    grep 'routed experts held 7369 of 10240; routed experts NVFP4 in 40 of 40 layers; compact routers in [1-9][0-9]* of 40 layers' "$out/compact.log"
+compact() { # NAME [ARGS...]: greedy codes into NAME.codes, stderr into NAME.log; the RESULT line must close it
+    name=$1
+    shift
+    "$bin/drama3-generate" --model "$compact" --codec "$fp8/codec.pth" --text 'The quick brown fox jumps over the lazy dog.' \
+        --greedy --max-frames 200 --out "$out/$name.codes" "$@" 2>"$out/$name.log"
+    tail -n 1 "$out/$name.log" | grep '^RESULT drama3 OK'
+}
+compact compact && grep -o 'routed experts held 7369 of 10240; routed experts NVFP4 in 40 of 40 layers; compact routers in [1-9][0-9]* of 40 layers' "$out/compact.log"
 check compact-load $?
-grep -o 'routed experts held.*' "$out/compact.log"
-tail -n 1 "$out/compact.log"
+compact compact-replay --replay 1
+check compact-replay $?
+tail -n 1 "$out/compact-replay.log"
 # guidance acts only on a reference-backed voice: a few seconds of Drama 3's own voice, as in drama3-pruned-main
 text="The lighthouse keeper climbed the winding stairs and lit the lamp before the storm."
 "$bin/drama3-generate" --model "$fp8" --codec "$fp8/codec.pth" --text "$text" --wav "$out/synthetic.wav" &&
