@@ -316,7 +316,7 @@ const gemm_rule = "a scale's NaN or infinity reaches its whole row or column of 
 
 /// h3_gemm_int8's dynamic shared bytes: its 3 stages fill sm_121's per-block cap (cuda_int8's own
 /// `gemm_shared_bytes`; duplicated so the contract needs no family import).
-pub const gemm_shared_bytes = 2 * (192 * 128 + 128 * 128 + 192 * 4);
+pub const gemm_shared_bytes = 3 * (128 * 128 + 128 * 128 + 128 * 4);
 
 /// The product's chains: two fp32 roundings a chunk (the activation-scale fold's fma and the accumulator's
 /// add), one more for the row-scale epilogue, plus the bf16 store's own rounding which `out` carries.
@@ -410,10 +410,10 @@ pub const Gemm = struct {
         for (t.dev) |p| args.add(p);
         for ([_]usize{ t.shape.rows, t.shape.n, t.shape.k }) |v| args.add(@as(c_int, @intCast(v)));
         args.add(@as(c_int, 8)); // tile bands' L2 swizzle group, as cuda_int8's gemm_group
-        const tiles_m = (t.shape.rows + 191) / 192;
+        const tiles_m = (t.shape.rows + 127) / 128;
         const tiles_n = (t.shape.n + 127) / 128;
         const shared: u32 = @intCast(gemm_shared_bytes);
-        try cuda.launch.launch(t.f, .{ .grid = .{ .x = @intCast(tiles_m * tiles_n) }, .block = .{ .x = 384 }, .shared = shared }, t.rig.s, &args);
+        try cuda.launch.launch(t.f, .{ .grid = .{ .x = @intCast(tiles_m * tiles_n) }, .block = .{ .x = 256 }, .shared = shared }, t.rig.s, &args);
         try t.rig.s.synchronize();
     }
 
@@ -502,7 +502,7 @@ const image_h3 align(16) = @embedFile("fatbin_h3").*;
 /// Per-shape wall-clock of `reps` back-to-back launches of `f`, ns each.
 fn timeKernel(f: cuda.Function, s: cuda.Stream, shared: u32, args: *cuda.Args, grid_x: u32, reps: usize, io: std.Io) !i96 {
     const start = gpu_check.now(io);
-    for (0..reps) |_| try cuda.launch.launch(f, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 384 }, .shared = shared }, s, args);
+    for (0..reps) |_| try cuda.launch.launch(f, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 256 }, .shared = shared }, s, args);
     try s.synchronize();
     return @divTrunc(gpu_check.now(io) - start, @as(i96, @intCast(reps)));
 }
@@ -582,9 +582,9 @@ pub fn bench(gpu: gpu_check.Gpu) !void {
         var args: cuda.Args = .{};
         for ([_]u64{ d_xq.ptr, d_xs.ptr, d_wq.ptr, d_ws.ptr, d_out.ptr }) |p| args.add(p);
         for ([_]usize{ sh.rows, sh.n, sh.k, 8 }) |v| args.add(@as(c_int, @intCast(v)));
-        const grid_x: u32 = @intCast(((sh.rows + 191) / 192) * ((sh.n + 127) / 128));
+        const grid_x: u32 = @intCast(((sh.rows + 127) / 128) * ((sh.n + 127) / 128));
         // warm + throw the first timed sample's cold-start out via one untimed launch
-        try cuda.launch.launch(f, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 384 }, .shared = @intCast(gemm_shared_bytes) }, s, &args);
+        try cuda.launch.launch(f, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 256 }, .shared = @intCast(gemm_shared_bytes) }, s, &args);
         try s.synchronize();
         const ours = try timeKernel(f, s, @intCast(gemm_shared_bytes), &args, grid_x, reps, io);
 

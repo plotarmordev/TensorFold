@@ -471,6 +471,14 @@ the picture's own shapes it still loses to cuBLASLt, so it stops short of a pict
 two, ~2 fma an element instead of ~5) and the tile is correct, but a third fewer TOPS than the library it would
 replace is not a win; the cuBLASLt qkvc/fc1 int8 default stands and `out`/`fc2` stay bf16.
 
+Two more tile geometries were run under the same stop rule (`bench-129-contract.sh` at `3e1c5842f` job
+`top-3abb0a0b31cb` 82.6/81.6/83.8/78.3 TOPS for a 256×128 two-stage tile with a per-step n-pair fold — worse
+than 128×128, the wider tile's extra smem stage lost to its fold running four times a chunk; at `8c4f3cb89` job
+`top-5688a4933512` a 192×128 two-stage tile at 12 warps an SM measured 116.0/118.1/117.6/115.9 TOPS, 0.74-0.77×
+cuBLASLt — it recovered to the 128×128 plateau, no better). Three geometries now bracket the same ~117 TOPS
+ceiling: a cp.async tile with eight-to-twelve warps and no persistent grid tops out a quarter under cuBLASLt's
+~152, and mmh3's own 172 comes from TMA plus a persistent grid, not the tile shape — that port is its own card.
+
 The rounds left toward mmh3's 9.5 s warm time (≤ 7 s by card 93; its first picture is 17.6 s, card 80's standing
 goal), in order, each needing its own window:
 
