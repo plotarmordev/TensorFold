@@ -5,10 +5,18 @@
 # baseline phase and back for the exit.
 # Results: /work/out/h3-image-bench (this commit) and /work/out/h3-image-bench-base (the card's files at main).
 #   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-128-ab.sh"
-# main in a job clone with no origin/main or heads/main: the newest merge's second parent is main's tip
-# (the branch's merges of main all merge it as ^2); falls back to refs/heads/main where it exists.
+# main in a job clone: no local branch, no origin/main, often a shallow detached HEAD with no merge
+# commits. Fetching main is the reliable path; the shallowest fallbacks are a merge's second parent
+# (when the clone kept the merge) and refs/heads/main.
 main=$(git -c safe.directory='*' merge-base HEAD origin/main 2>/dev/null || true)
-[ -n "$main" ] || main=$(git -c safe.directory='*' rev-parse "$(git -c safe.directory='*' rev-list --merges -1 HEAD)^2" 2>/dev/null || true)
+if [ -z "$main" ]; then
+    git -c safe.directory='*' fetch origin main 2>/dev/null || true
+    main=$(git -c safe.directory='*' rev-parse FETCH_HEAD 2>/dev/null || true)
+fi
+if [ -z "$main" ]; then
+    m=$(git -c safe.directory='*' rev-list --merges -1 HEAD 2>/dev/null || true)
+    [ -n "$m" ] && main=$(git -c safe.directory='*' rev-parse "$m^2" 2>/dev/null || true)
+fi
 [ -n "$main" ] || main=refs/heads/main
 status=0
 echo "=== after: this commit $(git -c safe.directory='*' rev-parse --short HEAD), card files at base ${main} ==="
