@@ -86,12 +86,12 @@ Job `top-7ccced985b0a` ran it at `cf2da2d92`: the build passed and `kernel-contr
 |---|---|---|
 | Prompt rows (Qwen3-VL to layer 50, `condition_proj`, the two-block refiner) | `prompt.zig` | CUDA `prompt_cuda.zig`, a layer's weights uploaded at a time; CPU reference `prompt_reference.zig`, the case from `prompt_case.zig` |
 | Weights | `model.safetensors.index.json` and its shards | `Model.loadSharded` reads the shards in place |
-| Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | host, `rows_reference.rowsIn` |
+| Rows in: `video_patch_proj`, F32 [5,376, 96] | `h3_rows_in` | `h3_rows_in` (`cuda_rows.zig`, card 122); CPU reference `rows_reference.rowsIn` |
 | AdaLN tables: the time embedder, each block's projection per timestep | `h3_modulation` | CUDA `cuda_modulation.zig`, resident (line, part, c) tables; final-norm table downloaded |
 | Rotary: 48 angles over 96 dims | `picture.rotary`, 96 wide, duplicated | `cos`/`sin` 48 wide, `rot` 48: the first half of each row |
 | Transformer blocks, dense, tiles of 64 | `block.zig` | these blocks, `keep` 0 |
-| Final norm and the step's head, `pdd_fused_heads` | `h3_final_norm`, `h3_rows_out` | host, `rows_reference.finalNorm`, `rowsOut` |
-| Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | the same |
+| Final norm and the step's head, `pdd_fused_heads` | `h3_final_norm`, `h3_rows_out` | `h3_rows_out` on the device (final norm + head), `rows_reference`'s order |
+| Euler step, unpatchify | `picture.euler`, `picture.unpatchify` | `h3_euler` on the device; `picture.unpatchify` on the host |
 | Image decoder | `image_decoder_metal.zig` | CUDA `image_decoder_cuda.zig`, batched tiles; host blending and PNG output |
 
 Gaps between the video and image transformer: the image transformer has no routing gate (dense attention), fuses each
@@ -400,10 +400,39 @@ default's. The decoder selftest's staged blocks land ~81–84% identical inside 
 — cuBLASLt's fp32 accumulation order, not an error — so `selftest --tc` drops only the identity bar
 (`selftest-tc.sh` gates that alone).
 
-| Warm 2048² (pre-122 window) | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
+Card 130 fuses the `--tc` decoder's finish pass: the bias-free-of-LayerScale projections run
+cuBLASLt's bias epilogue — `bf16(acc + b)` in the one rounding `h3d_finish` mode 0 held — and the
+LayerScale projections write that same rounded product into `u`, which `h3d_res_norm` folds into
+the next block norm (`x = bf16(x + bf16(u * s))`, then the RMS norm). `h3d_finish` had 776 launches
+a picture at 341 µs each on the card-125 trace; a CUPTI trace of the same bench
+(`top-5a08d40d1ed5`, at `5d2354fa`) shows 48 launches a warm decode — two a block: the qkv (m,3072,1024) and w2
+(m,1024,4096) projections, whose heuristic pick (nvjet `tss_128x208`) declines the bias epilogue,
+while out, w1 and proj_out run cutlass_80 relu algorithms that take it. Those two shapes keep the
+fp32 `acc` and `h3d_finish`. That remainder is cuBLASLt's answer, not a structural one:
+`h3d_res_norm` could read w2's fp32 acc and bias directly and `h3d_heads` could add qkv's, a ~0.09 s
+fold left for a later card. `--exact` is unchanged. `most_batch` is 128 so a 2048² canvas's 121
+tiles decode in one pass, the way mmh3 batches its VAE.
+
+`32279731` (job `top-c328ffe998ad`, 20 November, exit 0) ran the same-job A/B — the bench on this
+commit, then again with the card's seven files put back to merge base `60dd5ac5` inside the job.
+Every selftest passed in both phases; the same-latent `reference` repeated `9914f752`'s
+figures exactly (85.213% of bytes identical, 99.875% within 1, at most 7 apart, PSNR 56.31 dB,
+relative 3.33e-3), and every latent and PNG was byte-identical between phases. A warm 2048² picture
+took **15.2 s** mean (15.2, 15.2, 15.2: prompt 1.1, transformer 12.8, decoder 1.2–1.3) against the
+same job's base phase **15.3 s** (15.3, 15.3, 15.3: decoder 1.3) — kept. The decode's GPU time fell
+0.98 → 0.83 s: the finish stage 0.26 → 0.08 s (the 48 remaining `h3d_finish` launches of 0.091 s on
+the trace — qkv's nvjet pick and w2's decline the epilogue) and res_norm folded into norms at +0.02 s.
+The products' rates are the gap left toward mmh3's 0.55 s decode: products plus attention 0.58 s
+(0.34 + 0.24) against the card-125 trace's 0.52 s of nvjet+cutlass GEMM time — the finish pass was
+never the products' rate. The trace's per-shape rates: w2 94, w1 81, out 78 TFLOP/s, qkv's nvjet
+pick 56, proj_out 42. Against episode 1's Mac picture the fused path's `2048-2` measures the
+window's own 28.69 dB and 4.01 apart, cosine 0.9952.
+
+| Warm 2048² | Wall | Prompt | Transformer | Decoder | Same-latent PSNR | vs Mac picture |
 |---|---:|---:|---:|---:|---:|---:|
 | fp32-order decoder (`52350e5b`, `top-b79ca42af474`) | 18.9 s | 1.1 s | 12.9 s | 4.9 s | 56.62 dB | 28.69 dB, 4.01 |
 | tensor-core decoder (`9914f752`, `top-764629281bea`) | 15.3 s | 1.1 s | 12.8 s | 1.3 s | 56.31 dB | 28.69 dB, 4.01 |
+| fused finish pass (`32279731`, `top-c328ffe998ad`) | 15.2 s | 1.1 s | 12.8 s | 1.2 s | 56.31 dB | 28.69 dB, 4.01 |
 
 Two candidates for the int8 products' round were measured and reverted, each latent byte for byte `c30403d9`'s.
 `822b217c` (job `top-be459e1ee06e`) timed the first eight algorithms cuBLASLt's heuristic offers each int8 shape on

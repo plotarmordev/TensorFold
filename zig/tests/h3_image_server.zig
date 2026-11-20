@@ -8,12 +8,15 @@ const image_tool = @import("h3_image.zig");
 const decoder_tool = @import("h3_image_decoder.zig");
 
 const usage =
-    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile]
+    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile] [--draft-steps N] [--renoise-sigma X]
     \\  then one request a line on stdin: WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt
     \\  each writes OUT_PREFIX.safetensors, .h3case.safetensors, .rows.f32, .latent.f32 and .png as
     \\  tf-h3-image-prompt, tf-h3-image (free) and tf-h3-image-decoder do, and prints a timing line;
-    \\  a request with the last one's canvas, rows and tags reuses its transformer binding
+    \\  a request with the last one's canvas, rows and tags reuses its transformer binding;
+    \\  a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256)
     \\  profile: each request's six steps by stage, each stage in its own command buffer (slower; diagnostic)
+    \\  --draft-steps N runs every request's first N steps on the half-size canvas, as mmh3's does:
+    \\  a different picture, faster (the free run only; no reference edits)
     \\
 ;
 
@@ -27,19 +30,19 @@ const Binding = struct {
     tags: []const i32,
     weights: ?mtl.ResidencySet,
 
-    fn init(gpa: std.mem.Allocator, folder: *const image_tool.Folder, case: *const image_tool.Case, tags: []const i32, weights: ?mtl.ResidencySet) !Binding {
+    fn init(gpa: std.mem.Allocator, folder: *const image_tool.Folder, case: *const image_tool.Case, tags: []const i32, weights: ?mtl.ResidencySet, sched: ?h3.picture.Pdd) !Binding {
         const arena = try gpa.create(std.heap.ArenaAllocator);
         errdefer gpa.destroy(arena);
         arena.* = .init(gpa);
         errdefer arena.deinit();
-        const model = try folder.bind(arena.allocator(), arena.allocator(), case);
+        const model = try folder.bind(arena.allocator(), arena.allocator(), case, sched);
         errdefer model.release();
         const own_tags = try arena.allocator().dupe(i32, tags);
-        // the binding's int8 fc1 copy joins the weights' set while it lives: a step's encode drops from 0.19 to 0.04 s
+        // the binding's int8 weights join the weights' set while it lives: a step's encode drops from 0.19 to 0.04 s
         if (weights) |set| {
             model.queue.addResidencySet(set);
-            set.add(model.fc1_q);
-            set.add(model.fc1_s);
+            set.add(model.wq);
+            set.add(model.ws);
             set.commit();
         }
         return .{ .arena = arena, .model = model, .canvas = case.canvas, .rows = case.rows, .references = case.layout.references.len, .tags = own_tags, .weights = weights };
@@ -52,8 +55,8 @@ const Binding = struct {
 
     fn release(b: *Binding) void {
         if (b.weights) |set| {
-            set.remove(b.model.fc1_q);
-            set.remove(b.model.fc1_s);
+            set.remove(b.model.wq);
+            set.remove(b.model.ws);
             set.commit();
         }
         b.model.release();
@@ -64,14 +67,14 @@ const Binding = struct {
 };
 
 /// `binding` for `case`: its text rows replaced when the layout fits, else released and bound anew; true when reused.
-fn rebind(gpa: std.mem.Allocator, folder: *const image_tool.Folder, binding: *?Binding, case: *const image_tool.Case, tags: []const i32, weights: ?mtl.ResidencySet) !bool {
+fn rebind(gpa: std.mem.Allocator, folder: *const image_tool.Folder, binding: *?Binding, case: *const image_tool.Case, tags: []const i32, weights: ?mtl.ResidencySet, sched: ?h3.picture.Pdd) !bool {
     if (binding.*) |*b| if (b.fits(case, tags)) {
         try b.model.retext(case.file);
         return true;
     };
     if (binding.*) |*b| b.release();
     binding.* = null;
-    binding.* = try Binding.init(gpa, folder, case, tags, weights);
+    binding.* = try Binding.init(gpa, folder, case, tags, weights, sched);
     return false;
 }
 
@@ -97,9 +100,29 @@ fn holdWeights(init: std.process.Init, a: std.mem.Allocator, encoder: *const pro
 }
 
 pub fn main(init: std.process.Init) !u8 {
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-    const profile = args.len == 4 and std.mem.eql(u8, args[3], "profile");
-    if (args.len != 3 and !profile) {
+    const all = try init.minimal.args.toSlice(init.arena.allocator());
+    const a0 = init.arena.allocator();
+    var profile = false;
+    var draft_steps: usize = 0;
+    var renoise: ?f32 = null;
+    var positional: std.ArrayList([]const u8) = .empty;
+    var i: usize = 1;
+    while (i < all.len) : (i += 1) {
+        const arg = all[i];
+        if (std.mem.eql(u8, arg, "profile")) {
+            profile = true;
+        } else if (std.mem.eql(u8, arg, "--draft-steps")) {
+            i += 1;
+            if (i >= all.len) return 2;
+            draft_steps = std.fmt.parseInt(usize, all[i], 10) catch return 2;
+        } else if (std.mem.eql(u8, arg, "--renoise-sigma")) {
+            i += 1;
+            if (i >= all.len) return 2;
+            renoise = std.fmt.parseFloat(f32, all[i]) catch return 2;
+        } else try positional.append(a0, arg);
+    }
+    const args = positional.items;
+    if (args.len != 2 or (draft_steps == 0 and renoise != null)) {
         std.debug.print("{s}", .{usage});
         return 2;
     }
@@ -120,6 +143,8 @@ pub fn main(init: std.process.Init) !u8 {
 
     var binding: ?Binding = null;
     defer if (binding) |*b| b.release();
+    var draft_binding: ?Binding = null;
+    defer if (draft_binding) |*b| b.release();
     var in_buf: [4096]u8 = undefined;
     var in = std.Io.File.stdin().readerStreaming(init.io, &in_buf);
     while (true) {
@@ -134,7 +159,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (fields.len == 0) continue;
         var request = std.heap.ArenaAllocator.init(init.gpa);
         defer request.deinit();
-        serve(init, request.allocator(), &encoder, &folder, &vae, &binding, weights, fields, profile) catch |err| {
+        serve(init, request.allocator(), &encoder, &folder, &vae, &binding, &draft_binding, weights, fields, profile, draft_steps, renoise) catch |err| {
             std.debug.print("request failed: {s}\n", .{@errorName(err)});
         };
     }
@@ -162,7 +187,7 @@ fn nextLine(in: *std.Io.Reader) !?[]const u8 {
 }
 
 /// One request line: its prompt's case, the six steps on the bound (or a new) transformer, its PNG, a timing line.
-fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae, binding: *?Binding, weights: ?mtl.ResidencySet, line: []const u8, profile: bool) !void {
+fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae, binding: *?Binding, draft_binding: *?Binding, weights: ?mtl.ResidencySet, line: []const u8, profile: bool, draft_steps: usize, renoise: ?f32) !void {
     var it = std.mem.tokenizeAny(u8, line, " \t");
     const size = try prompt_tool.size(it.next() orelse return error.BadRequest);
     const seed = try std.fmt.parseInt(u64, it.next() orelse return error.BadRequest, 10);
@@ -181,11 +206,23 @@ fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Enc
 
     var pic = try h3.Tensors.open(init.gpa, try mtl.Device.init(), pic_path);
     defer pic.deinit();
-    const case = try image_tool.Case.write(init, a, folder, &pic, prefix);
+    // mmh3's --draft-steps: draftPlan needs the case's grid and seed noise, so the normal case is
+    // written first; a renoise that moved a step off the distilled grid rewrites it with the draft
+    // schedule and blended heads
+    var case = try image_tool.Case.write(init, a, folder, &pic, prefix, null);
     defer case.file.deinit();
+    const plan: ?image_tool.DraftPlan = if (draft_steps == 0) null else plan: {
+        if (case.layout.references.len != 0) return error.H3DraftWithReferences;
+        break :plan try image_tool.draftPlan(a, folder, &case, draft_steps, renoise);
+    };
+    if (plan) |p| if (p.heads != null) {
+        const next = try image_tool.Case.write(init, a, folder, &pic, prefix, .{ .sched = p.sched, .video_out = p.heads });
+        case.file.deinit();
+        case = next;
+    };
     const tags = pic.values(i32, try pic.at("text_tags", .i32, case.layout.text), case.layout.text);
     const cased = mtl.clock.seconds();
-    const reused = try rebind(init.gpa, folder, binding, &case, tags, weights);
+    const reused = try rebind(init.gpa, folder, binding, &case, tags, weights, if (plan) |p| p.sched else null);
     const bound = mtl.clock.seconds();
 
     const model = binding.*.?.model;
@@ -196,15 +233,22 @@ fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Enc
     defer {
         if (profile) model.profile = false;
     }
-    const out = try image_tool.free(a, model, folder, &case, prefix);
+    const steps = if (plan) |p| p.sched.steps() else folder.pdd.steps();
+    const out = if (plan) |p| out: {
+        // the half-size draft's own case and binding: its steps index the same schedule positions
+        const draft_case = try image_tool.Case.write(init, a, folder, &pic, try std.fmt.allocPrint(a, "{s}.draft", .{prefix}), .{ .sched = p.sched, .grid = p.draft_grid, .noise = p.draft_noise, .video_out = p.heads });
+        defer draft_case.file.deinit();
+        _ = try rebind(init.gpa, folder, draft_binding, &draft_case, tags, weights, p.sched);
+        break :out try image_tool.drafted(a, model, draft_binding.*.?.model, &case, &draft_case, p.sched, draft_steps, p.noise_latent, prefix);
+    } else try image_tool.free(a, model, folder, &case, prefix);
     if (profile) {
-        std.debug.print("{s}: six steps by stage, each stage in its own command buffer:\n", .{prefix});
+        std.debug.print("{s}: steps by stage, each stage in its own command buffer:\n", .{prefix});
         for (h3.stages, model.spent) |stage, seconds| std.debug.print("  {s}: {d:.3} s\n", .{ stage, seconds });
     }
     const denoised = mtl.clock.seconds();
     try vae.png(init, a, out.latent, case.grid.rows, case.grid.columns, .{ .width = size.width, .height = size.height }, try std.fmt.allocPrint(a, "{s}.png", .{prefix}));
     const done = mtl.clock.seconds();
-    std.debug.print("{s}: prompt {d:.2} s, case {d:.2} s, transformer {s} {d:.2} s, 6 steps {d:.2} s, decoder {d:.2} s, total {d:.2} s\n", .{ prefix, encoded - started, cased - encoded, if (reused) "reused" else "bound", bound - cased, denoised - bound, done - denoised, done - started });
+    std.debug.print("{s}: prompt {d:.2} s, case {d:.2} s, transformer {s} {d:.2} s, {d} steps {d:.2} s, decoder {d:.2} s, total {d:.2} s\n", .{ prefix, encoded - started, cased - encoded, if (reused) "reused" else "bound", bound - cased, steps, denoised - bound, done - denoised, done - started });
 }
 
 const testing = std.testing;
@@ -302,7 +346,7 @@ fn pictureCase(a: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const 
     @memset(tags, 1);
     try entries.append(a, .{ .name = "text_tags", .dtype = "I32", .shape = &.{text}, .bytes = std.mem.sliceAsBytes(tags) });
     const grid = try h3.picture.gridOf(.{ .width = @intCast(canvas[0]), .height = @intCast(canvas[1]) });
-    try s.add(a, &entries, "noise", "F32", &.{ try h3.picture.gridRows(grid) * s.width }, seed + 100);
+    try s.add(a, &entries, "noise", "F32", &.{try h3.picture.gridRows(grid) * s.width}, seed + 100);
     try dir.writeFile(io, .{ .sub_path = name, .data = try files.image(a, entries.items) });
 }
 
@@ -316,7 +360,7 @@ fn buildCase(init: std.process.Init, a: std.mem.Allocator, dir: std.Io.Dir, dir_
     var pic = try h3.Tensors.open(testing.allocator, device, pic_path);
     defer pic.deinit();
     const prefix = try std.fmt.allocPrint(a, "{s}/{s}", .{ dir_path, spec.name });
-    var case = try image_tool.Case.write(init, a, folder, &pic, prefix);
+    var case = try image_tool.Case.write(init, a, folder, &pic, prefix, null);
     // the noise is a view into `pic`, which closes on return
     case.noise = try a.dupe(f32, case.noise);
     const tags = try a.dupe(i32, pic.values(i32, try pic.at("text_tags", .i32, case.layout.text), case.layout.text));
@@ -324,13 +368,13 @@ fn buildCase(init: std.process.Init, a: std.mem.Allocator, dir: std.Io.Dir, dir_
 }
 
 fn freshLatent(a: std.mem.Allocator, folder: *const image_tool.Folder, case: *const image_tool.Case, tags: []const i32, prefix: []const u8) ![]f32 {
-    var b = try Binding.init(testing.allocator, folder, case, tags, null);
+    var b = try Binding.init(testing.allocator, folder, case, tags, null, null);
     defer b.release();
     return (try image_tool.free(a, b.model, folder, case, prefix)).latent;
 }
 
 fn residentLatent(a: std.mem.Allocator, folder: *const image_tool.Folder, binding: *?Binding, case: *const image_tool.Case, tags: []const i32, weights: mtl.ResidencySet, prefix: []const u8) ![]f32 {
-    _ = try rebind(testing.allocator, folder, binding, case, tags, weights);
+    _ = try rebind(testing.allocator, folder, binding, case, tags, weights, null);
     return (try image_tool.free(a, binding.*.?.model, folder, case, prefix)).latent;
 }
 
@@ -460,7 +504,7 @@ test "a failed bind releases every Metal object it made" {
     try testing.expect(device.allocated() <= ceiling);
 
     var binding_alloc = std.testing.FailingAllocator.init(testing.allocator, .{ .resize_fail_index = 0 });
-    var bound = try Binding.init(binding_alloc.allocator(), &f.folder, &f.cases[0].case, &.{}, null);
+    var bound = try Binding.init(binding_alloc.allocator(), &f.folder, &f.cases[0].case, &.{}, null, null);
     const tag_count = bound.arena.queryCapacity() / @sizeOf(i32) + 1;
     bound.release();
     try testing.expect(device.allocated() <= ceiling);
@@ -472,7 +516,7 @@ test "a failed bind releases every Metal object it made" {
         .fail_index = binding_alloc.alloc_index,
         .resize_fail_index = 0,
     });
-    try testing.expectError(error.OutOfMemory, Binding.init(tag_alloc.allocator(), &f.folder, &f.cases[0].case, tags, null));
+    try testing.expectError(error.OutOfMemory, Binding.init(tag_alloc.allocator(), &f.folder, &f.cases[0].case, tags, null, null));
     try testing.expect(tag_alloc.has_induced_failure);
     try testing.expectEqual(tag_alloc.allocated_bytes, tag_alloc.freed_bytes);
     try testing.expect(device.allocated() <= ceiling);
@@ -606,7 +650,7 @@ test "speech arriving during the prompt encoder, denoising or the decoder holds 
     }
     f.folder.turn = .{ .io = io, .at = lock };
     const case = &f.cases[0].case;
-    var b = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null);
+    var b = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
     defer b.release();
     const velocity = try a.alloc(f32, case.noise.len);
     _ = try b.model.forward(case.noise, &.{}, 0, velocity, &.{});
@@ -630,4 +674,124 @@ test "an over-long request line is drained and the next one read" {
     try testing.expectError(error.StreamTooLong, nextLine(&limited.interface));
     try testing.expectEqualStrings("2048x2048 42 out/a prompt.txt", (try nextLine(&limited.interface)).?);
     try testing.expectEqual(@as(?[]const u8, null), try nextLine(&limited.interface));
+}
+
+// A --draft-steps request on the synthetic model: the draft plan's pooled noise and the full run's
+// determinism; bad draft counts and a bad half-grid refuse.
+test "draft plan pools the seed's noise and the draft run is deterministic" {
+    const device = try mtl.Device.init();
+    if (!device.tensorUnits()) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var environ_map: std.process.Environ.Map = .init(testing.allocator);
+    defer environ_map.deinit();
+    const init = std.process.Init{
+        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
+        .arena = &arena,
+        .gpa = testing.allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .preopens = .empty,
+    };
+    var f = try residentFixture(init, a, tmp.dir, dir_path, device);
+    defer {
+        for (&f.cases) |*c| c.case.file.deinit();
+        f.folder.heads.deinit();
+        for (f.folder.ck.shards) |*shard| shard.deinit();
+        testing.allocator.free(f.folder.ck.shards);
+    }
+    const case = &f.cases[0].case; // 64x64 canvas: a 4x4 latent grid, whose half is 2x2
+
+    // the draft schedule of a plain 3-step draft is pdd's prefix (steps 0,1,2 then the lift from
+    // sigma[2] to sigma[3]); the half-grid noise is cascade.pool of the unpatchified seed noise
+    const plan = try image_tool.draftPlan(a, &f.folder, case, 3, null);
+    try testing.expectEqual(f.folder.pdd.steps(), plan.sched.steps());
+    try testing.expect(plan.heads == null); // no renoise: distilled heads as they stand
+    const full_grid = h3.cascade.Grid{ .rows = case.grid.rows, .columns = case.grid.columns };
+    const seed_latent = try a.alloc(f32, plan.noise_latent.len);
+    try h3.picture.unpatchify(case.noise, case.grid, seed_latent);
+    const want_pool = try a.alloc(f32, h3.picture.channels * plan.draft_grid.rows * plan.draft_grid.columns);
+    try h3.cascade.pool(seed_latent, full_grid, want_pool);
+    const got_latent = try a.alloc(f32, want_pool.len);
+    try h3.picture.unpatchify(plan.draft_noise, plan.draft_grid, got_latent);
+    try testing.expectEqualSlices(f32, want_pool, got_latent);
+
+    // the draft case and both bindings, then two draft runs: bit-identical latents
+    const pic_name = try std.fmt.allocPrintSentinel(a, "{s}/a.pic.safetensors", .{dir_path}, 0);
+    var pic = try h3.Tensors.open(testing.allocator, device, pic_name);
+    defer pic.deinit();
+    const draft_prefix = try std.fmt.allocPrint(a, "{s}/draft", .{dir_path});
+    const draft_case = try image_tool.Case.write(init, a, &f.folder, &pic, draft_prefix, .{ .sched = plan.sched, .grid = plan.draft_grid, .noise = plan.draft_noise, .video_out = plan.heads });
+    defer draft_case.file.deinit();
+    var b = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
+    defer b.release();
+    var db = try Binding.init(testing.allocator, &f.folder, &draft_case, f.cases[0].tags, null, plan.sched);
+    defer db.release();
+    const first = try image_tool.drafted(a, b.model, db.model, case, &draft_case, plan.sched, 3, plan.noise_latent, try std.fmt.allocPrint(a, "{s}/one", .{dir_path}));
+    const second = try image_tool.drafted(a, b.model, db.model, case, &draft_case, plan.sched, 3, plan.noise_latent, try std.fmt.allocPrint(a, "{s}/two", .{dir_path}));
+    try expectSameLatent(first.latent, second.latent);
+
+    // a renoise at sigma .5 runs the 3 drafts to .6, lifts to .5, then resumes the grid under it:
+    // seven steps, each video_out row the headSpan blend of the distilled heads it covers
+    const renoised = try image_tool.draftPlan(a, &f.folder, case, 3, 0.5);
+    try testing.expectEqual(@as(usize, 7), renoised.sched.steps());
+    const blended = renoised.heads orelse return error.TestUnexpectedResult;
+    const sw = synthetic.width;
+    const hidden = f.folder.hidden;
+    const hw = f.folder.heads.values(f32, try f.folder.heads.at("video_out.weight", .f32, f.folder.pdd.steps() * sw * hidden), f.folder.pdd.steps() * sw * hidden);
+    const hb = f.folder.heads.values(f32, try f.folder.heads.at("video_out.bias", .f32, f.folder.pdd.steps() * sw), f.folder.pdd.steps() * sw);
+    var saw_off_grid = false;
+    for (0..renoised.sched.steps()) |s| {
+        const span = try h3.picture.headSpan(f.folder.pdd.sigmas, renoised.sched.sigmas, s);
+        saw_off_grid = saw_off_grid or span.first != s;
+        const want_w = try a.alloc(f32, sw * hidden);
+        @memset(want_w, 0);
+        const want_b = try a.alloc(f32, sw);
+        @memset(want_b, 0);
+        for (span.first..span.last + 1, 0..) |head, j| {
+            for (want_w, hw[head * sw * hidden ..][0 .. sw * hidden]) |*o, v| o.* += span.weights[j] * v;
+            for (want_b, hb[head * sw ..][0..sw]) |*o, v| o.* += span.weights[j] * v;
+        }
+        try testing.expectEqualSlices(f32, want_w, blended.w[s * sw * hidden ..][0 .. sw * hidden]);
+        try testing.expectEqualSlices(f32, want_b, blended.b[s * sw ..][0..sw]);
+    }
+    try testing.expect(saw_off_grid); // the .5 step's head is a mid-grid blend
+
+    // the run case with the blended heads and its rescheduled binding, then the renoised draft run
+    const run_prefix = try std.fmt.allocPrint(a, "{s}/run", .{dir_path});
+    var run_case = try image_tool.Case.write(init, a, &f.folder, &pic, run_prefix, .{ .sched = renoised.sched, .video_out = renoised.heads });
+    defer run_case.file.deinit();
+    const renoised_draft_prefix = try std.fmt.allocPrint(a, "{s}/draft-renoised", .{dir_path});
+    var renoised_draft_case = try image_tool.Case.write(init, a, &f.folder, &pic, renoised_draft_prefix, .{ .sched = renoised.sched, .grid = renoised.draft_grid, .noise = renoised.draft_noise, .video_out = renoised.heads });
+    defer renoised_draft_case.file.deinit();
+    var rb = try Binding.init(testing.allocator, &f.folder, &run_case, f.cases[0].tags, null, renoised.sched);
+    defer rb.release();
+    var rdb = try Binding.init(testing.allocator, &f.folder, &renoised_draft_case, f.cases[0].tags, null, renoised.sched);
+    defer rdb.release();
+    const done_a = try image_tool.drafted(a, rb.model, rdb.model, &run_case, &renoised_draft_case, renoised.sched, 3, renoised.noise_latent, try std.fmt.allocPrint(a, "{s}/done-a", .{dir_path}));
+    const done_b = try image_tool.drafted(a, rb.model, rdb.model, &run_case, &renoised_draft_case, renoised.sched, 3, renoised.noise_latent, try std.fmt.allocPrint(a, "{s}/done-b", .{dir_path}));
+    try expectSameLatent(done_a.latent, done_b.latent);
+
+    // serve's rewrite is write-then-deinit: a failed rewrite leaves the first case alone, deinited once
+    var keep = try image_tool.Case.write(init, a, &f.folder, &pic, try std.fmt.allocPrint(a, "{s}/keep", .{dir_path}), null);
+    defer keep.file.deinit();
+    var oom_init = init;
+    var oom_gpa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    oom_init.gpa = oom_gpa.allocator();
+    try testing.expectError(error.OutOfMemory, image_tool.Case.write(oom_init, a, &f.folder, &pic, run_prefix, .{ .sched = renoised.sched, .video_out = renoised.heads }));
+    try testing.expect(oom_gpa.has_induced_failure);
+
+    // refusals: no draft steps, more than pdd has, all of them without a renoise, a renoise that
+    // doesn't sit under sigma[drafts-1]
+    try testing.expectError(error.H3BadDraftSteps, image_tool.draftPlan(a, &f.folder, case, 0, null));
+    try testing.expectError(error.H3BadDraftSteps, image_tool.draftPlan(a, &f.folder, case, 7, null));
+    try testing.expectError(error.H3DraftLeavesNoStep, image_tool.draftPlan(a, &f.folder, case, 6, null));
+    try testing.expectError(error.H3BadRenoiseSigma, image_tool.draftPlan(a, &f.folder, case, 3, 0.9));
+
+    // a canvas whose latent grid doesn't halve cleanly refuses: 96x96 is a 6x6 latent grid
+    try testing.expectError(error.H3BadCascadeGrid, image_tool.draftPlan(a, &f.folder, &f.cases[3].case, 3, null));
 }

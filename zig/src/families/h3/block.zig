@@ -1,5 +1,5 @@
-//! One FastH3 block in bf16: products on H3's 32x64-warp GEMM (fp32 sums), FastH3's routed attention in bf16. A
-//! picture's fc1 (the released layout) runs on int8 operands (int32 sums); a clip's stays bf16.
+//! One FastH3 block in bf16: products on H3's 32x64-warp GEMM (fp32 sums). A picture's (the released layout's) four
+//! linears run on int8 operands (int32 sums), a scale per 256 values of K on both; a clip's stay bf16.
 const std = @import("std");
 const mtl = @import("metal");
 const h3 = @import("h3.zig");
@@ -34,8 +34,8 @@ fn product(enc: mtl.ComputeEncoder, pipe: mtl.Pipeline, s: usize, x: mtl.Buffer,
     enc.dispatchGroups(mtl.Size.of(tn * band, (tm + band - 1) / band, 1), mtl.Size.of(32, 4, threads / 128));
 }
 
-/// fc1's weights' quantization group: one scale a row for each 256 values of K, the product's K block.
-pub const fc1_group = 256;
+/// The int8 scale group: one scale a row for each 256 values of K, the product's K block.
+pub const group = 256;
 
 /// `rows` rows of x (k values each) to int8 in q, in groups of `g` values, each group's scale in s.
 pub fn quantize(m: *const Model, enc: mtl.ComputeEncoder, x: Ref, rows: usize, k: usize, g: usize, q: Ref, s: Ref) void {
@@ -47,14 +47,18 @@ pub fn quantize(m: *const Model, enc: mtl.ComputeEncoder, x: Ref, rows: usize, k
     enc.dispatchGroups(mtl.Size.of(rows, 1, 1), mtl.Size.of(32, 1, 1));
 }
 
-/// m.wide = xn fc1^T for block `index`. A picture's: norm2 wrote int8 xq/xs through h3_norm_quant; a clip's in bf16.
-fn fc1(m: *const Model, enc: mtl.ComputeEncoder, w: Ref, index: usize) void {
-    const n = 2 * m.mlp;
-    if (!m.base) return gemm(m, enc, m.xn, w, m.wide, n, m.hidden);
+/// `d` = x w^T for a linear of n x k. A picture's: x to int8 a scale per 256 values of K, the weights' int8 rows
+/// bound per block (`qi`); a clip's bf16. `quantized` when xq/xs already hold x's int8 rows (h3_norm_quant's).
+fn linear(m: *const Model, enc: mtl.ComputeEncoder, x: mtl.Buffer, w: Ref, d: mtl.Buffer, n: usize, k: usize, qi: h3.Int8, quantized: bool) void {
+    if (!m.base) return gemm(m, enc, x, w, d, n, k);
+    if (!quantized) {
+        quantize(m, enc, .{ .buffer = x }, m.rows, k, group, .{ .buffer = m.xq }, .{ .buffer = m.xs });
+        enc.barrier();
+    }
     // the scales' slots are past product's own; an encoder keeps them across its pipeline change
     enc.setBuffer(m.xs, 0, 4);
-    enc.setBuffer(m.fc1_s, index * n * (m.hidden / fc1_group) * 4, 5);
-    product(enc, m.pipeline(kernels.gemm_32x64_i8), swizzle, m.xq, .{ .buffer = m.fc1_q, .offset = index * n * m.hidden }, m.wide, m.rows, n, m.hidden, 128);
+    enc.setBuffer(qi.s.buffer, qi.s.offset, 5);
+    product(enc, m.pipeline(kernels.gemm_32x64_i8), swizzle, m.xq, qi.w, d, m.rows, n, k, 128);
 }
 
 /// The stream's modulated norm to bf16 rows in xn; with `gates` it first adds the branch in `y` gated by that part.
@@ -113,7 +117,7 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
     const gates: ?Ref = if (index == 0) null else m.blocks[index - 1].tables;
     norm(m, enc.*, b.norm1, gates, h3.gate_m, b.tables, h3.scale_a, h3.shift_a);
     m.lap(pass, "norms");
-    if (m.base) gemm(m, enc.*, m.xn, b.q, m.qkv, 3 * m.inner, m.hidden) else {
+    if (m.base) linear(m, enc.*, m.xn, b.q, m.qkv, 3 * m.inner, m.hidden, b.int8.q, false) else {
         gemm(m, enc.*, m.xn, b.q, m.qr, m.inner, m.hidden);
         gemm(m, enc.*, m.xn, b.k, m.kr, m.inner, m.hidden);
         gemm(m, enc.*, m.xn, b.v, m.vr, m.inner, m.hidden);
@@ -166,12 +170,12 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
         enc.dispatchThreads(mtl.Size.of(m.rows, heads, 1), mtl.Size.of(64, 4, 1));
         m.lap(pass, "gate mix");
     }
-    gemm(m, enc.*, m.qr, b.out, m.y, m.hidden, m.inner);
+    linear(m, enc.*, m.qr, b.out, m.y, m.hidden, m.inner, b.int8.out, false);
     m.lap(pass, "attention out");
     if (m.base) normQuant(m, enc.*, b.norm2, b.tables, h3.gate_a, b.tables, h3.scale_m, h3.shift_m) else norm(m, enc.*, b.norm2, b.tables, h3.gate_a, b.tables, h3.scale_m, h3.shift_m);
     m.lap(pass, "norms");
     // the first projection's rows are [value | gate] ([gate | value] in the released layout), one product
-    fc1(m, enc.*, b.fc1, index);
+    linear(m, enc.*, m.xn, b.fc1, m.wide, 2 * m.mlp, m.hidden, b.int8.fc1, true);
     enc.barrier();
     enc.setPipeline(m.pipeline("h3_swiglu"));
     enc.setBuffer(m.wide, 0, 0);
@@ -179,7 +183,7 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
     enc.setBuffer(m.act, 0, 2);
     enc.dispatchThreads(mtl.Size.of(m.mlp, m.rows, 1), mtl.Size.of(256, 1, 1));
     m.lap(pass, "mlp in");
-    gemm(m, enc.*, m.act, b.fc2, m.y, m.hidden, m.mlp);
+    linear(m, enc.*, m.act, b.fc2, m.y, m.hidden, m.mlp, b.int8.fc2, false);
     m.lap(pass, "mlp out");
 }
 
@@ -251,7 +255,7 @@ test "h3 gemm: 32x64-warp products write every tile as MLX's 32x32 band of 4 doe
     }
 }
 
-test "h3 gemm: int8 fc1 operands give their exact dequantized product to bf16 rounding, across a ragged tile" {
+test "h3 gemm: int8 operands give their exact dequantized product to bf16 rounding, across a ragged tile" {
     const device = mtl.Device.init() catch return error.SkipZigTest;
     defer device.deinit();
     if (!device.tensorUnits()) return error.SkipZigTest;
@@ -269,8 +273,8 @@ test "h3 gemm: int8 fc1 operands give their exact dequantized product to bf16 ro
     defer for (m.pipelines) |p| p.deinit();
     const rows = 64 * 3 + 24;
     const n = 256;
-    const k = 2 * fc1_group;
-    const groups = k / fc1_group;
+    const k = 2 * group;
+    const groups = k / group;
     const guard = 64 * n; // past the last row, which must stay untouched
     const shared = mtl.ResourceOptions.shared;
     const x = try device.buffer(rows * k * 2, shared);
@@ -278,12 +282,12 @@ test "h3 gemm: int8 fc1 operands give their exact dequantized product to bf16 ro
     const w = try device.buffer(n * k * 2, shared);
     defer w.deinit();
     var prng = std.Random.DefaultPrng.init(84);
-    // bf16 values of magnitude [1, 2) times a power of two that differs by row and by weight group
-    for (x.slice(u16, rows * k), 0..) |*v, i| v.* = (0x3f80 + @as(u16, @intCast(i / k % 8)) * 0x80) | (prng.random().int(u16) & 0x807f);
-    for (w.slice(u16, n * k), 0..) |*v, i| v.* = (0x3c00 + @as(u16, @intCast(i / fc1_group % 16)) * 0x80) | (prng.random().int(u16) & 0x807f);
+    // bf16 values of magnitude [1, 2) times a power of two that differs by row, group and weight group
+    for (x.slice(u16, rows * k), 0..) |*v, i| v.* = (0x3f80 + @as(u16, @intCast(i / group % 8)) * 0x80) | (prng.random().int(u16) & 0x807f);
+    for (w.slice(u16, n * k), 0..) |*v, i| v.* = (0x3c00 + @as(u16, @intCast(i / group % 16)) * 0x80) | (prng.random().int(u16) & 0x807f);
     const xq = try device.buffer(rows * k, shared);
     defer xq.deinit();
-    const xs = try device.buffer(rows * 4, shared);
+    const xs = try device.buffer(rows * groups * 4, shared);
     defer xs.deinit();
     const wq = try device.buffer(n * k, shared);
     defer wq.deinit();
@@ -294,8 +298,8 @@ test "h3 gemm: int8 fc1 operands give their exact dequantized product to bf16 ro
     @memset(d.slice(u16, rows * n + guard), 0xffff); // a NaN no product of these inputs makes
     const cb = queue.commandBuffer();
     const enc = cb.compute(.concurrent);
-    quantize(&m, enc, .{ .buffer = x }, rows, k, k, .{ .buffer = xq }, .{ .buffer = xs });
-    quantize(&m, enc, .{ .buffer = w }, n, k, fc1_group, .{ .buffer = wq }, .{ .buffer = ws });
+    quantize(&m, enc, .{ .buffer = x }, rows, k, group, .{ .buffer = xq }, .{ .buffer = xs });
+    quantize(&m, enc, .{ .buffer = w }, n, k, group, .{ .buffer = wq }, .{ .buffer = ws });
     enc.barrier();
     enc.setBuffer(xs, 0, 4);
     enc.setBuffer(ws, 0, 5);
@@ -311,9 +315,9 @@ test "h3 gemm: int8 fc1 operands give their exact dequantized product to bf16 ro
         }
     }.f;
     // each group's largest magnitude maps to 127 and every value to its nearest step of the group's scale
-    const sx = xs.slice(f32, rows);
+    const sx = xs.slice(f32, rows * groups);
     const sw = ws.slice(f32, n * groups);
-    for ([_][]const u16{ x.slice(u16, rows * k), w.slice(u16, n * k) }, [_][]const i8{ xq.slice(i8, rows * k), wq.slice(i8, n * k) }, [_][]const f32{ sx, sw }, [_]usize{ k, fc1_group }) |src, q, s, g| {
+    for ([_][]const u16{ x.slice(u16, rows * k), w.slice(u16, n * k) }, [_][]const i8{ xq.slice(i8, rows * k), wq.slice(i8, n * k) }, [_][]const f32{ sx, sw }, [_]usize{ group, group }) |src, q, s, g| {
         for (s, 0..) |scale, gi| {
             var most: f32 = 0;
             for (src[gi * g ..][0..g]) |v| most = @max(most, @abs(bf(v)));
@@ -328,13 +332,12 @@ test "h3 gemm: int8 fc1 operands give their exact dequantized product to bf16 ro
         var exact: f64 = 0;
         var size: f64 = 0;
         for (0..k) |j| {
-            const term = @as(f64, @floatFromInt(@as(i32, xi[r * k + j]) * wi[c * k + j])) * sw[c * groups + j / fc1_group];
+            const term = @as(f64, @floatFromInt(@as(i32, xi[r * k + j]) * wi[c * k + j])) * sx[r * groups + j / group] * sw[c * groups + j / group];
             exact += term;
             size += @abs(term);
         }
-        exact *= sx[r];
         // one bf16 rounding of the result, and fp32 folds of the groups' sums
-        try std.testing.expect(@abs(bf(out[r * n + c]) - exact) <= @abs(exact) * 0x1p-8 + size * sx[r] * 1e-6);
+        try std.testing.expect(@abs(bf(out[r * n + c]) - exact) <= @abs(exact) * 0x1p-8 + size * 1e-6);
     };
     for (out[rows * n ..]) |v| try std.testing.expectEqual(@as(u16, 0xffff), v);
 }
@@ -452,7 +455,7 @@ test "h3 fused: h3_norm_quant's rows are bit-identical to h3_norm then h3_quanti
     try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(xs.slice(f32, rows)), std.mem.sliceAsBytes(xs2.slice(f32, rows)));
 }
 
-test "h3 gemm: a clip's fc1 stays bf16, bit for bit main's MLX product, whole and ragged" {
+test "h3 gemm: a clip's linears stay bf16, bit for bit main's MLX product, whole and ragged" {
     const device = mtl.Device.init() catch return error.SkipZigTest;
     defer device.deinit();
     if (!device.tensorUnits()) return error.SkipZigTest;
@@ -465,13 +468,13 @@ test "h3 gemm: a clip's fc1 stays bf16, bit for bit main's MLX product, whole an
     defer a.free(text);
     const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
     defer lib.deinit();
-    // a clip's model: no int8 fc1 bound (xq, xs, fc1_q and fc1_s stay unset), so a picture's path would fault
+    // a clip's model: no int8 weights bound (wq, ws, xq and xs stay unset), so a picture's path would fault
     var m: Model = undefined;
     inline for (kernels.names, 0..) |name, i| m.pipelines[i] = try mtl.Pipeline.init(device, lib, name, false);
     defer for (m.pipelines) |p| p.deinit();
     m.base = false;
     m.mlp = 128;
-    m.hidden = 2 * fc1_group;
+    m.hidden = 2 * group;
     const n = 2 * m.mlp;
     const k = m.hidden;
     var prng = std.Random.DefaultPrng.init(87);
@@ -494,7 +497,7 @@ test "h3 gemm: a clip's fc1 stays bf16, bit for bit main's MLX product, whole an
         const cb = queue.commandBuffer();
         const enc = cb.compute(.concurrent);
         product(enc, mlx, 2, m.xn, .{ .buffer = w }, old, rows, n, k, 256);
-        fc1(&m, enc, .{ .buffer = w }, 0);
+        linear(&m, enc, m.xn, .{ .buffer = w }, m.wide, n, k, .{ .w = .{ .buffer = w }, .s = .{ .buffer = w } }, false);
         enc.end();
         cb.commit();
         cb.wait();
