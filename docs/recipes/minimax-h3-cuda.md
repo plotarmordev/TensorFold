@@ -131,6 +131,72 @@ servers close, the script decodes the 2048² latent again with `reference`: the 
 decoder's on the same latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits
 non-zero past the bound. The host decoder needs the memory the servers held, so it runs once their arenas are free.
 
+### Fewer steps: the draft canvas, not the PDMD LoRA
+
+The card's two options were mmh3's PDMD 2-NFE LoRA and its `--draft-steps` half canvas
+([the study](../mmh3-h3-image-study.md), lever 8). The LoRA's weights are published
+(`yniw/MiniMax-H3-mmh3` on Hugging Face, the step-4000 rank-128 BF16 student) under the
+**minimax-h3-community-license-agreement** — a community agreement, not a standard OSS licence; the
+job has no network, so they would have to be staged into the pilot folder first, and the adapter would
+have to run through the int8 quantized GEMM stack — new surface on top of off-grid head blending.
+mmh3 reports the LoRA only at 4096², where its own three-step PDMD runs take about 40 s and its two-step
+ones 29 s against 62 s in six, and with three draft steps and the latent upscaler on top the run reaches
+24 s; it publishes no 2048² LoRA number. For drafts alone (no LoRA) it reports 2048² at 18 s → 16 s with
+two draft steps. Draft steps need no weights: a host bilinear lift plus a second resident stream is the
+whole device footprint, and the flag is a direct port of mmh3's own code. At our ~2.15 s a step, three
+half-size drafts (~0.6 s each) plus three full steps estimate ~9–10 s of transformer against 12.9 s.
+
+`tf-h3-image-cuda --draft-steps N` ports it: `picture.draftSchedule` is `renoised_schedule`
+(first N sigmas at half size, then the renoise — or the next grid sigma — and the undrafted sigmas
+below it), `picture.headSpan` is `step_heads` (an off-grid step blends the distilled heads of the
+grid intervals its span covers, weighted by interval length; `h3_rows_out` takes an optional
+accumulator row and scale so the blend is chained launches, an on-grid step one bare launch), and the
+half-canvas draft, its clean prediction and its renoise reuse `cascade.zig`: `cascade.pool` draws the
+draft's half-grid noise from the seed's full draw (unit variance, both canvases one picture), and
+`cascade.lift` predicts the clean latent `x + σ·v` from the last draft step's video and velocity,
+upsamples it bilinearly and renoises it to the next sigma with the seed's own detail. Drafts refuse
+references and canvases whose half grid fails `cascade.half`'s 64-pixel rule. `bench-drafts.sh` names
+`--draft-steps 3` (with the `--tc` decoder, matching the standing 15.3 s baseline's settings) for the
+Desk's env-less door.
+
+`12ce2b1c` (job `top-0aa72d9f154f`, 20 November, exit 0, `bench-drafts.sh` → `run-script.sh` with
+`H3_DECODER=tc`, `H3_DRAFT_STEPS=3`; every selftest PASS) ran `--draft-steps 3` beside the `--tc` decoder.
+A warm 2048² picture took **10.7 s** mean (10.7, 10.7, 10.7: prompt 1.1, transformer 8.3, decoder 1.3),
+cold 148.2 s, peak 76,701 MiB, ~81 W — against the six-step `--tc` baseline's 15.3 s (transformer 12.8),
+so the draft cuts a warm picture ~30% at the same decoder. The three draft steps ran ~0.3 s each on the
+half canvas, the host lift ~0.1 s, and the three full-size steps ~1.4 s each, so the transformer fell
+12.8 → 8.3 s as estimated. mmh3's own `draft-steps 3` server (job `top-508071b72154`, prompt.txt seed 42,
+2048²) answered the same request in **6.0 s** warm (5.99, 6.04, 6.02) against its six-step 9.3 s — mmh3
+stays leaner end to end; the gap is its pipeline, not the draft math.
+
+**The draft draws a different picture, not a defect — the earlier moiré was a sign bug, now fixed.** A
+draft draws a different composition by construction, so the same-picture gate (PSNR ≥ 28.2 dB, mean
+diff ≤ 4.1 against the Mac PNG) does not apply; the recipe shows the pictures side by side instead. The
+draft's latent cosine against `t2i-2048.latent.f32` is 0.706 (the six-step run is 0.995) — same fox,
+different pose and light, because the pooled draft noise and the renoise reshape the layout. The first
+build produced a rainbow moiré with no subject (latent cosine −0.11): `Rows.clean` computed `x − σ·v`,
+but this engine's velocity points from noise toward data (`v = x₀ − ε`, the opposite of mmh3's
+`ε − x₀`), so the clean estimate is `x + σ·v` — the wrong sign folded the latent into ~−0.78·x₀ + 1.78·ε.
+Reusing `cascade.lift` (which encodes `x + σ·v` and is covered by `cascade_test`'s exact clean-recovery
+case) both fixed the sign and removed the copy-paste `enlargeDraft`/`clean`/`pool` re-implementation;
+`enlargeDraft`, the on-device `clean` and the prefix-noise slice are gone.
+
+![`--draft-steps 3` (right) beside the six-step `--tc` picture (left), same prompt and seed 42: a clean
+fox in the birch grove in a different pose and light, not the moiré of the first build.](minimax-h3-cuda/draft-vs-six-step.png)
+
+`--draft-steps` stays **opt-in**: it is measurably faster (10.7 s vs 15.3 s warm) and now produces a
+clean alternate picture, but it is a different picture, so the lead calls whether it also becomes a
+default or recommended mode; the flag is the deliverable either way.
+
+**Warm-serve crash, fixed.** The second `--serve` render segfaulted at `case ready`, while its
+`Case.load`/early stream setup ran (job `top-622a63407b13` at `602456336`, exit 139; earlier
+`top-85ad023a6cc6`, `top-a09ae34c2ff5`, `top-e83950d1d819` the same). The split of `render` into
+`streamSteps` had moved the `folder.tables` call onto the per-request arena, so the kept AdaLN
+tables' host memory was freed at the first request's end and the second request's
+`std.mem.eql(f32, f.times, times)` guard and `prepare` walked freed pointers — a plain-serve
+regression, not the draft math (the crash hit with no `--draft-steps`). `streamSteps` now takes the
+persistent `init.gpa` for the cached tables as `render` did on main.
+
     ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-script.sh"
 
 Desk ran `d3ca6199` on TOP's GB10 (driver 580.173.02, job `top-587035ea34ef`, 16 November, 36 minutes, exit 0). The

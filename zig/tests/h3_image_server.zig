@@ -12,7 +12,8 @@ const usage =
     \\  then one request a line on stdin: WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt
     \\  each writes OUT_PREFIX.safetensors, .h3case.safetensors, .rows.f32, .latent.f32 and .png as
     \\  tf-h3-image-prompt, tf-h3-image (free) and tf-h3-image-decoder do, and prints a timing line;
-    \\  a request with the last one's canvas, rows and tags reuses its transformer binding
+    \\  a request with the last one's canvas, rows and tags reuses its transformer binding;
+    \\  a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256)
     \\  profile: each request's six steps by stage, each stage in its own command buffer (slower; diagnostic)
     \\
 ;

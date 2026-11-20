@@ -1,141 +1,6 @@
 // MiniMax H3 / FastH3's transformer blocks on CUDA in the checkpoint's bf16: the row, routing and attention kernels.
 #include "h3_attention.cuh"
 #include "common/reduce.cuh"
-#include "common/qmm_frag.cuh"
-
-namespace h3_gemm {
-using namespace qmm_frag;
-
-// One m16n8k32 int8 mma step on the packed code words of a 32-value slice.
-__device__ __forceinline__ void mma_s8(int (&d)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
-    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};\n"
-                 : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3]) : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
-}
-
-// C (M, N) bf16 = X (M, K) . W (N, K)^T of rotated int8 rows. Activations carry one fp32 scale a 128-wide
-// chunk in XS (M, K/128) — the per-chunk fold keeps a loud chunk from shrinking its neighbours; weights
-// carry one fp32 scale a row in WS (N), applied once in the epilogue. The int32 sums stay in registers
-// across K; the mma's own tile writes bf16, no int32 round trip through a second kernel.
-// A stage is one K chunk deep: BM rows of X, BN rows of W and this chunk's BM activation scales.
-// Grid tiles (M, N) in bands of `group` for L2 reuse.
-template <int BM, int BN, int WM, int WN, int STAGES>
-__device__ __forceinline__ void gemm(const int8_t* __restrict__ X, const float* __restrict__ XS,
-        const int8_t* __restrict__ W, const float* __restrict__ WS, __nv_bfloat16* __restrict__ C,
-        int M, int N, int K, int group) {
-    constexpr int GS = 128, THREADS = WM * WN * 32, MT = BM / WM / 16, NT = BN / WN / 8;
-    constexpr int SX = BM * GS, SW = BN * GS;            // one 128-value chunk's codes a row
-    constexpr int STAGE = SX + SW + BM * 4;              // codes, then this chunk's activation scales
-    extern __shared__ __align__(128) unsigned char buf[];
-    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
-    const int wm = warp / WN, wn = warp % WN;
-    const int KG = K >> 7;
-    const int2 at = tile_of(blockIdx.x, M, N, BM, BN, group);
-    const int m0 = at.x, n0 = at.y;
-    auto load = [&](int s, int g) {
-        unsigned char* p = buf + s * STAGE;
-        for (int c = tid; c < SX / 16; c += THREADS) {          // 8 chunks of 16 bytes a 128-byte row
-            const int r = c >> 3, ch = c & 7, row = m0 + r;
-            cp16z(p + r * GS + swz<8>(r, ch) * 16, X + (size_t)min(row, M - 1) * K + g * GS + ch * 16, row < M);
-        }
-        for (int c = tid; c < SW / 16; c += THREADS) {
-            const int r = c >> 3, ch = c & 7, col = n0 + r;
-            cp16z(p + SX + r * GS + swz<8>(r, ch) * 16, W + (size_t)min(col, N - 1) * K + g * GS + ch * 16, col < N);
-        }
-        float* ps = reinterpret_cast<float*>(p + SX + SW);
-        for (int c = tid; c < BM / 4; c += THREADS) {           // 4 scales a 16-byte copy
-            const int r = c * 4;
-#pragma unroll
-            for (int e = 0; e < 4; ++e) {
-                const int idx = m0 + r + e;
-                ps[r + e] = idx < M ? __ldg(XS + (size_t)idx * KG + g) : 0.f;
-            }
-        }
-    };
-    float acc[MT][NT][4];
-#pragma unroll
-    for (int i = 0; i < MT; ++i)
-#pragma unroll
-        for (int j = 0; j < NT; ++j) acc[i][j][0] = acc[i][j][1] = acc[i][j][2] = acc[i][j][3] = 0.0f;
-#pragma unroll
-    for (int s = 0; s < STAGES - 1; ++s) {
-        if (s < KG) load(s, s);
-        qmm_frag::commit();
-    }
-    for (int it = 0; it < KG; ++it) {
-        qmm_frag::wait<STAGES - 2>();
-        __syncthreads();
-        const int next = it + STAGES - 1;
-        if (next < KG) load(next % STAGES, next);
-        qmm_frag::commit();
-        const unsigned char* p = buf + (it % STAGES) * STAGE;
-        const float* ps = reinterpret_cast<const float*>(p + SX + SW);
-        int iacc[MT][NT][4];
-#pragma unroll
-        for (int i = 0; i < MT; ++i)
-#pragma unroll
-            for (int j = 0; j < NT; ++j) iacc[i][j][0] = iacc[i][j][1] = iacc[i][j][2] = iacc[i][j][3] = 0x4B400000;
-        // a chunk is four 32-deep mma steps; the int32 sums stay exact (each < 2^23) in the 12582912.0f trick's fma
-#pragma unroll
-        for (int kt = 0; kt < 4; ++kt) {
-            uint32_t a[MT][4];
-#pragma unroll
-            for (int i = 0; i < MT; ++i) {
-                const int r = wm * (BM / WM) + i * 16 + (lane & 7) + ((lane >> 3) & 1) * 8;
-                ldmatrix4(a[i], p + r * GS + swz<8>(r, kt * 2 + (lane >> 4)) * 16);
-            }
-#pragma unroll
-            for (int jj = 0; jj < NT; jj += 2) {              // an x4 load feeds two n8 operands
-                const int half = lane >> 4;                    // lanes 16+ take the j+1 weight rows
-                const int c = wn * (BN / WN) + (jj + half) * 8 + (lane & 7);
-                uint32_t b[4];
-                ldmatrix4(b, p + SX + c * GS + swz<8>(c, kt * 2 + ((lane >> 3) & 1)) * 16);
-#pragma unroll
-                for (int i = 0; i < MT; ++i) {
-                    mma_s8(iacc[i][jj], a[i], b[0], b[1]);
-                    mma_s8(iacc[i][jj + 1], a[i], b[2], b[3]);
-                }
-            }
-        }
-        // drop 12582912.0f and fold the chunk's int32 sums in at the activation scale: acc += (iacc - magic) * xs
-        float ra[MT][2], rc[MT][2];
-#pragma unroll
-        for (int i = 0; i < MT; ++i)
-#pragma unroll
-            for (int h = 0; h < 2; ++h) {
-                const float s = ps[wm * (BM / WM) + i * 16 + (lane >> 2) + h * 8];
-                ra[i][h] = s;
-                rc[i][h] = -12582912.0f * s;
-            }
-#pragma unroll
-        for (int j = 0; j < NT; ++j)
-#pragma unroll
-            for (int i = 0; i < MT; ++i)
-#pragma unroll
-                for (int h = 0; h < 2; ++h) {
-                    const float s = ra[i][h], c = rc[i][h];
-                    acc[i][j][2 * h] = fmaf(fmaf(__int_as_float(iacc[i][j][2 * h]), s, c), 1.0f, acc[i][j][2 * h]);
-                    acc[i][j][2 * h + 1] = fmaf(fmaf(__int_as_float(iacc[i][j][2 * h + 1]), s, c), 1.0f, acc[i][j][2 * h + 1]);
-                }
-    }
-    qmm_frag::wait<0>();
-#pragma unroll
-    for (int i = 0; i < MT; ++i)
-#pragma unroll
-        for (int j = 0; j < NT; ++j) {
-            const int col = n0 + wn * (BN / WN) + j * 8 + (lane & 3) * 2;
-            const float w0 = __ldg(WS + min(col, N - 1)), w1 = __ldg(WS + min(col + 1, N - 1));
-#pragma unroll
-            for (int h = 0; h < 2; ++h) {
-                const int row = m0 + wm * (BM / WM) + i * 16 + (lane >> 2) + h * 8;
-                if (row >= M || col >= N) continue;
-                __nv_bfloat16* dst = C + (size_t)row * N + col;
-                dst[0] = __float2bfloat16(acc[i][j][2 * h] * w0);
-                if (col + 1 < N) dst[1] = __float2bfloat16(acc[i][j][2 * h + 1] * w1);
-            }
-        }
-}
-
-} // namespace h3_gemm
 
 namespace tf_h3 {
 
@@ -363,6 +228,17 @@ __global__ void __launch_bounds__(256) h3_swiglu(const __nv_bfloat16* F, __nv_bf
     }
 }
 
+// h3_swiglu over an int8 product's int32 sums [gate | value]: each sum to bf16 as h3_dequantize rounds it, then the
+// same silu and product, so A matches the two kernels' output without the bf16 rows between them. Grid-stride.
+__global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* A, int M, int N) {
+    const size_t total = static_cast<size_t>(M) * N;
+    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < total; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+        const size_t r = i / N, n = i % N;
+        const float s = SX[r];
+        const float g = bf(ACC[r * 2 * N + n] * s * SW[n]), v = bf(ACC[r * 2 * N + N + n] * s * SW[N + n]);
+        A[i] = __float2bfloat16(bf(g / (1.0f + expf(-g))) * v);
+    }
+}
 
 // A warp's 128 values, four a lane in order, through the orthonormal Walsh-Hadamard transform in place.
 __device__ __forceinline__ void hadamard128(float v[4]) {
@@ -429,33 +305,19 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
     }
 }
 
-// Each bf16 row of X (M, K) Hadamard-rotated in 128-wide chunks, then to int8 Q at each chunk's own absmax
-// / 127 in S (M, K/128): the activation-side counterpart of h3_quantize's per-row scale. A chunk sits whole
-// in a warp, so its absmax is a warp reduce. Grid [M], 256 threads.
-__global__ void __launch_bounds__(256) h3_quantize_chunks(const __nv_bfloat16* X, int8_t* Q, float* S, int K) {
-    const size_t row = blockIdx.x;
-    const __nv_bfloat16* x = X + row * K;
-    const int chunks = K >> 7;
-    for (int c = threadIdx.x >> 5; c < chunks; c += blockDim.x >> 5) {
-        float v[4];
-        rotated_chunk(x, c, v);
-        float most = 0.f;
-        for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[j]));
-        most = warp_max(most);
-        const float scale = most > 0.f ? most / 127.f : 1.f;
-        if ((threadIdx.x & 31) == 0) S[row * chunks + c] = scale;
-        const char4 q = make_char4(__float2int_rn(v[0] / scale), __float2int_rn(v[1] / scale),
-                                   __float2int_rn(v[2] / scale), __float2int_rn(v[3] / scale));
-        *reinterpret_cast<char4*>(Q + row * K + c * 128 + (threadIdx.x & 31) * 4) = q;
+// Y (M, N) = bf16(ACC SX[row] SW[col]): an int8 product's int32 sums back to bf16 rows. Grid-stride, four a thread.
+__global__ void __launch_bounds__(256) h3_dequantize(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* Y, int M, int N) {
+    const size_t quads = static_cast<size_t>(M) * N / 4;
+    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < quads; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+        const size_t at = i * 4, r = at / N, n = at % N;
+        const int4 a = reinterpret_cast<const int4*>(ACC)[i];
+        const float4 w = *reinterpret_cast<const float4*>(SW + n);
+        const float s = SX[r];
+        __nv_bfloat162* y = reinterpret_cast<__nv_bfloat162*>(Y + at);
+        y[0] = __floats2bfloat162_rn(a.x * s * w.x, a.y * s * w.y);
+        y[1] = __floats2bfloat162_rn(a.z * s * w.z, a.w * s * w.w);
     }
 }
-
-extern "C" __global__ void __launch_bounds__(256) h3_gemm_int8(const int8_t* __restrict__ X, const float* __restrict__ XS,
-        const int8_t* __restrict__ W, const float* __restrict__ WS, __nv_bfloat16* __restrict__ C,
-        int M, int N, int K, int group) {
-    h3_gemm::gemm<128, 128, 2, 4, 3>(X, XS, W, WS, C, M, N, K, group); // 3 stages fill sm_121's 99328-byte block cap
-}
-
 
 __global__ void __launch_bounds__(128) h3_attention(
         const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V, const int* LIST, const int* SIZES,
@@ -482,10 +344,13 @@ __global__ void __launch_bounds__(256) h3_rows_in(const float* R, const float* W
 
 // The stream's row FIRST + r through the final norm, modulated by its line of the (times, 2 C) table TAB, then the
 // step's head into V (rows, width): rows_reference.finalNorm and rowsOut in their own sum orders (the squares one
-// at a time, the head's 32 lane sums then added in lane order). Grid [rows], 256 threads, C floats of shared.
+// at a time, the head's 32 lane sums then added in lane order). With ACC null V = row · W + B, the on-grid
+// step's plain head; else V = ACC + SCALE · (row · W + B), the off-grid steps' blend of the distilled
+// heads their span covers (mmh3's step_heads: the run chains one launch a spanned head). Grid [rows],
+// 256 threads, C floats of shared.
 __global__ void __launch_bounds__(256) h3_rows_out(const __nv_bfloat16* X, const __nv_bfloat16* NW, const __nv_bfloat16* TAB,
-                                                   const int* LINE, const float* W, const float* B, float* V, int C,
-                                                   int width, int first, float eps) {
+                                                   const int* LINE, const float* W, const float* B, const float* ACC,
+                                                   float* V, int C, int width, int first, float eps, float scale) {
     extern __shared__ float normed[];
     __shared__ float inv;
     const int r = blockIdx.x, row = first + r, warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
@@ -507,7 +372,10 @@ __global__ void __launch_bounds__(256) h3_rows_out(const __nv_bfloat16* X, const
         for (int k = lane; k < C; k += 32) part = __fadd_rn(part, __fmul_rn(normed[k], w[k]));
         float sum = 0.0f;
         for (int l = 0; l < 32; ++l) sum = __fadd_rn(sum, __shfl_sync(0xffffffffu, part, l));
-        if (lane == 0) V[static_cast<size_t>(r) * width + n] = __fadd_rn(sum, B[n]);
+        if (lane == 0) {
+            const float head = __fadd_rn(sum, B[n]);
+            V[static_cast<size_t>(r) * width + n] = ACC == nullptr ? head : __fadd_rn(ACC[static_cast<size_t>(r) * width + n], __fmul_rn(scale, head));
+        }
     }
 }
 

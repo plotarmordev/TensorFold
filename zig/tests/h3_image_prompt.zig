@@ -12,7 +12,7 @@ const edit = @import("h3_image_prompt_edit.zig");
 
 const rules = hp.rules;
 const ref = hp.reference;
-
+const prompt_cache = hp.cache;
 const usage =
     \\usage: tf-h3-image-prompt TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
     \\                          [--reference vision.safetensors [--anchors ENCODER_PREFIX]]...
@@ -91,6 +91,9 @@ pub const Encoder = struct {
     runner: hp.Runner,
     /// The last case's token count.
     text: usize = 0,
+    /// Kept prompt states across `case` calls: a prompt's exact bytes to its ids, tags and text rows,
+    /// reference-free only (`tf-h3-image-server`, `H3_PROMPT_CACHE` MiB, 256; 0 keeps nothing).
+    cache: prompt_cache.Cache,
 
     pub fn load(init: std.process.Init, a: std.mem.Allocator, text_dir: []const u8, model_dir: []const u8) !Encoder {
         const io = init.io;
@@ -110,10 +113,12 @@ pub const Encoder = struct {
         var runner = try hp.Runner.init(device);
         runner.give_way = .{ .io = io };
         std.debug.print("{s}: prompt weights mapped and kernels built in {d:.1} s\n", .{ device.name(), mtl.clock.seconds() - loading });
-        return .{ .enc = enc, .front = front, .tok = tok, .device = device, .text_w = text_w, .front_w = front_w, .runner = runner };
+        const cache = prompt_cache.Cache.init(gpa, prompt_cache.Cache.budgetOf(init.environ_map.get("H3_PROMPT_CACHE")));
+        return .{ .enc = enc, .front = front, .tok = tok, .device = device, .text_w = text_w, .front_w = front_w, .runner = runner, .cache = cache };
     }
 
     pub fn deinit(e: *Encoder, gpa: std.mem.Allocator) void {
+        e.cache.deinit();
         e.runner.deinit();
         e.front_w.deinit(gpa);
         e.text_w.deinit(gpa);
@@ -125,21 +130,31 @@ pub const Encoder = struct {
     pub fn case(e: *Encoder, init: std.process.Init, a: std.mem.Allocator, prompt: []const u8, request: ?Request, options: edit.Options) ![]u8 {
         const io = init.io;
         const refs = try edit.References.read(init.gpa, a, e.device, options.references, e.enc.text.hidden);
-        const p = try rules.present(a, &e.tok, e.enc.marks, refs.counts, prompt);
-        const pos = try rules.positions(a, p, e.enc.marks, refs.grids);
-        const vision = try refs.vision(a, p, e.enc.marks);
-        const T = p.ids.len;
-        e.text = T;
-        if (vision) |v| std.debug.print("{d} references: {d} vision rows at the image pads, DeepStack's added after layers 0 to 2\n", .{ refs.counts.len, v.pads.len });
+        var p: rules.Presentation = undefined;
+        var text: []u16 = undefined;
+        // an edit's vision rows sit inside its ids: only a reference-free prompt's states may be kept
+        if (if (refs.counts.len == 0) e.cache.find(prompt) else null) |kept| {
+            p = .{ .ids = @constCast(kept.ids), .tags = @constCast(kept.tags), .at = &.{} };
+            text = @constCast(kept.text);
+            std.debug.print("{d} tokens; prompt states kept: text encoder and refiner skipped\n", .{p.ids.len});
+        } else {
+            p = try rules.present(a, &e.tok, e.enc.marks, refs.counts, prompt);
+            const pos = try rules.positions(a, p, e.enc.marks, refs.grids);
+            const vision = try refs.vision(a, p, e.enc.marks);
+            if (vision) |v| std.debug.print("{d} references: {d} vision rows at the image pads, DeepStack's added after layers 0 to 2\n", .{ refs.counts.len, v.pads.len });
 
-        const rows = try a.alloc(u16, T * e.enc.text.hidden);
-        var started = mtl.clock.seconds();
-        try e.runner.encode(&e.text_w, p.ids, pos, vision, rows);
-        std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech\n", .{ T, e.enc.text.layers, mtl.clock.seconds() - started, e.runner.gpu, e.runner.paused });
-        const text = try a.alloc(u16, T * e.front.hidden);
-        started = mtl.clock.seconds();
-        try e.runner.refine(&e.front_w, rows, text);
-        std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech\n", .{ mtl.clock.seconds() - started, e.runner.gpu, e.runner.paused });
+            const rows = try a.alloc(u16, p.ids.len * e.enc.text.hidden);
+            var started = mtl.clock.seconds();
+            try e.runner.encode(&e.text_w, p.ids, pos, vision, rows);
+            std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech\n", .{ p.ids.len, e.enc.text.layers, mtl.clock.seconds() - started, e.runner.gpu, e.runner.paused });
+            text = try a.alloc(u16, p.ids.len * e.front.hidden);
+            started = mtl.clock.seconds();
+            try e.runner.refine(&e.front_w, rows, text);
+            std.debug.print("condition_proj and the token refiner: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech\n", .{ mtl.clock.seconds() - started, e.runner.gpu, e.runner.paused });
+            if (refs.counts.len == 0) e.cache.keep(prompt, p.ids, p.tags, text);
+        }
+        e.text = p.ids.len;
+
         var extra: std.ArrayList(fixture.Entry) = .empty;
         if (request) |r| {
             const canvas = try hp.picture.canvas(r.size.width, r.size.height, r.min_area);
