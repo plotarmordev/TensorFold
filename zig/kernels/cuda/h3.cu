@@ -204,8 +204,7 @@ __global__ void __launch_bounds__(256) h3_heads_i8(
                 const float4 wpb = *reinterpret_cast<const float4*>(wk + p0);
                 const uint2 npa = *reinterpret_cast<const uint2*>(NQ + p0);
                 const uint2 npb = *reinterpret_cast<const uint2*>(NK + p0);
-                const uint2 npa2 = *reinterpret_cast<const uint2*>(NQ + p0 + 2);
-                const uint2 npb2 = *reinterpret_cast<const uint2*>(NK + p0 + 2);
+
                 const float4 co = *reinterpret_cast<const float4*>(cs + t0);
                 const float4 si = *reinterpret_cast<const float4*>(sn + t0);
                 const float sign = grp_low ? -1.0f : 1.0f;
@@ -213,12 +212,10 @@ __global__ void __launch_bounds__(256) h3_heads_i8(
                 const float kpp[4] = {pb.x * sx * wpb.x, pb.y * sx * wpb.y, pb.z * sx * wpb.z, pb.w * sx * wpb.w};
                 const float npav[4] = {unpack(&npa.x, 0), unpack(&npa.x, 1), unpack(&npa.y, 0), unpack(&npa.y, 1)};
                 const float npbv[4] = {unpack(&npb.x, 0), unpack(&npb.x, 1), unpack(&npb.y, 0), unpack(&npb.y, 1)};
-                const float npa2v[4] = {unpack(&npa2.x, 0), unpack(&npa2.x, 1), unpack(&npa2.y, 0), unpack(&npa2.y, 1)};
-                const float npb2v[4] = {unpack(&npb2.x, 0), unpack(&npb2.x, 1), unpack(&npb2.y, 0), unpack(&npb2.y, 1)};
                 const float cov[4] = {co.x, co.y, co.z, co.w}, siv[4] = {si.x, si.y, si.z, si.w};
 #pragma unroll
                 for (int e = 0; e < 4; ++e) {
-                    const float nq_ = e < 2 ? npav[e] : npa2v[e - 2], nk_ = e < 2 ? npbv[e] : npb2v[e - 2];
+                    const float nq_ = npav[e], nk_ = npbv[e]; // npa/npb hold the partner group's four norms
                     const float qp_ = bf(bf(qpp[e]) * qi * nq_), kp_ = bf(bf(kpp[e]) * ki * nk_);
                     a[e] = bf(a[e] * bf(cov[e])) + bf(sign * qp_ * bf(siv[e]));
                     b[e] = bf(b[e] * bf(cov[e])) + bf(sign * kp_ * bf(siv[e]));
@@ -352,8 +349,8 @@ constexpr int quantize_chunks = 14;
 // h3_swiglu over an int8 product's int32 sums [gate | value]: each sum to bf16 as h3_dequantize rounds it, then the
 // same silu and product, so A matches the two kernels' output without the bf16 rows between them.
 
-// Grid [M], a row a block of 256 threads reading 4-wide int4/float4 groups — the grid-stride loop was the cost.
-__global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* A, int M, int N) {
+// Grid [rows], a row a block of 256 reading 4-wide int4/float4 groups — the grid-stride loop was the cost.
+__global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* A, int N) {
     const int r = blockIdx.x, groups = N >> 2;
     const int* acc = ACC + static_cast<size_t>(r) * 2 * N;
     const float s = SX[r];

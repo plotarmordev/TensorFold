@@ -33,8 +33,8 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
     if (own0 >= own1 or own1 > tiles or rows > try product(&.{ own1 - own0, 64 }) or rows < own1 - own0) return error.BadH3Dimensions;
     if (in.prefix_tiles > tiles or (in.keep != 0 and in.keep > tiles - in.prefix_tiles)) return error.BadH3Keep;
     if (in.keep != 0 and !m.gated) return error.BadH3Ungated;
-    // CUDA's rotary argument is a half-width within a 128-wide head.
-    if (in.rot > 64) return error.BadH3Rotary;
+    // CUDA's rotary argument is a half-width within a 128-wide head, a four-multiple for h3_heads_i8's groups.
+    if (in.rot > 64 or in.rot % 4 != 0) return error.BadH3Rotary;
     const count: usize = if (in.blocks == 0) m.blocks.len else in.blocks;
     if (count > m.blocks.len) return error.BadH3Blocks;
     const prefix: usize = if (in.keep == 0) tiles else in.prefix_tiles;

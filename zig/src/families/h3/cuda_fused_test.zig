@@ -190,7 +190,7 @@ pub fn run(a: std.mem.Allocator) !void {
         try cuda.launch.launch(try module.function("h3_swiglu"), .{ .grid = .{ .x = 1024 }, .block = .{ .x = 256 } }, stream, &args);
         args = .{};
         for ([_]u64{ acc_dev.ptr, sx_dev.ptr, sw_dev.ptr, act2.ptr }) |p| args.add(p);
-        for ([_]c_int{ rows, n }) |v| args.add(v);
+        args.add(@as(c_int, n));
         try cuda.launch.launch(try module.function("h3_swiglu_int8"), .{ .grid = .{ .x = rows }, .block = .{ .x = 256 } }, stream, &args);
     }
     try stream.synchronize();
