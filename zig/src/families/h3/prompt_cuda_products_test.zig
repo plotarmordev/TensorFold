@@ -206,7 +206,7 @@ pub fn check(comptime Products: type, comptime run: anytype) !void {
     const yp = dev(&y);
     // The actual-row algorithm declines bias; the canonical algorithm accepts it only on a bias descriptor.
     reset(true);
-    var p: Products = .{ .lt = .{ .lib = undefined, .api = api() }, .gpa = a, .workspace = .{ .d = undefined, .ptr = dev(&ws), .len = ws.len, .borrowed = true } };
+    var p: Products = .{ .lt = .{ .lib = undefined, .api = api() }, .gpa = a, .handle = null, .workspace = .{ .d = undefined, .ptr = dev(&ws), .len = ws.len, .borrowed = true } };
     defer drain(Products, &p);
     try run(&p, stream, xp, wp, bp, yp, 2, 3, 4);
     try std.testing.expectEqual(@as(usize, 1), matmul_calls);
@@ -224,7 +224,7 @@ pub fn check(comptime Products: type, comptime run: anytype) !void {
     try std.testing.expectEqualSlices(f32, &.{ 1, 4.5, 0, 0, -3.25, -1.375 }, &y);
     // the canonical algorithm not supporting .bias either: refused, nothing cached, nothing run
     reset(false);
-    var q: Products = .{ .lt = .{ .lib = undefined, .api = api() }, .gpa = a, .workspace = .{ .d = undefined, .ptr = dev(&ws), .len = ws.len, .borrowed = true } };
+    var q: Products = .{ .lt = .{ .lib = undefined, .api = api() }, .gpa = a, .handle = null, .workspace = .{ .d = undefined, .ptr = dev(&ws), .len = ws.len, .borrowed = true } };
     defer drain(Products, &q);
     try std.testing.expectError(error.NoAlgorithm, run(&q, stream, xp, wp, bp, yp, 2, 3, 4));
     try std.testing.expectEqual(@as(u32, 0), q.plans.count());

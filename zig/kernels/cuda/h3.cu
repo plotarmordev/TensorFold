@@ -1,6 +1,7 @@
 // MiniMax H3 / FastH3's transformer blocks on CUDA in the checkpoint's bf16: the row, routing and attention kernels.
 #include "h3_attention.cuh"
 #include "common/reduce.cuh"
+#include "h3_int8.cuh" // hadamard128, rotated_chunk, quantize_chunks: shared with h3_image_prompt.cu
 
 namespace tf_h3 {
 
@@ -302,41 +303,6 @@ __global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const floa
         A[i] = __float2bfloat16(bf(g / (1.0f + expf(-g))) * v);
     }
 }
-
-// A warp's 128 values, four a lane in order, through the orthonormal Walsh-Hadamard transform in place.
-__device__ __forceinline__ void hadamard128(float v[4]) {
-    const float a = v[0] + v[1], b = v[0] - v[1], c = v[2] + v[3], d = v[2] - v[3];
-    v[0] = a + c;
-    v[1] = b + d;
-    v[2] = a - c;
-    v[3] = b - d;
-    const int lane = threadIdx.x & 31;
-#pragma unroll
-    for (int o = 1; o < 32; o <<= 1) {
-        const bool high = lane & o;
-#pragma unroll
-        for (int i = 0; i < 4; ++i) {
-            const float p = __shfl_xor_sync(0xffffffffu, v[i], o);
-            v[i] = high ? p - v[i] : v[i] + p;
-        }
-    }
-#pragma unroll
-    for (int i = 0; i < 4; ++i) v[i] *= 0.08838834764831845f; // 1 / sqrt(128)
-}
-
-// Lane's four values of a row's 128-wide chunk `c`, rotated.
-__device__ __forceinline__ void rotated_chunk(const __nv_bfloat16* x, int c, float v[4]) {
-    const __nv_bfloat162* p = reinterpret_cast<const __nv_bfloat162*>(x + c * 128 + (threadIdx.x & 31) * 4);
-    const float2 lo = __bfloat1622float2(p[0]), hi = __bfloat1622float2(p[1]);
-    v[0] = lo.x;
-    v[1] = lo.y;
-    v[2] = hi.x;
-    v[3] = hi.y;
-    hadamard128(v);
-}
-
-// A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336, the widest projection input.
-constexpr int quantize_chunks = 14;
 
 // Each bf16 row of X (M, K) Hadamard-rotated in 128-wide chunks, then to int8 Q at the row's absmax / 127 in S.
 // A row and its weights' rows rotate alike, so their products' sums are the unrotated ones. The rotated chunks stay in

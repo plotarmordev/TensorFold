@@ -4,6 +4,7 @@
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stddef.h>
+#include "h3_int8.cuh" // hadamard128 and rotated_chunk, the rotation h3p_quantize quantizes under
 
 typedef __nv_bfloat16 bf16;
 
@@ -206,6 +207,64 @@ extern "C" __global__ void __launch_bounds__(256) h3p_linear(
             __syncwarp();
         }
         if (row < rows) y[(size_t)row * n + col] = sum;
+    }
+}
+
+// Each bf16 row of X (M, K) rotated in 128-wide chunks and quantized to int8 at the row's absmax / 127, the scale in
+// S — h3_quantize's math with the row streamed twice instead of register-resident, so any multiple-of-128 K fits
+// (the text encoder's down product reads 25,600 wide). A row and its weights' rows rotate alike, so their products'
+// sums are the unrotated ones. Grid [M], 256 threads.
+extern "C" __global__ void __launch_bounds__(256) h3p_quantize(const bf16* X, signed char* Q, float* S, int K) {
+    __shared__ float warp_max[8];
+    __shared__ float scale;
+    const size_t row = blockIdx.x;
+    const bf16* x = X + row * K;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = K >> 7;
+    float most = 0.0f;
+    for (int c = warp; c < chunks; c += 8) {
+        float v[4];
+        rotated_chunk(x, c, v);
+        for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[j]));
+    }
+    for (int o = 16; o; o >>= 1) most = fmaxf(most, __shfl_xor_sync(0xffffffffu, most, o));
+    if (lane == 0) warp_max[warp] = most;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float m = warp_max[0];
+        for (int w = 1; w < 8; ++w) m = fmaxf(m, warp_max[w]);
+        scale = m > 0.0f ? m / 127.0f : 1.0f;
+        S[row] = scale;
+    }
+    __syncthreads();
+    for (int c = warp; c < chunks; c += 8) {
+        float v[4];
+        rotated_chunk(x, c, v);
+        const char4 q = make_char4(__float2int_rn(v[0] / scale), __float2int_rn(v[1] / scale), __float2int_rn(v[2] / scale), __float2int_rn(v[3] / scale));
+        *reinterpret_cast<char4*>(Q + row * K + c * 128 + lane * 4) = q;
+    }
+}
+
+// Y (M, N) = bf16(ACC SX[row] SW[col]): an int8 product's int32 sums back to bf16 rows, h3_dequantize's rounding.
+// With `add` set the product is the delta of a residual instead: Y = bf16(Y + bf16(product)), the rounding h3p_add
+// gives the bf16 path's fp32 product, so the int8 layer's o and down products add exactly as the bf16 ones do.
+// Grid-stride, four a thread.
+extern "C" __global__ void __launch_bounds__(256) h3p_dequantize(
+        const int* ACC, const float* SX, const float* SW, bf16* Y, int M, int N, int add) {
+    const size_t quads = static_cast<size_t>(M) * N / 4;
+    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < quads; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+        const size_t at = i * 4, r = at / N, n = at % N;
+        const int4 a = reinterpret_cast<const int4*>(ACC)[i];
+        const float4 w = *reinterpret_cast<const float4*>(SW + n);
+        const float s = SX[r];
+        const float p[4] = { a.x * s * w.x, a.y * s * w.y, a.z * s * w.z, a.w * s * w.w };
+        bf16* y = Y + at;
+        if (add)
+            for (int j = 0; j < 4; ++j) y[j] = h(__fadd_rn(f(y[j]), f(h(p[j]))));
+        else {
+            __nv_bfloat162* pair = reinterpret_cast<__nv_bfloat162*>(y);
+            pair[0] = __floats2bfloat162_rn(p[0], p[1]);
+            pair[1] = __floats2bfloat162_rn(p[2], p[3]);
+        }
     }
 }
 

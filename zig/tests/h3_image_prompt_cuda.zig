@@ -1,6 +1,7 @@
 //! tf-h3-image-prompt-cuda: MiniMax-H3-Image's prompt stage on CUDA, the same case
 //! tf-h3-image-prompt(-host) writes — Qwen3-VL's text to layer 50 and the two-block refiner on the
-//! GPU, or its synthetic selftest against the float64 host reference.
+//! GPU as resident int8 products (bf16 with --bf16), or its synthetic selftest against the float64
+//! host reference.
 const std = @import("std");
 const hp = @import("h3_prompt_cuda");
 const tokenizer = @import("tokenizer");
@@ -18,8 +19,8 @@ const match = @import("h3_image_match.zig");
 const prompt_cache = hp.cache;
 
 const usage =
-    \\usage: tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
-    \\       tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR --serve
+    \\usage: tf-h3-image-prompt-cuda [--bf16] TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
+    \\       tf-h3-image-prompt-cuda [--bf16] TEXT_ENCODER_DIR MODEL_DIR --serve
     \\       tf-h3-image-prompt-cuda selftest [WORK_DIR]
     \\  TEXT_ENCODER_DIR  MiniMax-H3's text_encoder/ (Qwen3-VL): config.json, its index and shards
     \\  MODEL_DIR         the MiniMax-H3-Image folder: model_index.json, tokenizer/, transformer/
@@ -32,6 +33,8 @@ const usage =
     \\  --serve           the weights loaded once, then one `prompt.txt out.safetensors WxH [SEED [MIN_AREA]]` line
     \\                    of stdin per picture, each answered `done OUT` or `failed OUT` on stdout;
     \\                    a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256)
+    \\  --bf16            the text encoder resident in bf16 instead of the default int8 products with
+    \\                    per-row scales (the opt-out); H3_PROFILE laps the int8 encode's stages
     \\  selftest          the GPU kernels on a tiny synthetic checkpoint against the float64 host reference;
     \\                    WORK_DIR (default under TMPDIR) holds a new folder with the checkpoint while it runs
     \\Exit 0: done or every gate passed; 1: a gate failed.
@@ -40,27 +43,41 @@ const usage =
 pub fn main(init: std.process.Init) !u8 {
     const a = init.arena.allocator();
     const gpa = init.gpa;
-    const args = try init.minimal.args.toSlice(a);
-    if (args.len >= 2 and std.mem.eql(u8, args[1], "selftest") and args.len <= 3) {
+    const raw = try init.minimal.args.toSlice(a);
+    var bf16 = false;
+    const args = try a.alloc([]const u8, raw.len);
+    var argc: usize = 0;
+    for (raw) |arg| {
+        if (std.mem.eql(u8, arg, "--bf16")) {
+            bf16 = true;
+        } else {
+            args[argc] = arg;
+            argc += 1;
+        }
+    }
+    const argv = args[0..argc];
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "selftest") and argv.len <= 3) {
         const tmp = init.environ_map.get("TMPDIR") orelse "/tmp";
-        const dir = if (args.len == 3) args[2] else try std.fs.path.join(a, &.{ tmp, "tf-h3-image-prompt-cuda-selftest" });
+        const dir = if (argv.len == 3) argv[2] else try std.fs.path.join(a, &.{ tmp, "tf-h3-image-prompt-cuda-selftest" });
         return selftest(init, a, gpa, dir);
     }
-    const serving = args.len == 4 and std.mem.eql(u8, args[3], "--serve");
-    if ((args.len < 5 or args.len > 8) and !serving) {
+    const serving = argv.len == 4 and std.mem.eql(u8, argv[3], "--serve");
+    if ((argv.len < 5 or argv.len > 8) and !serving) {
         std.debug.print("{s}", .{usage});
         return 2;
     }
-    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, args[1], args[2]);
+    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, argv[1], argv[2], bf16);
     defer loaded.deinit(gpa);
     if (serving) return serve(init, gpa, &loaded);
-    try pictureRun(init.io, a, &loaded, args[3], args[4], args[5..]);
+    try pictureRun(init.io, a, &loaded, argv[3], argv[4], argv[5..]);
     return 0;
 }
 
 /// What every picture shares: the checked geometry, the tokenizer, the runner and the weights
-/// resident on the device, the shard mappings kept only for their names — their pages evicted once
-/// the resident copy landed, so a served process pins no host copy of the weights.
+/// resident on the device (int8 products by default, bf16 with `--bf16`), the shard mappings kept
+/// only for their names — their pages evicted once the resident copy landed, so a served process
+/// pins no host copy of the weights. The embedding table's mapping stays readable either way: the
+/// int8 encoder gathers each prompt's rows from it host-side.
 const Loaded = struct {
     enc: rules.Encoder,
     front: rules.Refiner,
@@ -69,9 +86,11 @@ const Loaded = struct {
     front_shards: Shards,
     runner: *hp.Runner,
     res: hp.Resident,
+    /// The embedding table's mapped bf16 bytes: the int8 encode's host-side row gather.
+    embed: hp.Tensor,
     /// Kept prompt states across `--serve`'s pictures: the prompt's exact bytes to its rows.
     cache: prompt_cache.Cache,
-    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
+    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8, bf16: bool) !Loaded {
         // the folder and its tokenizer, checked as the host prompt path checks them
         const enc = try rules.checkEncoder(a, try read(io, a, &.{ encoder_dir, "config.json" }));
         _ = try picture.checkIndex(a, try read(io, a, &.{ model_dir, "model_index.json" }));
@@ -82,6 +101,7 @@ const Loaded = struct {
 
         const runner = try hp.Runner.init(gpa);
         errdefer runner.deinit();
+        runner.profile = if (env.get("H3_PROFILE")) |v| v.len > 0 else false;
 
         var shards = try Shards.open(io, a, gpa, encoder_dir);
         errdefer shards.deinit(gpa);
@@ -95,12 +115,12 @@ const Loaded = struct {
         const started = seconds();
         var layer_ctx: LayerCtx = .{ .shards = &shards, .g = enc.text, .prefix = prefix };
         var block_ctx: BlockCtx = .{ .shards = &front_shards, .g = front };
-        const res = try hp.loadResident(runner, a, enc.text, front, embed, layerOf, &layer_ctx, blockOf, &block_ctx, front_w.cond_w, front_w.cond_b, front_w.final_norm);
-        std.debug.print("{d:.2} GiB of prompt weights resident in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), seconds() - started });
+        const res = try hp.loadResident(runner, a, enc.text, front, !bf16, embed, layerOf, &layer_ctx, blockOf, &block_ctx, front_w.cond_w, front_w.cond_b, front_w.final_norm);
+        std.debug.print("{d:.2} GiB of prompt weights resident ({s}) in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), if (bf16) "bf16" else "int8", seconds() - started });
         for (shards.folder.files.values()) |*file| file.evict();
         for (front_shards.folder.files.values()) |*file| file.evict();
         const cache = prompt_cache.Cache.init(gpa, prompt_cache.Cache.budgetOf(env.get("H3_PROMPT_CACHE")));
-        return .{ .enc = enc, .front = front, .tok = tok, .shards = shards, .front_shards = front_shards, .runner = runner, .res = res, .cache = cache };
+        return .{ .enc = enc, .front = front, .tok = tok, .shards = shards, .front_shards = front_shards, .runner = runner, .res = res, .embed = embed, .cache = cache };
     }
 
     fn deinit(l: *Loaded, gpa: std.mem.Allocator) void {
@@ -178,7 +198,7 @@ fn pictureRun(io: std.Io, a: std.mem.Allocator, loaded: *Loaded, prompt_path: []
 
         const enc_rows = try a.alloc(u16, T * loaded.enc.text.hidden);
         var gpu_started = seconds();
-        try runner.encode(a, loaded.enc.text, &loaded.res, p.ids, pos, null, enc_rows);
+        try runner.encode(a, loaded.enc.text, &loaded.res, p.ids, pos, loaded.embed, null, enc_rows);
         std.debug.print("{d} tokens; text encoder, {d} layers: {d:.2} s wall, {d:.2} s GPU\n", .{ T, loaded.enc.text.layers, seconds() - gpu_started, runner.gpu });
 
         text = try a.alloc(u16, T * loaded.front.hidden);
@@ -415,11 +435,12 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
     const prefix = "model.language_model.";
     var bits_layer: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
     var bits_front: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
-    var res = try hp.loadResident(runner, a, g, f, try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})), bitsLayer, &bits_layer, bitsBlock, &bits_front, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"));
+    const embed_bits = try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix}));
+    var res = try hp.loadResident(runner, a, g, f, false, embed_bits, bitsLayer, &bits_layer, bitsBlock, &bits_front, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"));
     defer res.deinit();
     const enc = try a.alloc(u16, T * g.hidden);
     const started = seconds();
-    try runner.encode(a, g, &res, ids, pos, null, enc);
+    try runner.encode(a, g, &res, ids, pos, embed_bits, null, enc);
     const enc_s = seconds() - started;
     const out = try a.alloc(u16, T * f.hidden);
     try runner.refine(f, &res, enc, out);
@@ -442,9 +463,32 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
     try ref.refine(f32, a, f, tiny.front, enc_f, out_32);
     failed = !try whole(a, "condition_proj, refiner and final norm on the GPU's encoder rows", out, out_32, out_ref, f.hidden) or failed;
 
+    // the same prompt through the resident int8 products: within 0.999 cosine of the bf16 encoder's
+    // rows, the refiner on them likewise, and byte-stable on a repeat
+    var res8 = try hp.loadResident(runner, a, g, f, true, embed_bits, bitsLayer, &bits_layer, bitsBlock, &bits_front, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"));
+    defer res8.deinit();
+    const enc8 = try a.alloc(u16, T * g.hidden);
+    try runner.encode(a, g, &res8, ids, pos, embed_bits, null, enc8);
+    const m8 = match.match(enc8, enc_f, g.hidden);
+    const pass8 = m8.cosine >= 0.999;
+    match.report("text encoder rows, resident int8 products against the bf16 encoder's", m8, pass8);
+    failed = failed or !pass8;
+    const out_bf = try a.alloc(f32, out.len);
+    for (out_bf, out) |*o, v| o.* = bf16_round.value(v);
+    const out8 = try a.alloc(u16, T * f.hidden);
+    try runner.refine(f, &res8, enc8, out8);
+    const r8 = match.match(out8, out_bf, f.hidden);
+    const pass_r8 = r8.cosine >= 0.999;
+    match.report("condition_proj, refiner and final norm on the int8 encoder's rows", r8, pass_r8);
+    const enc8b = try a.alloc(u16, enc8.len);
+    try runner.encode(a, g, &res8, ids, pos, embed_bits, null, enc8b);
+    const same8 = std.mem.eql(u16, enc8, enc8b);
+    std.debug.print("the int8 encode again, byte for byte the same: {}\n", .{same8});
+    failed = failed or !pass_r8 or !same8;
+
     // a second run, byte for byte the same
     const again = try a.alloc(u16, enc.len);
-    try runner.encode(a, g, &res, ids, pos, null, again);
+    try runner.encode(a, g, &res, ids, pos, embed_bits, null, again);
     const out_again = try a.alloc(u16, out.len);
     try runner.refine(f, &res, again, out_again);
     const same = std.mem.eql(u16, enc, again) and std.mem.eql(u16, out, out_again);
@@ -502,10 +546,10 @@ fn withPicture(runner: *hp.Runner, res: *const hp.Resident, a: std.mem.Allocator
 
     // Equal inputs must retain the same arithmetic with the vision copy/add path enabled.
     const plain = try a.alloc(u16, T * H);
-    try runner.encode(a, g, res, ids, pos, null, plain);
+    try runner.encode(a, g, res, ids, pos, embed, null, plain);
     const noop = try a.alloc(u16, T * H);
     const noop_vision: hp.Vision = .{ .pads = pads, .rows = keep, .deepstack = .{ zeros, zeros, zeros } };
-    try runner.encode(a, g, res, ids, pos, noop_vision, noop);
+    try runner.encode(a, g, res, ids, pos, embed, noop_vision, noop);
     const noop_same = std.mem.eql(u16, plain, noop);
     std.debug.print("a no-op vision (embedding rows spliced back, DeepStack zero) byte for byte the text-only run: {}\n", .{noop_same});
 
@@ -535,7 +579,7 @@ fn withPicture(runner: *hp.Runner, res: *const hp.Resident, a: std.mem.Allocator
     const sum32 = try a.alloc(f32, T * H);
     var ok = noop_same;
     for (probes) |probe| {
-        try runner.encode(a, probe.geometry, res, ids, pos, probe.gpu, enc);
+        try runner.encode(a, probe.geometry, res, ids, pos, embed, probe.gpu, enc);
         try ref.encode(f64, a, probe.geometry, tiny.host, ids, cs, sn, probe.host, exact);
         try ref.encode(f32, a, probe.geometry, tiny.host, ids, cs, sn, probe.host, sum32);
         ok = try whole(a, probe.label, enc, sum32, exact, H) and ok;
