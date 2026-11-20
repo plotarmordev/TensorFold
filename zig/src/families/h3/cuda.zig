@@ -282,9 +282,10 @@ pub const Model = struct {
         } else {
             _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
             _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
-            _ = try self.gemms.plan(rows, self.hidden, inner);
-            _ = try self.gemms.plan(rows, self.hidden, self.mlp);
         }
+        // `out` and `fc2` keep their bf16 weights in both modes
+        _ = try self.gemms.plan(rows, self.hidden, inner);
+        _ = try self.gemms.plan(rows, self.hidden, self.mlp);
     }
 
     /// The launches of `forward` once `plan` and `geometry.prepare` ran: capturable work only —
@@ -356,7 +357,7 @@ pub const Model = struct {
                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
                 try self.lap("gate mix", &mark);
             }
-            try self.project(g.ya, b.out.ptr, if (self.int8) |t| t.blocks[index].out else null, g.y, rows, hidden, inner);
+            try self.project(g.ya, b.out.ptr, null, g.y, rows, hidden, inner);
             try self.lap("attention out", &mark);
             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m);
             try self.lap("norms", &mark);
@@ -370,7 +371,7 @@ pub const Model = struct {
                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
             }
             try self.lap("mlp in", &mark);
-            try self.project(g.act, b.fc2.ptr, if (self.int8) |t| t.blocks[index].fc2 else null, g.y, rows, hidden, self.mlp);
+            try self.project(g.act, b.fc2.ptr, null, g.y, rows, hidden, self.mlp);
             try self.lap("mlp out", &mark);
         }
         {
