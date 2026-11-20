@@ -695,6 +695,56 @@ six-step picture past the gates, so per-row int8 on the encoder is reverted and 
 Card 139 found the same for the transformer: per-row scales are the only fold cuBLASLt's int32 C supports, so finer
 scales need an own-mma product.
 
+### Card 144: the `--tc` decoder beside mmh3's VAE, and attention fused into `h3d_flash`
+
+[`decoder-trace-job.sh`](minimax-h3-cuda/decoder-trace-job.sh) traces the warm 2048² decode kernel by kernel under
+the CUPTI preload — main's decoder, this card's, then mmh3's server — in one TOP window (job `top-6555a7bad5de` at
+`c35f0d47`, 20 November). Main's 121-tile pass: **340 launches, 0.841 s**, 0.002 s of it between kernels. mmh3's
+VAE (CUTLASS FP16 products, FP32 compute, every tile in one batch): **270 launches, 0.552 s**. Where main's 0.29 s
+over mmh3 goes, by kernel:
+
+| warm 2048², ms | main | mmh3 |
+|---|---:|---:|
+| attention: scores + softmax + p·v + unheads (main) / one fused kernel (mmh3) | 241.0 | 27.6 |
+| products (cuBLASLt bf16 / CUTLASS f16) | 340.1 | 307.6 |
+| swiglu | 81.6 | 88.8 |
+| finish + res_norm / residual add | 113.6 | 70.0 |
+| heads + rms_norm / norms + key norm and rope | 61.6 | 55.6 |
+
+Launches cost nothing (gaps 2 ms), so CUDA-graph batching and `h3d_finish`'s launch count have nothing to win; the
+products sit within 11% of mmh3's FP16 rate, and finish plus res_norm's 44 ms over mmh3's residual add is the
+Metal rounding points' extra bf16 pass. The 0.21 s gap is in attention, where main's four steps per block
+(two batched cuBLASLt products over 1,936 (tile, head)s, `h3d_softmax`, `h3d_unheads`) round-trip a
+[1,936, 261, 261] fp32 score plane. `h3d_flash` fuses them: a block of 4 warps holds 64 queries of one
+(tile, head), and wmma bf16 products with fp32 sums compute `q·kᵀ` and `p·v` over 64-key chunks, with an online
+fp32 softmax in between. Its bf16 weights enter both `p·v` and the row sum, and it writes the out projection's rows
+directly. `--exact` keeps `h3d_attention`. The kernel's contract case replaces the softmax and unheads cases.
+
+Two things tried and dropped. mmh3's 32-pixel tile overlap (81 tiles, 0.473 s on the GPU) missed the Mac mean
+gate at **4.53**, and the host reference decoder missed it identically, so tiling, not the kernels, moved the
+picture. A captured CUDA graph won nothing over 2 ms of gaps and zeroed H3_PROFILE's stage times.
+
+[`bench-144-ab.sh`](minimax-h3-cuda/bench-144-ab.sh) at `b42bc168` (job `top-577dfffd6058`, exit 0) ran the bench
+on this commit, then on `bench-144-base.patch` reverse-applied (main's decoder), with `H3_PROFILE=1` on both sides.
+Per the lead's decision, both sides used the canonical (seen) pilot prompt: the decoder decodes the same latent
+either way. Every selftest passed on both sides.
+
+| 2048², warm | decoder s (GPU) | decoder s (all) | products | finish | heads | attention | swiglu | norms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `h3d_flash`, run 2 | 0.78 | 1.22 | 0.33 | 0.09 | 0.05 | 0.19 | 0.08 | 0.04 |
+| `h3d_flash`, run 3 | 0.78 | 1.23 | 0.33 | 0.09 | 0.05 | 0.20 | 0.08 | 0.04 |
+| `h3d_flash`, run 4 | 0.78 | 1.22 | 0.33 | 0.08 | 0.05 | 0.20 | 0.08 | 0.04 |
+| main, run 2 | 0.83 | 1.27 | 0.34 | 0.09 | 0.05 | 0.24 | 0.08 | 0.04 |
+| main, run 3 | 0.83 | 1.26 | 0.34 | 0.09 | 0.05 | 0.24 | 0.08 | 0.04 |
+| main, run 4 | 0.84 | 1.29 | 0.34 | 0.09 | 0.05 | 0.24 | 0.08 | 0.04 |
+
+All four latents are byte-identical between the phases. The same-latent `reference` held (56.42 dB, relative
+3.27e-3 under 3e-2). On run 1's picture, `h3_image_compare.py`'s numbers against episode 1's Mac latent and PNG
+were cosine 0.9952, 28.69 dB, mean 4.015, the same as main's side. The win is 0.05 s of a 0.83 s decode. The rest of
+the distance to mmh3's 0.55 s is `h3d_flash` itself: 195.8 ms over 121 tiles against mmh3's 27.6 ms. It runs one
+(tile, head) per block at 40 KiB of shared memory and 128–144 registers, staging every wmma tile through shared
+memory; mma.sync fragments in registers are its next step.
+
 ### The side-by-side: mmh3's warm server beside ours, unseen prompts (20 November)
 
 [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) puts both engines' resident servers
