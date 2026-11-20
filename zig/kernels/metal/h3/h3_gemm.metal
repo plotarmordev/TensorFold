@@ -36,7 +36,10 @@ inline void h3_step(thread frag<C> (&acc)[2][4], const device T* A, const device
 
 // D [P[0], P[1]] = A [P[0], P[2]] * B^T [P[1], P[2]], N a multiple of 128; AM false bounds the rows. Int8 operands
 // come with SA [P[0]], A's row scales, and SB [P[1], P[9]], B's per 256-deep block, K a multiple of 256.
-template <bool AM, typename T, typename C>
+// ACT (int8 fc1 only): D has P[1] columns of silu(gate)·value — the tile sweeps K twice, first over B's value rows
+// P[15] below (their product lands in D as bf16, just as h3_swiglu would read it back), then over the gate rows,
+// and folds both at their block scales — writing bfloat(silu(bfloat(g))·bfloat(v)) without a wide row.
+template <bool AM, typename T, typename C, bool ACT = false>
 inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, const device int* P, const device float* SA,
                     const device float* SB, uint3 tg, uint sg, uint lane) {
   constexpr bool I8 = is_same_v<T, int8_t>;
@@ -44,65 +47,90 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
   const int ty = (int(tg.y) << swz) + (int(tg.x) & ((1 << swz) - 1)), tx = int(tg.x) >> swz;
   if (tx >= P[6] || ty >= P[7]) return;
   const int lda = P[3], ldb = P[4], ldd = P[5];
+  const int voff = ACT ? P[15] : 0;
   const int row = ty * 64 + 32 * int(sg / 2), col = tx * 128 + 64 * int(sg % 2);
-  A += long(P[13]) + long(P[10]) * tg.z + long(row) * lda;
+  const device T* A0 = A + long(P[13]) + long(P[10]) * tg.z + long(row) * lda;
   B += long(P[14]) + long(P[11]) * tg.z + long(col) * ldb;
   D += long(P[12]) * tg.z + long(row) * ldd + col;
   const int rows = AM ? 32 : min(32, P[0] - row), cols = 64;
   const bool full = AM || rows == 32;
   const bool live = rows > 0;
   const short2 home = frag_home(ushort(lane));
-  frag<C> acc[2][4];
-  frag<float> total[2][4];
-  TF_UNROLL
-  for (short m = 0; m < 2; m++) TF_UNROLL for (short n = 0; n < 4; n++) acc[m][n] = frag<C>(0), total[m][n] = frag<float>(0);
   const int kblocks = P[9];
-#pragma clang loop unroll(disable)
-  for (int kb = 0; kb < kblocks; kb++) {
-    threadgroup_barrier(mem_flags::mem_none);
-    if (full) {
-#pragma clang loop unroll(disable)
-      for (int kk = 0; kk < 256; kk += 32) h3_step<false>(acc, A, B, lda, ldb, kk, 32, rows, cols, home);
-    } else if (live) {
-#pragma clang loop unroll(disable)
-      for (int kk = 0; kk < 256; kk += 32) h3_step<true>(acc, A, B, lda, ldb, kk, 32, rows, cols, home);
+  const int rest = P[2] - kblocks * 256;
+  // An activated tile runs the gate sweep last: the value half's K sweep (voff rows below B) goes first, its
+  // bf16 product parked in D where the epilogue's v is read back; every other product is the single sweep h = 0.
+  const int sweeps = ACT && live ? 2 : 1;
+  frag<float> total[2][4];
+  for (int s = 0; s < sweeps; s++) {
+    const int h = ACT ? 1 - s : 0;
+    const device T* As = A0;
+    const device T* Bs = B + long(h * voff) * ldb;
+    frag<C> acc[2][4];
+    TF_UNROLL
+    for (short m = 0; m < 2; m++) TF_UNROLL for (short n = 0; n < 4; n++) {
+      acc[m][n] = frag<C>(0);
+      total[m][n] = frag<float>(0);
     }
-    if (I8 && live) {
-      // lane columns col + 16 n + home.x + (e & 3), each with its scale for this block
-      TF_UNROLL
-      for (short n = 0; n < 4; n++) {
-        const device float* s = SB + long(col + 16 * n + home.x) * kblocks + kb;
+#pragma clang loop unroll(disable)
+    for (int kb = 0; kb < kblocks; kb++) {
+      threadgroup_barrier(mem_flags::mem_none);
+      if (full) {
+#pragma clang loop unroll(disable)
+        for (int kk = 0; kk < 256; kk += 32) h3_step<false>(acc, As, Bs, lda, ldb, kk, 32, rows, cols, home);
+      } else if (live) {
+#pragma clang loop unroll(disable)
+        for (int kk = 0; kk < 256; kk += 32) h3_step<true>(acc, As, Bs, lda, ldb, kk, 32, rows, cols, home);
+      }
+      if (I8 && live) {
+        // lane columns col + 16 n + home.x + (e & 3), each with its scale for this block; the value half's scale sits P[15] rows below
+        const device float* Sh = SB + long(h * voff) * kblocks;
         TF_UNROLL
-        for (short m = 0; m < 2; m++) {
+        for (short n = 0; n < 4; n++) {
+          const device float* sc = Sh + long(col + 16 * n + home.x) * kblocks + kb;
           TF_UNROLL
-          for (short e = 0; e < 8; e++) total[m][n][e] += float(acc[m][n][e]) * s[(e & 3) * kblocks];
-          acc[m][n] = frag<C>(0);
+          for (short m = 0; m < 2; m++) {
+            TF_UNROLL
+            for (short e = 0; e < 8; e++) total[m][n][e] += float(acc[m][n][e]) * sc[(e & 3) * kblocks];
+            acc[m][n] = frag<C>(0);
+          }
         }
       }
+      As += 256;
+      Bs += 256;
     }
-    A += 256;
-    B += 256;
-  }
-  const int rest = P[2] - kblocks * 256;
-  if (rest > 0) {
-    simdgroup_barrier(mem_flags::mem_none);
-    if (live) {
+    if (rest > 0) {
+      simdgroup_barrier(mem_flags::mem_none);
+      if (live) {
 #pragma clang loop unroll(disable)
-      for (int kk = 0; kk < rest; kk += 32) h3_step<true>(acc, A, B, lda, ldb, kk, max(0, rest - kk), rows, cols, home);
+        for (int kk = 0; kk < rest; kk += 32) h3_step<true>(acc, As, Bs, lda, ldb, kk, max(0, rest - kk), rows, cols, home);
+      }
     }
-  }
-  if (!live) return;
-  TF_UNROLL
-  for (short m = 0; m < 2; m++) {
+    if (!live) return;
     // the lane's rows row + 16 m + home.y and 8 below; a ragged tile's dead rows read the last row's scale
-    const int r = row + 16 * m + home.y, last = P[0] - 1;
-    const float r0 = I8 ? SA[min(r, last)] : 1, r1 = I8 ? SA[min(r + 8, last)] : 1;
     TF_UNROLL
-    for (short n = 0; n < 4; n++) {
-      frag<float> f = frag<float>(acc[m][n]);
-      if (I8) TF_UNROLL for (short e = 0; e < 8; e++) f[e] = total[m][n][e] * (e < 4 ? r0 : r1);
-      if (full) frag_put(f, D, ldd, 16 * m, 16 * n, home);
-      else frag_put_in(f, D, ldd, 16 * m, 16 * n, home, rows, cols);
+    for (short m = 0; m < 2; m++) {
+      const int r = row + 16 * m + home.y, last = P[0] - 1;
+      const float r0 = I8 ? SA[min(r, last)] : 1, r1 = I8 ? SA[min(r + 8, last)] : 1;
+      TF_UNROLL
+      for (short n = 0; n < 4; n++) {
+        frag<float> f = frag<float>(acc[m][n]);
+        TF_UNROLL
+        for (short e = 0; e < 8; e++) {
+          const float rs = e < 4 ? r0 : r1;
+          if (I8) f[e] = total[m][n][e] * rs;
+          if (ACT) {
+            // h3_swiglu's exact roundings on the product's bf16 values; on the gate sweep D holds the value half's
+            // own bf16 product, read back as h3_swiglu would — the wide row never materializes
+            const float g = float(bfloat(f[e]));
+            const float v = s == 0 ? 0.0f : float(D[(16 * m + home.y + (e >> 2) * 8) * ldd + 16 * n + home.x + TF_COL(e)]);
+            f[e] = s == 0 ? float(bfloat(f[e]))
+                          : float(bfloat(g * float(bfloat(1.0f / (1.0f + exp(-g)))))) * v;
+          }
+        }
+        if (full) frag_put(f, D, ldd, 16 * m, 16 * n, home);
+        else frag_put_in(f, D, ldd, 16 * m, 16 * n, home, rows, cols);
+      }
     }
   }
 }
@@ -174,4 +202,20 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
   uint thread_index_in_simdgroup [[thread_index_in_simdgroup]],
   uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]) {
   tfp::h3_gemm<false, int8_t, int>(A, B, D, P, SA, SB, threadgroup_position_in_grid, simdgroup_index_in_threadgroup, thread_index_in_simdgroup);
+}
+
+// fc1's int8 product with silu(gate)·value in the epilogue: D [M, P[15]] instead of the [gate|value] rows, so the
+// h3_swiglu launch drops out of the block. P[15] = the value half's row offset in B (mlp).
+[[max_total_threads_per_threadgroup(128)]]
+[[kernel]] void h3_gemm_32x64_i8_act(
+  const device int8_t* A [[buffer(0)]],
+  const device int8_t* B [[buffer(1)]],
+  const device int32_t* P [[buffer(2)]],
+  device bfloat16_t* D [[buffer(3)]],
+  const device float* SA [[buffer(4)]],
+  const device float* SB [[buffer(5)]],
+  uint simdgroup_index_in_threadgroup [[simdgroup_index_in_threadgroup]],
+  uint thread_index_in_simdgroup [[thread_index_in_simdgroup]],
+  uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]) {
+  tfp::h3_gemm<false, int8_t, int, true>(A, B, D, P, SA, SB, threadgroup_position_in_grid, simdgroup_index_in_threadgroup, thread_index_in_simdgroup);
 }
