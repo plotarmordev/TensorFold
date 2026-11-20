@@ -1196,6 +1196,64 @@ cold then three warm requests each, load average 24-40: head warm 11.13-11.74 s 
 change is flat — the ~0.1 s a step of host round-trips is small next to a 1.6 s step — while the GPU-pass meter
 shows the decoder's 121 tiles at 1.08 s in one pass against 1.36 s over two, and the tail kernels' launches replace
 two dispatches and a buffer. The win is structural, not a new warm number.
+### Card 150: the int8 product's rate, profiled per kernel
+
+One warm 2048 picture profiled per kernel on the M5 Ultra (`tools/zig/metal_bench.swift`, command-buffer GPU
+timestamps, warm medians of 12, the exact launch `product()` dispatches at 4,120 rows; every bench under
+`/tmp/tensorfold-model.lock`, load average beside each set):
+
+| `h3_gemm_32x64_i8` launch | Shape M x N x K | time | rate |
+|---|---|---:|---:|
+| qkv | 4,120 x 21,504 x 5,376 | 6.88 ms | 138 TOPS |
+| attention out | 4,120 x 5,376 x 7,168 | 2.54 ms | 125 TOPS |
+| fc1 (gate+value) | 4,120 x 28,672 x 5,376 | 9.13 ms | 139 TOPS |
+| fc2 | 4,120 x 5,376 x 14,336 | 5.22 ms | 122 TOPS |
+
+(First set at load 47-92, the rerun at load 4.5 within 3% of these.) The peaks the products run against, measured
+the same way with register-fed `mma_16x32` chains — 16,384 simdgroups of 80,000 chained ops through MPP's
+`matmul2d` cooperative-tensor op, the M5 tensor-unit path every product kernel already takes, its
+cooperative-tensor staging included: **493 TOPS int8 and 255 TFLOPS bf16**. The int8 product sits at 25-28% of its
+path's own ceiling, and the bf16 products (the same probe's 255 TFLOPS against their measured 96) at 38%: the
+operand gather, not the tensor unit, is what binds — each fragment loads as eight scalar reads.
+
+Candidates, each microbenched against the shipped kernel first (medians; both sets, loads 55-80 and 4.5):
+
+| Candidate | qkv | out | fc1 | fc2 | Verdict |
+|---|---:|---:|---:|---:|---|
+| shipped (byte-wise `frag_get`) | 6.88 ms | 2.54 ms | 9.13 ms | 5.22 ms | kept |
+| int8 fragments as two 4-byte loads (`frag_get_q`) | 6.01 ms | 2.09 ms | 7.98 ms | 4.23 ms | -12 to -19% isolated; **lost the served A/B, reverted** |
+| 64 x 256 tile, 8 warps a threadgroup | 7.56 ms | 2.73 ms | 9.85 ms | 5.65 ms | slower by 8-10%: A-fragment traffic was not what binds |
+| register double-buffer of the 32-deep steps | 11.90 ms | 4.11 ms | 15.88 ms | 8.33 ms | slower by ~70%: spills past the register budget the two accumulator sets fill |
+| scale fold removed (int32 accumulator through all of K) | 11.62 ms | 3.98 ms | 15.41 ms | 8.16 ms | slower by ~70%: the per-256 fold also breaks the mma accumulator chain each block — it is structure, not just cost |
+
+SwiGLU folded into fc1's product stayed unbuilt: card 135's folded variants measured 1.63-1.73 s a step against
+1.53 s for the pair, in exactly the two register budgets the double-buffer row above re-measured as spills (both K
+halves' accumulators live, or one accumulator swept sequentially). A folded try must beat fc1's 9.13 ms plus
+`h3_swiglu` without both accumulator sets.
+
+The 4-byte-load candidate is the card's cautionary receipt. It was gated before it was benched: the warm latent was
+byte-identical (`776b443a…`, the pinned value), card 80's rule passed against episode 1's Mac latent and PNG
+(`h3-image-runs/34/t2i-2048.latent.f32`, `fox-2048-seed42.png`: cosine 0.995459, PSNR 28.673 dB, mean pixel diff
+3.903, every step `timing_valid=true`), `test-h3-gemm`, `test-h3-image-server`, `test-h3-image-prompt` and the
+kernel contract's `h3 product` set (gates 1-4, 0 limit problems) were green. But the served A/B — two resident
+ReleaseFast servers, one a side, cold on card 34's prompt then three warm runs on unseen prompts (harbour, meadow,
+steam; `docs/recipes/minimax-h3-cuda/prompts/`), one request a lock hold, seed 42, six steps — reversed it:
+
+| Warm run (unseen prompt) | head 6 steps | head total | main 6 steps | main total | load avg (head/main) |
+|---|---:|---:|---:|---:|---|
+| 1 | 9.15 s | 11.44 s | 8.94 s | 11.22 s | 12.2 / 8.9 |
+| 2 | 9.67 s | 12.36 s | 9.25 s | 11.51 s | 10.8 / 8.0 |
+Every paired warm run is main's. An earlier round under worse contention (main's requests at load 31-52 with the
+golden suite building, head's at 15-48) measured head 9.20-9.82 s against main 10.44-11.72 s and decoder walls up to
+6.5 s — load, not the kernels, moved those numbers, which is why the quiet round above is the one that decides. The
+isolated win (182 ms a step of product time, reproduced at both loads) did not appear in the served pipeline, which
+came out 0.2-0.5 s a picture slower; the microbench cannot see the step's barrier-ordered stages around each
+product, and nothing within this card isolated which of them the wider loads perturbed.
+By the rule — kept only if faster — the code was reverted; the receipts stand so the next round does not re-try the
+widened loads blind. Fast mode (`--draft-steps 3`) on the shipped state, same protocol at load 25-30: warm 8.59 s
+and 6.17 s (the second with the transformer binding reused), totals 11.19/7.86 s; one warm run waited up to 0.52 s
+for speech (`timing_valid=false`) and is reported, not counted.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
