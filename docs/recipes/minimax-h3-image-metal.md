@@ -1198,14 +1198,15 @@ change is flat — the ~0.1 s a step of host round-trips is small next to a 1.6 
 shows the decoder's 121 tiles at 1.08 s in one pass against 1.36 s over two, and the tail kernels' launches replace
 two dispatches and a buffer. The win is structural, not a new warm number.
 
-### Card 150: the int8 product's rate, profiled per kernel
+### Card 150: the int8 product's rate, from isolated kernel replays
 
-The card asked for one warm 2048 picture profiled per kernel with Metal GPU counters or a capture. That was not
-recorded: no in-picture capture or counter sample exists, and the Desk closed the Mac's GPU windows before one could
-be taken. What stands instead is each product launch replayed on its own (`tools/zig/metal_bench.swift`,
-command-buffer GPU timestamps, warm medians of 12, the exact launch `product()` dispatches at 4,120 rows; every
-bench under `/tmp/tensorfold-model.lock`, load average beside each set). A replay has no neighbouring stages or
-barriers around it, so its times bound the kernels, not their share of a picture's 9.24 s of step GPU time:
+The card asked for one warm 2048 picture profiled per kernel with Metal GPU counters or a capture. No in-picture
+Metal counter profile was taken: no capture or counter sample exists, and the Desk closed the Mac's GPU windows
+before one could be; the in-picture profile moves to card 148. The table below is not a picture profile. Each row is
+one product launch replayed alone (`tools/zig/metal_bench.swift`, command-buffer GPU timestamps, warm medians of 12,
+the exact launch `product()` dispatches at 4,120 rows; every bench under `/tmp/tensorfold-model.lock`, load average
+beside each set). A replay has no neighbouring stages or barriers around it, so its times bound the kernel in
+isolation; they are not in-picture kernel times and not a share of a picture's 9.24 s of step GPU time:
 
 | `h3_gemm_32x64_i8` launch | Shape M x N x K | time | rate |
 |---|---|---:|---:|
@@ -1317,11 +1318,12 @@ Fast mode (`--draft-steps 3`), same stage breakdown:
 | 2 | head | steam | 4.49 | 0.03 | r:0.00 | 7.30 (6.16) | 8.29 | 20.12 | 45.0 | |
 
 Three of main's fast-mode runs were spoiled: round 1 meadow and steam had steps with `timing_valid=false`, and round
-2 harbour's prompt waited 23.12 s for speech. They are reported above but not counted, and they have no clean
-replacements: the Desk closed the window and ruled out further GPU windows for this card. Fast-mode medians over the
-clean runs: main 8.98 s wall / 6.09 s GPU of steps (three runs), head 9.12 s wall / 6.12 s GPU (six runs; round 1
-head's cold run waited 0.31 s for speech in its prompt). Counting the spoiled runs would have put main at 8.82 s wall,
-the same 6.09 s GPU.
+2 harbour's prompt waited 23.12 s for speech. They are reported above but not counted, and they were never rerun:
+the Desk closed the window and the lead ruled out further GPU windows for this card. The fast-mode comparison is
+therefore unbalanced and is not a verdict; the verdict rests on the nine-a-side six-step A/B above. Over the clean
+runs: main 8.98 s wall / 6.09 s GPU of steps (three runs), head 9.12 s wall / 6.12 s GPU (six runs; round 1 head's
+cold run waited 0.31 s for speech in its prompt). Matched to main's three clean requests (round 1 harbour, round 2
+meadow and steam), head's medians are 9.37 s wall / 6.15 s GPU against main's 8.98 / 6.09 s.
 
 The window confirms the quiet round: even on pure step GPU time (9.24 vs 9.24 s normal, 6.09 vs 6.12 s fast) the
 4-byte loads yield no served gain, so the code stays reverted. Neither side reached the quiet baseline's 10.8 s
