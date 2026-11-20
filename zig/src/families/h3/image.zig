@@ -19,6 +19,7 @@ pub const tensors = prompt.tensors;
 pub const weights = prompt.weights;
 pub const reference = prompt.reference;
 pub const case = prompt.case;
+pub const cache = prompt.cache;
 pub const Runner = prompt.Runner;
 pub const Vision = prompt.Vision;
 

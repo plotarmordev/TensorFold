@@ -154,6 +154,24 @@ pub fn finish(in: In, want: []f64, mag: []f64) void {
     }
 }
 
+/// h3d_res_norm: h3d_finish's mode 1 (x = bf(x + bf(u * s))) fused with h3d_rms_norm of the updated
+/// row. out x' || xn, each rows * 1024. a u [m, 1024], b scale [1024], d gain [1024], e x rows in.
+pub fn resNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
+    const half = in.rows * 1024;
+    var terms: [1024]f64 = undefined;
+    for (0..in.rows) |r| {
+        const xr = want[r * 1024 ..][0..1024];
+        for (xr, 0..) |*v, i| v.* = bf(in.e[r * 1024 + i] + bf(in.a[r * 1024 + i] * in.b[i]));
+        for (&terms, xr) |*t, v| t.* = v * v;
+        const inv = 1.0 / @sqrt(s.of(&terms) / 1024.0 + in.eps);
+        for (0..1024) |i| {
+            want[half + r * 1024 + i] = bf(xr[i] * inv * in.d[i]);
+            mag[r * 1024 + i] = xr[i] * xr[i];
+            mag[half + r * 1024 + i] = xr[i] * xr[i];
+        }
+    }
+}
+
 /// h3d_heads: per (tile, token, head): q and k RMS-normed (no weight) to bf16, their first 32 dims
 /// half-turned in bf16 by cs/sn [tokens, 32]; v copied. want layout: q || k || v, each [(tile*16+head)*tokens+t, 64].
 /// a qkv [tiles*tokens, 3072], b cs [tokens, 32], d sn [tokens, 32].

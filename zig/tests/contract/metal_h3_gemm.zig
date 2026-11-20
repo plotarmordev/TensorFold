@@ -1,5 +1,5 @@
 //! H3's products under the contract: the 32x64-warp bf16 GEMM bit-equal to MLX's that it replaces, its int8 form
-//! (fc1) against float64 at its scales, and the row quantizer that feeds it.
+//! (a scale per 256 values of K on both operands) against float64 at its scales, and the row quantizer that feeds it.
 const std = @import("std");
 const mtl = @import("metal");
 const contract = @import("contract");
@@ -90,7 +90,7 @@ pub const Product = struct {
         return switch (f) {
             .whole => .{ .name = name(f), .accum = .f32, .depth = bf16Depth, .out = .bf16, .replaces = "MLX's 64x128 gemm_nax (whole)", .tiles = .{ .{ .size = 64, .step = 64, .min = 64 }, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 256, .step = 32, .min = 32 } }, .served = &.{ .{ .rows = 4096, .n = inner, .k = hidden }, .{ .rows = 4096, .n = 3 * inner, .k = hidden }, .{ .rows = 4096, .n = hidden, .k = mlp } } },
             .ragged => .{ .name = name(f), .accum = .f32, .depth = bf16Depth, .out = .bf16, .replaces = "MLX's 64x128 gemm_nax (ragged)", .tiles = .{ .{ .size = 64 }, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 256, .step = 32, .min = 32 } }, .served = &.{ .{ .rows = 4096 + 24, .n = inner, .k = hidden }, .{ .rows = 4096 + 24, .n = hidden, .k = inner } } },
-            .int8 => .{ .name = name(f), .accum = .f32, .depth = int8Depth, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 4096 + 24, .n = 2 * mlp, .k = hidden }, .{ .rows = 4096, .n = 2 * mlp, .k = hidden } }, .sums = .{ .why = "each K block's int8 products summed exactly in int32, the blocks folded in fp32 at their scales" } },
+            .int8 => .{ .name = name(f), .accum = .f32, .depth = int8Depth, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 4096 + 24, .n = 3 * inner, .k = hidden }, .{ .rows = 4096, .n = hidden, .k = inner }, .{ .rows = 4096, .n = 2 * mlp, .k = hidden }, .{ .rows = 4096, .n = hidden, .k = mlp } }, .sums = .{ .why = "each K block's int8 products summed exactly in int32, the blocks folded in fp32 at both scales" } },
         };
     }
 
@@ -195,7 +195,7 @@ pub const Product = struct {
         const kb = s.k / block;
         t.xq = try al.alloc(i8, s.rows * s.k);
         t.wq = try al.alloc(i8, s.n * s.k);
-        t.sx = try al.alloc(f32, s.rows);
+        t.sx = try al.alloc(f32, s.rows * kb);
         t.sw = try al.alloc(f32, s.n * kb);
         if (fill == .stress) {
             // |x w| up to 225: a block's sum passes fp16's range; each row's second half cancels its first but for 4
@@ -219,12 +219,12 @@ pub const Product = struct {
             for (t.sw) |*v| v.* = 0x1p-12 * (1 + rng.float(f32));
         }
         if (fill == .nonfinite) {
-            // int8 holds no NaN: the quantizer's scales carry it, a row's or one column's K block
+            // int8 holds no NaN: the quantizer's scales carry it, a row block's or one column's K block
             const nan = std.math.nan(f32);
             const inf = std.math.inf(f32);
             t.sx[0] = nan;
-            t.sx[1] = inf;
-            t.sx[2] = -inf;
+            t.sx[kb] = inf;
+            t.sx[2 * kb] = -inf;
             t.sw[5 * kb] = nan;
             t.sw[9 * kb + kb - 1] = inf;
         }
@@ -256,7 +256,7 @@ pub const Product = struct {
         return t.shape.rows * t.shape.n;
     }
 
-    /// Output (r, o)'s terms: bf16 products, or each K block's exact int32 sum at its column scale.
+    /// Output (r, o)'s terms: bf16 products, or each K block's exact int32 sum at both scales.
     fn terms(t: *const Product, r: usize, o: usize, out: []f64) []f64 {
         const s = t.shape;
         if (t.form != .int8) {
@@ -267,13 +267,9 @@ pub const Product = struct {
         for (out[0..kb], 0..) |*p, b| {
             var sum: i64 = 0;
             for (t.xq[r * s.k + b * block ..][0..block], t.wq[o * s.k + b * block ..][0..block]) |x, w| sum += @as(i32, x) * w;
-            p.* = @as(f64, @floatFromInt(sum)) * t.sw[o * kb + b];
+            p.* = @as(f64, @floatFromInt(sum)) * t.sx[r * kb + b] * t.sw[o * kb + b];
         }
         return out[0..kb];
-    }
-
-    fn rowScale(t: *const Product, r: usize) f64 {
-        return if (t.form == .int8) t.sx[r] else 1;
     }
 
     const Job = struct {
@@ -295,9 +291,8 @@ pub const Product = struct {
                     v += x;
                     m += @abs(x);
                 }
-                const sc = t.rowScale(r);
-                j.want[at] = v * sc;
-                j.mag[at] = m * @abs(sc);
+                j.want[at] = v;
+                j.mag[at] = m;
             };
         }
     };
@@ -337,9 +332,9 @@ pub const Quantize = struct {
         return 0;
     }
 
-    /// Rows: rows; n: groups a row; k: a group's values. Served: a 2048 picture's activations a row, fc1's weights per 256.
+    /// Rows: rows; n: groups a row; k: a group's values. Served: a 2048 picture's activation and weight rows per 256.
     pub fn spec() c.Spec {
-        return .{ .name = label, .accum = .none, .depth = none, .out = .raw, .nan = .{ .stated = "a group holding NaN or an infinity takes a non-finite scale; its values are unspecified" }, .tiles = .{ .{ .size = 64 }, .{}, .{ .size = 256, .step = 32, .min = 32 } }, .served = &.{ .{ .rows = 4096 + 24, .n = 1, .k = hidden }, .{ .rows = 2 * mlp, .n = hidden / block, .k = block } } };
+        return .{ .name = label, .accum = .none, .depth = none, .out = .raw, .nan = .{ .stated = "a group holding NaN or an infinity takes a non-finite scale; its values are unspecified" }, .tiles = .{ .{ .size = 64 }, .{}, .{ .size = 256, .step = 32, .min = 32 } }, .served = &.{ .{ .rows = 4096 + 24, .n = mlp / block, .k = block }, .{ .rows = 2 * mlp, .n = hidden / block, .k = block } } };
     }
 
     fn init(a: std.mem.Allocator, device: mtl.Device, queue: mtl.Queue, lib: mtl.Library) !Quantize {

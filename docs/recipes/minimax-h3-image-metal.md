@@ -49,6 +49,11 @@ rotary positions. Supporting edits would also require checking reference geometr
 conditioning, not just comparing row counts.
 Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), the steps' count
 and seconds, decoder, total.
+A reference-free prompt's states — its rows' ids, tags and the refiner's text rows — are kept across requests
+keyed by the prompt's exact bytes, least recently used inside a byte budget (`H3_PROMPT_CACHE` MiB, 256 by
+default; 0 keeps nothing). A repeated prompt skips the text encoder and refiner; an edit case's never leave the
+cache alone, so `--reference` prompts always encode. The key is the prompt bytes alone because the tokenizer,
+marks and geometry are checked at load and H3-Image has no negative prompt or CFG.
 
 `--draft-steps N` runs each request's first N steps on the half-size canvas, mmh3's fast mode: the clean draft is
 enlarged bilinearly, noised back to the next step's sigma (`--renoise-sigma X` overrides it) and redrawn at full
@@ -1058,9 +1063,10 @@ outliers that one row scale cannot cover. fc1's weights grouped per 256 values o
 (`h3_gemm_32x64_i8`): `bind` quantizes every block's fc1 rows once (`h3_quantize_rows`, one simdgroup a row, its
 groups in turn) into a private 7.7 GiB copy, each block quantizes `xn` a row before its product, and each 256-deep
 block's int32 sums fold into fp32 at the weights' scales for that block, the row's scale last. The fold costs about
-0.10 s a step against the ungrouped quantizer. The other products stay bf16 and byte-identical. Only the released
-layout's (a picture's) fc1 runs in int8: a FastH3 clip's binding makes no copy and its fc1 stays the bf16 product,
-which `test-h3-gemm` holds bit for bit against MLX's kernel at whole and ragged rows.
+0.10 s a step against the ungrouped quantizer. The other products stay bf16 and byte-identical (until card 136 put
+them on the same kernel). Only the released layout's (a picture's) fc1 ran in int8: a FastH3 clip's binding makes no
+copy and its linears stay the bf16 product, which `test-h3-gemm` holds bit for bit against MLX's kernel at whole and
+ragged rows.
 
 `tf-h3-image-server` joins each binding's int8 copy to its weights' residency set while the binding lives: in shared
 storage a step's encode took 0.42 s, private 0.19 s, joined 0.04 s. Cold and warm requests give the same latent
@@ -1126,6 +1132,32 @@ wall-GPU gap is ~0.1 s a step of host round-trips (latent up, velocity down, hos
 either fails the picture or costs its win in the fold. The lever worth a next card is a GPU-side Euler with the
 latent resident across steps (`h3_euler` exists on the CUDA path); that also deletes the per-step velocity
 download.
+
+### Card 136: int8 on all four linears
+
+Every picture linear — the fused qkv projection, attention out, fc1 and fc2 — runs on `h3_gemm_32x64_i8`, now with a
+scale per 256 values of K on **both** operands: card 124's measurements showed a row's activation scale breaks the
+picture (26.16 dB on qkv) while the grouped fold held the gates, and the same applies to SwiGLU's outliers on fc2's
+input. `bind` quantizes all four projections of every block once into private `wq`/`ws` (~20 GiB of int8 weights for
+the release checkpoint, joined to the weights' residency set as the fc1 copy was); each product quantizes its input
+into the shared `xq`/`xs` scratch, ordered by the same stage barriers that already bound the block. A clip's FastH3
+blocks make no copy and keep their bf16 products.
+
+A/B on this Mac, card 34's prompt, seed 42, warm 2048 requests on one resident server each (the latents below are
+the second of two warm requests; every run's latent was byte-identical within its own build):
+
+| | latent sha1 | cosine vs main | PSNR | mean diff | steps | total |
+|---|---|---|---|---|---|---|
+| main | `8b9e75b5…` (the pinned value) | — | — | — | 9.63/9.64 s | 12.50/13.27 s |
+| int8 all four | `776b443a…` | 0.996884 | 30.613 dB | 3.451 | 9.33 s | 11.18 s |
+
+The picture holds card 80's rule with more headroom than fc1's row-scaled landing (28.240 dB): the grouped fold pays
+its accuracy back. The steps run ~0.3 s faster than this main build's, where card 124's all-four trial measured
+slower (11.74-13.32 s totals) — this kernel takes one activation scale per lane row per K block, beside the column
+scales it already read. The bind pays ~5 s once (20 GiB to quantize against 7.7); a resident server amortizes it.
+`zig build test test-golden` is green apart from `message_starts_proof_test`'s timing bound, which fails identically
+on unmodified main; the contract's int8 product serves all four projection shapes against float64 (worst 0.995 of
+the bound).
 
 ### Next, ranked
 
