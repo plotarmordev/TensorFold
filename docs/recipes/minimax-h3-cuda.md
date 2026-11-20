@@ -403,8 +403,8 @@ measured the same 28.69 dB, 4.01 apart and 0.9952, and a warm 2048² picture too
 prompt 1.1, transformer 12.8, decoder 4.9), cold 157.8 s, peak 76,665 MiB.
 
 `--tc` opts the decoder's products and attention onto tensor cores: each projection runs cuBLASLt
-bf16 with fp32 sums into the same `acc` `h3d_finish` reads (the bias and LayerScale keep their
-rounding points), and attention runs as batched q·kᵀ and p·v around `h3d_softmax`/`h3d_unheads`.
+bf16 with fp32 sums, its bias in the epilogue (`h3d_res_norm` folds a LayerScale product into the next
+norm; a shape whose algorithm won't fuse keeps `h3d_finish`), and attention runs fused in `h3d_flash` (card 144).
 The tensor-core path is the default from card 122 on; `--exact` opts back into the ordered fp32
 kernels, and `bench-script.sh` maps `H3_DECODER=exact` to it.
 

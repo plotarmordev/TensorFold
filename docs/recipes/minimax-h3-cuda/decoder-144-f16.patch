@@ -1,0 +1,147 @@
+diff --git a/zig/kernels/cuda/h3_image_decoder.cu b/zig/kernels/cuda/h3_image_decoder.cu
+index 0210aae31..21390b61c 100644
+--- a/zig/kernels/cuda/h3_image_decoder.cu
++++ b/zig/kernels/cuda/h3_image_decoder.cu
+@@ -2,6 +2,7 @@
+ // points exactly as the Metal kernels (zig/kernels/metal/h3/image_decoder.metal) hold them, fp32
+ // sums; h3d_linear sums K sequentially in fp32, and h3d_finish applies bias and LayerScale at their points.
+ #include <cuda_bf16.h>
++#include <cuda_fp16.h>
+ #include <math.h>
+ #include <mma.h>
+ #include <stddef.h>
+@@ -442,4 +443,13 @@ __global__ void __launch_bounds__(256) h3d_swiglu(const bf16* wide, bf16* act, H
+     act[(size_t)y * 4096 + x] = __float2bfloat16(silu * f(r[4096 + x]));
+ }
+ 
++// p.m values of bf16 to fp16, counting each that overflows fp16 (|x| > 65504) or falls below its normals in *lost.
++__global__ void __launch_bounds__(256) h3d_half(const bf16* x, __half* y, unsigned* lost, H3dShape p) {
++    const unsigned i = blockIdx.x * 256 + threadIdx.x;
++    if (i >= p.m) return;
++    const float v = f(x[i]);
++    y[i] = __float2half_rn(v);
++    if (fabsf(v) > 65504.0f || (v != 0.0f && fabsf(v) < 0x1p-14f)) atomicAdd(lost, 1u);
++}
++
+ } // extern "C"
+diff --git a/zig/src/families/h3/image_decoder_cuda.zig b/zig/src/families/h3/image_decoder_cuda.zig
+index 3881adab1..a5d6764e8 100644
+--- a/zig/src/families/h3/image_decoder_cuda.zig
++++ b/zig/src/families/h3/image_decoder_cuda.zig
+@@ -15,7 +15,7 @@ const W = host.width;
+ const F = host.ffn;
+ 
+ const image align(16) = @embedFile("fatbin_h3_image_decoder").*;
+-const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_res_norm", "h3d_heads", "h3d_attention", "h3d_flash", "h3d_swiglu" };
++const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_res_norm", "h3d_heads", "h3d_attention", "h3d_flash", "h3d_swiglu", "h3d_half" };
+ 
+ /// H3_PROFILE's stages, in the order a pass runs them: where a warm picture's decoder seconds go.
+ pub const profile_stages = [_][]const u8{ "embedding", "norms", "products", "finish", "heads", "attention", "swiglu" };
+@@ -85,6 +85,11 @@ pub const Decoder = struct {
+     fast: bool = false,
+     gemms: ?cuda.vit.Gemms = null,
+     mark: f64 = 0,
++    /// FP16 trial: the weights in fp16, an fp16 copy of a product's input, the values fp16 lost, a plan a shape.
++    half_w: ?cuda.DeviceBuffer = null,
++    half_x: ?cuda.DeviceBuffer = null,
++    lost: ?cuda.DeviceBuffer = null,
++    half_plans: std.AutoHashMapUnmanaged([3]u64, cuda.cublaslt.Linear) = .empty,
+ 
+     /// A scratch view's byte offset inside `scratch`.
+     const View = struct {
+@@ -141,6 +146,10 @@ pub const Decoder = struct {
+         try d.drain();
+         d.staged.deinit(d.gpa);
+         if (d.gemms) |*g| g.deinit();
++        var it = d.half_plans.valueIterator();
++        while (it.next()) |l| l.deinit();
++        d.half_plans.deinit(d.gpa);
++        for ([_]*?cuda.DeviceBuffer{ &d.half_w, &d.half_x, &d.lost }) |b| if (b.*) |*x| x.free();
+         if (d.scratch) |*s| s.free();
+         if (d.latent) |*l| l.free();
+         d.weights.free();
+@@ -178,6 +187,7 @@ pub const Decoder = struct {
+         const bits = try a.alloc(u16, d.plan.total());
+         host.read(w, bits);
+         try d.weights.upload(0, std.mem.sliceAsBytes(bits));
++        try d.halveWeights();
+     }
+ 
+     /// Synthetic weights from `seed` for the self-test: matrices by their fan-in, gains near 1, small biases.
+@@ -185,6 +195,32 @@ pub const Decoder = struct {
+         const bits = try a.alloc(u16, d.plan.total());
+         try host.synthetic(a, d.plan, seed, bits);
+         try d.weights.upload(0, std.mem.sliceAsBytes(bits));
++        try d.halveWeights();
++    }
++
++    /// FP16 trial: --tc's fp16 copy of the weights, and how many fell outside fp16's normals.
++    fn halveWeights(d: *Decoder) !void {
++        if (!d.fast) return;
++        if (d.half_w == null) d.half_w = try cuda.DeviceBuffer.alloc(&d.driver, d.plan.total() * 2);
++        if (d.lost == null) d.lost = try cuda.DeviceBuffer.alloc(&d.driver, 4);
++        try d.halve(d.weights.ptr, d.half_w.?.ptr, d.plan.total());
++        std.debug.print("FP16 trial: {d} weights outside fp16's normals\n", .{try d.takeLost()});
++    }
++
++    /// y = fp16(x), `count` values, counting those fp16 loses into `lost`.
++    fn halve(d: *Decoder, x: u64, y: u64, count: usize) !void {
++        var a = d.args(&.{ x, y, d.lost.?.ptr });
++        a.add(Shape{ .m = @intCast(count) });
++        try d.launch("h3d_half", .{ .x = @intCast((count + 255) / 256), .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
++    }
++
++    /// The values fp16 lost since the last call, the counter zeroed.
++    fn takeLost(d: *Decoder) !u32 {
++        try d.drain();
++        var n: [4]u8 = undefined;
++        try d.lost.?.download(0, &n);
++        try d.lost.?.upload(0, &std.mem.zeroes([4]u8));
++        return std.mem.readInt(u32, &n, .little);
+     }
+ 
+     /// The raw latent [24, rows, cols] in, and scratch for passes of up to `batch` tiles of h x w cells.
+@@ -207,6 +243,9 @@ pub const Decoder = struct {
+         d.scratch = null;
+         const m = batch * n;
+         if (d.fast and d.gemms == null) d.gemms = try cuda.vit.Gemms.init(d.gpa, &d.driver);
++        if (d.half_x) |*x| x.free();
++        d.half_x = null;
++        if (d.fast) d.half_x = try cuda.DeviceBuffer.alloc(&d.driver, m * F * 2);
+         // x, xn, wide, q, k, v, o, act, out (bf16 rows); tok's cells; the rotary tables; origins; acc fp32
+         const sizes = [_]usize{ m * W * 2, m * W * 2, m * 2 * F * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8, m * 2 * F * 4 };
+         var total: usize = 0;
+@@ -317,6 +356,7 @@ pub const Decoder = struct {
+         }
+         try end.record(d.queue);
+         try end.synchronize();
++        if (d.fast) std.debug.print("FP16 trial: {d} product inputs outside fp16's normals this pass\n", .{try d.takeLost()});
+         d.passed = origins.len;
+         return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
+     }
+@@ -333,15 +373,16 @@ pub const Decoder = struct {
+         p.k = @intCast(k);
+         p.mode = @intFromBool(scale != null);
+         if (d.fast) {
+-            const gemms = &d.gemms.?;
+-            const plan = try gemms.plan(s.m, @intCast(n), @intCast(k), .bf16, .bias);
+-            if (plan.epilogue == .bias) {
+-                try plan.runBias(d.dev(x), d.param(w), d.param(b), d.dev(if (scale == null) y else d.view.wide), gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
+-                try d.lap("products");
+-                try d.lap("finish");
+-                return scale;
+-            }
+-            try gemms.run(d.queue, d.dev(x), d.param(w), d.dev(d.view.acc), s.m, n, k, .f32);
++            // FP16 trial: x to fp16 (h3d_half), fp16 x fp16 with fp32 sums into acc, h3d_finish's roundings
++            try d.halve(d.dev(x), d.half_x.?.ptr, s.m * k);
++            try d.lap("norms");
++            const key = [3]u64{ s.m, n, k };
++            const got = try d.half_plans.getOrPut(d.gpa, key);
++            if (!got.found_existing) got.value_ptr.* = cuda.cublaslt.Linear.initTyped(&d.gemms.?.lt, s.m, n, k, .f16, .f32, tc_workspace_bytes, .none) catch |e| {
++                d.half_plans.removeByPtr(got.key_ptr);
++                return e;
++            };
++            try got.value_ptr.run(d.half_x.?.ptr, d.half_w.?.ptr + w * 2, d.dev(d.view.acc), d.gemms.?.workspace.ptr, tc_workspace_bytes, d.queue.handle);
+         } else {
+             var product = d.args(&.{ d.dev(x), d.param(w), d.dev(d.view.acc) });
+             product.add(p);
