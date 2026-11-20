@@ -1254,7 +1254,8 @@ The latents of the two builds are bit-identical request for request, so the step
 Contention spoiled this card's fast unseen 3 twice. Both are kept in the receipt, not dropped. The first session
 recorded decoder 1.23 s, total 9.77 s, with load rising from 3.83 to 6.11. A whole fast session rerun right after met
 other workers' CPU tests: load rose from 5.71 to 21.14, and the session recorded decoder 1.37 / 0.84 / 0.93 / 1.04 s,
-totals 11.03 / 9.83 / 9.95 / 9.93 s. The load then stayed at 12-60 for ten minutes, so a clean third rerun is still owed.
+totals 11.03 / 9.83 / 9.95 / 9.93 s. Over the following hour the one-minute load stayed between 12 and 86, and it
+never dropped below 7 long enough for a session, so a clean third rerun is still owed.
 ### Next, ranked
 
 | # | Idea | Size | Basis |
