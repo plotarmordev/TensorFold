@@ -1,7 +1,6 @@
 //! Device regression of the fused int8 launches against the kernels they fold: h3_norm_quant's rows must be
-//! byte-identical to h3_norm then h3_quantize, h3_heads_i8's to h3_dequantize then h3_heads, and
-//! h3_swiglu_int8's to h3_dequantize then h3_swiglu. Every rounding and sum order is shared, so the check is
-//! equality, not a bound.
+//! byte-identical to h3_norm then h3_quantize, h3_heads_i8's and h3_swiglu_int8's to h3_dequantize then
+//! h3_heads / h3_swiglu. Every rounding and sum order is shared, so the check is equality, not a bound.
 const std = @import("std");
 const cuda = @import("cuda");
 const h3 = @import("cuda.zig");
@@ -172,8 +171,7 @@ pub fn run(a: std.mem.Allocator) !void {
     }
     try stream.synchronize();
 
-    // ---- swiglu: the unfused chain dequantizes the fc1 sums to bf16 then runs h3_swiglu; the fused
-    // h3_swiglu_int8 runs the same silu and product on values dequantized the same way
+    // ---- swiglu: the unfused chain runs h3_dequantize then h3_swiglu; the fused kernel does both on int32 sums
     const n = C / 2; // the act row's width
     var wide = try cuda.DeviceBuffer.alloc(&driver, rows * 2 * n * 2);
     defer wide.free();

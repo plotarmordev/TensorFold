@@ -122,11 +122,11 @@ __device__ __forceinline__ float unpack(const uint32_t* p, int e) {
 // h3_heads over an int8 product's int32 sums: each value is dequantized as h3_dequantize rounds it
 // (ACC SX[row] SW[col] to bf16), then the same head RMSNorm and split-half rotary run, so TQ/TK/TV match
 // h3_dequantize + h3_heads without the bf16 qkvc rows between them. Once per row, like h3_heads — card 120
-// measured folding this into attention's tile loop 11x slower. q and k sit in registers rounded to bf16
-// (two a word) and every row is read 16 bytes at a time — card 128's float arrays took 252 registers and
-// spilled (1.40 s against h3_heads' 0.96). The rotary partner of a thread's quarter lies in another quarter,
-// so it reloads the partner's int32 group and dequantizes it again rather than sharing rounded values.
-// Grid [tiles], 256 threads.
+// measured folding this into attention's tile loop 11x slower. Grid [tiles], 256 threads.
+
+// q/k in registers rounded to bf16 two a word, rows read 16B at a time; card 128's 252-register float arrays spilled.
+
+// A quarter's rotary partner lies in another quarter: the partner's int32 group is reloaded and dequantized again.
 __global__ void __launch_bounds__(256) h3_heads_i8(
         const int* ACC, const float* SX, const float* SW,
         const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS, const float* SIN,
@@ -138,8 +138,7 @@ __global__ void __launch_bounds__(256) h3_heads_i8(
     const float sx = SX[live ? row : 0];
     const float* cs = COS + static_cast<size_t>(live ? row : 0) * ROT;
     const float* sn = SIN + static_cast<size_t>(live ? row : 0) * ROT;
-    // the rotary partner of c0 + 32h + j sits ±ROT columns over; each 4-wide group is wholly below or
-    // wholly at-or-above ROT (ROT is a multiple of four), so partner, cos index and sign are per group
+    // the rotary partner of c0 + 32h + j sits ±ROT over; ROT is a four-multiple, so each 4-wide group is one side
     for (int head = 0; head < H; ++head) {
         const int* qr = ACC + static_cast<size_t>(live ? row : 0) * stride + head * 128;
         const int* kr = qr + H * 128;
@@ -341,13 +340,13 @@ __global__ void __launch_bounds__(256) h3_swiglu(const __nv_bfloat16* F, __nv_bf
     }
 }
 
-// A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336, the widest projection input
-// (fc1's half-row for h3_swiglu_int8; h3_quantize's row for the rotate passes).
+// A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336 (fc1's half-row, the widest input).
 constexpr int quantize_chunks = 14;
 
 // h3_swiglu over an int8 product's int32 sums [gate | value]: each sum to bf16 as h3_dequantize rounds it, then the
-// same silu and product, so A matches the two kernels' output without the bf16 rows between them. Grid [M], a row
-// a block, 256 threads of 4-wide groups reading int4/float4 — the grid-stride element loop was the launch's cost.
+// same silu and product, so A matches the two kernels' output without the bf16 rows between them.
+
+// Grid [M], a row a block of 256 threads reading 4-wide int4/float4 groups — the grid-stride loop was the cost.
 __global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* A, int M, int N) {
     const int r = blockIdx.x, groups = N >> 2;
     const int* acc = ACC + static_cast<size_t>(r) * 2 * N;
