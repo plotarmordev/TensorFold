@@ -17,7 +17,7 @@ index c3bc38b1e..7c5a8539e 100644
      _ = try tokens(out.h, out.w);
      return out;
 diff --git a/zig/src/families/h3/image_decoder_cuda.zig b/zig/src/families/h3/image_decoder_cuda.zig
-index 8f28b1735..a84704985 100644
+index 8f28b1735..652187822 100644
 --- a/zig/src/families/h3/image_decoder_cuda.zig
 +++ b/zig/src/families/h3/image_decoder_cuda.zig
 @@ -130,6 +130,9 @@ pub const Decoder = struct {
@@ -96,7 +96,7 @@ index 8f28b1735..a84704985 100644
              var b = d.args(&.{ d.dev(d.view.tok), d.param(d.plan.head(.embed_w)), d.param(d.plan.head(.embed_b)), d.param(d.plan.head(.registers)), d.dev(d.view.x) });
              b.add(s);
              try d.launch("h3d_embed", .{ .x = 4, .y = s.m, .z = 1 }, .{ .x = 256, .y = 1 }, 0, &b);
-@@ -368,12 +397,32 @@ pub const Decoder = struct {
+@@ -368,10 +397,29 @@ pub const Decoder = struct {
              try d.lap("norms");
              _ = try d.gemm(s, d.view.xn, d.plan.tail(.proj_w), d.plan.tail(.proj_b), null, d.view.out, host.patch, W);
          }
@@ -104,8 +104,8 @@ index 8f28b1735..a84704985 100644
 -        try end.synchronize();
 -        d.passed = origins.len;
 -        return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
-     }
- 
++    }
++
 +    /// `passBody` captured as one CUDA graph on the queue's stream: H3_PROFILE's laps stay no-ops
 +    /// while `capturing` is set, so a graphed pass reports its seconds under "outside the stages".
 +    fn capture(d: *Decoder, s: Shape, tiles: usize, stages: Stages) !cuda.graph.Exec {
@@ -127,12 +127,9 @@ index 8f28b1735..a84704985 100644
 +        errdefer exec.deinit();
 +        try exec.upload(d.queue);
 +        return exec;
-+    }
-+
-+
+     }
+ 
      /// y = bf16(x w^T + b): --tc asks cuBLASLt's bias epilogue for that one rounding straight into `y`
-     /// (no LayerScale) or into `wide`, where it waits for `resNorm` as the residual's u; a shape whose
-     /// algorithm won't fuse, and --exact's h3d_linear, keep the fp32 acc and h3d_finish's roundings.
 diff --git a/zig/src/families/h3/image_decoder_test.zig b/zig/src/families/h3/image_decoder_test.zig
 index cf88073d9..a0d2a1788 100644
 --- a/zig/src/families/h3/image_decoder_test.zig
@@ -156,3 +153,18 @@ index cf88073d9..a0d2a1788 100644
      const small = try h.tiles(x, &c, 6, 10);
      try testing.expectEqual(@as(usize, 1), small.total());
      try testing.expectEqual(@as(usize, 6), small.h);
+diff --git a/zig/src/families/moss_image/png.zig b/zig/src/families/moss_image/png.zig
+index 2c68ed24a..0e2743bd4 100644
+--- a/zig/src/families/moss_image/png.zig
++++ b/zig/src/families/moss_image/png.zig
+@@ -9,7 +9,9 @@ pub fn encode(a: std.mem.Allocator, rgb: []const u8, width: usize, height: usize
+     var z: std.Io.Writer.Allocating = try .initCapacity(a, rgb.len / 2 + 64);
+     defer z.deinit();
+     var window: [flate.max_window_len]u8 = undefined;
+-    var c = try flate.Compress.init(&z.writer, &window, .zlib, .default);
++    // filter 0 keeps every byte literal, so level 6 buys ~1% size for ~6x the seconds: level 2 writes
++    // the decoder's 2048² pictures measurably sooner at the same picture
++    var c = try flate.Compress.init(&z.writer, &window, .zlib, .fast);
+     const row = width * 3;
+     for (0..height) |y| {
+         try c.writer.writeByte(0);

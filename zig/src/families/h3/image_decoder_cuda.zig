@@ -422,7 +422,6 @@ pub const Decoder = struct {
         return exec;
     }
 
-
     /// y = bf16(x w^T + b): --tc asks cuBLASLt's bias epilogue for that one rounding straight into `y`
     /// (no LayerScale) or into `wide`, where it waits for `resNorm` as the residual's u; a shape whose
     /// algorithm won't fuse, and --exact's h3d_linear, keep the fp32 acc and h3d_finish's roundings.

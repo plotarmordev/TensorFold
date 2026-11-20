@@ -1,13 +1,14 @@
 #!/bin/sh
 # Card 144's same-job A/B (job clones carry no history to check main out from): bench-script.sh on this
-# commit, then bench-144-base.patch reverse-applied — the card's decoder files back to main's — and
-# bench-script.sh again: the baseline is the same job's main code with this commit's bench script and
-# model paths.
-# Each phase renders the pilot's prompt cold (the picture the episode-1 gates are read on) and three
-# warm repeats on prompts the repo and earlier jobs never used, written to /work/h3-prompts here.
+# commit, then bench-144-base.patch reverse-applied — the card's decoder and PNG-writer files back to
+# main's — and bench-script.sh again: the baseline is the same job's main code with this commit's
+# bench script and model paths.
+# Each phase renders the pilot's prompt cold (the picture the episode-1 gates are read on, compared
+# against the Mac references in-job) and three warm repeats on prompts the repo and earlier jobs
+# never used, written to /work/h3-prompts here.
 # Results: /work/out/h3-image-bench (this commit) and /work/out/h3-image-bench-base (main). The
-# phases' warm latents and PNGs must be sha256-pairwise equal only where the code paths match — the
-# transformer is untouched, so differing latents flag a bug, not noise.
+# phases' warm latents must be sha256-pairwise equal — the transformer is untouched, so a differing
+# latent flags a bug; the PNGs differ by design, this commit's writer compressing at level 2.
 #   ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-144-ab.sh"
 set -eu
 patch_file=docs/recipes/minimax-h3-cuda/bench-144-base.patch
@@ -29,6 +30,25 @@ export H3_BENCH_PROMPTS="/assets/drama3-pilot/h3-image-pilot/prompt.txt /work/h3
 status=0
 echo "=== after: this commit $(git -c safe.directory='*' rev-parse --short HEAD) ==="
 H3_PROFILE=1 sh docs/recipes/minimax-h3-cuda/bench-script.sh || status=$?
+echo "=== episode-1 gates: run 1's latent and PNG against the Mac references ==="
+python3 tools/zig/h3_image_compare.py \
+    /assets/drama3-pilot/h3-image-runs/34/t2i-2048.latent.f32 /work/out/h3-image-bench/2048-1.latent.f32 \
+    /assets/drama3-pilot/ep1-mac-fast/2048-warm1.png /work/out/h3-image-bench/2048-1.png --size 2048 \
+    | tee /work/out/h3-image-bench/2048-1.gates.json
+python3 - /work/out/h3-image-bench/2048-1.gates.json \
+    /assets/drama3-pilot/ep1-mac-fast/2048-warm1.png /work/out/h3-image-bench/2048-1.png <<'PY' || status=1
+import json, math, sys
+import numpy as np
+from PIL import Image
+g = json.load(open(sys.argv[1]))
+a, b = (np.asarray(Image.open(p).convert("RGB"), dtype=np.float64) for p in sys.argv[2:4])
+mse = float(((a - b) ** 2).mean())
+psnr = 10 * math.log10(255 * 255 / mse)
+ok = g["latent_cosine"] >= 0.99 and psnr >= 28.2 and g["pixel_mae"] <= 4.1
+print(f"episode-1 gates {'PASS' if ok else 'FAIL'}: cosine {g['latent_cosine']:.4f}, "
+      f"PSNR {psnr:.2f} dB, mean {g['pixel_mae']:.2f}")
+sys.exit(0 if ok else 1)
+PY
 echo "=== before: the card's files at main (patch -R) ==="
 git -c safe.directory='*' apply -R "$patch_file"
 H3_BENCH_OUT=/work/out/h3-image-bench-base H3_PROFILE=1 \
