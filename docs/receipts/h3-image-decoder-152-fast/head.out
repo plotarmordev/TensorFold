@@ -1,0 +1,57 @@
+Apple M5 Ultra: prompt weights mapped and kernels built in 0.5 s
+Apple M5 Ultra: decoder weights in bf16 in 0.4 s
+loaded the prompt encoder, transformer weights and decoder in 1.5 s; ready
+info: h3 image weights: 117.6 GiB kept wired between requests, inside 70% of 256 GiB of RAM
+117.6 GiB of weights held resident
+24 tokens; text encoder, 50 layers: 0.27 s wall, 0.27 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.25 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 0.49 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 0.49 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+1024x1024 draft done, lifting
+step 4/6: 1.55 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote /tmp/b152-run/head-pilot.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.75 s in all; wrote /tmp/b152-run/head-pilot.png at 2048x2048
+/tmp/b152-run/head-pilot: prompt 0.28 s, case 0.01 s, transformer bound 0.58 s, 6 steps 7.70 s, decoder 0.75 s, total 9.31 s
+25 tokens; text encoder, 50 layers: 0.21 s wall, 0.21 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 31
+step 1/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 0.49 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 0.49 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+1024x1024 draft done, lifting
+step 4/6: 1.55 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.54 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote /tmp/b152-run/head-v1.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.79 s in all; wrote /tmp/b152-run/head-v1.png at 2048x2048
+/tmp/b152-run/head-v1: prompt 0.22 s, case 0.01 s, transformer bound 0.63 s, 6 steps 6.75 s, decoder 0.79 s, total 8.40 s
+22 tokens; text encoder, 50 layers: 0.21 s wall, 0.21 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 32
+step 1/6: 1.36 s wall, 0.55 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 0.49 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 0.49 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+1024x1024 draft done, lifting
+step 4/6: 1.55 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote /tmp/b152-run/head-v2.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.82 s in all; wrote /tmp/b152-run/head-v2.png at 2048x2048
+/tmp/b152-run/head-v2: prompt 0.22 s, case 0.01 s, transformer bound 0.66 s, 6 steps 7.62 s, decoder 0.82 s, total 9.33 s
+25 tokens; text encoder, 50 layers: 0.21 s wall, 0.21 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 33
+step 1/6: 1.30 s wall, 0.51 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 0.50 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 0.49 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+1024x1024 draft done, lifting
+step 4/6: 1.55 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote /tmp/b152-run/head-v3.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.72 s in all; wrote /tmp/b152-run/head-v3.png at 2048x2048
+/tmp/b152-run/head-v3: prompt 0.22 s, case 0.02 s, transformer bound 0.66 s, 6 steps 7.59 s, decoder 0.72 s, total 9.20 s

@@ -451,6 +451,10 @@ Attention here is dense, so no routing floor applies. FastH3's 0.990 at step 1 c
 `tf-h3-image-decoder` turns `tf-h3-image`'s latent into a picture on Metal. It runs the VAE's 2D ViT decoder (24 blocks
 of 1,024, 16 heads of 64, 4 register tokens) on any Apple GPU. Its kernels compile from source when it loads; the
 products run on `nax.h`'s fragments, the M5's tensor units where the GPU has them and simdgroup matrices elsewhere.
+The products moved to `nax.h` with card 152. Their transposed weights load through `frag_get_t`, the loader that
+`frags.check` proves on pre-M5 GPUs. The M3 Ultra receipts below predate that move, and the simdgroup-matrix form
+of the new products has not yet run on a pre-M5 GPU. Forcing that form on an M5 is no stand-in: there the M5's
+cooperative-tensor layout fails every product whichever loader is used.
 
 **What runs:**
 
@@ -1227,15 +1231,18 @@ The products are three quarters of it. Each of the acceptance's four levers, wit
   with the two builds alternating under the lock at load 21 and each build's runs byte-identical. The acceptance
   keeps a change only if it is faster, so the products stay bf16: bf16 operands give exact products in the
   fragments' float32 sums at the same rounding points.
-- **PNG write overlapped or parallel (not possible under the byte gate).** After the pass, unpatchify, the blend and
+- **PNG write overlapped or parallel (open: owed, not taken).** After the pass, unpatchify, the blend and
   `picture_writer`'s PNG take 0.25 s at 2048. Nearly all of it is `png.encode`, which on its own took 0.27-0.30 s for
   a 2048 picture (ReleaseFast, three runs at load 25, so slower than in the server). It writes one zlib stream at the
-  default level through `std.compress.flate`.
-  Splitting it into bands changes the window and block boundaries and therefore the compressed bytes. A changed
-  level or filter has the same effect. The deflate cannot overlap the GPU either: all 121 tiles decode in one pass,
-  and the PNG's first row needs the blend of the first tile row, which arrives only when the pass ends. The request
-  ends when its file is written. Taking this lever needs the owner's approval of a decoded-pixel gate in place of
-  PNG byte identity (Next, ranked #2).
+  default level through `std.compress.flate`. Parallel bands, or another level or filter, change the compressed
+  bytes. Overlap does not have to: a split decode is bit-identical, and `png.encode` feeds its rows through one
+  `flate.Compress`, so a top band's rows can stream into that one stream while the GPU decodes the bottom band.
+  On this card's kernels the split costs nothing. Episode 1's warm latent (`head-v1`), decoded by
+  `tf-h3-image-decoder` under the lock at load 6.6 in passes of 128 and 61 tiles, alternated twice:
+  0.54 / 0.53 / 0.54 / 0.48 s of GPU, and the same PNG (`265bf7ff…`) both ways. Card 137's +0.28 s split cost
+  was main's slower gemm. The overlap can hide at most about one half-pass, roughly 0.25 s, of the encode. It needs a
+  streaming encode and a banded blend, followed by its own locked server A/B. Neither was built within this card,
+  so the lever remains open.
 
 Gates: `tf-h3-image-contract` 31 kernels pass gates 1-4 (`h3d_gemm`'s SwiGLU form in place of `h3d_swiglu`), all 34
 controls go red as planted, and there are no limit problems;
@@ -1248,7 +1255,8 @@ Warm A/B, M5 Ultra, ReleaseFast `tf-h3-image-server` per build: main `82a2bfba3`
 head. Each session runs one resident server under `/tmp/tensorfold-model.lock` (`zsystem flock`, taken before the
 server starts and held until it quits, 41-50 s a session) and sends the seed-42 pilot, then three unseen prompts (a
 glassblower's workshop, a mountain railway station at dawn, a tide pool from above; seeds 21-23). Stage seconds:
-prompt / transformer bind / 6 steps / decoder / total. Load is the one-minute average before / after each request:
+prompt / transformer bind / 6 steps / decoder / total; the total also holds the case stage (0.01-0.07 s), so a row's
+stages may sum short of it. Load is the one-minute average before / after each request:
 
 | Run | main | load | this card | load |
 |---|---|---|---|---|
@@ -1272,7 +1280,8 @@ The fast mode was rerun clean once the load fell below 7: main `4f805250e` again
 code), one locked fast session per build back to back (54 s and 39 s, lock held only for the session), the seed-42
 pilot and three new unseen prompts (a blacksmith's forge at night, a lighthouse in a winter storm, a spice stall from
 above; seeds 31-33). The exact text of the earlier unseen prompts was not kept, so all four requests ran again in
-both builds:
+both builds. The session script, the prompts, both servers' logs, the per-request loads and the pictures' and
+latents' SHA-256 are in [`docs/receipts/h3-image-decoder-152-fast`](../receipts/h3-image-decoder-152-fast/):
 
 | Run | main | load | this card | load |
 |---|---|---|---|---|
@@ -1290,7 +1299,7 @@ bit-identical request for request. The two builds' PNGs differ by the decoder's 
 | # | Idea | Size | Basis |
 |---|---|---|---|
 | 1 | SGLang's conditioning cache | under -2 s at warm 2048 | Residency landed with card 50: warm 2048 went from 27 s to 16.4-16.6 s, more than the 6.3 s of loader logs the projection counted, since each one-shot tool also re-reads its files and rebuilds its kernels. A conditioning cache would skip only the prompt (1.2-2.0 s warm); it needs separate accounting and cannot omit prompt work in an uncached comparison. |
-| 2 | PNG writing | upper estimate -18 s at 4096, -4 s at 2048 | Time after decoder tiles includes single-threaded deflate (`moss_image/png.zig`). Parallel bands could remove much of it but change compressed bytes, so they do not satisfy this card's fixed PNG byte-identity gate. Any separate decoded-pixel gate requires explicit approval before runs. |
+| 2 | PNG writing | up to -0.25 s at 2048 overlapped; upper estimate -18 s at 4096, -4 s at 2048 in parallel bands | Time after decoder tiles includes single-threaded deflate (`moss_image/png.zig`). Overlap keeps the bytes: a split decode is free on card 152's kernels and bit-identical, so a banded blend feeding one streaming `flate.Compress` can hide one half-pass of the encode. Parallel bands could remove much more but change compressed bytes, so they do not satisfy the PNG byte-identity gate; a decoded-pixel gate in its place needs explicit approval before runs. |
 | 3 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps at 4096 | The steps are compute-bound: a 2048 step is about 183 TFLOP in 1.83 s, a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs. ComfyUI's int8 here shows the other half: dequantized before each product, its steps are 1.7-1.9x slower than our bf16, so int8 weights alone buy only bytes. Not bit-identical; it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000: -32% at 2048, -22% at 4K. |
 | 4 | Attention | up to -15 s at 4096 | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. |
 | 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step at 4096 | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones; SGLang's recipe runs all six steps. Each skip is a sixth of the steps; it needs a gate against the six-step latent. |

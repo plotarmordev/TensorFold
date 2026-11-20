@@ -152,14 +152,14 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
       frag_get_in(a[m][k2], A, int(p.k), 16 * m, k0 + 16 * k2, home, int(p.m) - row, 1 << 30);
     TF_UNROLL
     for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short n = 0; n < 2; n++)
-      frag_get(wb[k2][n], B, int(p.k), 16 * n, k0 + 16 * k2, home);
+      frag_get_t(wb[k2][n], B, int(p.k), 16 * n, k0 + 16 * k2, home);
     TF_UNROLL
     for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short m = 0; m < 2; m++)
       mma_16x32<false, true>(acc[m][0], acc[m][1], a[m][k2], wb[k2][0], wb[k2][1]);
     if (gated) {
       TF_UNROLL
       for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short n = 0; n < 2; n++)
-        frag_get(wb[k2][n], V, int(p.k), 16 * n, k0 + 16 * k2, home);
+        frag_get_t(wb[k2][n], V, int(p.k), 16 * n, k0 + 16 * k2, home);
       TF_UNROLL
       for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short m = 0; m < 2; m++)
         mma_16x32<false, true>(val[m][0], val[m][1], a[m][k2], wb[k2][0], wb[k2][1]);
