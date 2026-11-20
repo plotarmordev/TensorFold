@@ -101,6 +101,7 @@ CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check
 `tf-h3-image-prompt-cuda` runs the text encoder and refiner on CUDA, streaming one layer's weights at a time.
 `tf-h3-image-decoder-cuda` runs the VAE on CUDA. The CPU tools remain independent reference implementations.
 [`run-script.sh`](minimax-h3-cuda/run-script.sh) builds these GPU tools and `tf-cuda-test` with `cuda-build.sh`, runs
+
 their synthetic selftests and renders both picture sizes only when they pass. A failed limits audit does not replace
 that selftest gate; its `limits.log` remains in the job output. One TOP job does the build and pictures:
 
@@ -110,6 +111,22 @@ ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax
 
 The 14 November tables below predate this cutover; the
 [`64188519` window](#gpu-qualification-and-the-64188519-window) measures it.
+
+### Threaded weight reads (card 142)
+
+`tf-h3-image-cuda --load-threads N` loads the transformer's 36.7 GiB of shards with N reader
+threads (`cuda_load_threads.zig`): every tensor's staged image is cut into 8 MiB read jobs the
+readers `pread` straight into the pinned stage, and the two 64 MiB stages alternate — one fills
+while the other's copy ranges upload (`copy_source.Stage`, same custody as before). The fused qkv
+stacking lands as whole head parts. `0` (default) keeps the single-threaded in-place reads; a
+missing or short shard fails at header/shape checks or the fill, before any step runs. The steps
+never see the load path, so the latent and PNG are byte-identical and the warm picture is
+unchanged. [`bench-142-ab.sh`](minimax-h3-cuda/bench-142-ab.sh) is the one-job A/B: one sm_121
+build, six cold runs with every weight file evicted (`posix_fadvise(DONTNEED)`), alternating
+0/8/0/8/0/8 threads, plus a resident transformer a count for the warm picture, every latent and
+PNG `cmp`ed against the 0-thread run.
+
+TBD — job receipt goes here.
 
 ### Benchmark run
 
