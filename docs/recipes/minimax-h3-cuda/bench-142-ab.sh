@@ -71,7 +71,7 @@ decoder_start() {
 decode() { # decode LABEL OUT_PREFIX: one PNG through the resident decoder
     echo "$2.latent.f32 128 128 $2.png 2048x2048" >&7
     read -r verdict _ <&8 || verdict=
-    [ "$verdict" = done ] || { tail -10 "$out/$1.decoder-server.log" >&2; exit 1; }
+    [ "$verdict" = done ] || { tail -10 "$out/main.decoder-server.log" >&2; exit 1; }
 }
 trap 'decoder_stop' EXIT
 
@@ -81,15 +81,15 @@ trap 'decoder_stop' EXIT
 #   A0 = --load-threads 0, B8 = --load-threads 8, three runs each.
 run_cold() {
     run=$1
-    threads=$2
-    case=$out/cold-$run-t$threads
+    count=$2
+    case=$out/cold-$run-t$count
     evict
     start=$(date +%s.%N)
-    "$bin/tf-h3-image-cuda" "$model" "$out/case.safetensors" "$case" --load-threads "$threads" \
+    "$bin/tf-h3-image-cuda" "$model" "$out/case.safetensors" "$case" --load-threads "$count" \
         >"$case.image.log" 2>&1 || { cat "$case.image.log" >&2; exit 1; }
-    decode "cold-$run-t$threads" "$case"
+    decode "cold-$run-t$count" "$case"
     end=$(date +%s.%N)
-    python3 - "$run" "$threads" "$start" "$end" "$case.image.log" >>"$out/times" <<'PY'
+    python3 - "$run" "$count" "$start" "$end" "$case.image.log" >>"$out/times" <<'PY'
 import re, sys
 run, threads, start, end, log = sys.argv[1], sys.argv[2], *map(float, sys.argv[3:5]), sys.argv[5]
 text = open(log, errors="replace").read()
@@ -97,7 +97,7 @@ load = float(re.search(r"model loaded in ([\d.]+) s", text).group(1))
 transformer = float(re.search(r"^transformer: ([\d.]+) s$", text, re.M).group(1))
 print(f"cold-{run} threads={threads} wall {end - start:.2f} load {load:.2f} transformer {transformer:.2f}")
 PY
-    echo "cold-$run threads=$threads done"
+    echo "cold-$run threads=$count done"
 }
 
 decoder_start main
@@ -110,25 +110,25 @@ done
 
 # warm pictures on the resident transformer, once per thread count (the load path cannot change
 # a step's math): the server stays up between its two renders
-for threads in 0 "$threads"; do
+for count in 0 "$threads"; do
     mkfifo "$out/requests" "$out/replies"
-    "$bin/tf-h3-image-cuda" "$model" --serve --load-threads "$threads" <"$out/requests" \
-        >"$out/replies" 2>"$out/warm-t$threads.server.log" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
+    "$bin/tf-h3-image-cuda" "$model" --serve --load-threads "$count" <"$out/requests" \
+        >"$out/replies" 2>"$out/warm-t$count.server.log" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
     server=$!
     exec 3>"$out/requests" 4<"$out/replies"
     logged=0
     # first render finishes the load; the second is the warm picture
     for run in 1 2; do
-        case=$out/warm-t$threads-$run
+        case=$out/warm-t$count-$run
         start=$(date +%s.%N)
         echo "$out/case.safetensors $case" >&3
         read -r verdict _ <&4 || verdict=
-        [ "$verdict" = done ] || { tail -10 "$out/warm-t$threads.server.log" >&2; exit 1; }
-        decode "warm-t$threads-$run" "$case"
+        [ "$verdict" = done ] || { tail -10 "$out/warm-t$count.server.log" >&2; exit 1; }
+        decode "warm-t$count-$run" "$case"
         end=$(date +%s.%N)
-        tail -c +$((logged + 1)) "$out/warm-t$threads.server.log" >"$case.image.log" 2>/dev/null || :
-        logged=$(wc -c <"$out/warm-t$threads.server.log")
-        python3 - "$run" "$threads" "$start" "$end" "$case.image.log" >>"$out/times" <<'PY'
+        tail -c +$((logged + 1)) "$out/warm-t$count.server.log" >"$case.image.log" 2>/dev/null || :
+        logged=$(wc -c <"$out/warm-t$count.server.log")
+        python3 - "$run" "$count" "$start" "$end" "$case.image.log" >>"$out/times" <<'PY'
 import re, sys
 run, threads, start, end, log = sys.argv[1], sys.argv[2], *map(float, sys.argv[3:5]), sys.argv[5]
 text = open(log, errors="replace").read()

@@ -130,7 +130,16 @@ pub fn plan(gpa: std.mem.Allocator, fills: []const Fill, stage: usize, job: usiz
         while (at < f.len) {
             const n = @min(piece, f.len - at);
             if (staged > 0 and staged + n > stage) {
-                try windows.append(gpa, .{ .jobs = try jobs.toOwnedSlice(gpa), .copies = try copies.toOwnedSlice(gpa), .bytes = staged });
+                const j = try jobs.toOwnedSlice(gpa);
+                const cl = copies.toOwnedSlice(gpa) catch |e| {
+                    gpa.free(j);
+                    return e;
+                };
+                windows.append(gpa, .{ .jobs = j, .copies = cl, .bytes = staged }) catch |e| {
+                    gpa.free(j);
+                    gpa.free(cl);
+                    return e;
+                };
                 staged = 0;
             }
             try jobs.append(gpa, .{ .fill = i, .at = at, .staged = staged, .len = n });
@@ -144,7 +153,18 @@ pub fn plan(gpa: std.mem.Allocator, fills: []const Fill, stage: usize, job: usiz
             at += n;
         }
     }
-    if (staged > 0) try windows.append(gpa, .{ .jobs = try jobs.toOwnedSlice(gpa), .copies = try copies.toOwnedSlice(gpa), .bytes = staged });
+    if (staged > 0) {
+        const j = try jobs.toOwnedSlice(gpa);
+        const cl = copies.toOwnedSlice(gpa) catch |e| {
+            gpa.free(j);
+            return e;
+        };
+        windows.append(gpa, .{ .jobs = j, .copies = cl, .bytes = staged }) catch |e| {
+            gpa.free(j);
+            gpa.free(cl);
+            return e;
+        };
+    }
     return .{ .gpa = gpa, .windows = try windows.toOwnedSlice(gpa) };
 }
 

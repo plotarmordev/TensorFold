@@ -101,7 +101,6 @@ CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check
 `tf-h3-image-prompt-cuda` runs the text encoder and refiner on CUDA, streaming one layer's weights at a time.
 `tf-h3-image-decoder-cuda` runs the VAE on CUDA. The CPU tools remain independent reference implementations.
 [`run-script.sh`](minimax-h3-cuda/run-script.sh) builds these GPU tools and `tf-cuda-test` with `cuda-build.sh`, runs
-
 their synthetic selftests and renders both picture sizes only when they pass. A failed limits audit does not replace
 that selftest gate; its `limits.log` remains in the job output. One TOP job does the build and pictures:
 
