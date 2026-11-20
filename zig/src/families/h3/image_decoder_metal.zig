@@ -71,13 +71,17 @@ pub const Decoder = struct {
     give_way: ?gpu_turn.Turn = null,
 
     /// `layers` blocks and the rotary `theta`, the kernels compiled from source, the weights' buffer unfilled.
+    /// The gemm's fragments come from nax.h: the tensor units where this GPU has them, simdgroup matrices
+    /// elsewhere, picked when the library compiles.
     pub fn init(gpa: std.mem.Allocator, device: mtl.Device, layers: usize, theta: f32) !*Decoder {
         const plan = try host.Plan.init(layers);
         const d = try gpa.create(Decoder);
         errdefer gpa.destroy(d);
         d.* = .{ .gpa = gpa, .device = device, .queue = try device.queue(), .lib = undefined, .pipes = undefined, .plan = plan, .theta = theta, .weights = undefined };
         errdefer d.queue.deinit();
-        d.lib = try mtl.Library.fromSource(device, kernels.source, mtl.CompileOptions.mlx());
+        const source = try kernels.assemble(gpa, device.tensorUnits(), kernels.source);
+        defer gpa.free(source);
+        d.lib = try mtl.Library.fromSource(device, source, mtl.CompileOptions.mlx());
         errdefer d.lib.deinit();
         var made: usize = 0;
         errdefer for (d.pipes[0..made]) |p| p.deinit();
@@ -245,7 +249,7 @@ pub const Decoder = struct {
         d.gemm(e, s, v.o, p.block(i, .out_w), p.block(i, .out_b), p.block(i, .scale1), v.x, W, W);
         d.run(e, .rms_norm, &.{ v.x, d.param(p.block(i, .norm2)), v.xn }, s, rows, row_group, true);
         d.gemm(e, s, v.xn, p.block(i, .w1_w), p.block(i, .w1_b), null, v.wide, 2 * F, W);
-        d.run(e, .swiglu, &.{ v.wide, v.act }, s, mtl.Size.of(F, s.m, 1), mtl.Size.of(256, 1, 1), false);
+        d.run(e, .swiglu, &.{ v.wide, v.act }, s, mtl.Size.of(F / 4, s.m, 1), mtl.Size.of(256, 1, 1), false);
         d.gemm(e, s, v.act, p.block(i, .w2_w), p.block(i, .w2_b), p.block(i, .scale2), v.x, W, F);
     }
 

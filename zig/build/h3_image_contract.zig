@@ -6,8 +6,15 @@ pub fn sources(b: *std.Build) [3]std.Build.Module.Import {
     return .{
         .{ .name = "h3_image_encoder_kernels", .module = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/image_encoder.zig") }) },
         .{ .name = "h3_prompt_kernels", .module = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/prompt_kernels.zig") }) },
-        .{ .name = "h3_image_decoder_kernels", .module = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/image_decoder.zig") }) },
+        .{ .name = "h3_image_decoder_kernels", .module = decoderKernels(b) },
     };
+}
+
+/// The decoder's kernel source and nax.h, which it inlines over its `#include "../nax.h"`.
+pub fn decoderKernels(b: *std.Build) *std.Build.Module {
+    const m = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/h3/image_decoder.zig") });
+    m.addAnonymousImport("nax.h", .{ .root_source_file = b.path("zig/kernels/metal/nax.h") });
+    return m;
 }
 
 /// macOS: `tf-h3-image-contract` (gates 1-4, controls, this GPU's limits) and `h3-image-contract`, which runs it.

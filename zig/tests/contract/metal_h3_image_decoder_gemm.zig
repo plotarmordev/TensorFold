@@ -28,7 +28,7 @@ const plain = served(&.{ .{ 3 * W, W }, .{ 2 * F, W }, .{ 768, W } });
 /// to_out (1,024 x 1,024) and w2 (1,024 x 4,096), each added to the stream through its LayerScale.
 const scaled = served(&.{ .{ W, W }, .{ W, F } });
 
-/// The k-deep chain of the simdgroup products' fp32 sums, then the bias.
+/// The k-deep chain of the fragments' fp32 sums (exact bf16 products either way), then the bias.
 fn chain(s: c.Shape) usize {
     return s.k + 1;
 }

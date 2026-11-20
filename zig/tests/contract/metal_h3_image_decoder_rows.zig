@@ -270,12 +270,12 @@ pub const Swiglu = struct {
         return true;
     }
 
-    /// A block's FFN: threads [4,096, rows] in groups of 256.
+    /// A block's FFN: threads [1,024, rows], 4 outputs each in groups of 256.
     pub fn launch(_: *Swiglu, t: anytype, e: mtl.ComputeEncoder) void {
         const s = t.shape;
         for (0..2) |i| t.bind(e, i, i);
         e.setValue(parts.Shape{ .m = @intCast(s.rows) }, 2);
-        e.dispatchThreads(mtl.Size.of(F, s.rows, 1), mtl.Size.of(256, 1, 1));
+        e.dispatchThreads(mtl.Size.of(F / 4, s.rows, 1), mtl.Size.of(256, 1, 1));
     }
 
     pub fn count(_: *Swiglu, s: c.Shape) usize {

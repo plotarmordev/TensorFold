@@ -247,6 +247,7 @@ fn resolve(a: std.mem.Allocator, device: mtl.Device, d: limits.MetalLaunch, comp
     } else if (std.mem.startsWith(u8, d.name, "minimax image ")) {
         if (!assemble) return undefined;
         text = if (has(d.name, " encoder ")) @import("h3_image_encoder_kernels").source else if (has(d.name, " prompt ")) @import("h3_prompt_kernels").source else @import("h3_image_decoder_kernels").source;
+        frags = !has(d.name, " encoder ") and !has(d.name, " prompt ");
     } else if (std.mem.startsWith(u8, d.name, "h3 product ")) {
         if (!assemble) return undefined;
         // h3_gemm.metal's products use gemm_nax's fragments, joined ahead of it as source.zig joins them at load

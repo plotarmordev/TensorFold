@@ -1,6 +1,8 @@
 // MiniMax-H3-Image's image decoder (the VAE's 2D ViT decoder) in bf16 with fp32 sums, on any Apple GPU.
 #include <metal_stdlib>
 using namespace metal;
+// The products' fragments: the M5's tensor units, or simdgroup matrices where TF_SIMD_FRAGS is set.
+#include "../nax.h"
 
 #define H3D_UNROLL _Pragma("clang loop unroll(full)")
 // Keys a lane holds in the attention: 9 a lane, 288 a simdgroup, past a 16 x 16 tile's 261 tokens.
@@ -119,76 +121,46 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
   }
 }
 
-// y = bf16(x w^T + b), x [m, k] and w [n, k] bf16, fp32 sums; mode 1 adds bf16(y s) into y's old value (LayerScale).
+// y = bf16(x w^T + b), x [m, k] and w [n, k] bf16, fp32 sums on nax.h's fragments; mode 1 adds bf16(y s) into y's
+// old value (LayerScale). A threadgroup spans 64 rows x 64 columns, each of its four warps 32 x 32.
 [[max_total_threads_per_threadgroup(128)]] [[kernel]] void h3d_gemm(
     const device bfloat* x [[buffer(0)]], const device bfloat* w [[buffer(1)]], const device bfloat* b [[buffer(2)]],
     const device bfloat* s [[buffer(3)]], device bfloat* y [[buffer(4)]], constant H3dShape& p [[buffer(5)]],
-    uint2 tg [[threadgroup_position_in_grid]], uint t [[thread_index_in_threadgroup]],
-    uint sg [[simdgroup_index_in_threadgroup]]) {
-  constexpr uint BK = 32;
-  constexpr uint LD = BK + 4;
-  threadgroup float buf[2 * 64 * LD];
-  threadgroup float* as = buf;
-  threadgroup float* bs = buf + 64 * LD;
-  const uint m0 = tg.y * 64;
-  const uint n0 = tg.x * 64;
-  // a thread stages 16 values of one row of each operand; a simdgroup owns a 32 x 32 quarter of the output
-  const uint lr = t / 2;
-  const uint lc = (t % 2) * 16;
-  const uint sr = (sg / 2) * 32;
-  const uint sc = (sg % 2) * 32;
-  const bool live = m0 + lr < p.m;
-  const device bfloat4* xa = (const device bfloat4*)(x + ulong(live ? m0 + lr : 0) * p.k + lc);
-  const device bfloat4* wb = (const device bfloat4*)(w + ulong(n0 + lr) * p.k + lc);
-  simdgroup_float8x8 acc[4][4];
-  H3D_UNROLL
-  for (uint i = 0; i < 4; i++) {
-    H3D_UNROLL
-    for (uint j = 0; j < 4; j++) acc[i][j] = simdgroup_float8x8(0.0f);
+    uint2 tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  using namespace tfp;
+  const int row = int(tg.y) * 64 + 32 * int(sg >> 1);
+  const int col = int(tg.x) * 64 + 32 * int(sg & 1);
+  const short2 home = frag_home(ushort(lane));
+  const device bfloat* A = x + ulong(row) * p.k;
+  const device bfloat* B = w + ulong(col) * p.k;
+  frag<float> acc[2][2];
+  TF_UNROLL
+  for (short m = 0; m < 2; m++) TF_UNROLL for (short n = 0; n < 2; n++) acc[m][n] = frag<float>(0.0f);
+  for (int k0 = 0; k0 < int(p.k); k0 += 32) {
+    frag<bfloat> a[2][2];
+    frag<bfloat> wb[2][2];
+    TF_UNROLL
+    for (short m = 0; m < 2; m++) TF_UNROLL for (short k2 = 0; k2 < 2; k2++)
+      frag_get_in(a[m][k2], A, int(p.k), 16 * m, k0 + 16 * k2, home, int(p.m) - row, 1 << 30);
+    TF_UNROLL
+    for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short n = 0; n < 2; n++)
+      frag_get(wb[k2][n], B, int(p.k), 16 * n, k0 + 16 * k2, home);
+    TF_UNROLL
+    for (short k2 = 0; k2 < 2; k2++) TF_UNROLL for (short m = 0; m < 2; m++)
+      mma_16x32<false, true>(acc[m][0], acc[m][1], a[m][k2], wb[k2][0], wb[k2][1]);
   }
-  for (uint k0 = 0; k0 < p.k; k0 += BK) {
-    threadgroup float4* da = (threadgroup float4*)(as + lr * LD + lc);
-    threadgroup float4* db = (threadgroup float4*)(bs + lr * LD + lc);
-    H3D_UNROLL
-    for (uint i = 0; i < 4; i++) {
-      da[i] = live ? float4(xa[k0 / 4 + i]) : float4(0.0f);
-      db[i] = float4(wb[k0 / 4 + i]);
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    H3D_UNROLL
-    for (uint kk = 0; kk < BK; kk += 8) {
-      simdgroup_float8x8 am[4];
-      simdgroup_float8x8 bm[4];
-      H3D_UNROLL
-      for (uint i = 0; i < 4; i++) simdgroup_load(am[i], as + (sr + i * 8) * LD + kk, LD);
-      H3D_UNROLL
-      for (uint j = 0; j < 4; j++) simdgroup_load(bm[j], bs + (sc + j * 8) * LD + kk, LD, ulong2(0, 0), true);
-      H3D_UNROLL
-      for (uint i = 0; i < 4; i++) {
-        H3D_UNROLL
-        for (uint j = 0; j < 4; j++) simdgroup_multiply_accumulate(acc[i][j], am[i], bm[j], acc[i][j]);
-      }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-  }
-  // the 64 x 64 sums through threadgroup memory (the staging buffers are free now), then the epilogue
-  threadgroup float* cs = buf;
-  H3D_UNROLL
-  for (uint i = 0; i < 4; i++) {
-    H3D_UNROLL
-    for (uint j = 0; j < 4; j++) simdgroup_store(acc[i][j], cs + (sr + i * 8) * 64 + sc + j * 8, 64);
-  }
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  for (uint e = t; e < 64 * 64; e += 128) {
-    const uint row = m0 + e / 64;
-    if (row >= p.m) continue;
-    const uint col = n0 + e % 64;
-    const ulong at = ulong(row) * p.n + col;
-    const float out = float(bfloat(cs[e] + float(b[col])));
+  TF_UNROLL
+  for (short m = 0; m < 2; m++) TF_UNROLL for (short h2 = 0; h2 < 2; h2++) TF_UNROLL for (short e = 0; e < 8; e++) {
+    const int rr = row + 16 * m + home.y + (e >> 2) * 8;
+    if (rr >= int(p.m)) continue;
+    const int cc = col + 16 * h2 + home.x + TF_COL(e);
+    const float out = float(bfloat(acc[m][h2][e] + float(b[cc])));
+    const ulong at = ulong(rr) * p.n + uint(cc);
     if (p.mode == 0) {
       y[at] = bfloat(out);
     } else {
-      y[at] = bfloat(float(y[at]) + float(bfloat(out * float(s[col]))));
+      y[at] = bfloat(float(y[at]) + float(bfloat(out * float(s[cc]))));
     }
   }
 }
@@ -247,10 +219,12 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
     const uint key = lane + 32 * i;
     sc[i] = -INFINITY;
     if (key < T) {
-      const device bfloat* kr = k + base + ulong(key) * 64;
-      float dot = 0.0f;
-      for (uint d = 0; d < 64; d++) dot += qr[d] * float(kr[d]);
-      sc[i] = dot * p.scale;
+      const device bfloat4* kr = (const device bfloat4*)(k + base + ulong(key) * 64);
+      const threadgroup float4* q4 = (const threadgroup float4*)qr;
+      float4 dot = float4(0.0f);
+      H3D_UNROLL
+      for (uint d = 0; d < 16; d++) dot += float4(kr[d]) * q4[d];
+      sc[i] = (dot.x + dot.y + dot.z + dot.w) * p.scale;
       top = max(top, sc[i]);
     }
   }
@@ -267,26 +241,28 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
   }
   total = simd_sum(total);
   simdgroup_barrier(mem_flags::mem_threadgroup);
-  float a0 = 0.0f;
-  float a1 = 0.0f;
+  float2 a = float2(0.0f);
   for (uint key = 0; key < T; key++) {
-    const float pk = pr[key];
-    const device bfloat* vr = v + base + ulong(key) * 64 + 2 * lane;
-    a0 += pk * float(vr[0]);
-    a1 += pk * float(vr[1]);
+    const device bfloat2* vr = (const device bfloat2*)(v + base + ulong(key) * 64 + 2 * lane);
+    a += float2(vr[0]) * pr[key];
   }
   const ulong at = (ulong(tile) * T + query) * 1024 + head * 64 + 2 * lane;
-  o[at] = bfloat(a0 / total);
-  o[at + 1] = bfloat(a1 / total);
+  o[at] = bfloat(a.x / total);
+  o[at + 1] = bfloat(a.y / total);
 }
 
-// act = bf16(bf16(SiLU(gate)) * value), w1's rows read as [gate 4,096 | value 4,096]. Threads [4,096, m].
+// act = bf16(bf16(SiLU(gate)) * value), w1's rows read as [gate 4,096 | value 4,096]. Threads [1,024, m], 4 wide.
 [[max_total_threads_per_threadgroup(256)]] [[kernel]] void h3d_swiglu(
     const device bfloat* wide [[buffer(0)]], device bfloat* act [[buffer(1)]], constant H3dShape& p [[buffer(2)]],
     uint2 at [[thread_position_in_grid]]) {
-  if (at.x >= 4096 || at.y >= p.m) return;
-  const device bfloat* r = wide + ulong(at.y) * 8192;
-  const float g = float(r[at.x]);
-  const float silu = float(bfloat(g / (1.0f + precise::exp(-g))));
-  act[ulong(at.y) * 4096 + at.x] = bfloat(silu * float(r[4096 + at.x]));
+  if (at.x >= 1024 || at.y >= p.m) return;
+  const float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);
+  const float4 v = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192 + 4096))[at.x]);
+  bfloat4 out;
+  H3D_UNROLL
+  for (uint e = 0; e < 4; e++) {
+    const float silu = float(bfloat(g[e] / (1.0f + precise::exp(-g[e]))));
+    out[e] = bfloat(silu * v[e]);
+  }
+  ((device bfloat4*)(act + ulong(at.y) * 4096))[at.x] = out;
 }

@@ -55,12 +55,12 @@ const controls = [_]Control{
     .{ .kind = .embed, .gate = .shapes, .what = "puts the registers after the zero token", .old = "} else if (t < cells + 4) {\n    v = reg[(t - cells) * 1024 + at.x];", .new = "} else if (t > cells) {\n    v = reg[(t - cells - 1) * 1024 + at.x];" },
     .{ .kind = .rms_norm, .gate = .sums, .what = "sums its simdgroups in half", .old = "v = simd_sum(v);", .new = "v = float(simd_sum(half(v)));" },
     .{ .kind = .layer_norm, .gate = .shapes, .what = "drops its mean", .old = "const float mean = h3d_total(s, sums, lane, sg) / 1024.0f;", .new = "const float mean = 0.0f * h3d_total(s, sums, lane, sg);" },
-    .{ .kind = .gemm, .gate = .shapes, .what = "drops its last K step", .old = "for (uint k0 = 0; k0 < p.k; k0 += BK) {", .new = "for (uint k0 = 0; k0 + BK < p.k; k0 += BK) {" },
-    .{ .kind = .gemm_scale, .gate = .shapes, .what = "adds LayerScale's product unrounded", .old = "float(bfloat(out * float(s[col])))", .new = "out * float(s[col])" },
+    .{ .kind = .gemm, .gate = .shapes, .what = "drops its last K step", .old = "for (int k0 = 0; k0 < int(p.k); k0 += 32) {", .new = "for (int k0 = 0; k0 + 32 < int(p.k); k0 += 32) {" },
+    .{ .kind = .gemm_scale, .gate = .shapes, .what = "adds LayerScale's product unrounded", .old = "float(bfloat(out * float(s[cc])))", .new = "out * float(s[cc])" },
     .{ .kind = .heads, .gate = .shapes, .what = "turns the second half of each head", .old = "const float a = float(src[part * 64 + lane]);\n    const float z = float(src[part * 64 + 32 + lane]);", .new = "const float a = float(src[part * 64 + 32 + lane]);\n    const float z = float(src[part * 64 + lane]);" },
     .{ .kind = .attention, .gate = .shapes, .what = "drops its last key", .old = "for (uint key = 0; key < T; key++) {", .new = "for (uint key = 0; key + 1 < T; key++) {" },
-    .{ .kind = .swiglu, .gate = .shapes, .what = "swaps gate and value", .old = "const float g = float(r[at.x]);\n  const float silu = float(bfloat(g / (1.0f + precise::exp(-g))));\n  act[ulong(at.y) * 4096 + at.x] = bfloat(silu * float(r[4096 + at.x]));", .new = "const float g = float(r[4096 + at.x]);\n  const float silu = float(bfloat(g / (1.0f + precise::exp(-g))));\n  act[ulong(at.y) * 4096 + at.x] = bfloat(silu * float(r[at.x]));" },
-    .{ .kind = .swiglu, .gate = .nonfinite, .what = "takes a NaN gate as zero", .old = "const float g = float(r[at.x]);", .new = "const float g = isnan(float(r[at.x])) ? 0.0f : float(r[at.x]);" },
+    .{ .kind = .swiglu, .gate = .shapes, .what = "swaps gate and value", .old = "const float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);\n  const float4 v = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192 + 4096))[at.x]);", .new = "const float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192 + 4096))[at.x]);\n  const float4 v = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);" },
+    .{ .kind = .swiglu, .gate = .nonfinite, .what = "takes a NaN gate as zero", .old = "const float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);", .new = "float4 g = float4(((const device bfloat4*)(wide + ulong(at.y) * 8192))[at.x]);\n  g = select(float4(0.0f), g, !isnan(g));" },
 };
 
 pub const Suite = struct {
@@ -102,7 +102,7 @@ pub const Suite = struct {
         const s = try a.create(Suite);
         s.* = .{ .a = a };
         errdefer s.destroy();
-        const lib = try common.library(device, .decoder, common.source(.decoder));
+        const lib = try common.library(a, device, .decoder, common.source(.decoder));
         s.libs.append(a, lib) catch |err| {
             lib.deinit();
             return err;
@@ -117,7 +117,7 @@ pub const Suite = struct {
             if (common.keep(only, name)) {
                 const text = try common.edited(a, .decoder, x.old, x.new);
                 defer a.free(text);
-                const edited = try common.library(device, .decoder, text);
+                const edited = try common.library(a, device, .decoder, text);
                 s.libs.append(a, edited) catch |err| {
                     edited.deinit();
                     return err;

@@ -88,7 +88,7 @@ pub const Suite = struct {
         if (ctl == null) if (s.served) |lib| return lib;
         const text = if (ctl) |x| try common.edited(s.a, .encoder, x.old, x.new) else try s.a.dupe(u8, common.source(.encoder));
         defer s.a.free(text);
-        const lib = try common.library(device, .encoder, text);
+        const lib = try common.library(s.a, device, .encoder, text);
         errdefer lib.deinit();
         try s.libs.append(s.a, lib);
         if (ctl == null) s.served = lib;
