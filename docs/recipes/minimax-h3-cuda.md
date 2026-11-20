@@ -671,10 +671,10 @@ Per-run stage columns, warm:
 | Prompt | 1.23-1.25 s | 0.2 s encode |
 | Transformer, 6 steps | 12.5-12.7 s (~2.09 a step) | ~8.6-8.7 s (1.4-1.5 a step) |
 | Decoder | 1.2-1.3 s | 0.7 s |
-| Wall | **15.1-15.2 s** | **9.6-10.6 s** |
+| Wall | **15.0-15.1 s** | **9.6-10.6 s** |
 
 **mmh3 wins the window I ran.** The card's goal — a warm 2048² picture at or under 7 s beside
-mmh3's 9.5 s — is not met at this head: I measure our warm at 15.1 s on unseen prompts (13.9 s on
+mmh3's 9.5 s — is not met at this head: I measure our warm at 15.0-15.1 s on unseen prompts (13.9 s on
 the repeated one). mmh3's warm barely moves off its 9.5 s quoted figure when the prompt is new:
 its INT8 text encoder stays resident and encodes an unseen prompt in 0.2 s (against its 3.4 s
 first encode with the encoder load), so "unseen" costs it 0.2-0.5 s, not the 3.4 s card 125's
