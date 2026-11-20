@@ -958,5 +958,13 @@ byte-identical between phases (`e95fd65d…`, `58db502a…`, `a8beb316…`). A w
 (transformer 12.52, 12.64, 12.63): `heads` 1.40–1.41→1.11–1.12 s, `mlp in` 3.28–3.30→3.23–3.25 s and `mlp out`
 2.43–2.45→2.22–2.23 s, with `q k v gate` (1.84–1.85 s against 1.83–1.85), `attention` and `norms` unchanged.
 `mlp out` is only fc2's bf16 product over `act`, so its 0.2 s comes from swiglu's new write order, likely
-leaving `act` in L2 for fc2 (inferred, not profiled). Of card 128's ~2.4 s of non-product passes, `heads` and `h3_swiglu_int8`'s own share of `mlp in` give back
-~0.35 s, so ~2.05 s against mmh3's 1.34 s; the further ~0.2 s lands in `mlp out`, a product pass.
+leaving `act` in L2 for fc2 (inferred, not profiled). Of card 128's ~2.4 s of non-product passes, `heads` and
+`h3_swiglu_int8`'s own share of `mlp in` give back ~0.35 s, so ~2.05 s against mmh3's 1.34 s; the further ~0.2 s
+lands in `mlp out`, a product pass.
+
+`7981aad` (job `top-2b14fb839bee`, 21 November, exit 0 — the same A/B after main's cards 150, 153 and 154 merged,
+each phase now auditing its own five-SM `h3.fatbin`) repeats it: **14.51, 14.53, 14.58 s** (transformer 12.02,
+12.02, 12.06) against main's **15.02, 15.20, 15.12 s** (transformer 12.54, 12.71, 12.61); `heads` 1.37→1.13 s,
+`mlp in` 3.29–3.34→3.21–3.22 s, `mlp out` 2.45–2.47→2.28 s; the same three latents byte-identical between
+phases. `kernel-contract-limits` passes both phases: `h3_heads_i8` takes 148/146/146/172/172 registers on
+sm_80/86/89/120/121, main's 252/246/246/255/255.
