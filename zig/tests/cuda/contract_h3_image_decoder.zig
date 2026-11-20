@@ -10,8 +10,7 @@ const contract = core.contract;
 const c = contract.spec;
 const g = contract.gates;
 
-/// The decoder's kernels: each symbol once, h3d_finish at both modes.
-pub const Which = enum { post_quant, embed, rms_norm, layer_norm, linear, finish_bias, finish_scale, softmax, heads, attention, unheads, swiglu };
+pub const Which = enum { post_quant, embed, rms_norm, layer_norm, linear, finish_bias, finish_scale, res_norm, softmax, heads, attention, unheads, swiglu };
 
 /// h3_image_decoder.cu's H3dShape, the trailing argument every decoder kernel takes.
 const Shape64 = extern struct {
@@ -69,6 +68,7 @@ pub fn spec(w: Which) c.Spec {
         .linear => .{ .name = "cuda h3 image decoder h3d_linear", .accum = .f32, .depth = dotK, .ops = 0, .out = .f32, .served = &.{ .{ .rows = 4, .n = 128, .k = 256 }, .{ .rows = 8, .n = 256, .k = 1024 }, .{ .rows = 8, .n = 128, .k = 4096 }, .{ .rows = 136, .n = 200, .k = 1000 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "each output sums K in increasing order with individually rounded fp32 multiplies and adds" } },
         .finish_bias => .{ .name = "cuda h3 image decoder h3d_finish bias", .accum = .none, .depth = none, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1 }, .{ .rows = 16, .n = 768, .k = 1 } } },
         .finish_scale => .{ .name = "cuda h3 image decoder h3d_finish layerscale", .accum = .none, .depth = none, .ops = 1, .mids = 2, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1 }, .{ .rows = 16, .n = 768, .k = 1 } } },
+        .res_norm => .{ .name = "cuda h3 image decoder h3d_res_norm", .accum = .f32, .depth = normChain, .ops = 12, .mids = 2, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1024 }, .{ .rows = 261, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .heads => .{ .name = "cuda h3 image decoder h3d_heads", .accum = .f32, .depth = headChain, .ops = 8, .mids = 4, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 3072 }, .{ .rows = 2, .n = 64, .k = 3072 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .attention => .{ .name = "cuda h3 image decoder h3d_attention", .accum = .f32, .depth = attnChain, .ops = 8, .mids = 0, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 64 }, .{ .rows = 2, .n = 64, .k = 64 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "softmax weights in [0, 1] with fp32 scores: the bf16 output hides a bf16 sum's error" } },
         .softmax => .{ .name = "cuda h3 image decoder h3d_softmax", .accum = .f32, .depth = softChain, .ops = 3, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 1 }, .{ .rows = 2, .n = 64, .k = 1 }, .{ .rows = 1, .n = 512, .k = 1 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "fp32 scores and a fp32 row sum: bf16 output hides a bf16 sum's error" } },
@@ -85,6 +85,7 @@ pub fn symbol(w: Which) [:0]const u8 {
         .layer_norm => "h3d_layer_norm",
         .linear => "h3d_linear",
         .finish_bias, .finish_scale => "h3d_finish",
+        .res_norm => "h3d_res_norm",
         .heads => "h3d_heads",
         .attention => "h3d_attention",
         .softmax => "h3d_softmax",
@@ -102,8 +103,9 @@ pub const Dec = struct {
     in: ref.In = .{},
     bufs: [8]u64 = undefined,
     nbufs: usize = 0,
-    /// In-place buffers' starting bytes, re-uploaded before every launch (the same order as `bufs`).
+    /// In-place buffers' starting bytes, re-uploaded before every launch to `bufs[fresh_at]`.
     fresh: []const u8 = &.{},
+    fresh_at: usize = 0,
     outs: usize = 0,
     /// Grid geometry the launch derives from the prepared inputs.
     p: Shape64 = .{},
@@ -177,9 +179,10 @@ pub const Dec = struct {
         const bytes_ = try self.encode(v, half);
         self.bufs[self.nbufs] = try self.rig.output(bytes_.len);
         self.nbufs += 1;
-        const b: cuda.DeviceBuffer = .{ .d = self.rig.gpu.d, .ptr = self.bufs[self.nbufs - 1], .len = bytes_.len };
+        self.fresh_at = self.nbufs - 1;
+        const b: cuda.DeviceBuffer = .{ .d = self.rig.gpu.d, .ptr = self.bufs[self.fresh_at], .len = bytes_.len };
         try b.upload(0, bytes_);
-        return self.bufs[self.nbufs - 1];
+        return self.bufs[self.fresh_at];
     }
 
     /// The latent tile origins: tile i crops at ((i % 3) * 4, (i % 5) * 4) of a 48x48 plane.
@@ -281,6 +284,24 @@ pub const Dec = struct {
                 self.outs = s.rows * s.n;
                 self.p = .{ .m = @intCast(s.rows), .n = @intCast(s.n), .mode = mode };
             },
+            .res_norm => {
+                // s.rows rows: u bf16 [rows, 1024] (a product's bf16(acc+b)), s scale [1024],
+                // g gain [1024], x in place [rows, 1024]; out x || xn, each rows * 1024 bf16.
+                if (s.n != 1024 or s.k != 1024) return false;
+                const u = try self.values(s.rows * 1024, -2, 2, fill, rng, true, true);
+                const sc = try self.values(1024, 0.3, 0.7, .random, rng, true, false);
+                const gg = try self.values(1024, 0.5, 1.5, .random, rng, true, false);
+                const x0 = try self.values(s.rows * 1024, -1, 1, .random, rng, true, false);
+                self.in = .{ .a = u, .b = sc, .d = gg, .e = x0, .rows = s.rows, .n = 1024, .k = 1024, .eps = 1e-5 };
+                _ = try self.upload(u, true);
+                _ = try self.upload(sc, true);
+                _ = try self.upload(gg, true);
+                _ = try self.inPlace(x0, true);
+                self.fresh = try self.encode(x0, true);
+                _ = try self.output(s.rows * 1024 * 2);
+                self.outs = 2 * s.rows * 1024;
+                self.p = .{ .m = @intCast(s.rows), .eps = 1e-5 };
+            },
             .heads => {
                 // s.rows tiles of s.n tokens; the qkv product's rows [tiles*tokens, 3072].
                 if (s.k != 3072 or s.n > 288) return false;
@@ -349,7 +370,7 @@ pub const Dec = struct {
 
     pub fn run(self: *Dec) !void {
         if (self.fresh.len > 0) {
-            const b: cuda.DeviceBuffer = .{ .d = self.rig.gpu.d, .ptr = self.bufs[self.nbufs - 1], .len = self.fresh.len };
+            const b: cuda.DeviceBuffer = .{ .d = self.rig.gpu.d, .ptr = self.bufs[self.fresh_at], .len = self.fresh.len };
             try b.upload(0, self.fresh);
         }
         const s = self.shape;
@@ -401,6 +422,11 @@ pub const Dec = struct {
                 a.add(self.p);
                 try self.go(.{ .x = @intCast(s.rows) }, .{ .x = 128 }, &a);
             },
+            .res_norm => {
+                for (b[0..5]) |p| a.add(p);
+                a.add(self.p);
+                try self.go(.{ .x = @intCast(s.rows) }, .{ .x = 256 }, &a);
+            },
             .unheads => {
                 for (b[0..2]) |p| a.add(p);
                 a.add(self.p);
@@ -431,6 +457,7 @@ pub const Dec = struct {
             .layer_norm => ref.layerNorm(self.in, s, want, mag),
             .linear => ref.linear(self.in, s, want, mag),
             .finish_bias, .finish_scale => ref.finish(self.in, want, mag),
+            .res_norm => ref.resNorm(self.in, s, want, mag),
             .heads => ref.heads(self.in, s, want, mag),
             .attention => ref.attention(self.in, s, want, mag),
             .softmax => ref.softmax(self.in, s, want, mag),

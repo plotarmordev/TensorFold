@@ -206,6 +206,32 @@ __global__ void __launch_bounds__(256) h3d_finish(
         y[at] = __float2bfloat16(f(y[at]) + bf(out * f(s[x])));
     }
 }
+
+// The fast path's residual and block norm in one launch: the product came through cuBLASLt's bias
+// epilogue, so u holds bf16(acc + b) already. x = bf16(x + bf16(u * s)) keeps h3d_finish mode 1's
+// rounding points; xn is h3d_rms_norm of the updated row. One row a block of 256.
+__global__ void __launch_bounds__(256) h3d_res_norm(
+        const bf16* u, const bf16* s, const bf16* g, bf16* x, bf16* xn, H3dShape p) {
+    __shared__ float part[8];
+    const unsigned row = blockIdx.x;
+    const unsigned t = threadIdx.x;
+    const size_t at = (size_t)row * 1024;
+    float v[4];
+    float sq = 0.0f;
+#pragma unroll
+    for (unsigned i = 0; i < 4; ++i) {
+        const unsigned c = t + 256 * i;
+        v[i] = bf(f(x[at + c]) + bf(f(u[at + c]) * f(s[c])));
+        x[at + c] = __float2bfloat16(v[i]);
+        sq += v[i] * v[i];
+    }
+    const float inv = inv_sqrt(tf_common::block_sum_serial(sq, part) / 1024.0f + p.eps);
+#pragma unroll
+    for (unsigned i = 0; i < 4; ++i) {
+        const unsigned c = t + 256 * i;
+        xn[at + c] = __float2bfloat16(v[i] * inv * f(g[c]));
+    }
+}
 // softmax(s / 8) row-wise in fp32 for the tensor-core path's S [tiles * 16 heads, T, T]: a flat query
 // row a block (grid b*T), 128 threads over four keys each, the bf16 weights contiguous for P . V.
 __global__ void __launch_bounds__(128) h3d_softmax(const float* s, bf16* pr, H3dShape p) {
