@@ -139,8 +139,9 @@ pub const Picks = struct {
         }
         const data = p.bytes(gpa) catch return;
         defer gpa.free(data);
-        saveAt(p.dir[0..p.dir_len], p.file[0..p.file_len], data);
-        std.debug.print("h3 cublaslt picks: {d} records to {s}\n", .{ p.entries.items.len, p.file[0..p.file_len] });
+        if (saveAt(p.dir[0..p.dir_len], p.file[0..p.file_len], data)) {
+            std.debug.print("h3 cublaslt picks: {d} records to {s}\n", .{ p.entries.items.len, p.file[0..p.file_len] });
+        }
     }
 
     /// Everything but the identity check and the device, for tests: `data` at `file` becomes the
@@ -179,22 +180,22 @@ pub const Picks = struct {
 
 /// `data` at `file`, written to a sibling and renamed over it; `dir`'s parents are made first.
 /// POSIX-only like the rows store's counters: a file this small is one write and one rename.
-pub fn saveAt(dir: []const u8, file: []const u8, data: []const u8) void {
+pub fn saveAt(dir: []const u8, file: []const u8, data: []const u8) bool {
     var zdir: [max_path]u8 = undefined;
-    if (dir.len > zdir.len) return;
+    if (dir.len > zdir.len) return false;
     @memcpy(zdir[0..dir.len], dir);
     zdir[dir.len] = 0;
     makeParents(zdir[0..dir.len :0]);
     var zfile: [max_path]u8 = undefined;
     var ztmp: [max_path + 8]u8 = undefined;
-    if (file.len > zfile.len) return;
+    if (file.len > zfile.len) return false;
     @memcpy(zfile[0..file.len], file);
     zfile[file.len] = 0;
-    const tmp = std.fmt.bufPrintSentinel(&ztmp, "{s}.part", .{file}, 0) catch return;
+    const tmp = std.fmt.bufPrintSentinel(&ztmp, "{s}.part", .{file}, 0) catch return false;
     const fd = platform.c.open(tmp, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(platform.c.mode_t, 0o600));
     if (fd < 0) {
         std.debug.print("h3 cublaslt picks: open {s}.part failed, errno {t}\n", .{ file, platform.c.errno(fd) });
-        return;
+        return false;
     }
     defer _ = platform.c.close(fd);
     var done: usize = 0;
@@ -202,14 +203,14 @@ pub fn saveAt(dir: []const u8, file: []const u8, data: []const u8) void {
         const n = platform.c.write(fd, data.ptr + done, data.len - done);
         if (n <= 0) {
             _ = platform.c.unlink(tmp);
-            return;
+            return false;
         }
         done += @intCast(n);
     }
-    _ = platform.c.rename(tmp, zfile[0..file.len :0]);
+    return platform.c.rename(tmp, zfile[0..file.len :0]) == 0;
 }
 
-/// `dir`'s parents made 0700 the way rows_store's are; the last component is the file's own name.
+/// `dir` made 0700 the way rows_store's parents are — but here the last component is a directory.
 fn makeParents(path: [:0]const u8) void {
     var buf: [max_path]u8 = undefined;
     if (path.len > buf.len) return;
@@ -220,6 +221,7 @@ fn makeParents(path: [:0]const u8) void {
         _ = platform.c.mkdir(@ptrCast(&buf), 0o700);
         buf[i] = '/';
     };
+    _ = platform.c.mkdir(@ptrCast(&buf), 0o700);
 }
 
 fn env(name: [*:0]const u8) ?[]const u8 {
@@ -265,13 +267,15 @@ test "h3 cublaslt picks: a stored pick answers its shape, kinds separate, and a 
     defer tmp.cleanup();
     const dir = try tmp.dir.realPathFileAlloc(io, ".", a);
     defer a.free(dir);
-    const file = try std.fs.path.join(a, &.{ dir, "picks.bin" });
+    const nested = try std.fs.path.join(a, &.{ dir, "tensorfold" }); // absent: saveAt makes it, the NOENT bug
+    defer a.free(nested);
+    const file = try std.fs.path.join(a, &.{ nested, "picks.bin" });
     defer a.free(file);
     r.file_len = file.len;
     @memcpy(r.file[0..file.len], file);
     r.readFile(a);
     try std.testing.expectEqual(@as(usize, 0), r.entries.items.len); // nothing there yet
-    saveAt(dir, file, data);
+    try std.testing.expect(saveAt(nested, file, data));
     r.readFile(a);
     try std.testing.expectEqual(@as(usize, 2), r.entries.items.len);
 }
