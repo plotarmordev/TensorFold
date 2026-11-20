@@ -119,7 +119,7 @@ pub fn main(init: std.process.Init) !void {
     const quick = args.len == 6 and (std.mem.indexOf(u8, args[5], "H3_KO") != null or std.mem.indexOf(u8, args[5], "H3_PROBE") != null);
     try h3.geometry.stepRange(from, steps);
     for (from..if (quick) from else if (once) from + 1 else steps) |step| {
-        const took = try model.forward(video, audio, step, vv, av);
+        const took = try model.forward(video, audio, step, null, vv, av);
         if (step == from) {
             const m = match(vv, expect_video, model.video_in);
             const n = match(av, expect_audio, model.audio_in);
@@ -138,7 +138,7 @@ pub fn main(init: std.process.Init) !void {
     try write(gpa, args[4], ".audio.f32", audio);
     if (!profile and !quick) return;
     model.profile = true;
-    const took = try model.forward(video_start, audio_start, 0, vv, av);
+    const took = try model.forward(video_start, audio_start, 0, null, vv, av);
     std.debug.print("one forward by stage, each in its own command buffer ({d:.2} s waited for speech, timing_valid={}):\n", .{ took.paused, took.timing_valid });
     for (h3.stages, model.spent) |stage, seconds| std.debug.print("  {s}: {d:.3} s\n", .{ stage, seconds });
 }

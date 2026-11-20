@@ -220,15 +220,15 @@ pub const Case = struct {
     }
 };
 
-/// The six steps from the case's noise: OUT_PREFIX.rows.f32 and .latent.f32 written, both returned.
+/// The six steps from the case's noise: the latent resident on the GPU between them (forward's
+/// delta does the Euler there), then down once. OUT_PREFIX.rows.f32 and .latent.f32 written.
 pub fn free(a: std.mem.Allocator, model: *h3.Model, f: *const Folder, case: *const Case, prefix: []const u8) !struct { rows: []f32, latent: []f32 } {
     const x = try a.dupe(f32, case.noise);
-    const velocity = try a.alloc(f32, x.len);
     for (0..f.pdd.steps()) |k| {
-        const took = try model.forward(x, &.{}, k, velocity, &.{});
-        picture.euler(x, velocity, f.pdd.deltas[k]);
+        const took = try model.forward(if (k == 0) x else &.{}, &.{}, k, f.pdd.deltas[k], &.{}, &.{});
         std.debug.print("step {d}/{d}: {d:.2} s wall, {d:.2} s GPU, {d:.2} s waited for speech, timing_valid={}\n", .{ k + 1, f.pdd.steps(), took.wall, took.gpu, took.paused, took.timing_valid });
     }
+    model.latent(x);
     try write(a, prefix, ".rows.f32", x);
     const out = try a.alloc(f32, x.len);
     try picture.unpatchify(x, case.grid, out);
@@ -314,7 +314,7 @@ pub fn main(init: std.process.Init) !void {
         const want = reference orelse break :teacher;
         for (0..if (mode == .once) 1 else steps) |k| {
             @memcpy(x, ins[k * target * width ..][0 .. target * width]);
-            const took = try model.forward(x, &.{}, k, velocity, &.{});
+            const took = try model.forward(x, &.{}, k, null, velocity, &.{});
             const d = try picture.distance(velocity, want[k * target * width ..][0 .. target * width], width);
             const ok = picture.stepPasses(d);
             gate.gated = true;

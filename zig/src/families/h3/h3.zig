@@ -119,7 +119,6 @@ pub const Model = struct {
     condition_latents: mtl.Buffer,
     video_latents: mtl.Buffer,
     audio_latents: mtl.Buffer,
-    normed: mtl.Buffer,
     video_velocity: mtl.Buffer,
     audio_velocity: mtl.Buffer,
     /// Every query tile attends to every tile and the pooled branch is left out (not how the checkpoint was trained).
@@ -189,7 +188,9 @@ pub const Model = struct {
         const heads = self.heads;
         const times = admitted.times;
 
-        const all = try @import("source.zig").library(gpa, heads, self.slots(), self.tiles, options.defines);
+        const defines = try std.fmt.allocPrint(gpa, "#define H3_HIDDEN {d}\n{s}", .{ hidden, options.defines });
+        defer gpa.free(defines);
+        const all = try @import("source.zig").library(gpa, heads, self.slots(), self.tiles, defines);
         defer gpa.free(all);
         const lib = try mtl.Library.fromSource(device, all, mtl.CompileOptions.mlx());
         defer lib.deinit();
@@ -251,7 +252,6 @@ pub const Model = struct {
         }
         self.video_latents = try device.buffer(self.video * self.video_in * 4, shared);
         self.audio_latents = try device.buffer(@max(self.audio * self.audio_in, 1) * 4, shared);
-        self.normed = try device.buffer(rows * hidden * 2, shared);
         self.video_velocity = try device.buffer(self.video * self.video_in * 4, shared);
         self.audio_velocity = try device.buffer(@max(self.audio * self.audio_in, 1) * 4, shared);
 
@@ -287,7 +287,7 @@ pub const Model = struct {
         for (self.blocks) |b| b.tables.buffer.deinit();
         inline for (.{ "final_table", "final_norm", "w_video_in", "b_video_in", "w_video_out", "b_video_out", "cos", "sin", "slot", "sizes" }) |f| @field(self, f).buffer.deinit();
         if (self.audio > 0) inline for (.{ "w_audio_in", "b_audio_in", "w_audio_out", "b_audio_out" }) |f| @field(self, f).buffer.deinit();
-        inline for (.{ "row_of", "all_tiles", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "normed", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
+        inline for (.{ "row_of", "all_tiles", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
         if (self.base) inline for (.{ "fc1_q", "fc1_s", "xq", "xs" }) |f| @field(self, f).deinit();
         self.queue.deinit();
         self.gpa.free(self.blocks);
@@ -391,19 +391,41 @@ pub const Model = struct {
         enc.dispatchThreads(mtl.Size.of(self.hidden, count, 1), mtl.Size.of(64, 16, 1));
     }
 
-    fn rowsOut(self: *const Model, enc: mtl.ComputeEncoder, w: Ref, b: Ref, to: mtl.Buffer, count: usize, width: usize, first: usize) void {
-        enc.setPipeline(self.pipeline("h3_rows_out"));
-        enc.setBuffer(self.normed, 0, 0);
-        enc.setBuffer(w.buffer, w.offset, 1);
-        enc.setBuffer(b.buffer, b.offset, 2);
-        enc.setValue([4]i32{ @intCast(count), @intCast(self.hidden), @intCast(width), @intCast(first) }, 3);
-        enc.setBuffer(to, 0, 4);
-        enc.dispatchGroups(mtl.Size.of(width, count, 1), mtl.Size.of(32, 1, 1));
+    /// The final norm and the head `w`/`b` in one dispatch over the `count` stepped rows at `first`:
+    /// h3_head_norm re-does each row's norm in threadgroup memory instead of writing a normed row,
+    /// so a `head_norm` launch still beats final_norm + a normed buffer + rows_out.
+    fn headOut(self: *const Model, enc: mtl.ComputeEncoder, w: Ref, b: Ref, to: mtl.Buffer, count: usize, width: usize, first: usize) void {
+        const skip = first * self.hidden * 2;
+        enc.setPipeline(self.pipeline("h3_head_norm"));
+        enc.setBuffer(self.x, skip, 0);
+        enc.setBuffer(self.final_norm.buffer, self.final_norm.offset, 1);
+        enc.setBuffer(self.final_table.buffer, self.final_table.offset, 2);
+        enc.setBuffer(self.time, first * 4, 3);
+        enc.setBuffer(w.buffer, w.offset, 4);
+        enc.setBuffer(b.buffer, b.offset, 5);
+        enc.setValue([3]i32{ @intCast(count), @intCast(self.hidden), @intCast(width) }, 6);
+        enc.setValue([1]f32{eps}, 7);
+        enc.setBuffer(to, 0, 8);
+        enc.dispatchGroups(mtl.Size.of(count, 1, 1), mtl.Size.of(256, 1, 1));
     }
 
-    /// The video and audio velocities for the latent rows at denoising step `step` of the case's schedule.
-    pub fn forward(self: *Model, video: []const f32, audio: []const f32, step: usize, video_velocity: []f32, audio_velocity: []f32) !Timing {
-        try geometry.forward(self.rows, self.video * self.video_in, self.audio * self.audio_in, self.adaln.len, self.times.len, step, video.len, audio.len, video_velocity.len, audio_velocity.len);
+    /// The Euler step on the resident video rows: x += delta * v, picture.euler's two roundings.
+    fn euler(self: *const Model, enc: mtl.ComputeEncoder, delta: f32) void {
+        enc.setPipeline(self.pipeline("h3_euler"));
+        enc.setBuffer(self.video_latents, 0, 0);
+        enc.setBuffer(self.video_velocity, 0, 1);
+        enc.setValue([1]i32{@intCast(self.video * self.video_in)}, 2);
+        enc.setValue([1]f32{delta}, 3);
+        enc.dispatchThreads(mtl.Size.of(self.video * self.video_in, 1, 1), mtl.Size.of(256, 1, 1));
+    }
+
+    /// Denoising step `step` of the case's schedule. `video`/`audio` carry the rows' latents from the
+    /// host; an empty `video` steps the rows already in `video_latents` (an upload, a `step`'s Euler,
+    /// or `latent` left them there). `delta` (pdd's `deltas[step]`) steps the video rows on the GPU
+    /// after their head, leaving them stepped for the next call or `latent`; null leaves them for a
+    /// host-side step. `video_velocity`/`audio_velocity` empty skip their readback.
+    pub fn forward(self: *Model, video: []const f32, audio: []const f32, step: usize, delta: ?f32, video_velocity: []f32, audio_velocity: []f32) !Timing {
+        try geometry.forward(self.rows, self.video * self.video_in, self.audio * self.audio_in, self.adaln.len, self.times.len, step, if (video.len == 0) self.video * self.video_in else video.len, audio.len, if (video_velocity.len == 0) self.video * self.video_in else video_velocity.len, audio_velocity.len);
         // this step's output head (its byte offsets), before anything is encoded
         const at = try geometry.headOffsets(self.step_heads, step, self.adaln.len / self.rows, self.video_in, self.hidden);
         const mark = if (self.give_way) |t| gpu_turn.mark(t.io, t.at) else null;
@@ -416,7 +438,7 @@ pub const Model = struct {
         @memcpy(self.line.slice(i32, rows), self.adaln[step * rows ..][0..rows]);
         @memcpy(self.time.slice(i32, rows), self.times[step * rows ..][0..rows]);
         @memcpy(self.x.slice(u16, self.prompt.len), self.prompt);
-        @memcpy(self.video_latents.slice(f32, video.len), video);
+        if (video.len > 0) @memcpy(self.video_latents.slice(f32, video.len), video);
         @memcpy(self.audio_latents.slice(f32, audio.len), audio);
         const pool = mtl.objc.Pool.push();
         defer pool.pop();
@@ -452,7 +474,7 @@ pub const Model = struct {
         }
         for (queued[0..n]) |cb| gpu += try finish(cb);
         const last = self.blocks[self.blocks.len - 1].tables;
-        // Only the stepped rows are ever read: prompt rows are re-copied into x each step and normed only by rows out.
+        // Only the stepped rows are ever read: prompt rows are re-copied into x each step and head_norm skips them.
         const skip = media * hidden * 2;
         enc.setPipeline(self.pipeline("h3_gate_add"));
         enc.setBuffer(self.x, skip, 0);
@@ -462,31 +484,30 @@ pub const Model = struct {
         enc.setValue([4]i32{ @intCast(rows - media), @intCast(hidden), @intCast(self.lines), gate_m }, 4);
         enc.dispatchGroups(mtl.Size.of(rows - media, 1, 1), mtl.Size.of(32, 1, 1));
         enc.barrier();
-        enc.setPipeline(self.pipeline("h3_final_norm"));
-        enc.setBuffer(self.x, skip, 0);
-        enc.setBuffer(self.final_norm.buffer, self.final_norm.offset, 1);
-        enc.setBuffer(self.final_table.buffer, self.final_table.offset, 2);
-        enc.setBuffer(self.time, media * 4, 3);
-        enc.setValue([2]i32{ @intCast(rows - media), @intCast(hidden) }, 4);
-        enc.setValue([1]f32{eps}, 5);
-        enc.setBuffer(self.normed, skip, 6);
-        enc.dispatchGroups(mtl.Size.of(rows - media, 1, 1), mtl.Size.of(32, 1, 1));
-        enc.barrier();
-        if (self.audio > 0) self.rowsOut(enc.*, self.w_audio_out, self.b_audio_out, self.audio_velocity, self.audio, self.audio_in, media);
+        if (self.audio > 0) self.headOut(enc.*, self.w_audio_out, self.b_audio_out, self.audio_velocity, self.audio, self.audio_in, media);
         const w_out: Ref = .{ .buffer = self.w_video_out.buffer, .offset = self.w_video_out.offset + at[0] };
         const b_out: Ref = .{ .buffer = self.b_video_out.buffer, .offset = self.b_video_out.offset + at[1] };
-        self.rowsOut(enc.*, w_out, b_out, self.video_velocity, self.video, self.video_in, media + self.audio);
+        self.headOut(enc.*, w_out, b_out, self.video_velocity, self.video, self.video_in, media + self.audio);
+        if (delta) |d| {
+            enc.barrier();
+            self.euler(enc.*, d);
+        }
         pass.enc.end();
         pass.cb.commit();
         const final = try finish(pass.cb);
         gpu += final;
         if (self.profile) self.spent[stages.len - 1] += final;
         if (self.give_way) |t| self.paused += gpu_turn.yield(t.io, t.at);
-        @memcpy(video_velocity, self.video_velocity.slice(f32, video_velocity.len));
-        @memcpy(audio_velocity, self.audio_velocity.slice(f32, audio_velocity.len));
+        if (video_velocity.len > 0) @memcpy(video_velocity, self.video_velocity.slice(f32, video_velocity.len));
+        if (audio_velocity.len > 0) @memcpy(audio_velocity, self.audio_velocity.slice(f32, audio_velocity.len));
         const wall = mtl.clock.seconds() - started;
         const timing_valid = if (self.give_way) |t| self.paused == 0 and gpu_turn.clean(t.io, t.at, mark) else false;
         return .{ .wall = wall, .gpu = gpu, .paused = self.paused, .timing_valid = timing_valid };
+    }
+
+    /// The resident video rows after `forward`'s uploads and Euler steps, (video, video_in) f32.
+    pub fn latent(self: *const Model, into: []f32) void {
+        @memcpy(into, self.video_latents.slice(f32, into.len));
     }
 
     /// Waits for a committed command buffer; its GPU seconds.

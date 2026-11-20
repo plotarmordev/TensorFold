@@ -100,6 +100,33 @@ pub fn finalNorm(in: In, s: Sum, scratch: []f64, want: []f64, mag: []f64) void {
     }
 }
 
+/// h3_head_norm: the final layer's modulated RMS norm of x (a x, d norm weight, f scale row, g shift
+/// row) then the step's head over the normed row (b head weights (n, k), e head bias), V in f32.
+pub fn headNorm(in: In, s: Sum, scratch: []f64, want: []f64, mag: []f64) void {
+    const C = in.k;
+    const row = scratch[C .. 2 * C];
+    for (0..in.rows) |r| {
+        const sq = scratch[0..C];
+        for (sq, 0..) |*q, i| q.* = in.a[r * C + i] * in.a[r * C + i];
+        const inv = 1 / @sqrt(s.of(sq) / @as(f64, @floatFromInt(C)) + in.eps);
+        for (row, 0..) |*v, i| v.* = bf(modulated(in.a[r * C + i], inv, in.d[i], in.f[i], in.g[i]));
+        for (0..in.n) |n| {
+            const t = scratch[2 * C ..][0..C];
+            for (t, 0..) |*v, i| v.* = row[i] * in.b[n * C + i];
+            want[r * in.n + n] = s.of(t) + in.e[n];
+            mag[r * in.n + n] = absSum(t) + @abs(in.e[n]);
+        }
+    }
+}
+
+/// h3_euler: x += delta * v elementwise (a x, b v, in.scale delta), f32 in place.
+pub fn euler(in: In, want: []f64, mag: []f64) void {
+    for (0..in.n) |i| {
+        want[i] = in.a[i] + in.scale * in.b[i];
+        mag[i] = @abs(in.a[i]) + @abs(in.scale * in.b[i]);
+    }
+}
+
 /// h3_heads: q, k norms and rotate-half on `k` channels, all in tile order (a q, b k, d v, e cos, f sin, g norms).
 pub fn heads(in: In, s: Sum, scratch: []f64, want: []f64, mag: []f64) void {
     const H = in.heads;

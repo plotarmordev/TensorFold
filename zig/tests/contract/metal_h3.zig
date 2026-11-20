@@ -9,13 +9,13 @@ const ref = @import("metal_h3_ref.zig");
 const c = contract.spec;
 const g = contract.gates;
 
-pub const Which = enum { rows_in, rows_out, norm, final_norm, gate_add, gate_mix, swiglu, swiglu_gate_first, heads, pool, tile_scores, coarse, attention, modulation };
+pub const Which = enum { rows_in, head_norm, euler, norm, gate_add, gate_mix, swiglu, swiglu_gate_first, heads, pool, tile_scores, coarse, attention, modulation };
 
 /// The geometry the test kernels are compiled for: two heads, up to 16 tiles of 64 slots.
 const heads = 2;
 const tiles = 16;
 const slots = tiles * 64;
-const defines = std.fmt.comptimePrint("#define H3_HEADS {d}\n#define H3_SLOTS {d}\n#define H3_TILES {d}\n", .{ heads, slots, tiles });
+const defines = std.fmt.comptimePrint("#define H3_HEADS {d}\n#define H3_SLOTS {d}\n#define H3_TILES {d}\n#define H3_HIDDEN 8192\n", .{ heads, slots, tiles });
 
 fn kChain(s: c.Shape) usize {
     return s.k + 2;
@@ -23,6 +23,10 @@ fn kChain(s: c.Shape) usize {
 /// A lane's chain over every 32nd input, then one simd_sum tree.
 fn laneChain(s: c.Shape) usize {
     return (s.k + 31) / 32 + 6;
+}
+/// A lane's norm chain (squares over every 32nd + tree), then the head's strided dot the same way.
+fn headNormChain(s: c.Shape) usize {
+    return 2 * ((s.k + 31) / 32 + 6);
 }
 fn headChain(_: c.Shape) usize {
     return 4 + 6;
@@ -48,17 +52,17 @@ pub fn spec(w: Which) c.Spec {
     const norm_sums = c.Sums{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why };
     return switch (w) {
         .rows_in => .{ .name = "metal h3 rows in h3_rows_in", .accum = .f32, .depth = kChain, .ops = 1, .out = .bf16, .tiles = .{ .{ .size = 16 }, .{ .size = 64 }, .{} }, .served = &.{ .{ .rows = 64, .n = 5376, .k = 96 }, .{ .rows = 16, .n = 5376, .k = 32 } } },
-        .rows_out => .{ .name = "metal h3 rows out h3_rows_out", .accum = .f32, .depth = laneChain, .ops = 1, .out = .f32, .tiles = .{ .{}, .{}, .{ .size = 32 } }, .served = &.{ .{ .rows = 32, .n = 96, .k = 5376 }, .{ .rows = 16, .n = 32, .k = 5376 } } },
+        .head_norm => .{ .name = "metal h3 head norm h3_head_norm", .accum = .f32, .depth = headNormChain, .ops = 9, .mids = 3, .out = .f32, .tiles = .{ .{}, .{}, .{ .size = 32 } }, .served = &.{ .{ .rows = 16, .n = 96, .k = 5376 }, .{ .rows = 16, .n = 32, .k = 5376 } }, .sums = norm_sums },
+        .euler => .{ .name = "metal h3 Euler h3_euler", .accum = .none, .depth = none, .ops = 2, .out = .f32, .in_place = true, .served = &.{ .{ .rows = 1, .n = 96 * 64, .k = 1 }, .{ .rows = 1, .n = 37, .k = 1 } } },
         .norm => .{ .name = "metal h3 modulated norm h3_norm", .accum = .f32, .depth = laneChain, .ops = 8, .mids = 5, .out = .bf16, .in_place = true, .tiles = .{ .{}, .{}, .{ .size = 32 } }, .served = &.{.{ .rows = 16, .n = 5376, .k = 5376 }}, .sums = norm_sums },
-        .final_norm => .{ .name = "metal h3 final norm h3_final_norm", .accum = .f32, .depth = laneChain, .ops = 8, .mids = 3, .out = .bf16, .tiles = .{ .{}, .{}, .{ .size = 32 } }, .served = &.{.{ .rows = 16, .n = 5376, .k = 5376 }}, .sums = norm_sums },
         .gate_add => .{ .name = "metal h3 gated add h3_gate_add", .accum = .none, .depth = none, .mids = 1, .out = .bf16, .in_place = true, .served = &.{.{ .rows = 16, .n = 5376, .k = 1 }} },
-        .gate_mix => .{ .name = "metal h3 pooled branch mix h3_gate_mix", .accum = .none, .depth = none, .mids = 1, .out = .bf16, .in_place = true, .tiles = .{ .{ .size = 64 }, .{}, .{} }, .served = &.{.{ .rows = slots, .n = heads * 128, .k = 1 }} },
+        .gate_mix => .{ .name = "metal h3 pooled branch mix h3_gate_mix", .accum = .none, .depth = none, .mids = 1, .out = .bf16, .in_place = true, .tiles = .{ .{ .size = 64 }, .{}, .{} }, .served = &.{ .{ .rows = slots, .n = heads * 128, .k = 1 }} },
         .swiglu => .{ .name = "metal h3 SwiGLU h3_swiglu", .accum = .none, .depth = none, .ops = 4, .mids = 2, .out = .bf16, .tiles = .{ .{}, .{ .size = 256 }, .{} }, .served = &.{.{ .rows = 16, .n = 14336, .k = 1 }} },
         .swiglu_gate_first => .{ .name = "metal h3 SwiGLU gate first h3_swiglu", .accum = .none, .depth = none, .ops = 4, .mids = 2, .out = .bf16, .tiles = .{ .{}, .{ .size = 256 }, .{} }, .served = &.{.{ .rows = 16, .n = 14336, .k = 1 }} },
         .heads => .{ .name = "metal h3 head layout h3_heads", .accum = .f32, .depth = headChain, .ops = 8, .mids = 2, .out = .bf16, .served = &.{ .{ .rows = slots, .n = heads * 128, .k = 64 }, .{ .rows = slots, .n = heads * 128, .k = 128 } }, .sums = norm_sums },
         .pool => .{ .name = "metal h3 tile means h3_pool", .accum = .f32, .depth = poolChain, .ops = 1, .out = .f32, .served = &.{.{ .rows = tiles, .n = 128, .k = 64 }}, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "a mean of at most 64 bf16 values: no sum reaches past fp16's range" } },
-        .tile_scores => .{ .name = "metal h3 tile scores h3_tile_scores", .accum = .f32, .depth = kChain, .ops = 1, .out = .f32, .served = &.{.{ .rows = tiles, .n = tiles, .k = 128 }} },
-        .coarse => .{ .name = "metal h3 pooled branch h3_coarse", .accum = .f32, .depth = tileChain, .ops = 6, .out = .f32, .tiles = .{ .{ .size = 4 }, .{}, .{} }, .served = &.{.{ .rows = tiles, .n = 128, .k = tiles }}, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = soft_why } },
+        .tile_scores => .{ .name = "metal h3 tile scores h3_tile_scores", .accum = .f32, .depth = kChain, .ops = 1, .out = .f32, .served = &.{ .{ .rows = tiles, .n = tiles, .k = 128 }} },
+        .coarse => .{ .name = "metal h3 pooled branch h3_coarse", .accum = .f32, .depth = tileChain, .ops = 6, .out = .f32, .tiles = .{ .{ .size = 4 }, .{}, .{} }, .served = &.{ .{ .rows = tiles, .n = 128, .k = tiles }}, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = soft_why } },
         .modulation => .{ .name = "metal h3 AdaLN tables h3_modulation", .accum = .f32, .depth = laneChain, .ops = 1, .out = .bf16, .tiles = .{ .{}, .{ .size = 18 * 32, .step = 18, .min = 18 }, .{ .size = 32 } }, .served = &.{ .{ .rows = 16, .n = 18 * 64, .k = 2688 }, .{ .rows = 3, .n = 18 * 16, .k = 2688 } } },
         .attention => .{ .name = "metal h3 routed attention h3_attention", .accum = .f32, .depth = attnChain, .ops = 8, .mids = 1, .out = .bf16, .tiles = .{ .{}, .{}, .{ .size = 256, .step = 64, .min = 64 } }, .served = &.{ .{ .rows = tiles, .n = 128, .k = tiles * 64 }, .{ .rows = tiles, .n = 128, .k = 6 * 64 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = soft_why } },
     };
@@ -68,9 +72,9 @@ pub fn spec(w: Which) c.Spec {
 fn function(w: Which) []const u8 {
     return switch (w) {
         .rows_in => "h3_rows_in",
-        .rows_out => "h3_rows_out",
+        .head_norm => "h3_head_norm",
+        .euler => "h3_euler",
         .norm => "h3_norm",
-        .final_norm => "h3_final_norm",
         .gate_add => "h3_gate_add",
         .gate_mix => "h3_gate_mix",
         .swiglu, .swiglu_gate_first => "h3_swiglu",
@@ -188,9 +192,10 @@ pub const H3 = struct {
         const scratch = try self.a.alloc(f64, @max(2 * self.in.n, 1024) + self.in.k);
         defer self.a.free(scratch);
         switch (self.which) {
-            .rows_in, .rows_out => ref.dot(self.in, s, scratch, want, mag),
+            .rows_in => ref.dot(self.in, s, scratch, want, mag),
+            .head_norm => ref.headNorm(self.in, s, scratch, want, mag),
+            .euler => ref.euler(self.in, want, mag),
             .norm => ref.norm(self.in, s, scratch, want, mag),
-            .final_norm => ref.finalNorm(self.in, s, scratch, want, mag),
             .gate_add => ref.gated(self.in, false, want, mag),
             .gate_mix => ref.gated(self.in, true, want, mag),
             .swiglu => ref.swiglu(self.in, false, want, mag),
