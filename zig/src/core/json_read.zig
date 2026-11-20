@@ -16,7 +16,8 @@ pub fn parse(comptime T: type, a: Allocator, bytes: []const u8) !std.json.Parsed
     return parsed;
 }
 
-/// The fields of T filled from `source`, ints read from their decimal text without floats.
+/// The fields of T filled from `source`, ints read from their decimal text without floats;
+/// `source` must come from a `.parse_numbers = false` parse (numbers as `.number_string`).
 pub fn value(comptime T: type, a: Allocator, source: std.json.Value) std.json.ParseFromValueError!T {
     switch (@typeInfo(T)) {
         .int => switch (source) {
