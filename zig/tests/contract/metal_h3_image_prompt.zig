@@ -132,7 +132,7 @@ pub const Suite = struct {
         const s = try a.create(Suite);
         s.* = .{ .a = a };
         errdefer s.destroy();
-        const lib = try common.library(device, .prompt, common.source(.prompt));
+        const lib = try common.library(a, device, .prompt, common.source(.prompt));
         defer lib.deinit();
         inline for (forms) |f| {
             const name = comptime common.name(.prompt, entry(f));
@@ -143,7 +143,7 @@ pub const Suite = struct {
             if (common.keep(only, name)) {
                 const text = try common.edited(a, .prompt, x.old, x.new);
                 defer a.free(text);
-                const edited = try common.library(device, .prompt, text);
+                const edited = try common.library(a, device, .prompt, text);
                 defer edited.deinit();
                 try s.add(device, queue, edited, f, name, x.gate, kernels);
             }

@@ -1017,3 +1017,30 @@ eight bench latents are sha256-identical (`8d067d75…`) between head and baseli
 at main **14.3 s** (14.3, 14.3, 14.3: transformer 12.9): `q k v gate` 2.68→1.88–1.89 s, `heads`
 0.96→1.40–1.41 s, `mlp in` 3.39→3.32–3.34 s — the study's 3.20 s of elementwise launches is 2.4 s. Against
 episode 1's Mac picture the gates hold unchanged — the latent is byte-identical to the measured one.
+
+`b163d44` (job `top-52a99a9e86fd`, 20 November, exit 0 — a same-job A/B: `bench-145-ab.sh` on this commit, then
+`bench-145-base.patch` reverse-applied and the same unseen prompts again) targets the two non-product passes card
+128's split left: `heads` 1.40 s and the ~0.8 s `h3_swiglu_int8` inside `mlp in`. `h3_heads_i8` keeps q and k
+rounded to bf16 two a word (bit-identical values, 146–172 registers across the five SMs where card 128's float
+arrays took 246–255 and spilled), reads every row 16 bytes at a time, and reloads each rotary partner's `int32` group to dequantize
+it again rather than sharing rounded values; `h3_swiglu_int8` runs one block a row of 4-wide `int4`/`float4`
+groups instead of a grid-stride element loop, the same dequantize, silu and product. An int8 act rows variant
+(swiglu quantizing its own output, fc2's product reading the codes) was cut before the run: cuBLASLt's mixed
+bf16×i8 path has no epilogue for the row scale, so it could not keep the product bit-identical. `fused_test`
+now checks `h3_swiglu_int8` against `h3_dequantize`+`h3_swiglu` too (transformer PASS in both phases). Each
+phase renders an uncounted warm-up prompt, then three unseen 2048² prompts; the three latents are
+byte-identical between phases (`e95fd65d…`, `58db502a…`, `a8beb316…`). A warm picture took **14.49, 14.53,
+14.55 s** (transformer 11.98, 12.02, 12.03) against the same job's main at **15.02, 15.15, 15.13 s**
+(transformer 12.52, 12.64, 12.63): `heads` 1.40–1.41→1.11–1.12 s, `mlp in` 3.28–3.30→3.23–3.25 s and `mlp out`
+2.43–2.45→2.22–2.23 s, with `q k v gate` (1.84–1.85 s against 1.83–1.85), `attention` and `norms` unchanged.
+`mlp out` is only fc2's bf16 product over `act`, so its 0.2 s comes from swiglu's new write order, likely
+leaving `act` in L2 for fc2 (inferred, not profiled). Of card 128's ~2.4 s of non-product passes, `heads` and
+`h3_swiglu_int8`'s own share of `mlp in` give back ~0.35 s, so ~2.05 s against mmh3's 1.34 s; the further ~0.2 s
+lands in `mlp out`, a product pass.
+
+`7981aad` (job `top-2b14fb839bee`, 21 November, exit 0 — the same A/B after main's cards 150, 153 and 154 merged,
+each phase now auditing its own five-SM `h3.fatbin`) repeats it: **14.51, 14.53, 14.58 s** (transformer 12.02,
+12.02, 12.06) against main's **15.02, 15.20, 15.12 s** (transformer 12.54, 12.71, 12.61); `heads` 1.37→1.13 s,
+`mlp in` 3.29–3.34→3.21–3.22 s, `mlp out` 2.45–2.47→2.28 s; the same three latents byte-identical between
+phases. `kernel-contract-limits` passes both phases: `h3_heads_i8` takes 148/146/146/172/172 registers on
+sm_80/86/89/120/121, main's 252/246/246/255/255.
