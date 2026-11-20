@@ -129,6 +129,7 @@ const Mock = struct {
         m.driver = driver();
         m.blocks = &.{};
         m.int8 = null;
+        m.fp4 = null;
         m.load_stages = .{ .{}, .{} };
         m.load_failed = false;
         m.retained_next = null;

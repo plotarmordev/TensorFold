@@ -117,6 +117,7 @@ pub const Model = struct {
         self.hosts = .empty;
         self.blocks = &.{};
         self.int8 = null;
+        self.fp4 = null;
         self.load_stages = .{ .{}, .{} };
         self.load_failed = false;
         self.retained_next = null;
@@ -288,17 +289,16 @@ pub const Model = struct {
     /// the int8 reserve may synchronise the stream.
     pub fn warm(self: *Model, rows: usize) !void {
         const inner = self.inner;
+        if (self.fp4) |t| return t.warm(self, rows);
         if (self.int8) |t| {
-            try t.warm(self, rows);
-        } else if (self.fp4) |t| {
             try t.warm(self, rows);
         } else {
             _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
             _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
-            // `out` and `fc2` keep their bf16 weights in the bf16 mode
-            _ = try self.gemms.plan(rows, self.hidden, inner);
-            _ = try self.gemms.plan(rows, self.hidden, self.mlp);
         }
+        // `out` and `fc2` keep their bf16 weights in both modes
+        _ = try self.gemms.plan(rows, self.hidden, inner);
+        _ = try self.gemms.plan(rows, self.hidden, self.mlp);
     }
 
     /// The launches of `forward` once `plan` and `geometry.prepare` ran: capturable work only —

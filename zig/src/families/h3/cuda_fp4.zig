@@ -11,11 +11,6 @@ const h3 = @import("cuda.zig");
 const workspace_bytes = @import("cuda_gemm.zig").workspace_bytes;
 const Model = h3.Model;
 
-/// Bytes of the e4m3 scales of `rows` rows of k values in cuBLASLt's 128 x 4 tiles, padding included.
-pub fn scaleBytes(rows: usize, k: usize) usize {
-    return std.mem.alignForward(usize, rows, 128) * std.mem.alignForward(usize, k / 16, 4);
-}
-
 /// A projection (N, K): its e2m1 codes, then N rows of tiled scales.
 pub const Weight = struct {
     q: cuda.DeviceBuffer,
@@ -66,9 +61,10 @@ pub const Fp4 = struct {
     /// A bf16 (n, k) projection to e2m1 codes and tiled scales, the bf16 buffer freed.
     fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize) !Weight {
         if (k % 128 != 0) return error.BadGeometry; // the rotation's chunks; every k is a multiple of 32 otherwise
-        const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k / 2 + scaleBytes(n, k)), .n = n, .k = k };
+        const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k / 2 + lt_.scaleBytes(n, k)), .n = n, .k = k };
         var args = quantizeArgs(bf16.ptr, w.q.ptr, w.scales(), k);
         try self.launch("h3_quantize_fp4", .{ .x = @intCast(n) }, 256, 0, &args);
+        try self.stream.synchronize();
         bf16.free();
         bf16.* = .{ .d = &self.driver, .ptr = 0, .len = 0 };
         return w;
@@ -127,7 +123,7 @@ pub const Fp4 = struct {
         if (rows <= t.rows) return;
         try self.stream.synchronize();
         t.scratch.free();
-        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, std.mem.alignForward(usize, rows * t.widest(self) / 2, 16) + scaleBytes(rows, t.widest(self)));
+        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, std.mem.alignForward(usize, rows * t.widest(self) / 2, 16) + lt_.scaleBytes(rows, t.widest(self)));
         try t.scratch.fill8(0, null); // the padding rows of the scale tiles never change
         t.rows = rows;
     }
