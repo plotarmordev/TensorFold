@@ -1037,7 +1037,8 @@ K chain is MLX's, 32-deep steps in order. Ten dispatches a shape in one command 
 | out | 5,376 x 7,168 | 113 | 108 |
 | fc2 | 5,376 x 14,336 | 89 | 103 |
 
-The products are at the tensor units' rate and a wider tile does not move them; the only shape that gains is fc2, worth
+The products are at the rate MLX's kernel reaches and a wider tile does not move them (card 150 later measured that
+rate at a third or less of the tensor unit's own ceiling); the only shape that gains is fc2, worth
 0.3 s of the six steps. Warm 2048 requests took 12.12 and 12.13 s (6 steps 10.49 and 10.52 s, decoder 1.38 and 1.40 s)
 against 12.30 s before. The latent and PNG stay sha1 `f3563c56…` / `904814d6…`.
 
