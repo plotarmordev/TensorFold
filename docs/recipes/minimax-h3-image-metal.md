@@ -48,6 +48,12 @@ the canvas, row count, reference count and tags; it assumes there are no referen
 rotary positions. Supporting edits would also require checking reference geometry and refreshing reference
 conditioning, not just comparing row counts.
 Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
+A reference-free prompt's states — its rows' ids, tags and the refiner's text rows — are kept across requests
+keyed by the prompt's exact bytes, least recently used inside a byte budget (`H3_PROMPT_CACHE` MiB, 256 by
+default; 0 keeps nothing). A repeated prompt skips the text encoder and refiner; an edit case's never leave the
+cache alone, so `--reference` prompts always encode. The key is the prompt bytes alone because the tokenizer,
+marks and geometry are checked at load and H3-Image has no negative prompt or CFG.
+
 A bad request prints its error and the server reads the next line.
 Start it with `profile` after `MODEL_DIR` to print each request's six steps by stage, each stage in its own command
 buffer: `rows in`, `norms`, `q k v gate`, `heads`, `attention`, `attention out`, `mlp in`, `mlp out`, `final`. The
