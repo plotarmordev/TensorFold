@@ -170,6 +170,11 @@ not the cache's receipt. The file held four records — the bf16 shapes collapse
 under their canonical rows, the int8 products to theirs. A faster cold start past these ~1.2 s needs a
 faster `warm`/`load` path, not a picks file.
 
+`49d1cdd7c` repeated the A/B under the `TFH3LT2` format (job `top-ac6a89d0864f`, exit 0): every selftest
+passed, phase A wrote a 656-byte file (the 272-byte header and four records), phase B read it, and the cold
+latents were bit-identical again; its printed table (cold 148.7 s, transformer 40.4 s, warm mean 13.9 s,
+transformer 12.6 s) sits within the runs above.
+
 ### Fewer steps: the draft canvas, not the PDMD LoRA
 
 The card's two options were mmh3's PDMD 2-NFE LoRA and its `--draft-steps` half canvas
