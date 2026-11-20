@@ -113,6 +113,69 @@ __global__ void __launch_bounds__(256) h3_heads(
     }
 }
 
+// h3_heads over an int8 product's int32 sums: each value is dequantized as h3_dequantize rounds it
+// (ACC SX[row] SW[col] to bf16), then the same head RMSNorm and split-half rotary run, so TQ/TK/TV match
+// h3_dequantize + h3_heads without the bf16 qkvc rows between them. Once per row, like h3_heads — card 120
+// measured folding this into attention's tile loop 11x slower. Grid [tiles], 256 threads.
+__global__ void __launch_bounds__(256) h3_heads_i8(
+        const int* ACC, const float* SX, const float* SW,
+        const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS, const float* SIN,
+        const int* ROWOF, __nv_bfloat16* TQ, __nv_bfloat16* TK, __nv_bfloat16* TV, int H, int stride, int ROT, int slots,
+        float eps) {
+    const int tile = blockIdx.x, s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32, slot = tile * 64 + s;
+    const int row = ROWOF[slot];
+    const bool live = row >= 0;
+    const float sx = SX[live ? row : 0];
+    const float* cs = COS + static_cast<size_t>(live ? row : 0) * ROT;
+    const float* sn = SIN + static_cast<size_t>(live ? row : 0) * ROT;
+    for (int head = 0; head < H; ++head) {
+        const int* qr = ACC + static_cast<size_t>(live ? row : 0) * stride + head * 128;
+        const int* kr = qr + H * 128;
+        const int* vr = kr + H * 128;
+        const float* wq = SW + head * 128;
+        const float* wk = wq + H * 128;
+        const float* wv = wk + H * 128;
+        float q[32], k[32], sq = 0.0f, sk = 0.0f;
+#pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            q[j] = live ? bf(qr[c0 + j] * sx * wq[c0 + j]) : 0.0f;
+            k[j] = live ? bf(kr[c0 + j] * sx * wk[c0 + j]) : 0.0f;
+            sq += q[j] * q[j];
+            sk += k[j] * k[j];
+        }
+        // a row's four quarters sit in neighbouring lanes
+        sq += __shfl_xor_sync(0xffffffffu, sq, 1);
+        sq += __shfl_xor_sync(0xffffffffu, sq, 2);
+        sk += __shfl_xor_sync(0xffffffffu, sk, 1);
+        sk += __shfl_xor_sync(0xffffffffu, sk, 2);
+        if (!live) continue;
+        const float qi = rsqrtf(sq / 128.0f + eps), ki = rsqrtf(sk / 128.0f + eps);
+        const size_t at = (static_cast<size_t>(head) * slots + slot) * 128 + c0;
+#pragma unroll
+        for (int j = 0; j < 32; j += 2) {
+            float a[2], b[2], vc[2];
+#pragma unroll
+            for (int e = 0; e < 2; ++e) {
+                const int c = c0 + j + e;
+                a[e] = bf(q[j + e] * qi * f(NQ[c]));
+                b[e] = bf(k[j + e] * ki * f(NK[c]));
+                vc[e] = bf(vr[c0 + j + e] * sx * wv[c0 + j + e]);
+                if (c < 2 * ROT) {
+                    const bool low = c < ROT;
+                    const int p = low ? c + ROT : c - ROT, t = low ? c : c - ROT;
+                    const float sign = low ? -1.0f : 1.0f, co = bf(cs[t]), si = bf(sn[t]);
+                    const float qp = bf(bf(qr[p] * sx * wq[p]) * qi * f(NQ[p])), kp = bf(bf(kr[p] * sx * wk[p]) * ki * f(NK[p]));
+                    a[e] = bf(a[e] * co) + bf(sign * qp * si);
+                    b[e] = bf(b[e] * co) + bf(sign * kp * si);
+                }
+            }
+            *reinterpret_cast<uint32_t*>(TQ + at + j) = pack2(a[0], a[1]);
+            *reinterpret_cast<uint32_t*>(TK + at + j) = pack2(b[0], b[1]);
+            *reinterpret_cast<uint32_t*>(TV + at + j) = pack2(vc[0], vc[1]);
+        }
+    }
+}
+
 // Each tile's mean q, k and v over its real rows, in fp32. QP, KP, VP: (H, tiles, 128). Grid [tiles, H], 32 threads.
 __global__ void h3_pool(const __nv_bfloat16* TQ, const __nv_bfloat16* TK, const __nv_bfloat16* TV, const int* SIZES,
                         float* QP, float* KP, float* VP, int slots, int tiles) {
@@ -301,6 +364,60 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
         if (c < chunks) {
             const char4 q = make_char4(__float2int_rn(v[i][0] / scale), __float2int_rn(v[i][1] / scale), __float2int_rn(v[i][2] / scale), __float2int_rn(v[i][3] / scale));
             *reinterpret_cast<char4*>(Q + row * K + c * 128 + lane * 4) = q;
+        }
+    }
+}
+
+// h3_norm and h3_quantize as one launch for the int8 path: the gated add and its squares run exactly as h3_norm
+// runs them (the same thread/stride and block_sum_serial order); h3_quantize's rotation, absmax and rounding run
+// unchanged on the normed values, which each lane recomputes as modulated() rounded to bf16 — the same values
+// h3_quantize reads from h3_norm's output row. The normed row is never materialized: the int8 product is its
+// only reader, so the unfused pair's bf16 round trip through a row buffer drops out. Grid [M], 256 threads.
+__global__ void __launch_bounds__(256) h3_norm_quant(
+    __nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
+    const float* GT, const float* TAB, const int* LINE,
+    int8_t* Q, float* S, int C, int gate, int scale, int shift, float eps) {
+    __shared__ float scratch[32];
+    const int row = blockIdx.x, line = LINE[row];
+    __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
+    float sq = 0.0f;
+    if (gate >= 0) {
+        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
+        const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
+        for (int c = threadIdx.x; c < C; c += blockDim.x) {
+            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
+            x[c] = __float2bfloat16(v);
+            sq += v * v;
+        }
+    } else {
+        for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
+    }
+    const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
+    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
+    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = C >> 7;
+    float most = 0.f, v[quantize_chunks][4];
+#pragma unroll
+    for (int i = 0; i < quantize_chunks; ++i) {
+        const int c = warp + 8 * i;
+        if (c < chunks) {
+            const int base = c * 128 + lane * 4;
+#pragma unroll
+            for (int j = 0; j < 4; ++j)
+                v[i][j] = f(__float2bfloat16(modulated(f(x[base + j]), inv, f(NW[base + j]), s[base + j], h[base + j])));
+            hadamard128(v[i]);
+            for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[i][j]));
+        }
+    }
+    most = tf_common::block_max_tree(most, scratch, 8);
+    const float row_scale = most > 0.f ? most / 127.f : 1.f;
+    if (threadIdx.x == 0) S[row] = row_scale;
+#pragma unroll
+    for (int i = 0; i < quantize_chunks; ++i) {
+        const int c = warp + 8 * i;
+        if (c < chunks) {
+            const char4 q = make_char4(__float2int_rn(v[i][0] / row_scale), __float2int_rn(v[i][1] / row_scale), __float2int_rn(v[i][2] / row_scale), __float2int_rn(v[i][3] / row_scale));
+            *reinterpret_cast<char4*>(Q + row * C + c * 128 + lane * 4) = q;
         }
     }
 }

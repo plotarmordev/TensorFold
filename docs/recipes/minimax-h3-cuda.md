@@ -617,6 +617,31 @@ goal), in order, each needing its own window:
    (86.952% with them, card 72) fails.
 5. **The 4096² memory round**: the decoder's buffers do not fit beside the resident prompt (round 2's OOM).
 
+### Card 139: `out` and `fc2` int8 at a scale per 256 of K, through cuBLASLt batch — measured and reverted
+
+Card 136's picture gates held on the Mac at a scale per 256 values of K on both operands where card 129's per-row
+scales failed here (28.15 dB, mean 4.23 against 28.2 dB and 4.1). cuBLASLt's int8 sums are int32 only, so the fine
+fold reached the library as a strided batch: `out` (K=7,168 → 28 groups) and `fc2` (K=14,336 → 56) ran one batched
+call whose batch `g` summed the 256-deep slice `[g·256, g·256+256)` of K into its own (rows, n) int32 plane
+(`Spec.batch`/`sa`/`sb`/`sc`), and `h3_dequantize_grouped` folded the planes at both operands' `S[row·G+g]` scales.
+`h3_quantize` took the group count (1 the row's scale; K/256 the grouped one), staging the 128-chunk maxes in shared.
+
+`bench-139.sh` at `6bf561216` (job `top-1c32bccda27d`, 20 November, exit 0, `H3_PROFILE=1` on both sides — no CUDA
+graph) ran the bench on that commit then on `bench-139-base.patch` reverse-applied (main's qkvc/fc1-int8 default).
+Every selftest passed on both sides. Grouped all-four int8 gave a warm 2048² **34.8 s** (34.8, 34.8, 35.0;
+transformer 33.6: attention out 7.94, mlp out 16.12) against the same job's main re-measure **14.3 s**
+(14.3, 14.3, 14.3; transformer 13.0: attention out 1.15, mlp out 2.35). The planes are the cost: `out` writes and
+reads 28 (4,120 × 5,376) int32 planes and `fc2` 56 — ≈4 TiB of acc traffic a picture at 2048², an order over the
+compute the int8 saves; a library fold needs the scales inside the product, which only an own-mma tile can do.
+`h3_image_compare.py` on the fetched picture measured **latent cosine 0.9935, PSNR 28.02 dB, mean diff 4.27**
+against episode 1's Mac latent and PNG — the grouped scales did not reach the picture either (main's bf16 `out`/`fc2`
+side: cosine 0.9952, 28.69 dB, 4.01). The forward path is reverted; `out` and `fc2` stay bf16. Per-256-of-K scales
+through cuBLASLt are closed: the library's int32 C writes each group's partial to its own plane, so a grouped fold
+costs G n-sized round trips — only an own-mma product folding scales in registers can hold the gates and the rate.
+Card 129's three tile geometries plateaued at 0.74–0.79× of cuBLASLt's int8 rate, so the round's open part stays a
+TMA + persistent-grid int8 product at mmh3's ~172 TOPS, not a library call.
+
+
 ### First CUDA pictures (BOTTOM, GB10, 14 Nov 2026)
 
 Prompt `h3-image-pilot/prompt.txt` (the red fox, sha256 cc969bca…), seed 42, the checkpoint's six distilled steps,
@@ -739,3 +764,19 @@ post-fix benchmark needs a new Desk window. Receipt SHA-256 identifiers:
 - `64188519/tensorfold.log`: `5bfda8793e16af8159c8435c098768d26466455c10931db7bd619174262cdb12`
 - `64188519/mmh3/out/mmh3/2048.log`: `54e17e0ada53c14502c6dadf543d4f64b0522537e704a383018f78da11772cfb`
 - `64188519/mmh3/out/mmh3/4096.log`: `a509701c36d026a9ca502fe904bc723ce73e888a8dd8abc868f800bd72cae3e1`
+
+`5d4bd40` (job `top-e611c4df9602`, 20 November, exit 0 — a same-job A/B: `bench-script.sh` on this commit,
+then `bench-128-base.patch` reverse-applied and `bench-script.sh` again; the branch carries cards 124, 125, 127
+and 131 merged from main) fuses the int8 transformer's elementwise passes as `docs/mmh3-h3-image-study.md`'s
+lever 2 reads mmh3: `h3_norm_quant` runs the gated add, modulated RMSNorm, rotate and quantize as one launch
+(the normed row is recomputed per lane as `modulated` rounded to bf16 — never materialized), and `h3_heads_i8`
+reads the qkvc product's int32 sums and scales and runs `h3_heads`' q/k norm and rotary on values dequantized
+as `h3_dequantize` rounds them — once a row, not per tile pair. `h3_swiglu_int8` stays its own launch over
+fc1's sums: mmh3's swiglu sits in its own int8 GEMM's epilogue, and cuBLASLt's i8×i8→i32 descriptors take none
+(the card's "in fc1's epilogue" clause asks for the amendment that keeps it a launch). `fused_test` in
+`--self-test` checks both against the unfused chain byte for byte (transformer PASS in both phases), and all
+eight bench latents are sha256-identical (`8d067d75…`) between head and baseline. A warm 2048² picture took
+**13.9 s** mean (13.9, 13.9, 14.0: transformer 12.5–12.6, decoder 1.3–1.4 s) against the same job's baseline
+at main **14.3 s** (14.3, 14.3, 14.3: transformer 12.9): `q k v gate` 2.68→1.88–1.89 s, `heads`
+0.96→1.40–1.41 s, `mlp in` 3.39→3.32–3.34 s — the study's 3.20 s of elementwise launches is 2.4 s. Against
+episode 1's Mac picture the gates hold unchanged — the latent is byte-identical to the measured one.

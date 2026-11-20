@@ -339,6 +339,7 @@ pub const metal = joins.metal_before ++ [_]M{
     .{ .name = "glm gather glm_rows_bf16_nax", .threads = 256, .tg_memory = 5120, .m1 = 1024, .m2 = 1024, .offline = false },
     .{ .name = "h3 rows in h3_rows_in", .threads = 1024, .tg_memory = 0, .m1 = 1024, .m2 = 1024 },
     .{ .name = "h3 modulated norm h3_norm", .threads = 32, .tg_memory = 0, .m1 = 1024, .m2 = 1024 },
+    .{ .name = "h3 modulated norm quantize h3_norm_quant", .threads = 32, .tg_memory = 0, .m1 = 1024, .m2 = 1024 },
     .{ .name = "h3 gated add h3_gate_add", .threads = 32, .tg_memory = 0, .m1 = 1024, .m2 = 1024 },
     .{ .name = "h3 pooled branch mix h3_gate_mix", .threads = 256, .tg_memory = 0, .m1 = 928, .m2 = 928 },
     .{ .name = "h3 SwiGLU h3_swiglu", .threads = 256, .tg_memory = 0, .m1 = 1024, .m2 = 1024 },

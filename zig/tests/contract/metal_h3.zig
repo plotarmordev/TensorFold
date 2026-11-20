@@ -9,7 +9,7 @@ const ref = @import("metal_h3_ref.zig");
 const c = contract.spec;
 const g = contract.gates;
 
-pub const Which = enum { rows_in, head_norm, euler, norm, gate_add, gate_mix, swiglu, swiglu_gate_first, heads, pool, tile_scores, coarse, attention, modulation };
+pub const Which = enum { rows_in, head_norm, euler, norm, norm_quant, gate_add, gate_mix, swiglu, swiglu_gate_first, heads, pool, tile_scores, coarse, attention, modulation };
 
 /// The geometry the test kernels are compiled for: two heads, up to 16 tiles of 64 slots.
 const heads = 2;
@@ -55,6 +55,7 @@ pub fn spec(w: Which) c.Spec {
         .head_norm => .{ .name = "metal h3 head norm h3_head_norm", .accum = .f32, .depth = headNormChain, .ops = 9, .mids = 3, .out = .f32, .tiles = .{ .{}, .{}, .{ .size = 32 } }, .served = &.{ .{ .rows = 16, .n = 96, .k = 5376 }, .{ .rows = 16, .n = 32, .k = 5376 } }, .sums = norm_sums },
         .euler => .{ .name = "metal h3 Euler h3_euler", .accum = .none, .depth = none, .ops = 2, .out = .f32, .in_place = true, .served = &.{ .{ .rows = 1, .n = 96 * 64, .k = 1 }, .{ .rows = 1, .n = 37, .k = 1 } } },
         .norm => .{ .name = "metal h3 modulated norm h3_norm", .accum = .f32, .depth = laneChain, .ops = 8, .mids = 5, .out = .bf16, .in_place = true, .tiles = .{ .{}, .{}, .{ .size = 32 } }, .served = &.{.{ .rows = 16, .n = 5376, .k = 5376 }}, .sums = norm_sums },
+        .norm_quant => .{ .name = "metal h3 modulated norm quantize h3_norm_quant", .accum = .none, .depth = none, .out = .raw, .in_place = true, .replaces = "h3_norm + h3_quantize_rows", .nan = .{ .stated = "every output byte equals h3_norm's then h3_quantize_rows's on the same inputs" }, .tiles = .{ .{}, .{}, .{ .size = 32 } }, .served = &.{.{ .rows = 16, .n = 5376, .k = 5376 }}, .sums = norm_sums },
         .gate_add => .{ .name = "metal h3 gated add h3_gate_add", .accum = .none, .depth = none, .mids = 1, .out = .bf16, .in_place = true, .served = &.{.{ .rows = 16, .n = 5376, .k = 1 }} },
         .gate_mix => .{ .name = "metal h3 pooled branch mix h3_gate_mix", .accum = .none, .depth = none, .mids = 1, .out = .bf16, .in_place = true, .tiles = .{ .{ .size = 64 }, .{}, .{} }, .served = &.{.{ .rows = slots, .n = heads * 128, .k = 1 }} },
         .swiglu => .{ .name = "metal h3 SwiGLU h3_swiglu", .accum = .none, .depth = none, .ops = 4, .mids = 2, .out = .bf16, .tiles = .{ .{}, .{ .size = 256 }, .{} }, .served = &.{.{ .rows = 16, .n = 14336, .k = 1 }} },
@@ -75,6 +76,7 @@ fn function(w: Which) []const u8 {
         .head_norm => "h3_head_norm",
         .euler => "h3_euler",
         .norm => "h3_norm",
+        .norm_quant => "h3_norm_quant",
         .gate_add => "h3_gate_add",
         .gate_mix => "h3_gate_mix",
         .swiglu, .swiglu_gate_first => "h3_swiglu",
@@ -102,16 +104,26 @@ pub const H3 = struct {
     /// The in-place buffer's starting bytes, copied in before every launch.
     fresh: []const u8 = &.{},
     outs: usize = 0,
+    /// norm_quant's baselines: h3_norm and h3_quantize_rows, compiled only for that Which.
+    norm_pipe: ?mtl.Pipeline = null,
+    quant_pipe: ?mtl.Pipeline = null,
 
     pub fn init(a: std.mem.Allocator, device: mtl.Device, queue: mtl.Queue, which: Which) !H3 {
         const src = try std.mem.concat(a, u8, &.{ defines, h3k.source });
         defer a.free(src);
-        return .{ .a = a, .rig = .{ .a = a, .device = device, .queue = queue }, .which = which, .pipe = try rig_.pipeline(device, src, function(which)), .arena = std.heap.ArenaAllocator.init(a) };
+        var h: H3 = .{ .a = a, .rig = .{ .a = a, .device = device, .queue = queue }, .which = which, .pipe = try rig_.pipeline(device, src, function(which)), .arena = std.heap.ArenaAllocator.init(a) };
+        if (which == .norm_quant) {
+            h.norm_pipe = try rig_.pipeline(device, src, "h3_norm");
+            h.quant_pipe = try rig_.pipeline(device, src, "h3_quantize_rows");
+        }
+        return h;
     }
 
     pub fn deinit(self: *H3) void {
         self.rig.deinit();
         self.pipe.deinit();
+        if (self.norm_pipe) |p| p.deinit();
+        if (self.quant_pipe) |p| p.deinit();
         self.arena.deinit();
     }
 
@@ -200,6 +212,7 @@ pub const H3 = struct {
             .head_norm => ref.headNorm(self.in, s, scratch, want, mag),
             .euler => ref.euler(self.in, want, mag),
             .norm => ref.norm(self.in, s, scratch, want, mag),
+            .norm_quant => return error.RawOutputChecksItself,
             .gate_add => ref.gated(self.in, false, want, mag),
             .gate_mix => ref.gated(self.in, true, want, mag),
             .swiglu => ref.swiglu(self.in, false, want, mag),
@@ -221,5 +234,42 @@ pub const H3 = struct {
         const mag = try self.a.alloc(f64, out.len);
         defer self.a.free(mag);
         return self.compute(.{ .acc = acc, .order = order }, out, mag);
+    }
+    /// The replaced pair's launches on the prepared inputs: h3_norm into a scratch xn, then h3_quantize_rows at the
+    /// gemm's 256-value block grouping into the same Q and S outputs the fused kernel fills. Output bytes: X, Q, S.
+    pub fn replaced(self: *H3) ![]const u8 {
+        if (self.fresh.len > 0) @memcpy(self.rig.bytes(self.bufs[0], self.fresh.len), self.fresh);
+        const s = self.shape;
+        const xn = try self.rig.scratch(s.rows * s.n * 2);
+        const p = self.rig.begin();
+        const e = p.e;
+        e.setPipeline(self.norm_pipe.?);
+        for (0..3) |i| e.setBuffer(self.bufs[i].buf, self.bufs[i].off, i);
+        e.setBuffer(self.bufs[3].buf, self.bufs[3].off, 3);
+        e.setBuffer(self.bufs[3].buf, self.bufs[3].off, 4);
+        e.setBuffer(self.bufs[4].buf, self.bufs[4].off, 5);
+        e.setValue([6]i32{ @intCast(s.rows), @intCast(s.n), 1, 2, 1, 0 }, 6);
+        e.setValue([1]f32{1e-5}, 7);
+        e.setBuffer(xn.buf, xn.off, 8);
+        e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));
+        e.barrier();
+        e.setPipeline(self.quant_pipe.?);
+        e.setBuffer(xn.buf, xn.off, 0);
+        e.setValue([3]i32{ @intCast(s.rows), @intCast(s.n), 256 }, 1);
+        e.setBuffer(self.bufs[5].buf, self.bufs[5].off, 2);
+        e.setBuffer(self.bufs[6].buf, self.bufs[6].off, 3);
+        e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));
+        try self.rig.finish(p);
+        return self.rig.outputBytes();
+    }
+
+    /// A stated rule that runs the baseline on the prepared inputs and compares bytes.
+    pub fn check(self: *H3, at: g.Gate) !?[]const u8 {
+        if (self.which != .norm_quant or at != .nonfinite) return null;
+        const got = try self.a.dupe(u8, try self.rig.outputBytes());
+        defer self.a.free(got);
+        const want = try self.replaced();
+        if (!std.mem.eql(u8, got, want)) return "non-finite inputs: its bytes differ from h3_norm + h3_quantize_rows's";
+        return null;
     }
 };

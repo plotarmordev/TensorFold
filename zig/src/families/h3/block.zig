@@ -47,12 +47,14 @@ pub fn quantize(m: *const Model, enc: mtl.ComputeEncoder, x: Ref, rows: usize, k
     enc.dispatchGroups(mtl.Size.of(rows, 1, 1), mtl.Size.of(32, 1, 1));
 }
 
-/// `d` = x w^T for a linear of n x k. A picture's: x in int8 a scale per 256 values of K, the weights' int8 rows
-/// bound per block (`qi`); a clip's bf16.
-fn linear(m: *const Model, enc: mtl.ComputeEncoder, x: mtl.Buffer, w: Ref, d: mtl.Buffer, n: usize, k: usize, qi: h3.Int8) void {
+/// `d` = x w^T for a linear of n x k. A picture's: x to int8 a scale per 256 values of K, the weights' int8 rows
+/// bound per block (`qi`); a clip's bf16. `quantized` when xq/xs already hold x's int8 rows (h3_norm_quant's).
+fn linear(m: *const Model, enc: mtl.ComputeEncoder, x: mtl.Buffer, w: Ref, d: mtl.Buffer, n: usize, k: usize, qi: h3.Int8, quantized: bool) void {
     if (!m.base) return gemm(m, enc, x, w, d, n, k);
-    quantize(m, enc, .{ .buffer = x }, m.rows, k, group, .{ .buffer = m.xq }, .{ .buffer = m.xs });
-    enc.barrier();
+    if (!quantized) {
+        quantize(m, enc, .{ .buffer = x }, m.rows, k, group, .{ .buffer = m.xq }, .{ .buffer = m.xs });
+        enc.barrier();
+    }
     // the scales' slots are past product's own; an encoder keeps them across its pipeline change
     enc.setBuffer(m.xs, 0, 4);
     enc.setBuffer(qi.s.buffer, qi.s.offset, 5);
@@ -72,6 +74,25 @@ fn norm(m: *const Model, enc: mtl.ComputeEncoder, w: Ref, gates: ?Ref, gate: i32
     enc.setValue([6]i32{ @intCast(m.rows), @intCast(m.hidden), @intCast(m.lines), if (gates == null) -1 else gate, scale, shift }, 6);
     enc.setValue([1]f32{h3.eps}, 7);
     enc.setBuffer(m.xn, 0, 8);
+    enc.dispatchGroups(mtl.Size.of(m.rows, 1, 1), mtl.Size.of(32, 1, 1));
+}
+
+/// norm's int8 form for the picture's second norm: the gated add and the modulated norm round exactly as norm
+/// rounds them, then each row straight to int8 in xq with its per-256-value block scales in xs — the bf16 normed
+/// rows are never written.
+fn normQuant(m: *const Model, enc: mtl.ComputeEncoder, w: Ref, gates: ?Ref, gate: i32, tables: Ref, scale: i32, shift: i32) void {
+    const g = gates orelse tables;
+    enc.setPipeline(m.pipeline("h3_norm_quant"));
+    enc.setBuffer(m.x, 0, 0);
+    enc.setBuffer(m.y, 0, 1);
+    enc.setBuffer(w.buffer, w.offset, 2);
+    enc.setBuffer(g.buffer, g.offset, 3);
+    enc.setBuffer(tables.buffer, tables.offset, 4);
+    enc.setBuffer(m.line, 0, 5);
+    enc.setValue([6]i32{ @intCast(m.rows), @intCast(m.hidden), @intCast(m.lines), if (gates == null) -1 else gate, scale, shift }, 6);
+    enc.setValue([1]f32{h3.eps}, 7);
+    enc.setBuffer(m.xq, 0, 8);
+    enc.setBuffer(m.xs, 0, 9);
     enc.dispatchGroups(mtl.Size.of(m.rows, 1, 1), mtl.Size.of(32, 1, 1));
 }
 
@@ -97,7 +118,7 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
     const gates: ?Ref = if (index == 0) null else m.blocks[index - 1].tables;
     norm(m, enc.*, b.norm1, gates, h3.gate_m, b.tables, h3.scale_a, h3.shift_a);
     m.lap(pass, "norms");
-    if (m.base) linear(m, enc.*, m.xn, b.q, m.qkv, 3 * m.inner, m.hidden, b.int8.q) else {
+    if (m.base) linear(m, enc.*, m.xn, b.q, m.qkv, 3 * m.inner, m.hidden, b.int8.q, false) else {
         gemm(m, enc.*, m.xn, b.q, m.qr, m.inner, m.hidden);
         gemm(m, enc.*, m.xn, b.k, m.kr, m.inner, m.hidden);
         gemm(m, enc.*, m.xn, b.v, m.vr, m.inner, m.hidden);
@@ -150,12 +171,12 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
         enc.dispatchThreads(mtl.Size.of(m.rows, heads, 1), mtl.Size.of(64, 4, 1));
         m.lap(pass, "gate mix");
     }
-    linear(m, enc.*, m.qr, b.out, m.y, m.hidden, m.inner, b.int8.out);
+    linear(m, enc.*, m.qr, b.out, m.y, m.hidden, m.inner, b.int8.out, false);
     m.lap(pass, "attention out");
-    norm(m, enc.*, b.norm2, b.tables, h3.gate_a, b.tables, h3.scale_m, h3.shift_m);
+    if (m.base) normQuant(m, enc.*, b.norm2, b.tables, h3.gate_a, b.tables, h3.scale_m, h3.shift_m) else norm(m, enc.*, b.norm2, b.tables, h3.gate_a, b.tables, h3.scale_m, h3.shift_m);
     m.lap(pass, "norms");
     // the first projection's rows are [value | gate] ([gate | value] in the released layout), one product
-    linear(m, enc.*, m.xn, b.fc1, m.wide, 2 * m.mlp, m.hidden, b.int8.fc1);
+    linear(m, enc.*, m.xn, b.fc1, m.wide, 2 * m.mlp, m.hidden, b.int8.fc1, true);
     enc.barrier();
     enc.setPipeline(m.pipeline("h3_swiglu"));
     enc.setBuffer(m.wide, 0, 0);
@@ -163,7 +184,7 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
     enc.setBuffer(m.act, 0, 2);
     enc.dispatchThreads(mtl.Size.of(m.mlp, m.rows, 1), mtl.Size.of(256, 1, 1));
     m.lap(pass, "mlp in");
-    linear(m, enc.*, m.act, b.fc2, m.y, m.hidden, m.mlp, b.int8.fc2);
+    linear(m, enc.*, m.act, b.fc2, m.y, m.hidden, m.mlp, b.int8.fc2, false);
     m.lap(pass, "mlp out");
 }
 
@@ -322,6 +343,121 @@ test "h3 gemm: int8 operands give their exact dequantized product to bf16 roundi
     for (out[rows * n ..]) |v| try std.testing.expectEqual(@as(u16, 0xffff), v);
 }
 
+test "h3 fused: h3_norm_quant's rows are bit-identical to h3_norm then h3_quantize_rows" {
+    const device = mtl.Device.init() catch return error.SkipZigTest;
+    defer device.deinit();
+    if (!device.tensorUnits()) return error.SkipZigTest;
+    const pool = mtl.objc.Pool.push();
+    defer pool.pop();
+    const queue = try device.queue();
+    defer queue.deinit();
+    const a = std.testing.allocator;
+    const text = try @import("source.zig").library(a, 56, 18432, 288, "");
+    defer a.free(text);
+    const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
+    defer lib.deinit();
+    var m: Model = undefined;
+    inline for (kernels.names, 0..) |name, i| m.pipelines[i] = try mtl.Pipeline.init(device, lib, name, false);
+    defer for (m.pipelines) |p| p.deinit();
+    const rows = 9;
+    const C = 512;
+    const lines = 3;
+    const shared = mtl.ResourceOptions.shared;
+    var prng = std.Random.DefaultPrng.init(91);
+    const mk = struct {
+        fn f(device_: mtl.Device, n_: usize, opts: usize, prng_: *std.Random.DefaultPrng) !mtl.Buffer {
+            const b = try device_.buffer(n_ * 2, opts);
+            for (b.slice(u16, n_)) |*v| v.* = 0x3c00 | (prng_.random().int(u16) & 0x83ff);
+            return b;
+        }
+    }.f;
+    const x = try mk(device, rows * C, shared, &prng);
+    defer x.deinit();
+    const x2 = try device.buffer(rows * C * 2, shared);
+    defer x2.deinit();
+    @memcpy(x2.slice(u16, rows * C), x.slice(u16, rows * C));
+    const y = try mk(device, rows * C, shared, &prng);
+    defer y.deinit();
+    const nw = try mk(device, C, shared, &prng);
+    defer nw.deinit();
+    const tab = try mk(device, 6 * lines * C, shared, &prng);
+    defer tab.deinit();
+    const line = try device.buffer(rows * 4, shared);
+    defer line.deinit();
+    for (line.slice(i32, rows), 0..) |*v, i| v.* = @intCast(i % lines);
+    const xn = try device.buffer(rows * C * 2, shared);
+    defer xn.deinit();
+    const xq = try device.buffer(rows * C, shared);
+    defer xq.deinit();
+    const xs = try device.buffer(rows * (C / group) * 4, shared);
+    defer xs.deinit();
+    const xq2 = try device.buffer(rows * C, shared);
+    defer xq2.deinit();
+    const xs2 = try device.buffer(rows * (C / group) * 4, shared);
+    defer xs2.deinit();
+    m.x = x;
+    m.y = y;
+    m.xn = xn;
+    m.xq = xq;
+    m.xs = xs;
+    m.line = line;
+    m.rows = rows;
+    m.hidden = C;
+    m.lines = lines;
+    const gate: i32 = 2;
+    const scale: i32 = 1;
+    const shift: i32 = 0;
+    const parts = [6]i32{ @intCast(rows), @intCast(C), @intCast(lines), gate, scale, shift };
+    {
+        // the two launches the fused kernel folds: h3_norm (gated add + modulated norm), then h3_quantize_rows
+        // at the gemm's 256-value block grouping
+        const cb = queue.commandBuffer();
+        const enc = cb.compute(.concurrent);
+        enc.setPipeline(m.pipeline("h3_norm"));
+        enc.setBuffer(x, 0, 0);
+        enc.setBuffer(y, 0, 1);
+        enc.setBuffer(nw, 0, 2);
+        enc.setBuffer(tab, 0, 3);
+        enc.setBuffer(tab, 0, 4);
+        enc.setBuffer(line, 0, 5);
+        enc.setBytes(std.mem.asBytes(&parts), 6);
+        enc.setValue([1]f32{h3.eps}, 7);
+        enc.setBuffer(xn, 0, 8);
+        enc.dispatchGroups(mtl.Size.of(rows, 1, 1), mtl.Size.of(32, 1, 1));
+        enc.barrier();
+        quantize(&m, enc, .{ .buffer = xn }, rows, C, group, .{ .buffer = xq }, .{ .buffer = xs });
+        enc.end();
+        cb.commit();
+        cb.wait();
+        try std.testing.expect(cb.failure() == null);
+    }
+    {
+        const cb = queue.commandBuffer();
+        const enc = cb.compute(.concurrent);
+        enc.setPipeline(m.pipeline("h3_norm_quant"));
+        enc.setBuffer(x2, 0, 0);
+        enc.setBuffer(y, 0, 1);
+        enc.setBuffer(nw, 0, 2);
+        enc.setBuffer(tab, 0, 3);
+        enc.setBuffer(tab, 0, 4);
+        enc.setBuffer(line, 0, 5);
+        enc.setBytes(std.mem.asBytes(&parts), 6);
+        enc.setValue([1]f32{h3.eps}, 7);
+        enc.setBuffer(xq2, 0, 8);
+        enc.setBuffer(xs2, 0, 9);
+        enc.dispatchGroups(mtl.Size.of(rows, 1, 1), mtl.Size.of(32, 1, 1));
+        enc.end();
+        cb.commit();
+        cb.wait();
+        try std.testing.expect(cb.failure() == null);
+    }
+    // the fused kernel's in-place add must match h3_norm's, its quantized rows and block scales h3_quantize_rows',
+    // bit for bit
+    try std.testing.expectEqualSlices(u16, x.slice(u16, rows * C), x2.slice(u16, rows * C));
+    try std.testing.expectEqualSlices(i8, xq.slice(i8, rows * C), xq2.slice(i8, rows * C));
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(xs.slice(f32, rows * (C / group))), std.mem.sliceAsBytes(xs2.slice(f32, rows * (C / group))));
+}
+
 test "h3 gemm: a clip's linears stay bf16, bit for bit main's MLX product, whole and ragged" {
     const device = mtl.Device.init() catch return error.SkipZigTest;
     defer device.deinit();
@@ -364,7 +500,7 @@ test "h3 gemm: a clip's linears stay bf16, bit for bit main's MLX product, whole
         const cb = queue.commandBuffer();
         const enc = cb.compute(.concurrent);
         product(enc, mlx, 2, m.xn, .{ .buffer = w }, old, rows, n, k, 256);
-        linear(&m, enc, m.xn, .{ .buffer = w }, m.wide, n, k, .{ .w = .{ .buffer = w }, .s = .{ .buffer = w } });
+        linear(&m, enc, m.xn, .{ .buffer = w }, m.wide, n, k, .{ .w = .{ .buffer = w }, .s = .{ .buffer = w } }, false);
         enc.end();
         cb.commit();
         cb.wait();
