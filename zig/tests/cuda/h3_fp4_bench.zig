@@ -39,7 +39,7 @@ const Fp4 = struct {
     algo: lt_.Algo,
     workspace_need: usize,
 
-    fn init(lt: *const lt_.Library, handle: lt_.Handle, dtype: c_int, scale_mode: c_int, rows: usize, n: usize, k: usize, ws: u64, scales_a: u64, scales_b: u64) !Fp4 {
+    fn init(lt: *const lt_.Library, handle: lt_.Handle, dtype: c_int, scale_mode: c_int, rows: usize, n: usize, k: usize, scales_a: u64, scales_b: u64) !Fp4 {
         const api = lt.api;
         var f: Fp4 = .{ .lt = lt, .handle = handle, .desc = null, .a = null, .b = null, .c = null, .algo = undefined, .workspace_need = 0 };
         try lt.check(api.cublasLtMatmulDescCreate(&f.desc, lt_.compute_32f, .f32), "cublasLtMatmulDescCreate");
@@ -71,7 +71,6 @@ const Fp4 = struct {
         if (count < 1 or found[0].state != 0) return error.NoAlgorithm;
         f.algo = found[0].algo;
         f.workspace_need = found[0].workspace_size;
-        _ = ws;
         return f;
     }
 
@@ -161,7 +160,7 @@ pub fn run(gpu: check.Gpu, dtype: c_int, scale_mode: c_int) !void {
         try d_ws.upload(0, wsc);
         try d_xs.upload(0, xsc);
 
-        var fp4 = Fp4.init(&lt, handle, dtype, scale_mode, sh.rows, sh.n, sh.k, ws.ptr, d_ws.ptr, d_xs.ptr) catch |err| {
+        var fp4 = Fp4.init(&lt, handle, dtype, scale_mode, sh.rows, sh.n, sh.k, d_ws.ptr, d_xs.ptr) catch |err| {
             std.debug.print("BENCH h3_fp4 {s} M={d} N={d} K={d}: NO ALGORITHM ({s})\n", .{ sh.name, sh.rows, sh.n, sh.k, @errorName(err) });
             return err;
         };
@@ -173,8 +172,8 @@ pub fn run(gpu: check.Gpu, dtype: c_int, scale_mode: c_int) !void {
         try int8.runInt(d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, workspace_bytes, s.handle);
         try fp4.run(d_w4.ptr, d_x4.ptr, d_out.ptr, ws.ptr, s);
         try s.synchronize();
-        const i8ns = try timeIt(int8.runInt, .{ &int8, d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, workspace_bytes, s.handle }, s, reps, io);
-        const f4ns = try timeIt(fp4.run, .{ &fp4, d_w4.ptr, d_x4.ptr, d_out.ptr, ws.ptr, s }, s, reps, io);
+        const i8ns = try timeIt(lt_.Gemm.runInt, .{ &int8, d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, workspace_bytes, s.handle }, s, reps, io);
+        const f4ns = try timeIt(Fp4.run, .{ &fp4, d_w4.ptr, d_x4.ptr, d_out.ptr, ws.ptr, s }, s, reps, io);
 
         const flops: f64 = 2.0 * @as(f64, @floatFromInt(sh.rows)) * @as(f64, @floatFromInt(sh.n)) * @as(f64, @floatFromInt(sh.k));
         const i8ms = @as(f64, @floatFromInt(i8ns)) / std.time.ns_per_ms;
