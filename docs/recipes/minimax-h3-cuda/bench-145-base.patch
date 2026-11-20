@@ -200,6 +200,24 @@ index e06a624f6..fcdd918f2 100644
      .{ .launch = .{ .name = "drama3 d3_gemv", .symbol = "d3_gemv", .image = "drama3", .threads = 256, .dynamic = 12288 }, .usage = .{ .{ .regs = 54, .static = 0, .bound = 256 }, .{ .regs = 54, .static = 0, .bound = 256 }, .{ .regs = 54, .static = 0, .bound = 256 }, .{ .regs = 62, .static = 0, .bound = 256 }, .{ .regs = 62, .static = 0, .bound = 256 } } },
      .{ .launch = .{ .name = "drama3 d3_rmsnorm", .symbol = "d3_rmsnorm", .image = "drama3", .threads = 256 }, .usage = .{ .{ .regs = 19, .static = 144, .bound = 0 }, .{ .regs = 20, .static = 144, .bound = 0 }, .{ .regs = 20, .static = 144, .bound = 0 }, .{ .regs = 18, .static = 144, .bound = 0 }, .{ .regs = 18, .static = 144, .bound = 0 } } },
      .{ .launch = .{ .name = "drama3 d3_add_rmsnorm", .symbol = "d3_add_rmsnorm", .image = "drama3", .threads = 256 }, .usage = .{ .{ .regs = 19, .static = 144, .bound = 0 }, .{ .regs = 21, .static = 144, .bound = 0 }, .{ .regs = 21, .static = 144, .bound = 0 }, .{ .regs = 24, .static = 144, .bound = 0 }, .{ .regs = 24, .static = 144, .bound = 0 } } },
+diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
+index 73bac4185..fa1f74f0d 100644
+--- a/zig/src/families/h3/cuda.zig
++++ b/zig/src/families/h3/cuda.zig
+@@ -265,7 +265,12 @@ pub const Model = struct {
+     pub const Plan = @import("cuda_validation.zig").Plan;
+
+     pub fn plan(self: *const Model, in: *const Inputs) !Plan {
+-        return @import("cuda_validation.zig").read(self, in, 0, in.tiles);
++        return @import("cuda_validation.zig").read(self, in, 0, in.tiles, true);
++    }
++
++    /// `plan` for host inputs: `cuda_host.stage` copies them into aligned device buffers.
++    pub fn planHost(self: *const Model, in: *const Inputs) !Plan {
++        return @import("cuda_validation.zig").read(self, in, 0, in.tiles, false);
+     }
+
+     /// Every block over the stream, in place; returns once the GPU has finished.
 diff --git a/zig/src/families/h3/cuda_fused_test.zig b/zig/src/families/h3/cuda_fused_test.zig
 index adccece80..38518bb50 100644
 --- a/zig/src/families/h3/cuda_fused_test.zig
@@ -259,6 +277,19 @@ index adccece80..38518bb50 100644
 -    std.debug.print("H3 CUDA fused: h3_norm_quant and h3_heads_i8 match the unfused kernels byte for byte\n", .{});
 +    std.debug.print("H3 CUDA fused: h3_norm_quant, h3_heads_i8 and h3_swiglu_int8 match the unfused kernels byte for byte\n", .{});
  }
+diff --git a/zig/src/families/h3/cuda_host.zig b/zig/src/families/h3/cuda_host.zig
+index 4554f4e80..81de4bfc7 100644
+--- a/zig/src/families/h3/cuda_host.zig
++++ b/zig/src/families/h3/cuda_host.zig
+@@ -6,7 +6,7 @@ const Model = @import("cuda.zig").Model;
+
+ /// Every nonzero address is host memory, including the optional attention output.
+ pub fn forwardHost(self: *Model, in: *const Model.Inputs) !f64 {
+-    const p = try self.plan(in);
++    const p = try self.planHost(in);
+     try self.drain();
+     const copy = try stage(self, in, p);
+     const took = try self.forward(&copy);
 diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
 index d17477ca4..40f3dbd24 100644
 --- a/zig/src/families/h3/cuda_int8.zig
@@ -288,7 +319,7 @@ index d17477ca4..40f3dbd24 100644
 
      /// Room and plans for `rows` before a step is captured: `layout` then only hands out buffers.
 diff --git a/zig/src/families/h3/cuda_lib.zig b/zig/src/families/h3/cuda_lib.zig
-index 875f15dad..9ff3aaf0a 100644
+index 875f15dad..5071346c6 100644
 --- a/zig/src/families/h3/cuda_lib.zig
 +++ b/zig/src/families/h3/cuda_lib.zig
 @@ -137,6 +137,7 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
@@ -299,7 +330,7 @@ index 875f15dad..9ff3aaf0a 100644
      var block: [1]h3.Block = undefined;
      m.blocks = &block;
      if (@hasField(h3.Model, "tp")) m.tp = null;
-@@ -173,6 +174,21 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
+@@ -173,6 +174,26 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
      in.sin = 0x1000;
      in.keep = 1;
      _ = try m.plan(&in);
@@ -312,39 +343,69 @@ index 875f15dad..9ff3aaf0a 100644
 +    try std.testing.expectError(error.BadH3Rotary, m.plan(&in));
 +    in.rot = 8;
 +    try std.testing.expectError(error.BadH3Address, m.plan(&in));
++    _ = try m.planHost(&in); // a host table is copied into an aligned device buffer before any launch
 +    in.cos = 0x1000;
 +    in.sin = 0x1008;
 +    try std.testing.expectError(error.BadH3Address, m.plan(&in));
++    _ = try m.planHost(&in);
 +    in.sin = 0x1010;
 +    _ = try m.plan(&in);
++    m.hidden = 129; // h3_heads_i8 reads the norm weights as 8-byte groups at hidden * 4 bytes in
++    try std.testing.expectError(error.BadH3Dimensions, m.plan(&in));
++    m.hidden = 128;
 +    m.int8 = null;
      m.hidden = std.math.maxInt(usize);
      try std.testing.expectEqual(@as(f64, -1), tf_h3_forward_host(&m, &valid));
      try report.expect("tf_h3_forward_host", error.BadH3Scalar);
 diff --git a/zig/src/families/h3/cuda_validation.zig b/zig/src/families/h3/cuda_validation.zig
-index e88c7e367..b60c25d2a 100644
+index e88c7e367..b82a30399 100644
 --- a/zig/src/families/h3/cuda_validation.zig
 +++ b/zig/src/families/h3/cuda_validation.zig
-@@ -33,8 +33,10 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
+@@ -20,7 +20,8 @@ fn address(ptr: u64, bytes: usize, alignment: usize) !void {
+     if (ptr == 0 or ptr % alignment != 0) return error.BadH3Address;
+     _ = std.math.add(u64, ptr, bytes) catch return error.BadH3Address;
+ }
+-pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
++/// `device`: every address is a kernel input; host tables are copied into aligned device buffers first.
++pub fn read(m: anytype, in: anytype, own0: usize, own1: usize, device: bool) !Plan {
+     const rows: usize = in.rows;
+     const tiles: usize = in.tiles;
+     if (rows == 0 or tiles == 0 or in.lines == 0) return error.BadH3Dimensions;
+@@ -33,8 +34,12 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
      if (own0 >= own1 or own1 > tiles or rows > try product(&.{ own1 - own0, 64 }) or rows < own1 - own0) return error.BadH3Dimensions;
      if (in.prefix_tiles > tiles or (in.keep != 0 and in.keep > tiles - in.prefix_tiles)) return error.BadH3Keep;
      if (in.keep != 0 and !m.gated) return error.BadH3Ungated;
 -    // CUDA's rotary argument is a half-width within a 128-wide head.
 -    if (in.rot > 64) return error.BadH3Rotary;
-+    // CUDA's rotary argument is a half-width within a 128-wide head; h3_heads_i8 (int8 forwards) reads cos and
-+    // sin as float4 groups, so there it must be a four-multiple and the tables 16-byte aligned.
++    // CUDA's rotary argument is a half-width within a 128-wide head. h3_heads_i8 (int8 forwards) reads cos and sin
++    // as float4 groups, so there it is a four-multiple and the device tables 16-byte aligned; it reads the norm
++    // weights in 4-wide uint2 groups at hidden * 4 bytes in, so hidden is even.
 +    const grouped = m.int8 != null;
++    if (grouped and m.hidden % 2 != 0) return error.BadH3Dimensions;
 +    if (in.rot > 64 or (grouped and in.rot % 4 != 0)) return error.BadH3Rotary;
      const count: usize = if (in.blocks == 0) m.blocks.len else in.blocks;
      if (count > m.blocks.len) return error.BadH3Blocks;
      const prefix: usize = if (in.keep == 0) tiles else in.prefix_tiles;
-@@ -49,7 +51,8 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
+@@ -49,7 +54,8 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
          try product(&.{ tiles, 4 }),        if (in.attention_out == 0) 0 else try product(&.{ rows, i, 2 }),
      };
      const pointers = [8]u64{ in.x, in.tables, in.line, in.cos, in.sin, in.slot, in.sizes, in.attention_out };
 -    for (pointers, input, [_]usize{ 2, 4, 4, 4, 4, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
-+    const table: usize = if (grouped) 16 else 4;
++    const table: usize = if (grouped and device) 16 else 4;
 +    for (pointers, input, [_]usize{ 2, 4, 4, table, table, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
      const padded = try product(&.{ heads, tiles, 64, 128, 2 });
      const means = try product(&.{ heads, tiles, 128, 4 });
      return .{ .count = count, .prefix = prefix, .keep = keep, .own0 = own0, .own1 = own1, .input = input, .buffers = .{
+diff --git a/zig/tests/h3_image_cuda.zig b/zig/tests/h3_image_cuda.zig
+index da4492da7..cca207e90 100644
+--- a/zig/tests/h3_image_cuda.zig
++++ b/zig/tests/h3_image_cuda.zig
+@@ -300,7 +300,7 @@ fn streamSteps(
+
+     // stage() treats every address as host memory: the resident table stays out, x is room for the
+     // stream, and `line` carries this step's count only (the validation reads one step's lines)
+-    const checked = try model.plan(&in);
++    const checked = try model.planHost(&in);
+     try model.drain();
+     var upload = checked;
+     upload.input[1] = 0;
