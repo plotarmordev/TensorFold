@@ -21,7 +21,7 @@ pub const Heuristic = extern struct {
     reserved: [4]c_int,
 };
 
-pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14, e4m3 = 28, f4 = cuda_r_4f_e2m1 };
+pub const DataType = enum(c_int) { f32 = 0, f16 = 2, i8 = 3, i32 = 10, bf16 = 14, f4 = cuda_r_4f_e2m1 };
 pub const compute_32f: c_int = 68;
 pub const compute_32i: c_int = 72;
 /// CUDA_R_4F_E2M1 (library_types.h): e2m1 values, two a byte, cuBLASLt's block-scaled FP4 operand.
@@ -39,8 +39,11 @@ pub const desc_a_scale_mode: c_int = 31;
 pub const desc_b_scale_mode: c_int = 32;
 /// cublasLtMatmulMatrixScale_t's CUBLASLT_MATMUL_MATRIX_SCALE_VEC16_UE4M3: one e4m3 scale every 16 values.
 pub const scale_vec16_ue4m3: c_int = 1;
-/// cublasLtMatmulMatrixScale_t's CUBLASLT_MATMUL_MATRIX_SCALE_VEC32_UE8M0.
-pub const scale_vec32_ue8m0: c_int = 2;
+
+/// Bytes of the VEC16_UE4M3 scales of `rows` rows of k values in cuBLASLt's 128 x 4 tiles, padding included.
+pub fn scaleBytes(rows: usize, k: usize) usize {
+    return std.mem.alignForward(usize, rows, 128) * std.mem.alignForward(usize, k / 16, 4);
+}
 
 pub const layout_order: c_int = 1;
 pub const layout_batch_count: c_int = 5;

@@ -443,9 +443,9 @@ __global__ void __launch_bounds__(256) h3_norm_quant(
 
 // h3_quantize's rotated rows as NVFP4 for cuBLASLt's 16-element block scaling: a block's four lanes reduce its
 // absmax, its e4m3 scale is e4m3(amax / 6) (nvfp4q) and its values e2m1(v / scale) 4-bit codes, Q (M, K / 2)
-// bytes. S holds the scale at the 128 x 4 tiled offset cuBLASLt reads — h3_quantize_fp8's layout, b a 16-block
-// (row r, block b: tile (r / 128, b / 4), then (r % 32) * 16 + (r % 128 / 32) * 4 + b % 4). S's padding past M
-// and K stays as the caller cleared it. Grid [M], 256 threads.
+// bytes. S holds the scale at cuBLASLt's 128 x 4 tiled offset, b a 16-block (row r, block b: tile (r / 128, b / 4),
+// then (r % 32) * 16 + (r % 128 / 32) * 4 + b % 4); padding past M and K is the caller's to clear (the weights'
+// N and K / 16 fill whole tiles). Grid [M], 256 threads.
 __global__ void __launch_bounds__(256) h3_quantize_fp4(const __nv_bfloat16* X, uint8_t* Q, uint8_t* S, int K) {
     const size_t row = blockIdx.x;
     const __nv_bfloat16* x = X + row * K;

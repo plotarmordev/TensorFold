@@ -10,15 +10,6 @@ const check = @import("check.zig");
 const lt_ = cuda.cublaslt;
 
 const workspace_bytes = 32 << 20;
-const desc_a_scale_pointer: c_int = 17;
-const desc_b_scale_pointer: c_int = 18;
-const desc_a_scale_mode: c_int = 31;
-const desc_b_scale_mode: c_int = 32;
-
-/// Bytes of the e4m3 scales of `rows` rows of k values in cuBLASLt's 128 x 4 tiles, padding included.
-fn scaleBytes(rows: usize, k: usize) usize {
-    return std.mem.alignForward(usize, rows, 128) * std.mem.alignForward(usize, k / 16, 4);
-}
 
 /// The four projections a 2048² picture steps through, (name, rows M, n N, k K), as card 129's bench had them.
 const cases = [_]struct { name: []const u8, rows: usize, n: usize, k: usize }{
@@ -37,11 +28,10 @@ const Fp4 = struct {
     b: lt_.Layout,
     c: lt_.Layout,
     algo: lt_.Algo,
-    workspace_need: usize,
 
     fn init(lt: *const lt_.Library, handle: lt_.Handle, dtype: c_int, scale_mode: c_int, rows: usize, n: usize, k: usize, scales_a: u64, scales_b: u64) !Fp4 {
         const api = lt.api;
-        var f: Fp4 = .{ .lt = lt, .handle = handle, .desc = null, .a = null, .b = null, .c = null, .algo = undefined, .workspace_need = 0 };
+        var f: Fp4 = .{ .lt = lt, .handle = handle, .desc = null, .a = null, .b = null, .c = null, .algo = undefined };
         try lt.check(api.cublasLtMatmulDescCreate(&f.desc, lt_.compute_32f, .f32), "cublasLtMatmulDescCreate");
         errdefer _ = api.cublasLtMatmulDescDestroy(f.desc);
         const ta: c_int = @backingInt(lt_.Op.t);
@@ -49,11 +39,11 @@ const Fp4 = struct {
         try lt.check(api.cublasLtMatmulDescSetAttribute(f.desc, lt_.desc_transa, &ta, @sizeOf(c_int)), "set transa");
         try lt.check(api.cublasLtMatmulDescSetAttribute(f.desc, lt_.desc_transb, &tb, @sizeOf(c_int)), "set transb");
         // the heuristic refuses a block-scaled plan without its scales
-        for ([_]c_int{ desc_a_scale_mode, desc_b_scale_mode }) |m|
+        for ([_]c_int{ lt_.desc_a_scale_mode, lt_.desc_b_scale_mode }) |m|
             try lt.check(api.cublasLtMatmulDescSetAttribute(f.desc, m, &scale_mode, @sizeOf(c_int)), "set scale mode");
-        for ([_]struct { c_int, u64 }{ .{ desc_a_scale_pointer, scales_a }, .{ desc_b_scale_pointer, scales_b } }) |p|
+        for ([_]struct { c_int, u64 }{ .{ lt_.desc_a_scale_pointer, scales_a }, .{ lt_.desc_b_scale_pointer, scales_b } }) |p|
             try lt.check(api.cublasLtMatmulDescSetAttribute(f.desc, p[0], &p[1], @sizeOf(u64)), "set scale pointer");
-        const t: lt_.DataType = @enumFromInt(dtype);
+        const t: lt_.DataType = @fromBackingInt(@intCast(dtype));
         try lt.check(api.cublasLtMatrixLayoutCreate(&f.a, t, k, n, @intCast(k)), "layout W");
         errdefer _ = api.cublasLtMatrixLayoutDestroy(f.a);
         try lt.check(api.cublasLtMatrixLayoutCreate(&f.b, t, k, rows, @intCast(k)), "layout X");
@@ -70,7 +60,6 @@ const Fp4 = struct {
         try lt.check(api.cublasLtMatmulAlgoGetHeuristic(handle, f.desc, f.a, f.b, f.c, f.c, pref, 1, &found, &count), "cublasLtMatmulAlgoGetHeuristic");
         if (count < 1 or found[0].state != 0) return error.NoAlgorithm;
         f.algo = found[0].algo;
-        f.workspace_need = found[0].workspace_size;
         return f;
     }
 
@@ -128,9 +117,9 @@ pub fn run(gpu: check.Gpu, dtype: c_int, scale_mode: c_int) !void {
         defer a.free(w4);
         const x4 = try a.alloc(u8, sh.rows * sh.k / 2);
         defer a.free(x4);
-        const wsc = try a.alloc(u8, scaleBytes(sh.n, sh.k));
+        const wsc = try a.alloc(u8, lt_.scaleBytes(sh.n, sh.k));
         defer a.free(wsc);
-        const xsc = try a.alloc(u8, scaleBytes(sh.rows, sh.k));
+        const xsc = try a.alloc(u8, lt_.scaleBytes(sh.rows, sh.k));
         defer a.free(xsc);
         for (w4) |*v| v.* = rng.int(u8);
         for (x4) |*v| v.* = rng.int(u8);
