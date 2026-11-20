@@ -673,20 +673,20 @@ Per-run stage columns, warm:
 | Decoder | 1.2-1.3 s | 0.7 s |
 | Wall | **15.1-15.2 s** | **9.6-10.6 s** |
 
-**mmh3 wins the window.** The card's goal — a warm 2048² picture at or under 7 s beside mmh3's
-9.5 s — is not met at this head: our warm is 15.1 s on unseen prompts (13.9 s on the repeated
-one). mmh3's warm barely moves off its 9.5 s quoted figure when the prompt is new: its INT8 text
-encoder stays resident and encodes an unseen prompt in 0.2 s (against its 3.4 s first encode with
-the encoder load), so "unseen" costs it 0.2-0.5 s, not the 3.4 s card 125's whole-run figure
-suggested. Our unseen prompt costs the BF16 encoder's 1.2 s; the kept-states hit is 0.01 s. The
-transformer holds the gap that matters — its 8.6 s to our 12.6 s, the products and the fused
-elementwise passes the rounds above already name — the decoder its 0.7 s to our 1.3 s.
+**mmh3 wins the window I ran.** The card's goal — a warm 2048² picture at or under 7 s beside
+mmh3's 9.5 s — is not met at this head: I measure our warm at 15.1 s on unseen prompts (13.9 s on
+the repeated one). mmh3's warm barely moves off its 9.5 s quoted figure when the prompt is new:
+its INT8 text encoder stays resident and encodes an unseen prompt in 0.2 s (against its 3.4 s
+first encode with the encoder load), so "unseen" costs it 0.2-0.5 s, not the 3.4 s card 125's
+whole-run figure suggested. Our unseen prompt costs the BF16 encoder's 1.2 s; the kept-states hit
+is 0.01 s. The transformer holds the gap that matters — its 8.6 s to our 12.6 s, the products and
+the fused elementwise passes the rounds above already name — the decoder its 0.7 s to our 1.3 s.
 
-The gates hold for the gate prompt: run 1's latent cosine against episode 1's Mac latent is
-**0.9952** (≥ 0.99) and its PNG **28.69 dB** PSNR and **4.02** apart on average (≥ 28.2, ≤ 4.1);
-run 5's is byte-identical. Every selftest passed and the same-latent `reference` compare repeated
-the `--tc` bound: 85.213% of bytes identical, 99.875% within 1, at most 7 apart, 56.31 dB,
-relative error 3.33e-3 under 3e-2. Six steps both engines, same seed; mmh3's seed draws other
+The gates hold for the gate prompt: I measured run 1's latent cosine against episode 1's Mac
+latent at **0.9952** (≥ 0.99) and its PNG **28.69 dB** PSNR and **4.02** apart on average (≥ 28.2,
+≤ 4.1); run 5's is byte-identical. Every selftest passed and the same-latent `reference` compare
+repeated the `--tc` bound: 85.213% of bytes identical, 99.875% within 1, at most 7 apart, 56.31
+dB, relative error 3.33e-3 under 3e-2. Six steps both engines, same seed; mmh3's seed draws other
 noise, so its side is times, not pixels.
 
 What each engine does that the other doesn't, at this head:

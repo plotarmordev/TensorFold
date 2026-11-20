@@ -32,7 +32,6 @@ done
 
 # Phase 1: our bench, run n on the nth prompt of the list.
 H3_BENCH_OUT=/work/out/h3-side-by-side H3_BENCH_PROMPTS="$list" sh "$here/bench-script.sh"
-printf '%s\n' $list > /work/out/h3-side-by-side/run-prompts.txt
 
 # Phase 2: mmh3's server, the same list in the same order.
 mkdir -p "$out/jobs"
