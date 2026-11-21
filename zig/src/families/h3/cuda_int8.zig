@@ -57,7 +57,7 @@ pub const Int8 = struct {
     }
 
     fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize) !Weight {
-        if (k % 128 != 0 or k > 14336 or n % 4 != 0) return error.BadGeometry; // h3_quantize's quantize_chunks
+        if (k % 128 != 0 or k > 14336 or n % 8 != 0) return error.BadGeometry; // h3_quantize's and h3_swiglu_int8's groups
         const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * 4), .n = n, .k = k };
         try launchQuantize(self, bf16.ptr, w.q.ptr, w.scales(), n, k);
         try self.stream.synchronize();
@@ -94,12 +94,12 @@ pub const Int8 = struct {
 
     /// act (rows, w.n / 2) = swiglu of x . w^T [gate | value], the int32 sums scaled in h3_swiglu_int8 itself.
     pub fn mlpIn(t: *Int8, self: *Model, lay: Scratch, w: Weight, act: u64, rows: usize) !void {
+        if (w.n / 2 > 14336) return error.BadGeometry; // h3_swiglu_int8's quantize_chunks
         try t.gemm(self, lay, w, rows);
         var args: cuda.Args = .{};
         for ([_]u64{ lay.acc, lay.xs, w.scales(), act }) |a| args.add(a);
-        args.add(@as(c_int, @intCast(rows)));
         args.add(@as(c_int, @intCast(w.n / 2)));
-        try self.launch("h3_swiglu_int8", .{ .x = 1024 }, 256, 0, &args);
+        try self.launch("h3_swiglu_int8", .{ .x = @intCast(rows) }, 256, 0, &args);
     }
 
     /// Room and plans for `rows` before a step is captured: `layout` then only hands out buffers.

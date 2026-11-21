@@ -236,35 +236,6 @@ pub fn attention(in: In, s: Sum, want: []f64, mag: []f64) void {
     };
 }
 
-/// h3d_softmax: bf16 softmax(s * scale) over each row of s [rows, n] fp32, fmaxf's NaN drop as the kernel's.
-pub fn softmax(in: In, s: Sum, want: []f64, mag: []f64) void {
-    const n = in.n;
-    var e: [512]f64 = undefined;
-    for (0..in.rows) |r| {
-        const row = in.a[r * n ..][0..n];
-        var top: f64 = -std.math.inf(f64);
-        for (0..n) |i| {
-            e[i] = row[i] * in.scale;
-            if (!std.math.isNan(e[i])) top = @max(top, e[i]);
-        }
-        var terms: [512]f64 = undefined;
-        for (0..n) |i| terms[i] = @exp(e[i] - top);
-        const total = s.of(terms[0..n]);
-        for (0..n) |i| {
-            want[r * n + i] = bf(terms[i] / total);
-            mag[r * n + i] = @abs(e[i]);
-        }
-    }
-}
-
-/// h3d_unheads: y [tokens, 1,024] bf16 = o [16 heads, tokens, 64] fp32 scattered a head's 64 channels a row.
-pub fn unheads(in: In, want: []f64, mag: []f64) void {
-    for (0..in.tokens) |t| for (0..16) |head| for (0..64) |ch| {
-        want[(t * 16 + head) * 64 + ch] = bf(in.a[(head * in.tokens + t) * 64 + ch]);
-        mag[(t * 16 + head) * 64 + ch] = 0;
-    };
-}
-
 /// h3d_swiglu: act [m, 4096] = bf16(bf16(silu(gate)) * value); a wide [m, 8192].
 pub fn swiglu(in: In, want: []f64, mag: []f64) void {
     for (0..in.rows) |r| for (0..4096) |x| {

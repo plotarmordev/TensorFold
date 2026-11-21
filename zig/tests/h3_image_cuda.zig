@@ -8,8 +8,8 @@ const schedule = h3image.schedule;
 const cascade = h3image.cascade;
 
 const usage =
-    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16] [--draft-steps N] [--renoise-sigma X]
-    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16] [--draft-steps N] [--renoise-sigma X]
+    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
+    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
     \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
@@ -21,7 +21,9 @@ const usage =
     \\--draft-steps does: the clean draft is enlarged bilinearly, noised to the next step's sigma (or
     \\to --renoise-sigma X) and redrawn at full size for the rest. It draws a different picture, not a
     \\faster copy of the six-step one.
-    \\
+    \\--load-threads N reads the transformer's weights with N reader threads straight into the pinned
+    \\stages that alternate with the GPU upload, as mmh3's eight-thread loader does; 0 (default) reads
+    \\the shards in place.
 ;
 
 fn read(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
@@ -46,7 +48,7 @@ const Folder = struct {
     modulation: ?h3.modulation.Tables = null,
     times: []f32 = &.{},
 
-    fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, int8: bool) !Folder {
+    fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, int8: bool, threads: usize) !Folder {
         const heads_name = try picture.checkIndex(a, try read(init, a, dir, "model_index.json"));
         const transformer_dir = try std.fs.path.join(a, &.{ dir, "transformer" });
         try picture.checkTransformer(a, try read(init, a, transformer_dir, "config.json"));
@@ -55,7 +57,7 @@ const Folder = struct {
         const pdd = try picture.pdd(a, try read(init, a, heads_dir, "pdd_config.json"));
         var ck = try h3.checkpoint.Shards.open(init.gpa, transformer_dir, shard_count);
         errdefer ck.deinit(init.gpa);
-        const model = try h3.Model.loadSharded(init.gpa, &ck);
+        const model = try h3.Model.loadSharded(init.gpa, &ck, threads);
         errdefer model.deinit();
         if (model.gated) return error.H3NotPictureModel; // a picture's blocks are dense: every tile sees every tile
         if (int8) try h3.Int8.quantize(model);
@@ -95,6 +97,7 @@ pub fn main(init: std.process.Init) !void {
         return h3.picks_test.run(init.gpa);
     }
     var draft_steps: usize = 0;
+    var load_threads: usize = 0;
     var renoise: ?f32 = null;
     var bf16 = false;
     var args: std.ArrayList([]const u8) = .empty;
@@ -103,6 +106,10 @@ pub fn main(init: std.process.Init) !void {
         const arg = all[i];
         if (std.mem.eql(u8, arg, "--bf16")) {
             bf16 = true;
+        } else if (std.mem.eql(u8, arg, "--load-threads")) {
+            i += 1;
+            if (i >= all.len) return error.BadArguments;
+            load_threads = std.fmt.parseInt(usize, all[i], 10) catch return error.BadArguments;
         } else if (std.mem.eql(u8, arg, "--draft-steps")) {
             i += 1;
             if (i >= all.len) return error.BadArguments;
@@ -120,7 +127,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (draft_steps == 0 and renoise != null) return error.BadArguments; // --renoise-sigma noises a draft
     const started = h3.seconds();
-    var folder = try Folder.load(init, init.arena.allocator(), args.items[0], !bf16);
+    var folder = try Folder.load(init, init.arena.allocator(), args.items[0], !bf16, load_threads);
     defer folder.deinit(init.gpa);
     std.debug.print("model loaded in {d:.1} s\n", .{h3.seconds() - started});
     if (!serving) return render(init, init.arena.allocator(), &folder, args.items[1], args.items[2], draft_steps, renoise);
@@ -294,7 +301,7 @@ fn streamSteps(
 
     // stage() treats every address as host memory: the resident table stays out, x is room for the
     // stream, and `line` carries this step's count only (the validation reads one step's lines)
-    const checked = try model.plan(&in);
+    const checked = try model.planHost(&in);
     try model.drain();
     var upload = checked;
     upload.input[1] = 0;

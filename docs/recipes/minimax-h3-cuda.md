@@ -111,6 +111,26 @@ ssh top-menu "job start gpu top plotarmordev/TensorFold SHA docs/recipes/minimax
 The 14 November tables below predate this cutover; the
 [`64188519` window](#gpu-qualification-and-the-64188519-window) measures it.
 
+### Threaded weight reads (card 142)
+
+`tf-h3-image-cuda --load-threads N` loads the transformer's 36.7 GiB of shards with N reader
+threads (`cuda_load_threads.zig`): every tensor's staged image is cut into 8 MiB read jobs the
+readers `pread` straight into the pinned stage, and the two 64 MiB stages alternate — one fills
+while the other's copy ranges upload (`copy_source.Stage`, same custody as before). The fused qkv
+stacking lands as whole head parts. `0` (default) keeps the single-threaded in-place reads; a
+missing or short shard fails at header/shape checks or the fill, before any step runs. The steps
+never see the load path, so the latent and PNG are byte-identical and the warm picture is
+unchanged. [`bench-142-ab.sh`](minimax-h3-cuda/bench-142-ab.sh) is the one-job A/B: one sm_121
+build, six cold runs with every weight file evicted (`posix_fadvise(DONTNEED)`), alternating
+0/8/0/8/0/8 threads, plus a resident transformer a count for the warm picture, every latent and
+PNG `cmp`ed against the 0-thread run.
+
+Measured on TOP (job `top-aa70eb7fd52e`, commit `b298850`): the transformer's `model loaded in` fell
+from **49.5 s** mean (48.8, 49.5, 52.1) cold at `--load-threads 0` to **17.9 s** (17.8, 17.9, 18.2)
+at 8 threads — the cold 2048² picture's wall went 92.0 s mean to 60.6 s. The warm picture held
+(13.65 s vs 13.61 s wall, transformer 12.33 vs 12.30 s) and every latent and PNG was
+byte-identical.
+
 ### Benchmark run
 
 [`bench-script.sh`](minimax-h3-cuda/bench-script.sh) builds the sm_121 tools alone in the same TOP job
@@ -434,8 +454,8 @@ measured the same 28.69 dB, 4.01 apart and 0.9952, and a warm 2048² picture too
 prompt 1.1, transformer 12.8, decoder 4.9), cold 157.8 s, peak 76,665 MiB.
 
 `--tc` opts the decoder's products and attention onto tensor cores: each projection runs cuBLASLt
-bf16 with fp32 sums into the same `acc` `h3d_finish` reads (the bias and LayerScale keep their
-rounding points), and attention runs as batched q·kᵀ and p·v around `h3d_softmax`/`h3d_unheads`.
+bf16 with fp32 sums, its bias in the epilogue (`h3d_res_norm` folds a LayerScale product into the next
+norm; a shape whose algorithm won't fuse keeps `h3d_finish`), and attention runs fused in `h3d_flash` (card 144).
 The tensor-core path is the default from card 122 on; `--exact` opts back into the ordered fp32
 kernels, and `bench-script.sh` maps `H3_DECODER=exact` to it.
 
@@ -726,6 +746,118 @@ six-step picture past the gates, so per-row int8 on the encoder is reverted and 
 Card 139 found the same for the transformer: per-row scales are the only fold cuBLASLt's int32 C supports, so finer
 scales need an own-mma product.
 
+### Card 144: the `--tc` decoder beside mmh3's VAE, and attention fused into `h3d_flash`
+
+[`decoder-trace-job.sh`](minimax-h3-cuda/decoder-trace-job.sh) traces the warm 2048² decode kernel by kernel under
+the CUPTI preload — main's decoder, this card's, then mmh3's server — in one TOP window (job `top-6555a7bad5de` at
+`c35f0d47`, 20 November). Main's 121-tile pass: **340 launches, 0.841 s**, 0.002 s of it between kernels. mmh3's
+VAE (CUTLASS FP16 products, FP32 compute, every tile in one batch): **270 launches, 0.552 s**. Where main's 0.29 s
+over mmh3 goes, by kernel:
+
+| warm 2048², ms | main | mmh3 |
+|---|---:|---:|
+| attention: scores + softmax + p·v + unheads (main) / one fused kernel (mmh3) | 241.0 | 27.6 |
+| products (cuBLASLt bf16 / CUTLASS f16) | 340.1 | 307.6 |
+| swiglu | 81.6 | 88.8 |
+| finish + res_norm / residual add | 113.6 | 70.0 |
+| heads + rms_norm / norms + key norm and rope | 61.6 | 55.6 |
+
+Launches cost nothing (gaps 2 ms), so CUDA-graph batching and `h3d_finish`'s launch count have nothing to win; the
+products sit within 11% of mmh3's FP16 rate, and finish plus res_norm's 44 ms over mmh3's residual add is the
+Metal rounding points' extra bf16 pass. The 0.21 s gap is in attention, where main's four steps per block
+(two batched cuBLASLt products over 1,936 (tile, head)s, `h3d_softmax`, `h3d_unheads`) round-trip a
+[1,936, 261, 261] fp32 score plane. `h3d_flash` fuses them: a block of 4 warps holds 64 queries of one
+(tile, head), and wmma bf16 products with fp32 sums compute `q·kᵀ` and `p·v` over 64-key chunks, with an online
+fp32 softmax in between. Its bf16 weights enter both `p·v` and the row sum, and it writes the out projection's rows
+directly. `--exact` keeps `h3d_attention`. The kernel's contract case replaces the softmax and unheads cases.
+
+Two things tried and dropped. mmh3's 32-pixel tile overlap (81 tiles, 0.473 s on the GPU) missed the Mac mean
+gate at **4.53**, and the host reference decoder missed it identically, so tiling, not the kernels, moved the
+picture. A captured CUDA graph won nothing over 2 ms of gaps and zeroed H3_PROFILE's stage times.
+
+[`bench-144-ab.sh`](minimax-h3-cuda/bench-144-ab.sh) at `b42bc168` (job `top-577dfffd6058`, exit 0) ran the bench
+on this commit, then on `bench-144-base.patch` reverse-applied (main's decoder), with `H3_PROFILE=1` on both sides.
+Per the lead's decision, both sides used the canonical (seen) pilot prompt: the decoder decodes the same latent
+either way. Every selftest passed on both sides.
+
+| 2048², warm | decoder s (GPU) | decoder s (all) | products | finish | heads | attention | swiglu | norms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `h3d_flash`, run 2 | 0.78 | 1.22 | 0.33 | 0.09 | 0.05 | 0.19 | 0.08 | 0.04 |
+| `h3d_flash`, run 3 | 0.78 | 1.23 | 0.33 | 0.09 | 0.05 | 0.20 | 0.08 | 0.04 |
+| `h3d_flash`, run 4 | 0.78 | 1.22 | 0.33 | 0.08 | 0.05 | 0.20 | 0.08 | 0.04 |
+| main, run 2 | 0.83 | 1.27 | 0.34 | 0.09 | 0.05 | 0.24 | 0.08 | 0.04 |
+| main, run 3 | 0.83 | 1.26 | 0.34 | 0.09 | 0.05 | 0.24 | 0.08 | 0.04 |
+| main, run 4 | 0.84 | 1.29 | 0.34 | 0.09 | 0.05 | 0.24 | 0.08 | 0.04 |
+
+All four latents are byte-identical between the phases. The same-latent `reference` held (56.42 dB, relative
+3.27e-3 under 3e-2). On run 1's picture, `h3_image_compare.py`'s numbers against episode 1's Mac latent and PNG
+were cosine 0.9952, 28.69 dB, mean 4.015, the same as main's side. The win is 0.05 s of a 0.83 s decode. The rest of
+the distance to mmh3's 0.55 s is `h3d_flash` itself: 195.8 ms over 121 tiles against mmh3's 27.6 ms. It runs one
+(tile, head) per block at 40 KiB of shared memory and 128–144 registers, staging every wmma tile through shared
+memory; mma.sync fragments in registers are its next step.
+
+`h3d_flash`'s bf16 weights enter `p·v` and the row sum, so its contract case declares those two roundings
+(`mids = 2`, the bf16-P attentions' one for each place). At `2915d6f7`, [`contract-job.sh`](minimax-h3-cuda/contract-job.sh)
+(job `top-6fd50c9c9c52`) passed all four of its gates: shapes worst 0.664 of the bound at 1×261×64 and 2×64×64.
+The job exited 1 on four gate failures in kernels this card leaves unchanged: `h3d_embed` shapes 1.14, `h3d_rms_norm`
+shapes 1.11, `h3d_layer_norm` shapes 1.36 plus its stress sums, and `h3d_attention` shapes 1.81 plus its stress sums.
+
+**FP16 products, tried and kept out.** [`decoder-144-f16-job.sh`](minimax-h3-cuda/decoder-144-f16-job.sh) at
+`2915d6f7` (job `top-ff79ae402131`, exit 1 from the same four contract failures) ran the bench on this commit, then with
+[`decoder-144-f16.patch`](minimax-h3-cuda/decoder-144-f16.patch) applied: the weights converted once to fp16, each
+product's bf16 input cast to fp16 (`h3d_half`), cuBLASLt fp16 × fp16 with fp32 compute into `acc`, then
+`h3d_finish`'s bias and LayerScale roundings — mmh3's operand type at the Metal rounding points. Both bench phases
+passed every selftest and the same-latent bound held unchanged (56.42 dB, relative 3.27e-3 under 3e-2; 85.530% of
+bytes identical against bf16's 85.543%), with 860,230 weights and 5.9 M product inputs a pass outside fp16's
+normals. It was slower:
+
+| 2048², warm | decoder s (GPU) | products | finish | norms (+ casts) |
+|---|---:|---:|---:|---:|
+| bf16, runs 2-4 | 0.78, 0.78, 0.78 | 0.33 | 0.08–0.09 | 0.04 |
+| fp16 trial, runs 2-4 | 1.10, 1.10, 1.10 | 0.39–0.40 | 0.26 | 0.12 |
+
+fp16 operands didn't speed up the products on the GB10: with an fp32 `acc` the products alone took 0.39 s
+against bf16's 0.33 s with its bias epilogue. cuBLASLt's fp16 bias epilogue would also make fp16 the output type,
+which rounds each product to fp16 instead of the Metal reference's bf16. So fp16 adds the casts and an unfused
+`h3d_finish` per product and saves nothing. bf16 products stay. The remaining 22 ms to mmh3's 307.6 ms comes from
+CUTLASS's kernel choice on these shapes, not from the operand type.
+
+### Card 154: unseen prompts of every length draw again
+
+An unseen 55-token prompt (the lighthouse, job `top-6f13211c7306`) failed with `NoAlgorithm` on both sides of that
+job. I probed the prompt server over 1 to 4,096 tokens (`top-6b06d02a7e21`, a throwaway branch logging each
+product's plan): the failing product is condition_proj, `Products.run` at (T, 5,376, 5,120) with its bias fused.
+Prompts of 1-32 and 65-90 tokens drew; 33-64 and 100 and up failed — 55, 128, 300 and 4,096 among them. At those
+lengths cuBLASLt refuses the canonical algorithm (`AlgoCheck` status 15, `NOT_SUPPORTED`), and the fallback that
+`bb46c418` added on 15 November checked the shape's own algorithm — picked by the heuristic *without* the bias
+epilogue, because `fuse` leaves it unfused when it cannot take one — against a descriptor that now carries the bias.
+No commit broke a passing prompt: card 132's unseen prompts were 31-32 tokens, inside the band that draws, and the
+fused bias with a canonical-only plan dates from `a3755cbb` the same day.
+
+The fallback now asks the heuristic again with the bias epilogue set (`Linear.pick`), so every length gets an
+algorithm that adds the bias in its epilogue; the canonical algorithm still runs wherever cuBLASLt accepts it, and
+an unanswered shape still fails with its (rows, n, k, bias) logged. The transformer's `Gemms.plan` keeps the shape's
+own algorithm the same way instead of refusing. `prompt_cuda_lengths_test.zig` replays GB10's answers on a cuBLASLt
+stub at 1, 55, 77, 301 and 4,096 rows; it fails on main and passes here.
+
+[`bench-154.sh`](minimax-h3-cuda/bench-154.sh) at `912e9d9f` (job `top-473d0aacdf51`, GB10, driver 580.173.02,
+20 November, exit 0) drew the pilot prompt and five unseen ones through the resident servers, `H3_PROMPT_CHECK=1`
+checking each encode's refiner rows against the BF16 host reference (`prompt_reference.refine`, f32 sums, on the
+GPU encoder's rows). All selftests passed.
+
+| 2048² run | prompt | tokens | refiner rows against the host reference | wall s |
+|---|---|---:|---|---:|
+| cold | pilot (fox) | 24 | cosine 0.9999922, relative 3.95e-3 | 156.0 |
+| warm 1 | one word | 1 | cosine 0.9999998, relative 6.17e-4 | 17.0 |
+| warm 2 | lighthouse | 55 | cosine 0.9999917, relative 4.08e-3 | 19.8 |
+| warm 3 | workshop | 81 | cosine 0.9999914, relative 4.15e-3 | 22.1 |
+| warm 4 | glacier | 134 | cosine 0.9999929, relative 3.76e-3 | 27.3 |
+| warm 5 | station | 316 | cosine 0.9999921, relative 3.98e-3 | 48.9 |
+
+The prompt column includes the host check (316 tokens: 18.0 s encoding, 15.0 s reference), so these walls are not
+speed receipts. The second phase reverse-applied `bench-154-base.patch` (main's products) and drew the pilot prompt
+again: both 2048-1 latents are sha256 `8d067d75…`, byte-equal — the canonical algorithm still runs at 24 rows.
+
 ### The side-by-side: mmh3's warm server beside ours, unseen prompts (20 November)
 
 [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) puts both engines' resident servers
@@ -936,3 +1068,30 @@ eight bench latents are sha256-identical (`8d067d75…`) between head and baseli
 at main **14.3 s** (14.3, 14.3, 14.3: transformer 12.9): `q k v gate` 2.68→1.88–1.89 s, `heads`
 0.96→1.40–1.41 s, `mlp in` 3.39→3.32–3.34 s — the study's 3.20 s of elementwise launches is 2.4 s. Against
 episode 1's Mac picture the gates hold unchanged — the latent is byte-identical to the measured one.
+
+`b163d44` (job `top-52a99a9e86fd`, 20 November, exit 0 — a same-job A/B: `bench-145-ab.sh` on this commit, then
+`bench-145-base.patch` reverse-applied and the same unseen prompts again) targets the two non-product passes card
+128's split left: `heads` 1.40 s and the ~0.8 s `h3_swiglu_int8` inside `mlp in`. `h3_heads_i8` keeps q and k
+rounded to bf16 two a word (bit-identical values, 146–172 registers across the five SMs where card 128's float
+arrays took 246–255 and spilled), reads every row 16 bytes at a time, and reloads each rotary partner's `int32` group to dequantize
+it again rather than sharing rounded values; `h3_swiglu_int8` runs one block a row of 4-wide `int4`/`float4`
+groups instead of a grid-stride element loop, the same dequantize, silu and product. An int8 act rows variant
+(swiglu quantizing its own output, fc2's product reading the codes) was cut before the run: cuBLASLt's mixed
+bf16×i8 path has no epilogue for the row scale, so it could not keep the product bit-identical. `fused_test`
+now checks `h3_swiglu_int8` against `h3_dequantize`+`h3_swiglu` too (transformer PASS in both phases). Each
+phase renders an uncounted warm-up prompt, then three unseen 2048² prompts; the three latents are
+byte-identical between phases (`e95fd65d…`, `58db502a…`, `a8beb316…`). A warm picture took **14.49, 14.53,
+14.55 s** (transformer 11.98, 12.02, 12.03) against the same job's main at **15.02, 15.15, 15.13 s**
+(transformer 12.52, 12.64, 12.63): `heads` 1.40–1.41→1.11–1.12 s, `mlp in` 3.28–3.30→3.23–3.25 s and `mlp out`
+2.43–2.45→2.22–2.23 s, with `q k v gate` (1.84–1.85 s against 1.83–1.85), `attention` and `norms` unchanged.
+`mlp out` is only fc2's bf16 product over `act`, so its 0.2 s comes from swiglu's new write order, likely
+leaving `act` in L2 for fc2 (inferred, not profiled). Of card 128's ~2.4 s of non-product passes, `heads` and
+`h3_swiglu_int8`'s own share of `mlp in` give back ~0.35 s, so ~2.05 s against mmh3's 1.34 s; the further ~0.2 s
+lands in `mlp out`, a product pass.
+
+`7981aad` (job `top-2b14fb839bee`, 21 November, exit 0 — the same A/B after main's cards 150, 153 and 154 merged,
+each phase now auditing its own five-SM `h3.fatbin`) repeats it: **14.51, 14.53, 14.58 s** (transformer 12.02,
+12.02, 12.06) against main's **15.02, 15.20, 15.12 s** (transformer 12.54, 12.71, 12.61); `heads` 1.37→1.13 s,
+`mlp in` 3.29–3.34→3.21–3.22 s, `mlp out` 2.45–2.47→2.28 s; the same three latents byte-identical between
+phases. `kernel-contract-limits` passes both phases: `h3_heads_i8` takes 148/146/146/172/172 registers on
+sm_80/86/89/120/121, main's 252/246/246/255/255.

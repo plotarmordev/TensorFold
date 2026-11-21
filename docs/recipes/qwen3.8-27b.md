@@ -78,8 +78,12 @@ For bounded top-k requests, the BF16 host draw validates and selects candidates 
 scratch. The same FP64 keyed sampler applies temperature, top-p and min-p to the same ordered candidates.
 Larger or unbounded cuts keep the general draw. Sampling time has its own pass-profile phase.
 
-On Metal, M5 prompt passes request 2,048 rows when no other request is decoding; earlier chips keep the 512-row
-default. The larger frame must fit the configured context and all streams beside loaded weights and the 8 GiB
+On Metal, M5 prompt passes request 2,048 rows when no other request is decoding. The dense 27B and 9B default
+frame follows the attention geometry at model load and serving. The qualified shared-prefix path keeps the
+512-row default before M5; `TF_QWEN27_SHARED_PREFIX=0` on those chips uses a 128-row frame for its 128-row passes.
+Valid `TF_PROMPT_ROWS` values and a caller's explicit row count remain unchanged, as do M5 and routed defaults.
+Less unused scratch on the unshared path may let a tight startup fit or admit more streams.
+The larger frame must fit the configured context and all streams beside loaded weights and the 8 GiB
 margin, otherwise M5 keeps 512 rows. Startup reserves the actual prompt scratch sizes as well as stream caches.
 Wide prompt frames keep separate 512-row activation scratch for small rounds, so decoding binds the small buffers.
 Admission counts both banks.
@@ -213,7 +217,8 @@ The `qwen3_5` family combines Gated DeltaNet and full attention. The standard re
 4-bit/group-64 checkpoint; the quantization guide lists the other affine formats it reads.
 
 ```bash
-tensorfold pull TensorFold/Qwen3.8-27B-MLX-4bit z-lab/Qwen3.8-27B-DFlash2
+tensorfold pull TensorFold/Qwen3.8-27B-MLX-4bit
+tensorfold pull z-lab/Qwen3.8-27B-DFlash2
 tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --name bench
 ```
 
@@ -267,7 +272,8 @@ alone. One GPU: `--tp 2` stops at startup (two ranks read the MLX checkpoint), a
 input is qualified on this checkpoint.
 
 ```bash
-tensorfold pull nvidia/Qwen3.8-27B-NVFP4 z-lab/Qwen3.8-27B-DFlash2
+tensorfold pull nvidia/Qwen3.8-27B-NVFP4
+tensorfold pull z-lab/Qwen3.8-27B-DFlash2
 tensorfold serve nvidia/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8080
 ```
 

@@ -50,9 +50,7 @@ pub const Gemms = struct {
     }
 
     /// The shape's plan, running the algorithm cuBLASLt picked for (canonical_rows, n, k) — the
-    /// picks file's own when it matches, proven on this shape by `initChecked`. A record the device
-    /// refuses (a bit flip behind a valid header, a workspace need that grew) is dropped, the search
-    /// reruns and its fresh pick replaces it — a corrupt file never repeats.
+    /// picks file's own when it matches, proven on this shape by `initChecked` — else `fallback`'s.
     pub fn plan(g: *Gemms, rows: usize, n: usize, k: usize) !*const lt_.Linear {
         const got = try g.plans.getOrPut(g.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
@@ -60,11 +58,26 @@ pub const Gemms = struct {
         const chosen = try g.algoFor(n, k);
         got.value_ptr.* = lt_.Linear.initChecked(&g.lt, rows, n, k, .bf16, workspace_bytes, chosen) catch |e| blk: {
             if (e != error.NoAlgorithm) return e;
-            g.stale(.{ canonical_rows, n, k });
-            const fresh = try g.searched(n, k);
-            break :blk try lt_.Linear.initChecked(&g.lt, rows, n, k, .bf16, workspace_bytes, fresh);
+            break :blk try g.fallback(rows, n, k, chosen);
         };
         return got.value_ptr;
+    }
+
+    /// `chosen` refused at `rows`: a pick the canonical shape still runs is sound, so this shape asks
+    /// the heuristic for its own; one the canonical shape refuses too (a bit flip behind a valid
+    /// header, a workspace need that grew) is dropped and re-searched, so a corrupt file never repeats.
+    fn fallback(g: *Gemms, rows: usize, n: usize, k: usize, chosen: lt_.Algo) !lt_.Linear {
+        var canonical = lt_.Linear.initChecked(&g.lt, canonical_rows, n, k, .bf16, workspace_bytes, chosen) catch |e| {
+            if (e != error.NoAlgorithm) return e;
+            g.stale(.{ canonical_rows, n, k });
+            const fresh = try g.searched(n, k);
+            return lt_.Linear.initChecked(&g.lt, rows, n, k, .bf16, workspace_bytes, fresh) catch |e2| {
+                if (e2 != error.NoAlgorithm) return e2;
+                return lt_.Linear.init(&g.lt, rows, n, k, .bf16, workspace_bytes);
+            };
+        };
+        canonical.deinit();
+        return lt_.Linear.init(&g.lt, rows, n, k, .bf16, workspace_bytes);
     }
 
     /// The canonical shape's stored pick dropped after the device refused it; the (n, k) in `algos`

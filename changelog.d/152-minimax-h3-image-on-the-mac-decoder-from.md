@@ -1,0 +1,4 @@
+# MiniMax-H3-Image: the Mac decoder on the tensor units
+
+- On the M5, `tf-h3-image-decoder`'s products run on `nax.h`'s tensor-unit fragments with bf16 operands and float32 sums at the same rounding points, SwiGLU folds into w1's product epilogue (196 dispatches a pass instead of 220), and `h3d_attention` loads k and v as vectors. Every other Apple GPU compiles main's decoder unchanged: `nax.h`'s simdgroup-matrix form could not be shown right before the M5.
+- Warm 2048x2048 decode on an M5 Ultra: 121 tiles take 0.49 s on the GPU, down from 1.08 s, and the server's decoder stage 0.72-0.82 s, down from 1.32-1.41 s, with latents bit-identical to main's. Receipts, including fast mode (`--draft-steps 3`) and why FP16 products were not kept, are in `docs/recipes/minimax-h3-image-metal.md` and `docs/receipts/h3-image-decoder-152-fast`. A band-by-band PNG overlap was tried, not measured in a locked window, and not shipped.

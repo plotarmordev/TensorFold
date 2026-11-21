@@ -1,0 +1,16 @@
+main pilot load-before { 6.47 19.23 25.76 }
+main pilot load-after { 6.15 18.74 25.51 }
+main v1 load-before { 6.15 18.74 25.51 }
+main v1 load-after { 5.58 18.21 25.24 }
+main v2 load-before { 5.58 18.21 25.24 }
+main v2 load-after { 5.34 17.74 24.99 }
+main v3 load-before { 5.34 17.74 24.99 }
+main v3 load-after { 4.98 17.25 24.74 }
+head pilot load-before { 5.15 17.08 24.63 }
+head pilot load-after { 4.81 16.62 24.38 }
+head v1 load-before { 4.81 16.62 24.38 }
+head v1 load-after { 4.54 16.17 24.13 }
+head v2 load-before { 4.54 16.17 24.13 }
+head v2 load-after { 4.07 15.69 23.87 }
+head v3 load-before { 4.07 15.69 23.87 }
+head v3 load-after { 3.98 15.28 23.63 }

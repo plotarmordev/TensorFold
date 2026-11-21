@@ -90,9 +90,10 @@ pub const Model = struct {
     }
 
     /// `load` over a checkpoint's already-open shards (the released MiniMax-H3's model-NNNNN-of-COUNT files).
-    pub fn loadSharded(gpa: std.mem.Allocator, ck: *checkpoint.Shards) !*Model {
+    /// `threads` readers pread the tensors straight into the pinned stages; 0 is the in-place reads.
+    pub fn loadSharded(gpa: std.mem.Allocator, ck: *checkpoint.Shards, threads: usize) !*Model {
         const self = try setup(gpa);
-        weights.readSyncedShards(self, ck.*) catch |err| {
+        weights.readSyncedShards(self, ck.*, threads) catch |err| {
             self.tryDeinit() catch @import("cuda_load_retained.zig").keep(self);
             return err;
         };
@@ -266,7 +267,12 @@ pub const Model = struct {
     pub const Plan = @import("cuda_validation.zig").Plan;
 
     pub fn plan(self: *const Model, in: *const Inputs) !Plan {
-        return @import("cuda_validation.zig").read(self, in, 0, in.tiles);
+        return @import("cuda_validation.zig").read(self, in, 0, in.tiles, true);
+    }
+
+    /// `plan` for host inputs: `cuda_host.stage` copies them into aligned device buffers.
+    pub fn planHost(self: *const Model, in: *const Inputs) !Plan {
+        return @import("cuda_validation.zig").read(self, in, 0, in.tiles, false);
     }
 
     /// Every block over the stream, in place; returns once the GPU has finished.

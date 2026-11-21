@@ -1,7 +1,8 @@
 //! MiniMax-H3-Image's image decoder on CUDA: the VAE's 2D ViT decoder in bf16, tiles in batches.
 //! --exact's products sum K sequentially in fp32 and h3d_finish adds bias and LayerScale at the
 //! Metal kernels' rounding points; --tc gets the same rounding from cuBLASLt's bias epilogue,
-//! with h3d_res_norm folding a LayerScale product into the next block norm.
+//! with h3d_res_norm folding a LayerScale product into the next block norm, and fuses attention
+//! into h3d_flash.
 const std = @import("std");
 const report = @import("report.zig");
 const cuda = @import("cuda");
@@ -14,7 +15,7 @@ const W = host.width;
 const F = host.ffn;
 
 const image align(16) = @embedFile("fatbin_h3_image_decoder").*;
-const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_res_norm", "h3d_softmax", "h3d_heads", "h3d_attention", "h3d_unheads", "h3d_swiglu" };
+const kernel_names = [_][:0]const u8{ "h3d_post_quant", "h3d_embed", "h3d_rms_norm", "h3d_layer_norm", "h3d_linear", "h3d_finish", "h3d_res_norm", "h3d_heads", "h3d_attention", "h3d_flash", "h3d_swiglu" };
 
 /// H3_PROFILE's stages, in the order a pass runs them: where a warm picture's decoder seconds go.
 pub const profile_stages = [_][]const u8{ "embedding", "norms", "products", "finish", "heads", "attention", "swiglu" };
@@ -49,52 +50,6 @@ pub const Stages = struct { embed: bool = true, from: usize = 0, to: usize, fina
 /// 121 tiles in one pass, the way mmh3 decodes its whole canvas at once.
 pub const most_batch = 128;
 
-/// The fast path's cuBLASLt plans: each projection's bias epilogue writes bf16(acc + b) to y or
-/// (LayerScale) to `wide` for h3d_res_norm, attention batched over a pass's (tile, head)s; `acc`
-/// holds its scores and output, and the fallback's fp32 products.
-const Tc = struct {
-    handle: cuda.cublaslt.Handle,
-    gemms: cuda.vit.Gemms,
-    /// scores q . kᵀ and output p . v, a plan a (tokens, batch) shape.
-    scores: std.AutoHashMapUnmanaged([2]u64, cuda.cublaslt.Gemm) = .empty,
-    out: std.AutoHashMapUnmanaged([2]u64, cuda.cublaslt.Gemm) = .empty,
-
-    fn open(gpa: std.mem.Allocator, d: *const cuda.Driver) !Tc {
-        var gemms = try cuda.vit.Gemms.init(gpa, d);
-        errdefer gemms.deinit();
-        const handle = try cuda.cublaslt.createHandle(&gemms.lt);
-        errdefer _ = gemms.lt.api.cublasLtDestroy(handle);
-        return .{ .handle = handle, .gemms = gemms };
-    }
-
-    fn close(tc: *Tc, gpa: std.mem.Allocator) void {
-        var it = tc.scores.valueIterator();
-        while (it.next()) |g| g.deinit();
-        tc.scores.deinit(gpa);
-        var it2 = tc.out.valueIterator();
-        while (it2.next()) |g| g.deinit();
-        tc.out.deinit(gpa);
-        _ = tc.gemms.lt.api.cublasLtDestroy(tc.handle);
-        tc.gemms.deinit();
-    }
-
-    /// The batched plan of `which` for `n` tokens over `b` (tile, head)s.
-    fn plan(tc: *Tc, gpa: std.mem.Allocator, which: enum { scores, out }, n: u64, b: u64) !*cuda.cublaslt.Gemm {
-        const map = if (which == .scores) &tc.scores else &tc.out;
-        const got = try map.getOrPut(gpa, .{ n, b });
-        if (got.found_existing) return got.value_ptr;
-        errdefer map.removeByPtr(got.key_ptr);
-        // Row-major packed heads read column-major: k, q and v are each [64, n] with lda/ldb 64,
-        // so sᵀ [n, n] column-major of s row-major is kᵀ . q and oᵀ [64, n] is vᵀ . p.
-        const s: cuda.cublaslt.Spec = switch (which) {
-            .scores => .{ .ta = .t, .tb = .n, .m = n, .n = n, .k = 64, .a = .bf16, .b = .bf16, .c = .f32, .lda = 64, .ldb = 64, .ldc = n, .batch = @intCast(b), .sa = n * 64, .sb = n * 64, .sc = n * n },
-            .out => .{ .ta = .n, .tb = .n, .m = 64, .n = n, .k = n, .a = .bf16, .b = .bf16, .c = .f32, .lda = 64, .ldb = n, .ldc = 64, .batch = @intCast(b), .sa = n * 64, .sb = n * n, .sc = 64 * n },
-        };
-        got.value_ptr.* = try cuda.cublaslt.Gemm.init(&tc.gemms.lt, tc.handle, s, tc_workspace_bytes);
-        return got.value_ptr;
-    }
-};
-
 pub const seconds = @import("clock.zig").seconds;
 
 pub const Decoder = struct {
@@ -126,9 +81,9 @@ pub const Decoder = struct {
     /// H3_PROFILE: wait after every stage and keep where a picture's decoder seconds went.
     profile: bool = false,
     spent: [profile_stages.len]f64 = @splat(0),
-    /// --tc: products and attention through tensor cores (cuBLASLt, fp32 sums), plans under `tc`.
+    /// --tc: products through tensor cores (cuBLASLt, fp32 sums) and h3d_flash's fused attention.
     fast: bool = false,
-    tc: ?Tc = null,
+    gemms: ?cuda.vit.Gemms = null,
     mark: f64 = 0,
 
     /// A scratch view's byte offset inside `scratch`.
@@ -185,7 +140,7 @@ pub const Decoder = struct {
     fn tryDeinit(d: *Decoder) !void {
         try d.drain();
         d.staged.deinit(d.gpa);
-        if (d.tc) |*tc| tc.close(d.gpa);
+        if (d.gemms) |*g| g.deinit();
         if (d.scratch) |*s| s.free();
         if (d.latent) |*l| l.free();
         d.weights.free();
@@ -251,17 +206,9 @@ pub const Decoder = struct {
         if (d.scratch) |*s| s.free();
         d.scratch = null;
         const m = batch * n;
-        if (d.fast and d.tc == null) d.tc = try Tc.open(d.gpa, &d.driver);
+        if (d.fast and d.gemms == null) d.gemms = try cuda.vit.Gemms.init(d.gpa, &d.driver);
         // x, xn, wide, q, k, v, o, act, out (bf16 rows); tok's cells; the rotary tables; origins; acc fp32
-        // acc fp32, the products' sums; the fast path's attention also packs scores f32, weights bf16
-        // and output f32 into it, 256-aligned for cuBLASLt's default pointer preference.
-        const s_n: usize = if (d.fast) blk: {
-            const p_off = std.mem.alignForward(usize, batch * host.heads * n * n * 4, 256);
-            const o_off = p_off + std.mem.alignForward(usize, batch * host.heads * n * n * 2, 256);
-            break :blk (o_off + batch * host.heads * n * 64 * 4) / 4;
-        } else 0;
-        const acc = if (d.fast) @max(m * 2 * F, s_n) else m * 2 * F;
-        const sizes = [_]usize{ m * W * 2, m * W * 2, m * 2 * F * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8, acc * 4 };
+        const sizes = [_]usize{ m * W * 2, m * W * 2, m * 2 * F * 2, m * W * 2, m * W * 2, m * W * 2, m * W * 2, m * F * 2, m * host.patch * 2, batch * h * w * host.channels * 2, n * vae.rotated * 2, n * vae.rotated * 2, batch * 8, m * 2 * F * 4 };
         var total: usize = 0;
         for (sizes) |s| total += std.mem.alignForward(usize, s, 256);
         const buf = try cuda.DeviceBuffer.alloc(&d.driver, total);
@@ -386,15 +333,15 @@ pub const Decoder = struct {
         p.k = @intCast(k);
         p.mode = @intFromBool(scale != null);
         if (d.fast) {
-            const tc = &d.tc.?;
-            const plan = try tc.gemms.plan(s.m, @intCast(n), @intCast(k), .bf16, .bias);
+            const gemms = &d.gemms.?;
+            const plan = try gemms.plan(s.m, @intCast(n), @intCast(k), .bf16, .bias);
             if (plan.epilogue == .bias) {
-                try plan.runBias(d.dev(x), d.param(w), d.param(b), d.dev(if (scale == null) y else d.view.wide), tc.gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
+                try plan.runBias(d.dev(x), d.param(w), d.param(b), d.dev(if (scale == null) y else d.view.wide), gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
                 try d.lap("products");
                 try d.lap("finish");
                 return scale;
             }
-            try tc.gemms.run(d.queue, d.dev(x), d.param(w), d.dev(d.view.acc), s.m, n, k, .f32);
+            try gemms.run(d.queue, d.dev(x), d.param(w), d.dev(d.view.acc), s.m, n, k, .f32);
         } else {
             var product = d.args(&.{ d.dev(x), d.param(w), d.dev(d.view.acc) });
             product.add(p);
@@ -436,11 +383,11 @@ pub const Decoder = struct {
         h.add(s);
         try d.launch("h3d_heads", .{ .x = s.m, .y = host.heads, .z = 1 }, .{ .x = 32 }, 0, &h);
         try d.lap("heads");
+        var t = d.args(&.{ d.dev(d.view.q), d.dev(d.view.k), d.dev(d.view.v), d.dev(d.view.o) });
+        t.add(s);
         if (d.fast) {
-            try d.attentionTc(s);
+            try d.launch("h3d_flash", .{ .x = @intCast((s.tokens + 63) / 64), .y = host.heads, .z = s.tiles }, .{ .x = 128 }, 0, &t);
         } else {
-            var t = d.args(&.{ d.dev(d.view.q), d.dev(d.view.k), d.dev(d.view.v), d.dev(d.view.o) });
-            t.add(s);
             try d.launch("h3d_attention", .{ .x = @intCast((s.tokens + 7) / 8), .y = host.heads, .z = s.tiles }, .{ .x = 256 }, 0, &t);
         }
         try d.lap("attention");
@@ -458,30 +405,6 @@ pub const Decoder = struct {
         try d.launch("h3d_swiglu", .{ .x = @intCast(F / 32), .y = @intCast((s.m + 7) / 8), .z = 1 }, .{ .x = 32, .y = 8 }, 0, &u);
         try d.lap("swiglu");
         return d.gemm(s, d.view.act, p.block(i, .w2_w), p.block(i, .w2_b), p.block(i, .scale2), d.view.x, W, F);
-    }
-
-    /// Fast attention: packed q, k, v [tiles * heads, T, 64] through the batched products s = q . kᵀ
-    /// (fp32), h3d_softmax's bf16 weights, o = p . v (fp32), then h3d_unheads to the out projection's
-    /// rows. Scores, weights and output share `acc` (the products' sums are free during attention).
-    fn attentionTc(d: *Decoder, s: Shape) !void {
-        const tc = &d.tc.?;
-        const n: u64 = s.tokens;
-        const b: u64 = s.tiles * host.heads;
-        // h3d_softmax reads a row in 128-key strides; a tile over 4 * 128 tokens needs it wider.
-        if (n > 4 * 128) return error.H3BadTiles;
-        const acc = d.dev(d.view.acc);
-        const scores = try tc.plan(d.gpa, .scores, n, b);
-        const out = try tc.plan(d.gpa, .out, n, b);
-        const p_bf16 = acc + std.mem.alignForward(u64, n * n * 4 * b, 256);
-        const o_f32 = p_bf16 + std.mem.alignForward(u64, n * n * 2 * b, 256);
-        try scores.run(1, d.dev(d.view.k), d.dev(d.view.q), 0, acc, tc.gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
-        var a = d.args(&.{ acc, p_bf16 });
-        a.add(s);
-        try d.launch("h3d_softmax", .{ .x = @intCast(b * n), .y = 1, .z = 1 }, .{ .x = 128 }, 0, &a);
-        try out.run(1, d.dev(d.view.v), p_bf16, 0, o_f32, tc.gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
-        var u = d.args(&.{ o_f32, d.dev(d.view.o) });
-        u.add(s);
-        try d.launch("h3d_unheads", .{ .x = s.m, .y = host.heads, .z = 1 }, .{ .x = 64 }, 0, &u);
     }
 
     /// The decoded picture [3, 16 rows, 16 cols] (normalised) of a raw latent: tiles in batches, blended in fp32.

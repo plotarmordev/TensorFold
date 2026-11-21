@@ -449,8 +449,15 @@ Attention here is dense, so no routing floor applies. FastH3's 0.990 at step 1 c
 ## Decoder
 
 `tf-h3-image-decoder` turns `tf-h3-image`'s latent into a picture on Metal. It runs the VAE's 2D ViT decoder (24 blocks
-of 1,024, 16 heads of 64, 4 register tokens) on any Apple GPU. Its kernels compile from source when it loads and use no
-tensor units.
+of 1,024, 16 heads of 64, 4 register tokens) on any Apple GPU. Its kernels compile from source when it loads, in one of
+two builds of `image_decoder.metal`. With tensor units (the M5), `H3D_TENSOR` is set and `nax.h` inlined: card 152's
+products on the tensor units, SwiGLU folded into w1's, vector attention loads. Every other Apple GPU compiles the
+source as written, which is main's decoder before card 152 token for token (simdgroup-matrix products staged through
+threadgroup memory, a separate `h3d_swiglu`), with main's dispatches. Card 152's products stay off pre-M5 GPUs:
+`nax.h`'s simdgroup-matrix form could not be run on one, and forcing it on an M5 is no stand-in, since there
+`nax.h`'s own `tf_frag_check` (`core/frags.zig`), compiled with `TF_SIMD_FRAGS`, gets 512 of 512 transposed sums and
+510 of 512 plain ones wrong (21 Nov), while the tensor-unit form gets all of them right. The M3 Ultra receipts below
+ran main's decoder, which is still the pre-M5 build.
 
 **What runs:**
 
@@ -473,7 +480,7 @@ tensor units.
 
 - Every parameter is rounded from the file's F32 to bf16 when loaded, and the latent is rounded to bf16 at
   `post_quant_conv`.
-- Products are bf16 with float32 sums, the bias added before the one rounding.
+- Products are bf16 (exact in the fragments' float32) with float32 sums, the bias added before the one rounding.
 - RMSNorm's statistics and weight are float32, rounded once; q and k are RMS-normed with no weight.
 - The rotary ids and 2π·id are in bf16 arithmetic, the angles in float32, cos and sin in bf16.
 - Rotation, LayerScale, the residuals and SiLU are bf16 elementwise.
@@ -1037,7 +1044,8 @@ K chain is MLX's, 32-deep steps in order. Ten dispatches a shape in one command 
 | out | 5,376 x 7,168 | 113 | 108 |
 | fc2 | 5,376 x 14,336 | 89 | 103 |
 
-The products are at the tensor units' rate and a wider tile does not move them; the only shape that gains is fc2, worth
+The products are at the rate MLX's kernel reaches and a wider tile does not move them (card 150's isolated replays
+later put that rate at under two fifths of the tensor unit's own ceiling); the only shape that gains is fc2, worth
 0.3 s of the six steps. Warm 2048 requests took 12.12 and 12.13 s (6 steps 10.49 and 10.52 s, decoder 1.38 and 1.40 s)
 against 12.30 s before. The latent and PNG stay sha1 `f3563c56…` / `904814d6…`.
 
@@ -1197,6 +1205,139 @@ change is flat — the ~0.1 s a step of host round-trips is small next to a 1.6 
 shows the decoder's 121 tiles at 1.08 s in one pass against 1.36 s over two, and the tail kernels' launches replace
 two dispatches and a buffer. The win is structural, not a new warm number.
 
+### Card 150: the int8 product's rate, from isolated kernel replays
+
+The card asked for one warm 2048 picture profiled per kernel with Metal GPU counters or a capture. No in-picture
+Metal counter profile was taken: no capture or counter sample exists, and the Desk closed the Mac's GPU windows
+before one could be; the in-picture profile moves to card 148. The table below is not a picture profile. Each row is
+one product launch replayed alone (`tools/zig/metal_bench.swift`, command-buffer GPU timestamps, warm medians of 12,
+the exact launch `product()` dispatches at 4,120 rows; every bench under `/tmp/tensorfold-model.lock`, load average
+beside each set). A replay has no neighbouring stages or barriers around it, so its times bound the kernel in
+isolation; they are not in-picture kernel times and not a share of a picture's 9.24 s of step GPU time:
+
+| `h3_gemm_32x64_i8` launch | Shape M x N x K | time | rate |
+|---|---|---:|---:|
+| qkv | 4,120 x 21,504 x 5,376 | 6.88 ms | 138 TOPS |
+| attention out | 4,120 x 5,376 x 7,168 | 2.54 ms | 125 TOPS |
+| fc1 (gate+value) | 4,120 x 28,672 x 5,376 | 9.13 ms | 139 TOPS |
+| fc2 | 4,120 x 5,376 x 14,336 | 5.22 ms | 122 TOPS |
+
+(First set at load 47-92, the rerun at load 4.5 within 3% of these.) The peaks the products run against, measured
+the same way with register-fed `mma_16x32` chains — 16,384 simdgroups of 80,000 chained ops through MPP's
+`matmul2d` cooperative-tensor op, the M5 tensor-unit path every product kernel already takes, its
+cooperative-tensor staging included: **493 TOPS int8 and 255 TFLOPS bf16**. Replayed alone, the int8 product sits at
+25-28% of its path's own ceiling, and the bf16 products (the same probe's 255 TFLOPS against their measured 96) at
+38%: the operand gather, not the tensor unit, is what binds — each fragment loads as eight scalar reads.
+
+Candidates, each microbenched against the shipped kernel first (medians; both sets, loads 55-80 and 4.5):
+
+| Candidate | qkv | out | fc1 | fc2 | Verdict |
+|---|---:|---:|---:|---:|---|
+| shipped (byte-wise `frag_get`) | 6.88 ms | 2.54 ms | 9.13 ms | 5.22 ms | kept |
+| int8 fragments as two 4-byte loads (`frag_get_q`) | 6.01 ms | 2.09 ms | 7.98 ms | 4.23 ms | -12 to -19% isolated; **lost the served A/B, reverted** |
+| 64 x 256 tile, 8 warps a threadgroup | 7.56 ms | 2.73 ms | 9.85 ms | 5.65 ms | slower by 8-10%: A-fragment traffic was not what binds |
+| register double-buffer of the 32-deep steps | 11.90 ms | 4.11 ms | 15.88 ms | 8.33 ms | slower by ~70%: spills past the register budget the two accumulator sets fill |
+| scale fold removed (int32 accumulator through all of K) | 11.62 ms | 3.98 ms | 15.41 ms | 8.16 ms | slower by ~70%: the per-256 fold also breaks the mma accumulator chain each block — it is structure, not just cost |
+
+SwiGLU folded into fc1's product stayed unbuilt: card 135's folded variants measured 1.63-1.73 s a step against
+1.53 s for the pair, in exactly the two register budgets the double-buffer row above re-measured as spills (both K
+halves' accumulators live, or one accumulator swept sequentially). A folded try must beat fc1's 9.13 ms plus
+`h3_swiglu` without both accumulator sets.
+
+The 4-byte-load candidate is the card's cautionary receipt. It was gated before it was benched: the warm latent was
+byte-identical (`776b443a…`, the pinned value), card 80's rule passed against episode 1's Mac latent and PNG
+(`h3-image-runs/34/t2i-2048.latent.f32`, `fox-2048-seed42.png`: cosine 0.995459, PSNR 28.673 dB, mean pixel diff
+3.903, every step `timing_valid=true`), `test-h3-gemm`, `test-h3-image-server`, `test-h3-image-prompt` and the
+kernel contract's `h3 product` set (gates 1-4, 0 limit problems) were green. The decoder's products are `h3d_gemm`,
+not `h3_gemm_32x64_i8`, so its same-latent bound holds by construction: the candidate's byte-identical latent is the
+decoder's same input (the candidate's PNG hash itself was not kept). `tf-h3-image-decoder selftest` on this M5 Ultra
+(one lock hold, 40 s, load 7.5) passed every bound: 24 blocks relative 1.49e-2, worst 16.5 ULP, picture bytes at
+most 1 apart, 121 tiles in passes of 128 bit-identical to passes of 16. But the served A/B — two resident
+ReleaseFast servers, one a side, cold on card 34's prompt then three warm runs on unseen prompts (harbour, meadow,
+steam; `docs/recipes/minimax-h3-cuda/prompts/`), one request a lock hold, seed 42, six steps — reversed it:
+
+| Warm run (unseen prompt) | head 6 steps | head total | main 6 steps | main total | load avg (head/main) |
+|---|---:|---:|---:|---:|---|
+| 1 | 9.15 s | 11.44 s | 8.94 s | 11.22 s | 12.2 / 8.9 |
+| 2 | 9.67 s | 12.36 s | 9.25 s | 11.51 s | 10.8 / 8.0 |
+| 3 | 9.67 s | 11.27 s | 9.24 s | 10.83 s | 10.0 / 7.5 |
+
+Every paired warm run is main's. An earlier round under worse contention (main's requests at load 31-52 with the
+golden suite building, head's at 15-48) measured head 9.20-9.82 s against main 10.44-11.72 s and decoder walls up to
+6.5 s — load, not the kernels, moved those numbers, which is why the quiet round above is the one that decides. The
+isolated win (182 ms a step of product time, reproduced at both loads) did not appear in the served pipeline, which
+came out 0.21-0.43 s slower in the six steps and 0.22-0.85 s slower in total a picture; the microbench cannot see
+the step's barrier-ordered stages around each product, and nothing within this card isolated which of them the
+wider loads perturbed.
+By the rule — kept only if faster — the code was reverted; the receipts stand so the next round does not re-try the
+widened loads blind. Fast mode (`--draft-steps 3`) on the shipped state, same protocol at load 25-30: warm 8.59 s
+and 6.17 s (the second with the transformer binding reused), totals 11.19/7.86 s; one warm run waited up to 0.52 s
+for speech (`timing_valid=false`) and is reported, not counted.
+
+The Desk's GPU window (16:37-17:17 HKT, voice idle) re-ran the A/B with `frag_get_q` rebuilt on this branch's
+parent (`fc8aa2d45`, the shipped side built from the same commit): one resident ReleaseFast server a side, one lock
+hold a server (cold on card 34's prompt, then harbour, meadow, steam at seed 42; latents byte-identical between
+sides on all three prompts), sides alternated main, head, head, main, main, head. Load is the 1-minute average when
+each request was sent; other checkouts' builds kept it at 8.8-45.0. Every warm run's stage times in seconds (`b:`
+bound, `r:` reused; step GPU sum in brackets):
+
+| Round | Side | Request | prompt | case | xform | 6 steps (GPU) | decoder | total | load | notes |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | main | harbour | 1.28 | 0.01 | b:0.75 | 8.97 (8.94) | 1.41 | 12.42 | 23.2 | |
+| 1 | main | meadow | 1.24 | 0.00 | b:0.76 | 9.28 (9.24) | 1.38 | 12.66 | 20.9 | |
+| 1 | main | steam | 1.69 | 0.01 | r:0.00 | 9.31 (9.24) | 1.39 | 12.40 | 18.8 | |
+| 1 | head | harbour | 1.52 | 0.01 | b:0.81 | 8.96 (8.93) | 1.46 | 12.76 | 33.0 | |
+| 1 | head | meadow | 1.02 | 0.01 | b:0.76 | 9.28 (9.24) | 1.46 | 12.52 | 29.4 | |
+| 1 | head | steam | 0.76 | 0.01 | r:0.00 | 9.95 (9.92) | 1.60 | 12.32 | 26.9 | |
+| 2 | head | harbour | 2.03 | 0.06 | b:1.30 | 9.81 (9.02) | 3.23 | 16.43 | 19.0 | |
+| 2 | head | meadow | 3.07 | 0.01 | b:1.20 | 10.39 (9.36) | 2.72 | 17.38 | 15.2 | |
+| 2 | head | steam | 2.73 | 0.09 | r:0.00 | 9.61 (9.32) | 3.83 | 16.26 | 14.3 | |
+| 2 | main | harbour | 2.32 | 0.01 | b:1.46 | 10.81 (9.03) | 3.31 | 17.92 | 15.2 | |
+| 2 | main | meadow | 23.90 | 0.02 | b:1.96 | 10.61 (9.37) | 2.61 | 39.09 | 25.3 | prompt waited 20.78 s for speech |
+| 2 | main | steam | 2.23 | 0.06 | r:0.00 | 9.60 (9.23) | 2.90 | 14.79 | 16.5 | |
+| 3 | main | harbour | 2.28 | 0.01 | b:1.10 | 9.00 (8.94) | 1.65 | 14.05 | 28.0 | |
+| 3 | main | meadow | 1.44 | 0.03 | b:0.91 | 9.31 (9.24) | 1.98 | 13.67 | 25.2 | |
+| 3 | main | steam | 2.69 | 0.05 | r:0.00 | 9.72 (9.24) | 2.45 | 14.90 | 22.4 | |
+| 3 | head | harbour | 2.20 | 0.01 | b:1.18 | 10.24 (9.01) | 3.40 | 17.03 | 21.9 | |
+| 3 | head | meadow | 3.32 | 0.01 | b:1.08 | 9.41 (9.24) | 1.97 | 15.80 | 24.9 | |
+| 3 | head | steam | 2.70 | 0.01 | r:0.00 | 9.28 (9.24) | 2.26 | 14.25 | 19.0 | |
+
+Medians of the nine warm runs a side: main 9.31 s wall / 9.24 s GPU of steps, head 9.61 s wall / 9.24 s GPU. Every
+warm step reported `timing_valid=true`; round 2 main's meadow prompt waited 20.78 s for speech, which spoils its
+total but not its steps (main's median stays 9.31 s without it), and head's round-1 cold run (not in the table)
+waited 0.31 s in prompt and 0.53 s in steps 1-2 (`timing_valid=false`).
+
+Fast mode (`--draft-steps 3`), same stage breakdown:
+
+| Round | Side | Request | prompt | case | xform | 6 steps (GPU) | decoder | total | load | notes |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | main | harbour | 2.16 | 0.02 | b:1.23 | 8.98 (5.88) | 2.13 | 14.52 | 19.4 | |
+| 1 | main | meadow | 3.37 | 0.02 | b:0.94 | 8.65 (6.16) | 1.83 | 14.82 | 18.3 | 0.17 s speech wait; steps 1, 5-6 `timing_valid=false` |
+| 1 | main | steam | 2.68 | 0.02 | r:0.00 | 6.16 (6.09) | 2.13 | 11.00 | 15.9 | steps 4-6 `timing_valid=false` |
+| 1 | head | harbour | 4.19 | 0.02 | b:1.21 | 10.98 (5.88) | 3.03 | 19.43 | 11.3 | |
+| 1 | head | meadow | 3.57 | 0.02 | b:1.19 | 9.49 (6.16) | 2.43 | 16.70 | 8.8 | |
+| 1 | head | steam | 2.79 | 0.02 | r:0.00 | 6.49 (6.09) | 2.90 | 12.20 | 9.9 | |
+| 2 | main | harbour | 25.82 | 0.01 | b:1.46 | 9.51 (5.88) | 2.91 | 39.71 | 22.4 | prompt waited 23.12 s for speech |
+| 2 | main | meadow | 4.21 | 0.06 | b:1.33 | 9.51 (6.16) | 2.50 | 17.61 | 20.9 | |
+| 2 | main | steam | 2.02 | 0.01 | r:0.00 | 6.67 (6.09) | 2.92 | 11.62 | 15.6 | |
+| 2 | head | harbour | 2.58 | 0.02 | b:1.30 | 8.88 (5.87) | 3.00 | 15.78 | 11.5 | |
+| 2 | head | meadow | 2.21 | 0.01 | b:1.39 | 9.37 (6.15) | 8.22 | 21.20 | 15.8 | |
+| 2 | head | steam | 4.49 | 0.03 | r:0.00 | 7.30 (6.16) | 8.29 | 20.12 | 45.0 | |
+
+Three of main's fast-mode runs were spoiled: round 1 meadow (load 18.3) and steam (load 15.9) had steps with
+`timing_valid=false`, and round 2 harbour's prompt (load 22.4) waited 23.12 s for speech. They are reported above but
+not counted, and they were never rerun here: the Desk closed the window and the lead ruled out further GPU windows for
+this card, so clean fast-mode reruns move to card 148. The fast-mode comparison is therefore unbalanced and is not a
+verdict; the verdict rests on the nine-a-side six-step A/B above. Over the clean runs only: main 8.98 s wall / 6.09 s
+GPU of steps (three runs), head 9.12 s wall / 6.12 s GPU (six runs; round 1 head's cold run waited 0.31 s for speech
+in its prompt). Matched to main's three clean requests (round 1 harbour, round 2 meadow and steam), head's medians
+are 9.37 s wall / 6.15 s GPU against main's 8.98 / 6.09 s. No fast-mode win or loss is claimed from these.
+
+The window confirms the quiet round at six steps: even on pure step GPU time (9.24 vs 9.24 s, nine runs a side) the
+4-byte loads yield no served gain, so the code stays reverted. Neither side reached the quiet baseline's 10.8 s
+normal / 7.8 s fast totals under this host load (8.8-45.0); the best warm totals in the window were main 12.40 s and
+head 12.32 s at six steps, and main 11.00 s (`timing_valid=false`; 11.62 s valid) and head 12.20 s in fast mode.
+
 ### Card 151: a faster `h3_attention`, measured and reverted
 
 `h3_attention` already runs q·kᵀ and p·v on the tensor units (`matmul2d`, 8 simdgroups, 64-row query tiles) with an
@@ -1235,12 +1376,165 @@ query tiles were not tried: a 64 x 64 tile's fp32 scores and bf16 probabilities 
 and 128 query rows would need 48 KiB against the 32 KiB limit. The kernel is unchanged from main. The receipts
 (`ab151.sh`, server logs, latents and PNGs) are in `h3-image-runs/151`, outside the repo.
 
+### Card 162: scores in registers and 128-row query tiles, measured and reverted
+
+I kept `h3_attention`'s q·kᵀ scores in the product's cooperative tensor instead of the 16 KiB fp32 `st` tile, so 128
+query rows fit: 18,944 threadgroup bytes instead of 25,856 for 64 rows. A layout probe on the M5
+(`matmul2d_descriptor(64, 64, 128)`, 8 simdgroups) gives each lane 4-column quarters of 16-column row chunks. A
+chunk's four quarters sit on lanes `l`, `l^1`, `l^8` and `l^9`. Its running sum is passed through those lanes by
+`simd_shuffle_xor` (^1, ^9, ^1, ^9) in column order. Every fp32 sum then rounds exactly as main's quarter-row thread
+rounds it, and row maxima go through a 1 KiB `part` tile. That leaves two barriers per key tile instead of four.
+Unlike card 151's shuffles, the reduction order is main's.
+
+Microbench on main's 2048 geometry (56 heads, 65 key tiles, 4,122 rows), built with the engine's compile options
+(safe math, fast functions, language 4.1). These are best-of-30 times under `/tmp/tensorfold-model.lock`, two runs,
+load 41-47 from other builders' compiles:
+
+| Kernel | Threadgroup bytes | Time | Output vs main |
+|---|---:|---:|---|
+| main | 25,856 | 5.01-5.01 ms | — |
+| scores in registers, 64-row tiles | 9,472 | 4.89-4.90 ms | 29,546,496 of 29,546,496 bf16 values bit-equal |
+| scores in registers, 128-row tiles | 18,944 | 5.95-5.95 ms | bit-equal |
+
+128 rows lose by 19%: there are half as many threadgroups (33 x 56) with twice the registers each. With exp inside
+the per-role branch, the 64-row tiles ran 5.36 ms. Moving it ahead of the chain and selecting the sum gave 4.89 ms.
+Built with Metal's default fast math instead, the two forms differed from main in 53 and 1,136 values by one bf16 step:
+fast math contracts `acc * scale - next`, which main's `st` round trip prevents. With the engine's options it passed
+`h3-image-contract` (32 of 32 kernels, 36 of 36 controls red, no limit problems).
+
+End to end at 64-row tiles: warm 2048 on a resident `tf-h3-image-server`, seed 42, two prompts not used before (a
+lighthouse, a cello), one cold and three warm requests each, against current main's build (`337abc0a3`) in the same
+session. Each server held `/tmp/tensorfold-model.lock` for its own run. Load is shown before → after each request:
+
+| Build, prompt | Warm request (6 steps, decoder, total) | Load |
+|---|---|---|
+| main, lighthouse | 9.25 / 0.78 / 10.04 s; 9.30 / 0.79 / 10.10 s; 9.24 / 0.77 / 10.01 s | 13.5 → 12.0 |
+| registers, lighthouse | 9.37 / 0.78 / 10.16 s; 10.18 / 0.79 / 11.22 s; 9.23 / 0.81 / 10.06 s | 13.6 → 17.1 |
+| main, cello (rerun) | 10.08 / 1.11 / 11.24 s; spoiled (197 s, see below); 9.37 / 0.80 / 10.18 s | 18.4 → 30.7 |
+
+Every warm latent and PNG is byte-identical to main's on the same prompt and run (`cmp`, lighthouse and cello runs
+2-4), so the picture gates hold by identity. Another builder's GPU job (`tf-exl3-encode`, outside the lock) spoiled
+the first cello pair: main 10.31-10.87 s and the candidate 9.39-11.46 s in six steps. Both were renamed
+`*.spoiled.server.log`. On the rerun, main's second warm request took 197 s; the Desk paused the GPU for the voice
+server, and no further GPU run was started. So the candidate's cello rerun and the `--draft-steps 3` fast mode were
+not measured.
+
+**Not kept.** The 0.12 ms saved per call is ~36 ms a picture (300 block calls), under 0.4%. The one clean pair
+(lighthouse) has warm steps 9.23-9.37 s against main's 9.24-9.30 s, with no win visible. The kernel would also depend on
+the M5 cooperative layout above, which is undocumented, where main's `st` round trip is layout-agnostic. By the rule
+(kept only if faster), I reverted the code. The variant (`h3_attention.r64.metal`), the layout probe, the
+microbench (`bench.swift`, `cand.metal`), `ab162.sh`, the server logs, latents and PNGs are in `h3-image-runs/162`,
+outside the repo.
+
+### Card 152: the decoder on the tensor units
+
+A per-kernel trace of main's warm 2048 decode (`fc8aa2d45`, one dispatch a command buffer timed to completion, a
+throwaway patch not committed; its total runs over the one-buffer pass) put the 1.4 s here:
+
+| Kernel | main |
+|---|---|
+| `h3d_gemm` (qkv, out, w1, w2 of 24 blocks, `proj_out`) | 1,046 ms |
+| `h3d_attention` | 201 ms |
+| `h3d_post_quant` | 51 ms |
+| `h3d_rms_norm` | 42 ms |
+| `h3d_swiglu` | 40 ms |
+| `h3d_heads` | 34 ms |
+| `h3d_embed`, `h3d_layer_norm` | 2 ms |
+
+The products are three quarters of it. Each of the acceptance's four levers, with its result:
+
+- **Wider loads (landed).** The gemm runs on `nax.h`'s fragments (`mma_16x32`, bf16 operands straight from device
+  memory, float32 sums, no threadgroup staging), and `h3d_attention` reads k four wide and v two wide. In the
+  one-buffer pass, the GPU meter falls from 1.08 s to 0.56 s.
+- **Fewer launches (landed).** SwiGLU moved into w1's product. Its mode 2 sums the gate and value rows of one output
+  side by side, applies `bf16(bf16(SiLU(gate)) * value)` in the epilogue, and writes 4,096 values a row instead of
+  8,192. A pass encodes 196 dispatches instead of main's 220 (embed 2, 24 blocks of 8 instead of 9, tail 2), and the
+  2n-wide rows no longer go through memory. Episode 1's latent decodes to the same PNG bytes as before the fusion
+  (`85098fa9…` in both builds), and the GPU meter falls from 0.56 s to 0.49 s.
+- **FP16 products with FP32 sums (measured, not kept).** The fragments typed `frag<half>` convert every bf16
+  activation and weight on load. Episode 1's latent decoded in 0.68 s of GPU twice, against bf16's 0.54-0.55 s,
+  with the two builds alternating under the lock at load 21 and each build's runs byte-identical. The acceptance
+  keeps a change only if it is faster, so the products stay bf16: bf16 operands give exact products in the
+  fragments' float32 sums at the same rounding points.
+- **PNG write overlapped (tried, not shipped).** After the pass, unpatchify, the blend and `picture_writer`'s PNG
+  take 0.25 s at 2048, nearly all of it `png.encode`'s single zlib stream through `std.compress.flate`. Parallel
+  bands, or another level or filter, change the compressed bytes. A band-by-band encode feeding one `flate.Compress`
+  while the GPU decodes the next tile rows keeps them, and a split decode is bit-identical on this card's kernels.
+  It was built and timed only in the standalone tool, never in a locked warm server A/B, so it was reverted; it goes
+  to a later Mac card with its own A/B.
+
+Gates: `tf-h3-image-contract` on the M5 runs the tensor-unit build (`h3d_gemm`'s SwiGLU form beside `h3d_swiglu`,
+which every build still compiles) and that build's controls; a GPU without tensor units runs main's build and main's
+controls. On the M5 Ultra (21 Nov, load 26-30): 32 kernels pass gates 1-4, all 36 controls go red as planted, and
+there are no limit problems;
+`tf-h3-image-decoder selftest` passes (24 blocks relative 1.48e-2, picture bytes at most 1 apart); `zig build test
+test-golden` exits 0. Episode 1's latent decoded by this card versus main: 56.6 dB, mean 0.14, max 5. The warm
+latents are bit-identical to main's on every request below. The cold picture against episode 1's Mac PNG
+(`904814d6…`): latent cosine 0.9955, 28.67 dB, mean 3.90 for both builds.
+
+Warm A/B, M5 Ultra, ReleaseFast `tf-h3-image-server` per build: main `82a2bfba3` against this card's SwiGLU-fused
+head. Each session runs one resident server under `/tmp/tensorfold-model.lock` (`zsystem flock`, taken before the
+server starts and held until it quits, 41-50 s a session) and sends the seed-42 pilot, then three unseen prompts (a
+glassblower's workshop, a mountain railway station at dawn, a tide pool from above; seeds 21-23). Stage seconds:
+prompt / transformer bind / 6 steps / decoder / total; the total also holds the case stage (0.01-0.07 s), so a row's
+stages may sum short of it. Load is the one-minute average before / after each request:
+
+| Run | main | load | this card | load |
+|---|---|---|---|---|
+| normal, pilot | 0.27 / 0.90 / 9.17 / 1.41 / 11.76 | 3.35 / 3.43 | 0.58 / 0.61 / 9.30 / 0.81 / 11.31 | 3.92 / 4.18 |
+| normal, unseen 1 | 0.22 / 0.66 / 9.20 / 1.36 / 11.44 | 3.43 / 3.51 | 0.22 / 0.67 / 9.28 / 0.76 / 10.94 | 4.18 / 4.29 |
+| normal, unseen 2 | 0.24 / 0.65 / 9.29 / 1.41 / 11.59 | 3.51 / 3.67 | 0.22 / 0.67 / 9.25 / 0.82 / 10.96 | 4.29 / 4.33 |
+| normal, unseen 3 | 0.27 / 0.68 / 9.24 / 1.32 / 11.52 | 3.67 / 3.83 | 0.22 / 0.67 / 9.23 / 0.72 / 10.84 | 4.33 / 4.49 |
+| fast (`--draft-steps 3`), pilot | 0.28 / 0.59 / 7.79 / 1.45 / 10.11 | 4.29 / 4.06 | 0.23 / 0.79 / 8.08 / 0.85 / 9.96 | 3.37 / 3.94 |
+| fast, unseen 1 | 0.22 / 0.65 / 6.72 / 1.35 / 8.94 | 4.06 / 3.88 | 0.24 / 0.64 / 6.72 / 0.75 / 8.36 | 3.94 / 3.88 |
+| fast, unseen 2 | 0.26 / 0.66 / 7.48 / 1.40 / 9.80 | 3.88 / 3.72 | 0.24 / 0.65 / 7.55 / 0.79 / 9.23 | 3.88 / 3.83 |
+| fast, unseen 3 | 0.28 / 0.64 / 7.56 / 1.32 / 9.80 | 3.72 / 3.23 | spoiled twice, see below | |
+
+The decoder stage falls from 1.32-1.45 s to 0.72-0.85 s, about 0.6 s a picture, and every clean warm total is lower.
+The latents of the two builds are bit-identical request for request, so the steps' spread is the machine's.
+Contention spoiled this card's fast unseen 3 twice. Both are kept in the receipt, not dropped. The first session
+recorded decoder 1.23 s, total 9.77 s, with load rising from 3.83 to 6.11. A whole fast session rerun right after met
+other workers' CPU tests: load rose from 5.71 to 21.14, and the session recorded decoder 1.37 / 0.84 / 0.93 / 1.04 s,
+totals 11.03 / 9.83 / 9.95 / 9.93 s. Over the following hour the one-minute load stayed between 12 and 86.
+
+The fast mode was rerun clean once the load fell below 7: main `4f805250e` against this card's head (same decoder
+code), one locked fast session per build back to back (54 s and 39 s, lock held only for the session), the seed-42
+pilot and three new unseen prompts (a blacksmith's forge at night, a lighthouse in a winter storm, a spice stall from
+above; seeds 31-33). The exact text of the earlier unseen prompts was not kept, so all four requests ran again in
+both builds. The session script, the prompts, both servers' logs, the per-request loads and the pictures' and
+latents' SHA-256 are in [`docs/receipts/h3-image-decoder-152-fast`](../receipts/h3-image-decoder-152-fast/):
+
+| Run | main | load | this card | load |
+|---|---|---|---|---|
+| fast, pilot | 0.28 / 0.86 / 7.81 / 1.35 / 10.32 | 6.47 / 6.15 | 0.28 / 0.58 / 7.70 / 0.75 / 9.31 | 5.15 / 4.81 |
+| fast, unseen 1 | 0.22 / 0.65 / 7.56 / 1.37 / 9.86 | 6.15 / 5.58 | 0.22 / 0.63 / 6.75 / 0.79 / 8.40 | 4.81 / 4.54 |
+| fast, unseen 2 | 0.22 / 0.65 / 7.50 / 1.43 / 9.81 | 5.58 / 5.34 | 0.22 / 0.66 / 7.62 / 0.82 / 9.33 | 4.54 / 4.07 |
+| fast, unseen 3 | 0.22 / 0.63 / 7.57 / 1.32 / 9.75 | 5.34 / 4.98 | 0.22 / 0.66 / 7.59 / 0.72 / 9.20 | 4.07 / 3.98 |
+
+The decoder stage drops by 0.54-0.64 s in each request, and every total comes in lower. The latents are
+bit-identical request for request. The two builds' PNGs differ by the decoder's rounding alone: 53.3-56.6 dB, mean
+0.14-0.29, max 5-9.
+
+### Card 160: the Euler on the GPU, checked against the host's
+
+I found this card's change already on main: card 137 (`e0d1072fb`) runs `h3_euler` after each step's head on the
+resident `video_latents`, with one upload before step 1 and one download before the decoder (`runSteps` in
+`tests/h3_image.zig`). What it lacked was a test: the kernel contract checks `h3_euler` against float64 within a
+bound, and card 137's latent sha1 was a one-off receipt. I added `the steps' Euler on the GPU leaves main's
+host-Euler latent bit for bit` to `test-h3-image-server` (in `zig build test`): on one binding of the synthetic
+checkpoint it runs the six steps with the GPU Euler, then main's old loop (velocity down, `picture.euler` on the host,
+the latent up each step) and requires the two latents' bytes equal. Scaling the host's delta by 0.999 turns it red.
+
+I did not take a new warm 2048 A/B: this branch's render path is byte for byte main's, so it would time the same
+binary twice. Card 137's A/B above is the measurement of this lever: flat on wall clock (head 11.13-11.74 s, base
+11.06-11.79 s), since about 0.1 s a step of host round-trips does not show next to a 1.6 s step.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
 |---|---|---|---|
 | 1 | SGLang's conditioning cache | under -2 s at warm 2048 | Residency landed with card 50: warm 2048 went from 27 s to 16.4-16.6 s, more than the 6.3 s of loader logs the projection counted, since each one-shot tool also re-reads its files and rebuilds its kernels. A conditioning cache would skip only the prompt (1.2-2.0 s warm); it needs separate accounting and cannot omit prompt work in an uncached comparison. |
-| 2 | PNG writing | upper estimate -18 s at 4096, -4 s at 2048 | Time after decoder tiles includes single-threaded deflate (`moss_image/png.zig`). Parallel bands could remove much of it but change compressed bytes, so they do not satisfy this card's fixed PNG byte-identity gate. Any separate decoded-pixel gate requires explicit approval before runs. |
+| 2 | PNG writing | up to -0.25 s at 2048 overlapped; upper estimate -18 s at 4096, -4 s at 2048 in parallel bands | Time after decoder tiles includes single-threaded deflate (`moss_image/png.zig`). Overlap keeps the bytes: a split decode is free on card 152's kernels and bit-identical, so a banded blend feeding one streaming `flate.Compress` can hide one half-pass of the encode. Parallel bands could remove much more but change compressed bytes, so they do not satisfy the PNG byte-identity gate; a decoded-pixel gate in its place needs explicit approval before runs. |
 | 3 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps at 4096 | The steps are compute-bound: a 2048 step is about 183 TFLOP in 1.83 s, a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs. ComfyUI's int8 here shows the other half: dequantized before each product, its steps are 1.7-1.9x slower than our bf16, so int8 weights alone buy only bytes. Not bit-identical; it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000: -32% at 2048, -22% at 4K. |
 | 4 | Attention | up to -15 s at 4096 | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. |
 | 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step at 4096 | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones; SGLang's recipe runs all six steps. Each skip is a sixth of the steps; it needs a gate against the six-step latent. |

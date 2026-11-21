@@ -5,22 +5,22 @@ const h3 = @import("cuda.zig");
 const Checkpoint = @import("checkpoint.zig").Checkpoint;
 const Shards = @import("checkpoint.zig").Shards;
 const Model = h3.Model;
-
-const staging_bytes = 64 << 20;
+const crew_load = @import("cuda_load_threads.zig");
+const staging_bytes = crew_load.stage_bytes;
 
 /// Reads the model's sizes from `path`, allocates its blocks and fills them from the one checkpoint file.
 pub fn read(self: *Model, path: [*:0]const u8) !void {
     var ck = try Checkpoint.open(path);
     defer ck.deinit();
-    try readFrom(self, ck.shards());
+    try readFrom(self, ck.shards(), 0);
 }
 
 /// `read` over a checkpoint's already-open shards, searched by tensor name.
 pub fn readShards(self: *Model, ck: Shards) !void {
-    try readFrom(self, ck);
+    try readFrom(self, ck, 0);
 }
 
-fn readFrom(self: *Model, ck: Shards) !void {
+fn readFrom(self: *Model, ck: Shards, threads: usize) !void {
     const d = &self.driver;
     var name: [128]u8 = undefined;
     const qkv0 = try ck.bf16("blocks.0.attn.qkv_proj.weight");
@@ -70,6 +70,10 @@ fn readFrom(self: *Model, ck: Shards) !void {
         b.* = try allocateBlock(d, plan.sizes);
         made += 1;
     }
+    if (threads > 0) {
+        submitted = true; // a fill can fail after the first copy ran: cleanup drains and closes
+        return readThreaded(self, ck, &name, plan, gated, threads);
+    }
     const into = [_]usize{ 0, 0, 1, 2, 3, 4, 4, 4, 4 };
     for (self.blocks, 0..) |*b, i| {
         const held = buffers(b);
@@ -78,8 +82,40 @@ fn readFrom(self: *Model, ck: Shards) !void {
             const entry = try ck.bf16(try std.fmt.bufPrint(&name, "blocks.{d}.{s}", .{ i, suffix }));
             submitted = true;
             // the gate-free release fuses each head's q, k and v; the kernels read them stacked
-            const fused: ?Fused = if (!gated and k == 0) .{ .heads = self.heads, .row = self.hidden * 2 } else null;
+            const fused: ?crew_load.Fused = if (!gated and k == 0) .{ .heads = self.heads, .row = self.hidden * 2 } else null;
             try upload(staging, held[to].*, offset, entry.bytes, fused);
+        }
+    }
+}
+
+/// `readFrom` with `threads` readers: every tensor's jobs pread straight into the pinned stage,
+/// the two stages alternating between a crew fill and the GPU upload of the window before.
+fn readThreaded(self: *Model, ck: Shards, name: *[128]u8, plan: Layout, gated: bool, threads: usize) !void {
+    const into = [_]usize{ 0, 0, 1, 2, 3, 4, 4, 4, 4 };
+    var fills: std.ArrayList(crew_load.Fill) = .empty;
+    defer fills.deinit(self.gpa);
+    for (0..self.blocks.len) |i| {
+        for (names, into, plan.offsets, 0..) |suffix, to, offset, k| {
+            if (!gated and k == gate) continue;
+            const entry = try ck.bf16(try std.fmt.bufPrint(name, "blocks.{d}.{s}", .{ i, suffix }));
+            const fused: ?crew_load.Fused = if (!gated and k == 0) .{ .heads = self.heads, .row = self.hidden * 2 } else null;
+            try fills.append(self.gpa, .{ .tag = i * 5 + to, .at = offset, .fd = entry.fd, .file = entry.file, .len = entry.bytes.len, .fused = fused });
+        }
+    }
+    var cut = try crew_load.plan(self.gpa, fills.items, staging_bytes, crew_load.job_bytes);
+    defer cut.deinit();
+    var crew: crew_load.Crew = .{};
+    try crew.start(threads);
+    defer crew.stop();
+    const staging = &self.load_stages;
+    const stream: cuda.Stream = .{ .d = &self.driver, .handle = null };
+    for (cut.windows, 0..) |w, t| {
+        const stage = &staging[t % 2];
+        const window = try stage.take(&self.driver, w.bytes);
+        try crew.run(fills.items, w.jobs, window);
+        for (w.copies) |cp| {
+            const b = &self.blocks[cp.tag / 5];
+            try stage.copyRangeTo(buffers(b)[cp.tag % 5].*, cp.to, cp.staged, cp.len, stream);
         }
     }
 }
@@ -126,9 +162,10 @@ pub fn readSynced(self: *Model, path: [*:0]const u8) !void {
     try self.ctx.synchronize();
 }
 
-/// `readSynced` over a checkpoint's already-open shards.
-pub fn readSyncedShards(self: *Model, ck: Shards) !void {
-    try readFrom(self, ck);
+/// `readSynced` over a checkpoint's already-open shards; `threads` readers pread into the pinned
+/// stages, 0 the single-threaded in-place reads.
+pub fn readSyncedShards(self: *Model, ck: Shards, threads: usize) !void {
+    try readFrom(self, ck, threads);
     errdefer free(self);
     try self.ctx.synchronize();
 }
@@ -163,25 +200,8 @@ pub fn set(self: *Model, block: usize, which: Projection, w: u64, rows: usize, c
     try self.ctx.synchronize();
 }
 
-/// A fused qkv product, (heads, [q, k, v], 128) rows, which the device holds stacked: ([q, k, v], heads, 128).
-pub const Fused = struct {
-    heads: usize,
-    /// One row's bytes.
-    row: usize,
-
-    /// A head part's bytes: the unit the stacking moves.
-    pub fn part(f: Fused) usize {
-        return h3.head_dim * f.row;
-    }
-
-    /// The stored byte that lands at stacked byte `at`.
-    pub fn source(f: Fused, at: usize) usize {
-        const unit = f.part();
-        const qkv = at / (f.heads * unit);
-        const head = at / unit % f.heads;
-        return (head * 3 + qkv) * unit + at % unit;
-    }
-};
+/// A fused qkv product: re-exported for callers building the staged copy themselves.
+pub const Fused = crew_load.Fused;
 
 /// `bytes` into `to` from `offset` through the two pinned stages, stacked when `fused`; the driver
 /// copies pageable memory several times slower. A window holds whole head parts: one is 128 rows, far
