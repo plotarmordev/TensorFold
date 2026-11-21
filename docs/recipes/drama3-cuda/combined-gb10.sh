@@ -52,3 +52,5 @@ mkdir -p "$out/voices"
 (cd tools/zig && python3 drama_guidance_check.py --bin /work/sm121/native/bin/tensorfold-native --checkpoint "$fp8" \
     --voices "$out/voices" --voice synthetic --out "$out/guidance")
 echo "CHECK guidance PASS"
+# the door keeps only the log's tail: the receipt goes last
+cat "$out/compact/RECEIPT.txt"
