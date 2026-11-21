@@ -1,1 +1,0 @@
-- MiniMax-H3-Image (CUDA): each 2048 picture product (`qkvc` and `fc1` in int8, `out` and `fc2` in bf16) runs the fastest of cuBLASLt's 16 heuristic candidates, timed on the real shape at warm-up, in place of the heuristic's first pick; the server log lists both in TOPS.
