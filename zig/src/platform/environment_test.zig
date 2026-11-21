@@ -36,6 +36,7 @@ test "environment: every strict reader refuses bad text before opening a model, 
 
 const Case = struct { name: []const u8, raw: []const u8, n: u64 };
 const valid = [_]Case{
+    .{ .name = "TF_QWEN_KV_HOST_GIB", .raw = "8", .n = 8 },
     .{ .name = "TF_CACHE_EVICT", .raw = "main", .n = 0 },
     .{ .name = "TF_CACHE_EVICT", .raw = "decayed_resume", .n = 1 },
     .{ .name = "TF_FLASHNEXT_BATCH_DRAWS", .raw = "0", .n = 0 },
@@ -97,6 +98,7 @@ const valid = [_]Case{
     .{ .name = "TF_DRAFT_NODES", .raw = "0", .n = 0 },
     .{ .name = "TF_DRAFT_NODES", .raw = "64", .n = 64 },
     .{ .name = "TF_QMMF_HALF_BELOW", .raw = "0", .n = 0 },
+    .{ .name = "TF_HY4_MEM_FLOOR_GIB", .raw = "10", .n = 10 },
     .{ .name = "TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS", .raw = "0", .n = 0 },
     .{ .name = "TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS", .raw = "1", .n = 1 },
     .{ .name = "TF_PROMPT_INTERMEDIATE", .raw = "0", .n = 0 },
@@ -154,6 +156,8 @@ const valid = [_]Case{
     .{ .name = "XPU_MTP", .raw = "1", .n = 1 },
     .{ .name = "XPU_MTP_DEPTH", .raw = "6", .n = 6 },
     .{ .name = "XPU_MTP_CONF", .raw = "-0.4", .n = @bitCast(@as(f64, -0.4)) },
+    .{ .name = "XPU_CHUNK", .raw = "64", .n = 64 },
+    .{ .name = "XPU_CHUNK_SOLO", .raw = "2048", .n = 2048 },
     .{ .name = "XPU_VERIFY_TEST", .raw = "0", .n = 0 },
     .{ .name = "XPU_VERIFY_TEST", .raw = "1", .n = 1 },
     .{ .name = "XPU_FLASHNEXT_WARM", .raw = "0", .n = 0 },
@@ -194,6 +198,11 @@ const valid = [_]Case{
     .{ .name = "TF_MINIMAX_WORLD", .raw = "2", .n = 2 },
     .{ .name = "TF_HY4_ENGRAM", .raw = "gpu", .n = 2 },
     .{ .name = "TF_HY4_DRAFT_BITS", .raw = "8", .n = 8 },
+    .{ .name = "TENSORFOLD_PARALLEL", .raw = "4", .n = 4 },
+    .{ .name = "TENSORFOLD_PARALLEL", .raw = " 8\t", .n = 8 },
+    .{ .name = "TENSORFOLD_PARALLEL", .raw = "4096", .n = 4096 },
+    .{ .name = "TENSORFOLD_PARALLEL", .raw = "auto", .n = 0 },
+    .{ .name = "TENSORFOLD_PARALLEL", .raw = "AUTO", .n = 0 },
 };
 
 test "environment: valid forms remain raw numbers before existing consumer clamps and defaults" {
@@ -230,6 +239,8 @@ test "environment: range, enum, whitespace and native prompt geometry refusals a
         .{ "XPU_A8_BITS", "16" },                      .{ "XPU_TP", "0" },
         .{ "XPU_TP", "3" },                            .{ "XPU_TP", " 4" },
         .{ "XPU_CTX", "0" },                           .{ "XPU_CTX", "262145" },
+        .{ "XPU_CHUNK", "0" },                         .{ "XPU_CHUNK", "2049" },
+        .{ "XPU_CHUNK_SOLO", "0" },                    .{ "XPU_CHUNK_SOLO", "2049" },
         .{ "XPU_MTP_DEPTH", "0" },                     .{ "XPU_MTP_DEPTH", "16" },
         .{ "XPU_DEVICE_ID", "0" },                     .{ "XPU_DEVICE_ID", "0xzz" },
         .{ "TF_SLIDE_POCKET_KEY", "AUTO" },            .{ "TF_DRAMA_PREFILL_ROWS", "4096x" },
@@ -447,4 +458,28 @@ test "rank aliases name their flag and refuse from their retirement release" {
     }
     try t.expect(e.retired("TF_GLM_PROF", "9.9.9") == null);
     try t.expect(e.retired("TF_NOT_A_ROW", "9.9.9") == null);
+}
+
+test "environment: TENSORFOLD_PARALLEL takes the flag over the setting, blank keeps the default, garbage is refused" {
+    try t.expectEqualStrings("4", (try e.parallel("4", "8")).?);
+    try t.expectEqualStrings("auto", (try e.parallel("auto", "8")).?);
+    try t.expectEqualStrings("8", (try e.parallel(null, " 8 ")).?);
+    try t.expectEqualStrings("Auto", (try e.parallel(null, "Auto")).?); // the text passes through; cli.parallel matches it without case
+    try t.expect((try e.parallel(null, null)) == null);
+    try t.expect((try e.parallel(null, " \t")) == null);
+    for ([_][]const u8{ "0", "4097", "typo", "-1", "8\nwrong" }) |raw| {
+        try t.expectError(error.InvalidEnvironment, e.parallel(null, raw));
+        const why = (try e.refusal(a, Env{ .name = "TENSORFOLD_PARALLEL", .raw = raw }, all)).?;
+        defer a.free(why);
+        try t.expect(std.mem.indexOf(u8, why, "TENSORFOLD_PARALLEL") != null);
+        try t.expect(std.mem.indexOf(u8, why, "or auto") != null);
+    }
+}
+
+test "environment: Qwen host GiB cap is strict, bounded and blank as unset" {
+    const name = "TF_QWEN_KV_HOST_GIB";
+    for ([_]?[]const u8{ null, "", " \t\r\n" }) |raw| try t.expectEqual(@as(u64, 0), try e.value(u64, name, raw, 0));
+    try t.expectEqual(@as(u64, 8), try e.value(u64, name, "8", 0));
+    try t.expectEqual(@as(u64, std.math.maxInt(u64) >> 30), try e.value(u64, name, "17179869183", 0));
+    for ([_][]const u8{ "0", "-1", "bad", "1.5", "17179869184" }) |raw| try t.expectError(error.InvalidEnvironment, e.value(u64, name, raw, 0));
 }

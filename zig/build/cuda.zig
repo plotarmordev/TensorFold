@@ -127,7 +127,8 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     runner.addImport("glm_cuda", glmCuda(b, target, optimize, cuda, mods.core, mods.lanes, mods.heat, mods.api));
     @import("minimax_cuda.zig").targets(b, target, optimize, strip, cuda, mods.core, mods.lanes, runner);
     @import("inkling2.zig").targets(b, target, optimize, strip, cuda, mods.core, mods.lanes, runner);
-    for ([_]struct { []const u8, *std.Build.Module }{ .{ "kolibri1", kolibri1Module(b, target, optimize, cuda, mods.core, mods.lanes) }, .{ "dory", @import("dory.zig").module(b, target, optimize, cuda, mods.core, mods.lanes) }, .{ "idol_cuda", @import("idol_cuda.zig").targets(b, target, optimize, strip, cuda, mods.core) } }) |m| runner.addImport(m[0], m[1]);
+    @import("idol_cuda.zig").targets(b, target, optimize, strip, cuda, mods.core, runner);
+    for ([_]struct { []const u8, *std.Build.Module }{ .{ "kolibri1", kolibri1Module(b, target, optimize, cuda, mods.core, mods.lanes) }, .{ "dory", @import("dory.zig").module(b, target, optimize, cuda, mods.core, mods.lanes) } }) |m| runner.addImport(m[0], m[1]);
     runner.addImport("gemma4_cuda", @import("gemma4_cuda.zig").module(b, target, optimize, cuda, mods.core, mods.lanes));
     runner.addImport("spark25", @import("spark25.zig").module(b, target, optimize, cuda, mods.core, mods.lanes));
     // the served family and its engine, for the dots runner
@@ -155,6 +156,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     contract_images.dependOn(fatbin_step);
     @import("cuda_contract_deepseek.zig").images(b, runner_exe, contract_images, kernels, &images, prebuilt, nvcc, version, sms, opts.cuobjdump);
     @import("dsv41_serve.zig").install(b, target, optimize, cuda, nvcc != null or prebuilt != null);
+    @import("hy4_cuda.zig").install(b, target, optimize, cuda, mods.core);
     const server_exe = nativeServer(b, target, optimize, cuda, mods.core, mods.lanes, mods.nemotron, mods.heat, mods.qwen35, mods.qwen_vision, mods.tokenizer, mods.living, build_options, true, strip);
     b.step("compile-config-server", "Compile the actual CUDA server config entry point without installing or running").dependOn(&server_exe.step);
     // tf-qwen35-cuda: the Qwen CUDA forward's rows for a reference to compare, and its tower on picture files
@@ -340,7 +342,7 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, build_options: *st
     @import("drama3_host.zig").plan(b, drama3, mods.core, native_modules.api, cuda);
     @import("drama3_host.zig").metal(b, mods.core, native_modules.api);
     const safety = b.step("test-kv-safety-host", "Actual native KV startup budget and paged constructors under allocation/completion faults");
-    for ([_]*std.Build.Module{ native, mods.nemotron }) |m| safety.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{"kv safety:"} })).step);
+    for ([_]*std.Build.Module{ native, mods.nemotron, mods.qwen35 }) |m| safety.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m, .filters = &.{"kv safety:"} })).step);
     b.step("test-cache-capacity-host", "Startup cache capacity facts and warnings without a GPU").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = native, .filters = &.{"cache capacity:"} })).step);
     b.step("test-snap-fork-host", "CUDA prompt-cache rules: no fork marks unless a family sets snap_fork, its marks when it does").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = native, .filters = &.{"snap fork:"} })).step);
     b.step("test-snap-hooks-host", "CUDA prompt-cache hooks: a family's spare, trim and reuses reach the store").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = native, .filters = &.{"snap hooks:"} })).step);
