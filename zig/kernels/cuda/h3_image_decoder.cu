@@ -3,6 +3,7 @@
 // sums; h3d_linear sums K sequentially in fp32, and h3d_finish applies bias and LayerScale at their points.
 #include <cuda_bf16.h>
 #include <math.h>
+#include <mma.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "common/reduce.cuh"
@@ -232,47 +233,115 @@ __global__ void __launch_bounds__(256) h3d_res_norm(
         xn[at + c] = __float2bfloat16(v[i] * inv * f(g[c]));
     }
 }
-// softmax(s / 8) row-wise in fp32 for the tensor-core path's S [tiles * 16 heads, T, T]: a flat query
-// row a block (grid b*T), 128 threads over four keys each, the bf16 weights contiguous for P . V.
-__global__ void __launch_bounds__(128) h3d_softmax(const float* s, bf16* pr, H3dShape p) {
-    __shared__ float part[4];
-    const unsigned row = blockIdx.x; // a flat query row over the batch's [tiles * heads, T, T]
-    const unsigned t = threadIdx.x;
-    const float* sr = s + (size_t)row * p.tokens;
-    float v[4];
-    float hi = -INFINITY;
-#pragma unroll
-    for (unsigned i = 0; i < 4; ++i) {
-        const unsigned key = t + 128 * i;
-        v[i] = key < p.tokens ? sr[key] * p.scale : -INFINITY;
-        hi = fmaxf(hi, v[i]);
+// The fast path's attention fused flash style: softmax(q kᵀ / 8) v of a tile's (head, 64 queries)
+// a block of 4 warps, 16 queries a warp, 64 keys a chunk. Both products on bf16 tensor cores with
+// fp32 sums; the softmax runs online in fp32 with each chunk's exp rounded to bf16 for p . v and its
+// rounded values summed, so the weights still normalise to one. Writes the out projection's rows
+// [tiles * T, 1,024] directly. Grid [ceil(T / 64), 16, tiles].
+__global__ void __launch_bounds__(128) h3d_flash(
+        const bf16* q, const bf16* k, const bf16* v, bf16* o, H3dShape p) {
+    using namespace nvcuda;
+    __shared__ __align__(32) bf16 ks[64 * 64];
+    __shared__ __align__(32) bf16 vs[64 * 64];
+    __shared__ __align__(32) float ss[4][16 * 64];
+    __shared__ __align__(32) bf16 ps[4][16 * 64];
+    const unsigned warp = threadIdx.x >> 5;
+    const unsigned lane = threadIdx.x & 31;
+    const unsigned T = p.tokens;
+    const size_t base = ((size_t)blockIdx.z * 16 + blockIdx.y) * T * 64;
+    const unsigned q0 = blockIdx.x * 64 + warp * 16;
+    float* s = ss[warp];
+    bf16* pw = ps[warp];
+    // the warp's queries through its weights' buffer into registers, zero rows past T
+    for (unsigned i = lane; i < 16 * 8; i += 32) {
+        const unsigned r = i >> 3;
+        const unsigned c = (i & 7) * 8;
+        uint4 val = make_uint4(0, 0, 0, 0);
+        if (q0 + r < T) val = *reinterpret_cast<const uint4*>(q + base + (size_t)(q0 + r) * 64 + c);
+        *reinterpret_cast<uint4*>(pw + r * 64 + c) = val;
     }
-    const float top = tf_common::block_max_tree(hi, part, 4);
-    float e[4];
+    __syncwarp();
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> qf[4];
+#pragma unroll
+    for (unsigned d = 0; d < 4; ++d) wmma::load_matrix_sync(qf[d], pw + d * 16, 64);
+    // a lane holds half a query row: row lane / 2, columns 32 * (lane & 1) on
+    const unsigned row = lane >> 1;
+    const unsigned half = (lane & 1) * 32;
+    float* sr = s + row * 64 + half;
+    float top = -INFINITY;
     float sum = 0.0f;
+    float acc[32];
 #pragma unroll
-    for (unsigned i = 0; i < 4; ++i) {
-        e[i] = v[i] == -INFINITY ? 0.0f : expf(v[i] - top);
-        sum += e[i];
-    }
-    const float total = tf_common::block_sum_tree(sum, part, 4);
-    bf16* out = pr + (size_t)row * p.tokens;
+    for (unsigned j = 0; j < 32; ++j) acc[j] = 0.0f;
+    for (unsigned k0 = 0; k0 < T; k0 += 64) {
+        __syncthreads();
+        for (unsigned i = threadIdx.x; i < 64 * 8; i += 128) {
+            const unsigned r = i >> 3;
+            const unsigned c = (i & 7) * 8;
+            uint4 kv = make_uint4(0, 0, 0, 0);
+            uint4 vv = kv;
+            if (k0 + r < T) {
+                kv = *reinterpret_cast<const uint4*>(k + base + (size_t)(k0 + r) * 64 + c);
+                vv = *reinterpret_cast<const uint4*>(v + base + (size_t)(k0 + r) * 64 + c);
+            }
+            *reinterpret_cast<uint4*>(ks + r * 64 + c) = kv;
+            *reinterpret_cast<uint4*>(vs + r * 64 + c) = vv;
+        }
+        __syncthreads();
 #pragma unroll
-    for (unsigned i = 0; i < 4; ++i) {
-        const unsigned key = t + 128 * i;
-        if (key < p.tokens) out[key] = __float2bfloat16(e[i] / total);
+        for (unsigned n = 0; n < 4; ++n) {
+            wmma::fragment<wmma::accumulator, 16, 16, 16, float> sf;
+            wmma::fill_fragment(sf, 0.0f);
+#pragma unroll
+            for (unsigned d = 0; d < 4; ++d) {
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, bf16, wmma::col_major> kf;
+                wmma::load_matrix_sync(kf, ks + n * 16 * 64 + d * 16, 64);
+                wmma::mma_sync(sf, qf[d], kf, sf);
+            }
+            wmma::store_matrix_sync(s + n * 16, sf, 64, wmma::mem_row_major);
+        }
+        __syncwarp();
+        float hi = -INFINITY;
+#pragma unroll
+        for (unsigned j = 0; j < 32; ++j) {
+            if (k0 + half + j < T) hi = fmaxf(hi, sr[j] * p.scale);
+        }
+        // every chunk holds key k0 < T, so `next` is finite and the first chunk's alpha is 0
+        const float next = fmaxf(top, fmaxf(hi, __shfl_xor_sync(0xffffffffu, hi, 1)));
+        const float alpha = expf(top - next);
+        float part = 0.0f;
+#pragma unroll
+        for (unsigned j = 0; j < 32; ++j) {
+            const bf16 e = __float2bfloat16(k0 + half + j < T ? expf(sr[j] * p.scale - next) : 0.0f);
+            pw[row * 64 + half + j] = e;
+            part += f(e);
+        }
+        sum = sum * alpha + part + __shfl_xor_sync(0xffffffffu, part, 1);
+        top = next;
+        __syncwarp();
+#pragma unroll
+        for (unsigned n = 0; n < 4; ++n) {
+            wmma::fragment<wmma::accumulator, 16, 16, 16, float> of;
+            wmma::fill_fragment(of, 0.0f);
+#pragma unroll
+            for (unsigned kk = 0; kk < 4; ++kk) {
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> pf;
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, bf16, wmma::row_major> vf;
+                wmma::load_matrix_sync(pf, pw + kk * 16, 64);
+                wmma::load_matrix_sync(vf, vs + kk * 16 * 64 + n * 16, 64);
+                wmma::mma_sync(of, pf, vf, of);
+            }
+            wmma::store_matrix_sync(s + n * 16, of, 64, wmma::mem_row_major);
+        }
+        __syncwarp();
+#pragma unroll
+        for (unsigned j = 0; j < 32; ++j) acc[j] = acc[j] * alpha + sr[j];
     }
-}
-
-// The fast path's o [tiles * 16 heads, T, 64] fp32 to the out projection's rows [m, 1,024] bf16:
-// h3d_attention's own layout, a thread a channel. Grid [tiles * T, 16].
-__global__ void __launch_bounds__(64) h3d_unheads(const float* o, bf16* y, H3dShape p) {
-    const unsigned row = blockIdx.x;
-    const unsigned head = blockIdx.y;
-    const unsigned d = threadIdx.x;
-    const unsigned tile = row / p.tokens;
-    const unsigned t = row % p.tokens;
-    y[(size_t)row * 1024 + head * 64 + d] = __float2bfloat16(o[((size_t)tile * 16 + head) * p.tokens * 64 + t * 64 + d]);
+    const unsigned query = q0 + row;
+    if (query >= T) return;
+    bf16* out = o + ((size_t)blockIdx.z * T + query) * 1024 + blockIdx.y * 64 + half;
+#pragma unroll
+    for (unsigned j = 0; j < 32; ++j) out[j] = __float2bfloat16(acc[j] / sum);
 }
 
 // Per row and head: q and k RMS-normed (no weight) to bf16, their first 32 dims turned half-style in bf16; v copied.

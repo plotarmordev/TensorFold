@@ -10,10 +10,22 @@ const gemm = @import("metal_h3_image_decoder_gemm.zig");
 const heads = @import("metal_h3_image_decoder_heads.zig");
 const g = contract.gates;
 
-/// A registration: one kernel at one form; the gemm's LayerScale form is mode 1 of h3d_gemm.
-const Kind = enum { post_quant, embed, rms_norm, layer_norm, gemm, gemm_scale, heads, attention, swiglu };
+/// A registration: one kernel at one form; the gemm's LayerScale and SwiGLU forms are modes 1 and 2 of h3d_gemm.
+const Kind = enum { post_quant, embed, rms_norm, layer_norm, gemm, gemm_scale, gemm_swiglu, heads, attention, swiglu };
 
-const kinds = [_]Kind{ .post_quant, .embed, .rms_norm, .layer_norm, .gemm, .gemm_scale, .heads, .attention, .swiglu };
+const kinds = [_]Kind{ .post_quant, .embed, .rms_norm, .layer_norm, .gemm, .gemm_scale, .gemm_swiglu, .heads, .attention, .swiglu };
+
+/// Which of the source's two builds a registration or control runs on: both, only the tensor-unit build (M5), or
+/// only main's simdgroup-matrix build (every other Apple GPU).
+const Build = enum { both, tensor, simd };
+
+fn builds(comptime kind: Kind) Build {
+    return if (kind == .gemm_swiglu) .tensor else .both;
+}
+
+fn here(b: Build, tensor: bool) bool {
+    return b == .both or (b == .tensor) == tensor;
+}
 
 fn Of(comptime kind: Kind) type {
     return switch (kind) {
@@ -21,7 +33,7 @@ fn Of(comptime kind: Kind) type {
         .embed => rows.Embed,
         .rms_norm => norms.RmsNorm,
         .layer_norm => norms.LayerNorm,
-        .gemm, .gemm_scale => gemm.Gemm,
+        .gemm, .gemm_scale, .gemm_swiglu => gemm.Gemm,
         .heads => heads.Heads,
         .attention => heads.Attention,
         .swiglu => rows.Swiglu,
@@ -30,35 +42,46 @@ fn Of(comptime kind: Kind) type {
 
 fn function(comptime kind: Kind) []const u8 {
     return switch (kind) {
-        .gemm, .gemm_scale => "h3d_gemm",
+        .gemm, .gemm_scale, .gemm_swiglu => "h3d_gemm",
         else => "h3d_" ++ @tagName(kind),
     };
 }
 
 fn label(comptime kind: Kind) []const u8 {
-    return comptime common.name(.decoder, function(kind)) ++ (if (kind == .gemm_scale) " layer scale" else "");
+    return comptime common.name(.decoder, function(kind)) ++ switch (kind) {
+        .gemm_scale => " layer scale",
+        .gemm_swiglu => " swiglu",
+        else => "",
+    };
 }
 
 fn initial(comptime kind: Kind) Of(kind) {
     return switch (kind) {
-        .gemm => .{ .layer_scale = false },
-        .gemm_scale => .{ .layer_scale = true },
+        .gemm => .{ .form = .plain },
+        .gemm_scale => .{ .form = .layer_scale },
+        .gemm_swiglu => .{ .form = .swiglu },
         else => .{},
     };
 }
 
-/// A planted control: the registration it breaks, the gate that must catch it, and its one source edit.
-const Control = struct { kind: Kind, gate: g.Gate, what: []const u8, old: []const u8, new: []const u8 };
+/// A planted control: the registration it breaks, the gate that must catch it, its one source edit, and the build
+/// whose code it edits.
+const Control = struct { kind: Kind, gate: g.Gate, what: []const u8, old: []const u8, new: []const u8, build: Build = .both };
 
 const controls = [_]Control{
     .{ .kind = .post_quant, .gate = .shapes, .what = "drops the latent's bf16 rounding point", .old = "float(bfloat(lat[k * plane + r * p.cols + c]))", .new = "lat[k * plane + r * p.cols + c]" },
     .{ .kind = .embed, .gate = .shapes, .what = "puts the registers after the zero token", .old = "} else if (t < cells + 4) {\n    v = reg[(t - cells) * 1024 + at.x];", .new = "} else if (t > cells) {\n    v = reg[(t - cells - 1) * 1024 + at.x];" },
     .{ .kind = .rms_norm, .gate = .sums, .what = "sums its simdgroups in half", .old = "v = simd_sum(v);", .new = "v = float(simd_sum(half(v)));" },
     .{ .kind = .layer_norm, .gate = .shapes, .what = "drops its mean", .old = "const float mean = h3d_total(s, sums, lane, sg) / 1024.0f;", .new = "const float mean = 0.0f * h3d_total(s, sums, lane, sg);" },
-    .{ .kind = .gemm, .gate = .shapes, .what = "drops its last K step", .old = "for (uint k0 = 0; k0 < p.k; k0 += BK) {", .new = "for (uint k0 = 0; k0 + BK < p.k; k0 += BK) {" },
-    .{ .kind = .gemm_scale, .gate = .shapes, .what = "adds LayerScale's product unrounded", .old = "float(bfloat(out * float(s[col])))", .new = "out * float(s[col])" },
+    .{ .kind = .gemm, .gate = .shapes, .what = "drops its last K step", .old = "for (int k0 = 0; k0 < int(p.k); k0 += 32) {", .new = "for (int k0 = 0; k0 + 32 < int(p.k); k0 += 32) {", .build = .tensor },
+    .{ .kind = .gemm, .gate = .shapes, .what = "drops its last K step", .old = "for (uint k0 = 0; k0 < p.k; k0 += BK) {", .new = "for (uint k0 = 0; k0 + BK < p.k; k0 += BK) {", .build = .simd },
+    .{ .kind = .gemm_scale, .gate = .shapes, .what = "adds LayerScale's product unrounded", .old = "float(bfloat(out * float(s[cc])))", .new = "out * float(s[cc])", .build = .tensor },
+    .{ .kind = .gemm_scale, .gate = .shapes, .what = "adds LayerScale's product unrounded", .old = "float(bfloat(out * float(s[col])))", .new = "out * float(s[col])", .build = .simd },
     .{ .kind = .heads, .gate = .shapes, .what = "turns the second half of each head", .old = "const float a = float(src[part * 64 + lane]);\n    const float z = float(src[part * 64 + 32 + lane]);", .new = "const float a = float(src[part * 64 + 32 + lane]);\n    const float z = float(src[part * 64 + lane]);" },
-    .{ .kind = .attention, .gate = .shapes, .what = "drops its last key", .old = "for (uint key = 0; key < T; key++) {", .new = "for (uint key = 0; key + 1 < T; key++) {" },
+    .{ .kind = .attention, .gate = .shapes, .what = "drops its last key", .old = "for (uint key = 0; key < T; key++) {\n    const device bfloat2*", .new = "for (uint key = 0; key + 1 < T; key++) {\n    const device bfloat2*", .build = .tensor },
+    .{ .kind = .attention, .gate = .shapes, .what = "drops its last key", .old = "for (uint key = 0; key < T; key++) {\n    const float pk", .new = "for (uint key = 0; key + 1 < T; key++) {\n    const float pk", .build = .simd },
+    .{ .kind = .gemm_swiglu, .gate = .shapes, .what = "swaps gate and value", .old = "const float out = float(bfloat(acc[m][h2][e] + float(b[cc])));", .new = "const float out = float(bfloat(val[m][h2][e] + float(b[p.n + cc])));", .build = .tensor },
+    .{ .kind = .gemm_swiglu, .gate = .shapes, .what = "drops SiLU's bf16 rounding point", .old = "bfloat(float(bfloat(out / (1.0f + precise::exp(-out)))) * value)", .new = "bfloat(out / (1.0f + precise::exp(-out)) * value)", .build = .tensor },
     .{ .kind = .swiglu, .gate = .shapes, .what = "swaps gate and value", .old = "const float g = float(r[at.x]);\n  const float silu = float(bfloat(g / (1.0f + precise::exp(-g))));\n  act[ulong(at.y) * 4096 + at.x] = bfloat(silu * float(r[4096 + at.x]));", .new = "const float g = float(r[4096 + at.x]);\n  const float silu = float(bfloat(g / (1.0f + precise::exp(-g))));\n  act[ulong(at.y) * 4096 + at.x] = bfloat(silu * float(r[at.x]));" },
     .{ .kind = .swiglu, .gate = .nonfinite, .what = "takes a NaN gate as zero", .old = "const float g = float(r[at.x]);", .new = "const float g = isnan(float(r[at.x])) ? 0.0f : float(r[at.x]);" },
 };
@@ -102,13 +125,14 @@ pub const Suite = struct {
         const s = try a.create(Suite);
         s.* = .{ .a = a };
         errdefer s.destroy();
-        const lib = try common.library(device, .decoder, common.source(.decoder));
+        const lib = try common.library(a, device, .decoder, common.source(.decoder));
         s.libs.append(a, lib) catch |err| {
             lib.deinit();
             return err;
         };
-        inline for (kinds) |kind| if (common.keep(only, label(kind))) try s.add(kind, device, queue, lib, label(kind), null, kernels);
-        inline for (controls) |x| {
+        const tensor = device.tensorUnits();
+        inline for (kinds) |kind| if (here(builds(kind), tensor) and common.keep(only, label(kind))) try s.add(kind, device, queue, lib, label(kind), null, kernels);
+        inline for (controls) |x| if (here(x.build, tensor)) {
             const name = try std.fmt.allocPrint(a, "{s} control: {s}", .{ label(x.kind), x.what });
             s.names.append(a, name) catch |err| {
                 a.free(name);
@@ -117,14 +141,14 @@ pub const Suite = struct {
             if (common.keep(only, name)) {
                 const text = try common.edited(a, .decoder, x.old, x.new);
                 defer a.free(text);
-                const edited = try common.library(device, .decoder, text);
+                const edited = try common.library(a, device, .decoder, text);
                 s.libs.append(a, edited) catch |err| {
                     edited.deinit();
                     return err;
                 };
                 try s.add(x.kind, device, queue, edited, name, x.gate, kernels);
             }
-        }
+        };
         return s;
     }
 

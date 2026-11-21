@@ -13,7 +13,7 @@ fn limitsHere(a: std.mem.Allocator, device: mtl.Device, only: ?[]const u8) !usiz
     for (records) |d| {
         if (!common.keep(only, d.name)) continue;
         const part: common.Part = if (std.mem.indexOf(u8, d.name, " encoder ") != null) .encoder else if (std.mem.indexOf(u8, d.name, " prompt ") != null) .prompt else .decoder;
-        const lib = try common.library(device, part, common.source(part));
+        const lib = try common.library(a, device, part, common.source(part));
         defer lib.deinit();
         const p = try mtl.Pipeline.init(device, lib, d.name[std.mem.lastIndexOfScalar(u8, d.name, ' ').? + 1 ..], false);
         defer p.deinit();

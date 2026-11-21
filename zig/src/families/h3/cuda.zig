@@ -274,7 +274,12 @@ pub const Model = struct {
     pub const Plan = @import("cuda_validation.zig").Plan;
 
     pub fn plan(self: *const Model, in: *const Inputs) !Plan {
-        return @import("cuda_validation.zig").read(self, in, 0, in.tiles);
+        return @import("cuda_validation.zig").read(self, in, 0, in.tiles, true);
+    }
+
+    /// `plan` for host inputs: `cuda_host.stage` copies them into aligned device buffers.
+    pub fn planHost(self: *const Model, in: *const Inputs) !Plan {
+        return @import("cuda_validation.zig").read(self, in, 0, in.tiles, false);
     }
 
     /// Every block over the stream, in place; returns once the GPU has finished.
