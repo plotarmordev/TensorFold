@@ -789,8 +789,8 @@ What each engine does that the other doesn't, at this head:
   `add_norm_quantize` launch family is 1.34 s a picture to our fused set's ~2.4 s. Its text
   encoder is INT8 too and stays resident, so an unseen prompt costs 0.2 s where ours costs 1.2 s.
   It saves cuBLASLt's picks and its INT8 tilings to disk (`~/.cache/mmh3`), so a cold request pays
-  no algorithm search; our cold picture pays one 4-7 s search on its first step (card 141 owns
-  the same cache for us).
+  no algorithm search; ours does the same since card 141 (`~/.cache/tensorfold/h3-cublaslt-algos.bin`,
+  ~1.2 s of `warm` skipped, above).
 - **Neither side runs the other's headline trick**: where the card names block-scaled FP8/NVFP4
   projections and fused quantized attention, both engines were measured there and neither ships
   it on this model — our MXFP8 products missed every gate (`160c7687`, cosine 0.9664, 11.5 apart

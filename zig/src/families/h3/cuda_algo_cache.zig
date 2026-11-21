@@ -87,7 +87,7 @@ pub const Picks = struct {
         return true;
     }
 
-    /// A `TF_H3_ALGO_CACHE` path into `p`'s fixed buffers, with its own directory for the `.part`
+    /// A `TF_H3_ALGO_CACHE` path into `p`'s fixed buffers, with its own directory for the staging
     /// sibling, under the same rule.
     fn namedPath(p: *Picks, file: []const u8) bool {
         if (file.len >= max_path) return false;
