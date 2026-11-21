@@ -676,15 +676,18 @@ epilogue rounds as the replaced kernels did, so `qkvc` writes bf16 rows straight
 epilogue writes `silu(gate) * up` (`h3_swiglu_rows` interleaves its gate and up weight rows). `h3_dequantize`,
 `h3_heads_i8` and `h3_swiglu_int8` are deleted, and so are card 145's int8-only admission rules for `h3_heads_i8`.
 
-Stop rule (`bench-146-contract.sh` at `199ed172`, `tf-cuda-test h3-int8-bench`, cuBLASLt int8 in the same
-job, GB10, driver 580.173.02): the product beats cuBLASLt on all four picture shapes at M = 4,120.
+Stop rule (`bench-146-contract.sh` at `643ce1ba`, job `top-22c3ccdf2c2a`, 21 November, `tf-cuda-test
+h3-int8-bench`, cuBLASLt int8 in the same job, GB10, driver 580.173.02): the product beats cuBLASLt on all four
+picture shapes at M = 4,120. The same job ran the contract: all three kernels pass gates 1-4, the planted control
+goes red, and the live sm_121 limits match the records (222 and 219 registers). The wide 128×256 tile, measured
+on earlier heads, lost on every shape and is gone.
 
-| shape (N × K) | tall tile | wide tile | cuBLASLt |
-|---|---:|---:|---:|
-| `qkvc` 21,504 × 5,376 | 5.08 ms, 187.4 TOPS (1.24×) | 5.38 ms, 176.9 TOPS | 6.30 ms, 151.2 TOPS |
-| `out` 5,376 × 7,168 | 1.71 ms, 186.2 TOPS (1.20×) | 1.87 ms, 169.4 TOPS | 2.04 ms, 155.8 TOPS |
-| `fc1` 28,672 × 5,376 | 6.94 ms, 182.9 TOPS (1.17×) | 7.12 ms, 178.5 TOPS | 8.12 ms, 156.4 TOPS |
-| `fc2` 5,376 × 14,336 | 3.58 ms, 177.6 TOPS (1.18×) | 3.81 ms, 166.8 TOPS | 4.22 ms, 150.5 TOPS |
+| shape (N × K) | TMA product | cuBLASLt |
+|---|---:|---:|
+| `qkvc` 21,504 × 5,376 | 5.20 ms, 183.1 TOPS (1.18×) | 6.13 ms, 155.4 TOPS |
+| `out` 5,376 × 7,168 | 1.68 ms, 189.4 TOPS (1.20×) | 2.01 ms, 157.9 TOPS |
+| `fc1` 28,672 × 5,376 | 6.92 ms, 183.5 TOPS (1.17×) | 8.06 ms, 157.5 TOPS |
+| `fc2` 5,376 × 14,336 | 3.70 ms, 171.4 TOPS (1.19×) | 4.40 ms, 144.3 TOPS |
 
 The kernel-contract entries live in `contract_h3_int8.zig`. `cuda h3 int8 tma product h3_gemm_int8_tma`
 compares every output against the float64 formula, covering classes at the planted NaN row scale and infinite
