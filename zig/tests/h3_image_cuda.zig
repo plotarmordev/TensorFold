@@ -310,7 +310,7 @@ fn streamSteps(
 
     // stage() treats every address as host memory: the resident table stays out, x is room for the
     // stream, and `line` carries this step's count only (the validation reads one step's lines)
-    const checked = try model.planHost(&in);
+    const checked = try model.plan(&in);
     try model.drain();
     var upload = checked;
     upload.input[1] = 0;

@@ -28,7 +28,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_heads_i8", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_swiglu_int8", "h3_attention", "h3_quantize", "h3_dequantize", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -77,6 +77,20 @@ pub const Model = struct {
     fn function(self: *const Model, comptime name: []const u8) cuda.Function {
         inline for (kernel_names, 0..) |n, i| if (comptime std.mem.eql(u8, n, name)) return self.functions[i];
         @compileError("no kernel " ++ name);
+    }
+
+    /// The index kernel_names gives `name`, for launches the comptime `function` wrapper cannot make
+    /// (the int8 product picks its entry point at runtime).
+    pub fn functionIndex(comptime name: []const u8) usize {
+        inline for (kernel_names, 0..) |n, i| if (comptime std.mem.eql(u8, n, name)) return i;
+        @compileError("no kernel " ++ name);
+    }
+
+    /// cuLaunchKernel on functions[i] with `shared` dynamic bytes; the int8 gemm's one-step launch
+    /// (no prior allowDynamicShared, which would leave the opt-in racing the concurrent step).
+    pub fn launchShared(self: *Model, i: usize, blocks: u32, threads: u32, shared: u32, args: *cuda.Args) !void {
+        const f = self.functions[i];
+        try self.driver.check(self.driver.api.cuLaunchKernel(f.handle, blocks, 1, 1, threads, 1, 1, shared, self.stream.handle, args.pointers(), null), "cuLaunchKernel");
     }
 
     pub fn launch(self: *const Model, comptime name: []const u8, grid: cuda.Dim3, threads: u32, shared: u32, args: *cuda.Args) !void {
@@ -130,6 +144,10 @@ pub const Model = struct {
         errdefer if (ordinary_cleanup) self.module.unload();
         inline for (kernel_names, 0..) |name, i| self.functions[i] = try self.module.function(name);
         try self.function("h3_attention").allowDynamicShared(attention_shared);
+        // the TMA products' two-stage rings (h3_int8_tma.cuh Config::shared_bytes), once at setup so
+        // no launch needs the attribute raced against the stream
+        try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
+        try self.function("h3_swiglu_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
         // the legacy default stream: work queued by the caller's framework comes first
         self.stream = .{ .d = d, .handle = null };
         self.gemms = try Gemms.init(gpa, d);
@@ -274,12 +292,7 @@ pub const Model = struct {
     pub const Plan = @import("cuda_validation.zig").Plan;
 
     pub fn plan(self: *const Model, in: *const Inputs) !Plan {
-        return @import("cuda_validation.zig").read(self, in, 0, in.tiles, true);
-    }
-
-    /// `plan` for host inputs: `cuda_host.stage` copies them into aligned device buffers.
-    pub fn planHost(self: *const Model, in: *const Inputs) !Plan {
-        return @import("cuda_validation.zig").read(self, in, 0, in.tiles, false);
+        return @import("cuda_validation.zig").read(self, in, 0, in.tiles);
     }
 
     /// Every block over the stream, in place; returns once the GPU has finished.
@@ -331,7 +344,7 @@ pub const Model = struct {
         const video_tiles = tiles - prefix;
         const count = checked.count;
         var mark = seconds();
-        // the int8 scratch the fused launches share: norm_quant fills xq/xs, the product fills acc; the fp4
+        // the int8 scratch the fused launches share: norm_quant fills xq/xs, the products read them; the fp4
         // one holds a step's normed rows as e2m1 codes and tiled scales, refilled by every norm and quantize
         const lay = if (self.int8) |t| try t.layout(self, rows) else null;
         const lay4 = if (self.fp4) |t| try t.layout(self, rows) else null;
@@ -344,7 +357,9 @@ pub const Model = struct {
             if (index == 0) try self.norm(in.x, b.norms.ptr, tab, tab, in.line, -1, scale_a, shift_a, iq, is) else try self.norm(in.x, b.norms.ptr, tab - table_bytes, tab, in.line, gate_m, scale_a, shift_a, iq, is);
             try self.lap("norms", &mark);
             if (self.int8) |t| {
-                try t.gemm(self, lay.?, t.blocks[index].qkvc, rows);
+                // the TMA product writes the bf16 qkvc rows straight into g.qkvc — h3_heads reads
+                // them, the int32 sums and h3_dequantize's pass are gone
+                try t.gemm(self, lay.?, t.blocks[index].qkvc, g.qkvc, rows);
             } else if (self.fp4) |t| {
                 try t.gemm(self, lay4.?, t.blocks[index].qkvc, g.qkvc, rows);
             } else {
@@ -352,18 +367,14 @@ pub const Model = struct {
             }
             try self.lap("q k v gate", &mark);
             {
-                // q, k and v in tile order, beginning at tile zero; the int8 product's int32 sums feed
-                // h3_heads_i8, which dequantizes each value as h3_dequantize rounds it — once per row
+                // q, k and v in tile order, beginning at tile zero; the int8 path's product already
+                // wrote them bf16 into g.qkvc, so both modes feed plain h3_heads
                 const at = own0 * slot_tile * head_dim * 2;
                 var args: cuda.Args = .{};
-                if (lay) |l| {
-                    for ([_]u64{ l.acc, l.xs, self.int8.?.blocks[index].qkvc.scales(), b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
-                } else {
-                    for ([_]u64{ g.qkvc, b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
-                }
+                for ([_]u64{ g.qkvc, b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
                 for ([_]usize{ heads, width, in.rot, tiles * slot_tile }) |n| args.add(@as(c_int, @intCast(n)));
                 args.add(eps);
-                if (lay == null) try self.launch("h3_heads", .{ .x = @intCast(owned) }, 256, 0, &args) else try self.launch("h3_heads_i8", .{ .x = @intCast(owned) }, 256, 0, &args);
+                try self.launch("h3_heads", .{ .x = @intCast(owned) }, 256, 0, &args);
             }
             try self.lap("heads", &mark);
             if (dense) {
@@ -400,9 +411,7 @@ pub const Model = struct {
             try self.lap("attention out", &mark);
             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m, iq, is);
             try self.lap("norms", &mark);
-            if (self.int8) |t| {
-                try t.mlpIn(self, lay.?, t.blocks[index].fc1, g.act, rows);
-            } else {
+            if (self.int8) |t| try t.gemm(self, lay.?, t.blocks[index].fc1, g.act, rows) else {
                 if (self.fp4) |t| try t.gemm(self, lay4.?, t.blocks[index].fc1, g.wide, rows) else try self.gemms.run(self.stream, g.xn, b.fc1.ptr, g.wide, rows, 2 * self.mlp, hidden);
                 var args: cuda.Args = .{};
                 args.add(g.wide);

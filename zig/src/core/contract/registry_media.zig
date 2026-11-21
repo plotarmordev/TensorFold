@@ -13,9 +13,7 @@ pub const cuda = [_]CudaRecord{
     .{ .launch = .{ .name = "h3 h3_attention", .symbol = "h3_attention", .image = "h3", .threads = 128, .dynamic = 49152 }, .usage = .{ .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 217, .static = 0, .bound = 128 }, .{ .regs = 217, .static = 0, .bound = 128 } } },
     .{ .launch = .{ .name = "h3 h3_topk", .symbol = "h3_topk", .image = "h3", .threads = 32 }, .usage = .{ .{ .regs = 32, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 38, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 } } },
     .{ .launch = .{ .name = "h3 h3_quantize", .symbol = "h3_quantize", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 73, .static = 128, .bound = 256 }, .{ .regs = 72, .static = 128, .bound = 256 }, .{ .regs = 72, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 } } },
-    .{ .launch = .{ .name = "h3 h3_dequantize", .symbol = "h3_dequantize", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 22, .static = 0, .bound = 256 }, .{ .regs = 21, .static = 0, .bound = 256 }, .{ .regs = 21, .static = 0, .bound = 256 }, .{ .regs = 38, .static = 0, .bound = 256 }, .{ .regs = 38, .static = 0, .bound = 256 } } },
     .{ .launch = .{ .name = "h3 h3_norm_quant", .symbol = "h3_norm_quant", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 74, .static = 128, .bound = 256 }, .{ .regs = 74, .static = 128, .bound = 256 } } },
-    .{ .launch = .{ .name = "h3 h3_heads_i8", .symbol = "h3_heads_i8", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 148, .static = 0, .bound = 256 }, .{ .regs = 146, .static = 0, .bound = 256 }, .{ .regs = 146, .static = 0, .bound = 256 }, .{ .regs = 172, .static = 0, .bound = 256 }, .{ .regs = 172, .static = 0, .bound = 256 } } },
     .{ .launch = .{ .name = "h3 h3_quantize_fp4", .symbol = "h3_quantize_fp4", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 26, .static = 0, .bound = 256 }, .{ .regs = 27, .static = 0, .bound = 256 }, .{ .regs = 28, .static = 0, .bound = 256 }, .{ .regs = 26, .static = 0, .bound = 256 }, .{ .regs = 26, .static = 0, .bound = 256 } } },
     .{ .launch = .{ .name = "h3 h3_norm_quant_fp4", .symbol = "h3_norm_quant_fp4", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 32, .static = 128, .bound = 256 }, .{ .regs = 35, .static = 128, .bound = 256 }, .{ .regs = 48, .static = 128, .bound = 256 }, .{ .regs = 37, .static = 128, .bound = 256 }, .{ .regs = 37, .static = 128, .bound = 256 } } },
     .{ .launch = .{ .name = "drama3 d3_gemv", .symbol = "d3_gemv", .image = "drama3", .threads = 256, .dynamic = 12288 }, .usage = .{ .{ .regs = 54, .static = 0, .bound = 256 }, .{ .regs = 54, .static = 0, .bound = 256 }, .{ .regs = 54, .static = 0, .bound = 256 }, .{ .regs = 62, .static = 0, .bound = 256 }, .{ .regs = 62, .static = 0, .bound = 256 } } },
@@ -73,3 +71,18 @@ pub const cuda_pending = [_]CudaRecord{
     .{ .launch = .{ .name = "drama3 d3_router_compact", .symbol = "d3_router_compact", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
     .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
 };
+
+/// The picture's TMA products (h3_int8_tma.cuh): sm_121's usage from GB10's live check; sm_120's
+/// pending the five-SM limits job.
+pub const cuda_tma_pending = [_]CudaRecord{
+    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(222) },
+    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(219) },
+    .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = @import("registry.zig").none },
+};
+
+/// A usage row measured on sm_121 alone; the other targets stay missing receipts.
+fn sm121(regs: u32) [5]@import("limits.zig").Usage {
+    var u = @import("registry.zig").none;
+    u[4] = .{ .regs = regs, .static = 0, .bound = 256 };
+    return u;
+}

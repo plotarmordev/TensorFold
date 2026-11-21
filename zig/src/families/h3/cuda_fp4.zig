@@ -42,9 +42,12 @@ pub const Fp4 = struct {
         if (self.gated) return error.H3NotPictureModel; // the dense forward's three of q, k and v only
         if (self.int8 != null) return error.Quantized;
         try self.ctx.makeCurrent();
-        var handle: lt_.Handle = null;
-        try self.gemms.lt.check(self.gemms.lt.api.cublasLtCreate(&handle), "cublasLtCreate");
         const t = try self.gpa.create(Fp4);
+        var handle: lt_.Handle = null;
+        self.gemms.lt.check(self.gemms.lt.api.cublasLtCreate(&handle), "cublasLtCreate") catch |err| {
+            self.gpa.destroy(t);
+            return err;
+        };
         t.* = .{ .blocks = &.{}, .handle = handle, .scratch = .{ .d = &self.driver, .ptr = 0, .len = 0 } };
         self.fp4 = t; // the model's deinit frees what a failed quantize already made
         const none: Weight = .{ .q = .{ .d = &self.driver, .ptr = 0, .len = 0 }, .n = 0, .k = 0 };
@@ -61,7 +64,8 @@ pub const Fp4 = struct {
     /// A bf16 (n, k) projection to e2m1 codes and tiled scales, the bf16 buffer freed.
     fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize) !Weight {
         if (k % 128 != 0) return error.BadGeometry; // the rotation's chunks; every k is a multiple of 32 otherwise
-        const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k / 2 + lt_.scaleBytes(n, k)), .n = n, .k = k };
+        var w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k / 2 + lt_.scaleBytes(n, k)), .n = n, .k = k };
+        errdefer w.q.free();
         var args = quantizeArgs(bf16.ptr, w.q.ptr, w.scales(), k);
         try self.launch("h3_quantize_fp4", .{ .x = @intCast(n) }, 256, 0, &args);
         try self.stream.synchronize();

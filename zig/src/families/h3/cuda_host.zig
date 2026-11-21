@@ -6,7 +6,7 @@ const Model = @import("cuda.zig").Model;
 
 /// Every nonzero address is host memory, including the optional attention output.
 pub fn forwardHost(self: *Model, in: *const Model.Inputs) !f64 {
-    const p = try self.planHost(in);
+    const p = try self.plan(in);
     try self.drain();
     const copy = try stage(self, in, p);
     const took = try self.forward(&copy);

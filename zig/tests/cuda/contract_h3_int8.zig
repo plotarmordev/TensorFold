@@ -1,4 +1,4 @@
-//! MiniMax H3's int8 projection kernels (h3_quantize, h3_dequantize) under the contract, against float64 formulas.
+//! MiniMax H3's int8 projection kernels (h3_quantize, h3_gemm_int8_tma) under the contract, against float64 formulas.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
@@ -190,88 +190,356 @@ pub const Quantize = struct {
     }
 };
 
-/// One output a product sum: rows by n, int32 sums times the row's and the column's fp32 scales, then bf16.
-pub fn dequantizeSpec() c.Spec {
+// ---------------------------------------------------------------------------
+// The TMA product (h3_int8_tma.cuh): 256x128 tiles walked by one CTA an SM, tensor maps encoded
+// per launch. Its contract gates the exact int32 sums plus the fp32 scale fold against float64.
+
+const gpu_check = @import("check.zig");
+
+/// The driver encodes a [rows, columns] matrix into a CUtensorMap (cuda_int8.zig's TensorMap).
+const TensorMap = extern struct { bytes: [128]u8 align(64) };
+const Encode = *const fn (*TensorMap, c_uint, c_uint, ?*anyopaque, *const [2]u64, *const u64, *const [2]u32, *const [2]u32, c_uint, c_uint, c_uint, c_uint) callconv(.c) cuda.abi.Result;
+
+/// cuTensorMapEncodeTiled, bound once: a driver without it cannot run the product at all.
+pub fn encoder(d: *const cuda.Driver) !Encode {
+    var lib = d.lib;
+    return lib.lookup(Encode, "cuTensorMapEncodeTiled") orelse error.MissingSymbol;
+}
+
+/// UINT8, 2D, swizzle 128B, L2 256B promotion, zero fill: cuda_int8.zig's encode, here for the
+/// contract's own buffers.
+fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, box_rows: u32) !void {
+    const dims: [2]u64 = .{ k, rows };
+    const strides: u64 = k;
+    const box: [2]u32 = .{ 128, box_rows };
+    const es: [2]u32 = .{ 1, 1 };
+    const res = enc(map, 0, 2, @ptrFromInt(@as(usize, @intCast(ptr))), &dims, &strides, &box, &es, 0, 3, 3, 0);
+    if (res != cuda.abi.success) return error.CudaFailed;
+}
+
+/// TallTile's ring (the only tile the picture uses): 2 stages of (256 + 128) x 128 bytes.
+const tma_shared_bytes = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
+
+/// A TMA product kernel with its ring's dynamic shared memory allowed (past the 48 KiB default).
+pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8) !cuda.Function {
+    const f = try mod.function(name);
+    try f.allowDynamicShared(tma_shared_bytes);
+    return f;
+}
+
+/// What a GemmTma registration launches: the plain product, fc1's SwiGLU epilogue on interleaved
+/// rows, or the control - the plain product at a width cuBLASLt took (n % 4) but the TMA grid,
+/// whole 128-column tiles only, leaves partly unwritten.
+pub const Mode = enum { plain, swiglu, control };
+
+/// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact; SwiGLU's
+/// is h3_swiglu's on the plain product's [gate | up] halves, bit for bit.
+pub fn gemmTmaSpec(mode: Mode) c.Spec {
+    const served: []const c.Shape = switch (mode) {
+        .plain => &.{
+            .{ .rows = 16, .n = 128, .k = 128 }, // one tile, one stage
+            .{ .rows = 300, .n = 128, .k = 256 }, // a partial M tile and two K blocks
+            .{ .rows = 64, .n = 384, .k = 384 }, // three N tiles past a partial M tile
+            .{ .rows = 16, .n = 21504, .k = 5376 }, // qkvc's real fan-out and depth
+        },
+        .swiglu => &.{
+            .{ .rows = 16, .n = 256, .k = 128 }, // one feature tile
+            .{ .rows = 300, .n = 512, .k = 256 }, // a partial M tile, two tiles and K blocks
+            .{ .rows = 256, .n = 2 * mlp, .k = hidden }, // fc1's real fan-out
+        },
+        .control => &.{.{ .rows = 16, .n = 392, .k = 128 }}, // n % 8 keeps the epilogue's 16-byte stores aligned
+    };
     return .{
-        .name = "cuda h3 int8 sums h3_dequantize",
-        .accum = .none,
+        .name = switch (mode) {
+            .plain => "cuda h3 int8 tma product h3_gemm_int8_tma",
+            .swiglu => "cuda h3 int8 tma swiglu h3_swiglu_rows + h3_swiglu_int8_tma",
+            .control => "control: h3_gemm_int8_tma at a width off whole 128-column tiles",
+        },
+        .accum = .none, // int32 sums, exact: no fp accumulator for gate 4 to stress
         .depth = none,
         .ops = 3,
         .out = .bf16,
-        .tiles = .{ .{}, .{ .size = 1024, .step = 4, .min = 4 }, .{} },
-        // 1024 blocks of 256 threads cover 1M quads: 64 rows of mlp out's 2 x 14336 run the grid-stride loop
-        .served = &.{ .{ .rows = 16, .n = hidden, .k = 1 }, .{ .rows = 16, .n = 3 * inner, .k = 1 }, .{ .rows = 64, .n = 2 * mlp, .k = 1 } },
+        .nan = .{ .stated = "a nonfinite row or column scale reaches every output it multiplies, as h3_dequantize's did" },
+        .tiles = switch (mode) {
+            .plain => .{ .{}, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 128, .step = 128, .min = 128 } },
+            .swiglu => .{ .{}, .{ .size = 256, .step = 256, .min = 256 }, .{ .size = 128, .step = 128, .min = 128 } },
+            .control => .{ .{}, .{}, .{} },
+        },
+        .served = served,
+        .replaces = if (mode == .swiglu) "h3_gemm_int8_tma then h3_swiglu" else null,
+        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
     };
 }
 
-pub const Dequantize = struct {
+/// C (rows, n) bf16 = (X int8 rows,k . W int8 n,k)^T * xs[rows] * ws[n], as the TMA kernel writes
+/// it; in swiglu mode W's rows are [gate | up], interleaved on the device as fc1's are, and C is
+/// silu(gate) * up, (rows, n / 2).
+pub const GemmTma = struct {
     rig: rig_.Rig,
-    f: cuda.Function,
+    mode: Mode,
+    mod: cuda.Module,
+    enc: Encode,
     arena: std.heap.ArenaAllocator,
     shape: c.Shape = undefined,
-    acc: []i32 = &.{},
-    sx: []f32 = &.{},
-    sw: []f32 = &.{},
-    bufs: [4]u64 = undefined,
+    xq: []i8 = &.{},
+    wq: []i8 = &.{},
+    xs: []f32 = &.{},
+    ws: []f32 = &.{},
+    /// xq, xs, wq, ws, out; swiglu adds the interleaved wq, ws and the baseline's two buffers.
+    dev: [9]u64 = @splat(0),
 
-    pub fn deinit(t: *Dequantize) void {
+    pub fn deinit(t: *GemmTma) void {
         t.rig.deinit();
         t.arena.deinit();
     }
 
-    pub fn kernel(t: *Dequantize) g.Kernel {
-        return .{ .spec = dequantizeSpec(), .ctx = t, .vt = &vt };
+    pub fn kernel(t: *GemmTma) g.Kernel {
+        return .{ .spec = gemmTmaSpec(t.mode), .ctx = t, .vt = &vt, .control = if (t.mode == .control) .shapes else null };
     }
 
-    const vt = g.hooks(Dequantize);
+    const vt = g.hooks(GemmTma);
 
-    pub fn prepare(t: *Dequantize, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
-        if (shape.n % 4 != 0 or shape.n == 0) return false;
+    fn outColumns(t: *const GemmTma) usize {
+        return if (t.mode == .swiglu) t.shape.n / 2 else t.shape.n;
+    }
+
+    pub fn prepare(t: *GemmTma, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
+        const width: usize = switch (t.mode) {
+            .plain => 128,
+            .swiglu => 256,
+            .control => 8,
+        };
+        if (shape.k % 128 != 0 or shape.n % width != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
         t.rig.reset();
         _ = t.arena.reset(.retain_capacity);
         t.shape = shape;
-        const al = t.arena.allocator();
+        const a = t.arena.allocator();
         var prng = std.Random.DefaultPrng.init(seed);
         const rng = prng.random();
-        t.acc = try al.alloc(i32, shape.rows * shape.n);
-        t.sx = try al.alloc(f32, shape.rows);
-        t.sw = try al.alloc(f32, shape.n);
-        // |sums| up to 127 * 127 * 14336, as a full-width product's can reach
-        for (t.acc) |*v| v.* = rng.intRangeAtMost(i32, -231_000_000, 231_000_000);
-        for (t.sx) |*v| v.* = @floatCast(0x1p-10 * (0.5 + rng.float(f64)));
-        for (t.sw) |*v| v.* = @floatCast(0x1p-12 * (0.5 + rng.float(f64)));
-        if (fill == .nonfinite) {
-            // a NaN row scale, both infinities on columns, and 0 * inf where a sum is zero
-            t.sx[shape.rows - 1] = std.math.nan(f32);
-            t.sw[1] = std.math.inf(f32);
-            t.sw[shape.n - 2] = -std.math.inf(f32);
-            t.acc[1] = 0;
+        t.xq = try a.alloc(i8, shape.rows * shape.k);
+        t.wq = try a.alloc(i8, shape.n * shape.k);
+        t.xs = try a.alloc(f32, shape.rows);
+        t.ws = try a.alloc(f32, shape.n);
+        for (t.xq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        for (t.wq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        for (t.xs) |*v| v.* = 0.001 + 0.004 * rng.float(f32);
+        for (t.ws) |*v| v.* = 0.002 + 0.006 * rng.float(f32);
+        if (fill == .stress) {
+            for (t.xq) |*v| v.* = if (v.* >= 0) 127 else -127;
         }
-        t.bufs[0] = try t.rig.input(std.mem.sliceAsBytes(t.acc));
-        t.bufs[1] = try t.rig.input(std.mem.sliceAsBytes(t.sx));
-        t.bufs[2] = try t.rig.input(std.mem.sliceAsBytes(t.sw));
-        t.bufs[3] = try t.rig.output(shape.rows * shape.n * 2);
+        if (fill == .nonfinite) {
+            if (shape.rows > 2) t.xs[2] = std.math.nan(f32);
+            if (shape.n > 3) t.ws[3] = std.math.inf(f32);
+        }
+        t.dev[0] = try t.rig.input(std.mem.sliceAsBytes(t.xq));
+        t.dev[1] = try t.rig.input(std.mem.sliceAsBytes(t.xs));
+        t.dev[2] = try t.rig.input(std.mem.sliceAsBytes(t.wq));
+        t.dev[3] = try t.rig.input(std.mem.sliceAsBytes(t.ws));
+        t.dev[4] = try t.rig.output(shape.rows * t.outColumns() * 2);
+        if (t.mode == .swiglu) {
+            t.dev[5] = try t.rig.scratch(shape.n * shape.k);
+            t.dev[6] = try t.rig.scratch(shape.n * 4);
+            t.dev[7] = try t.rig.scratch(shape.rows * shape.n * 2);
+            t.dev[8] = try t.rig.scratch(shape.rows * shape.n);
+        }
         return true;
     }
 
-    pub fn run(t: *Dequantize) !void {
+    /// One TMA product launch: `wq` and `ws` the weight rows and scales it reads, into `out`.
+    fn product(t: *GemmTma, name: [:0]const u8, wq: u64, ws: u64, out: u64) !void {
+        var maps: [2]TensorMap = undefined;
+        try encodeTiled(t.enc, &maps[0], t.dev[0], t.shape.rows, t.shape.k, 256);
+        try encodeTiled(t.enc, &maps[1], wq, t.shape.n, t.shape.k, 128);
         var args: cuda.Args = .{};
-        for (t.bufs) |p| args.add(p);
-        args.add(@as(c_int, @intCast(t.shape.rows)));
-        args.add(@as(c_int, @intCast(t.shape.n)));
-        try cuda.launch.launch(t.f, .{ .grid = .{ .x = 1024 }, .block = .{ .x = 256 } }, t.rig.s, &args);
+        args.add(maps[0]);
+        args.add(maps[1]);
+        for ([_]u64{ t.dev[1], ws, out }) |p| args.add(p);
+        for ([_]usize{ t.shape.rows, t.shape.n, t.shape.k }) |v| args.add(@as(c_int, @intCast(v)));
+        const sm: usize = @intCast(try t.rig.gpu.ctx.attribute(.multiprocessor_count));
+        const tiles = (t.shape.rows + 255) / 256 * (t.shape.n / 128);
+        try cuda.launch.launch(try tmaFunction(t.mod, name), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
+    }
+
+    pub fn run(t: *GemmTma) !void {
+        if (t.mode == .swiglu) {
+            var args: cuda.Args = .{};
+            for ([_]u64{ t.dev[2], t.dev[3], t.dev[5], t.dev[6] }) |p| args.add(p);
+            args.add(@as(c_int, @intCast(t.shape.k)));
+            try cuda.launch.launch(try t.mod.function("h3_swiglu_rows"), .{ .grid = .{ .x = @intCast(t.shape.n / 2) }, .block = .{ .x = 256 } }, t.rig.s, &args);
+            try t.product("h3_swiglu_int8_tma", t.dev[5], t.dev[6], t.dev[4]);
+        } else try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[4]);
         try t.rig.s.synchronize();
     }
 
-    pub fn count(t: *Dequantize) usize {
-        return t.shape.rows * t.shape.n;
+    /// SwiGLU's baseline: the plain product on the original [gate | up] rows, then h3_swiglu.
+    pub fn replaced(t: *GemmTma) ![]const u8 {
+        try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[7]);
+        var args: cuda.Args = .{};
+        for ([_]u64{ t.dev[7], t.dev[8] }) |p| args.add(p);
+        for ([_]usize{ t.shape.rows, t.shape.n / 2 }) |v| args.add(@as(c_int, @intCast(v)));
+        try cuda.launch.launch(try t.mod.function("h3_swiglu"), .{ .grid = .{ .x = 256 }, .block = .{ .x = 256 } }, t.rig.s, &args);
+        return t.rig.bytes(t.dev[8], t.shape.rows * t.shape.n);
     }
 
-    pub fn reference(t: *Dequantize, want: []f64, mag: []f64) !void {
+    pub fn count(t: *GemmTma) usize {
+        return t.shape.rows * t.outColumns();
+    }
+
+    /// The float64 product: exact int32 dots over the whole row (the mma order is irrelevant to
+    /// them), then acc * xs * ws in fp32 rounded to bf16 as the store does; SwiGLU then rounds
+    /// silu(gate) and silu * up to bf16 as h3_swiglu does.
+    pub fn reference(t: *GemmTma, want: []f64, mag: []f64) !void {
+        const k = t.shape.k;
         const n = t.shape.n;
-        for (want, mag, t.acc, 0..) |*w, *m, a, i| {
-            w.* = @as(f64, @floatFromInt(a)) * t.sx[i / n] * t.sw[i % n];
-            m.* = 0;
-        }
+        const cols = t.outColumns();
+        const half = n / 2;
+        for (0..t.shape.rows) |row| for (0..cols) |col| {
+            const x = t.xq[row * k ..][0..k];
+            const at = row * cols + col;
+            if (t.mode != .swiglu) {
+                const dot = dots(x, t.wq[col * k ..][0..k]);
+                want[at] = c.fromBf16(c.toBf16(@as(f32, @floatFromInt(dot[0])) * t.xs[row] * t.ws[col]));
+                mag[at] = @as(f64, @floatFromInt(dot[1])) * t.xs[row] * t.ws[col];
+                continue;
+            }
+            const gd = dots(x, t.wq[col * k ..][0..k]);
+            const ud = dots(x, t.wq[(col + half) * k ..][0..k]);
+            const gate = c.fromBf16(c.toBf16(@as(f32, @floatFromInt(gd[0])) * t.xs[row] * t.ws[col]));
+            const up = c.fromBf16(c.toBf16(@as(f32, @floatFromInt(ud[0])) * t.xs[row] * t.ws[col + half]));
+            const g32: f32 = @floatCast(gate);
+            const silu = c.fromBf16(c.toBf16(g32 / (1 + @exp(-g32))));
+            want[at] = c.fromBf16(c.toBf16(@floatCast(silu * up)));
+            mag[at] = @abs(want[at]);
+        };
     }
 };
+
+/// A row's int32 dot with a weight row and the sum of its terms' magnitudes.
+fn dots(x: []const i8, w: []const i8) [2]i64 {
+    var dot: i64 = 0;
+    var sum: i64 = 0;
+    for (x, w) |a, b| {
+        const p = @as(i64, a) * b;
+        dot += p;
+        sum += @intCast(@abs(p));
+    }
+    return .{ dot, sum };
+}
+
+// ---------------------------------------------------------------------------
+// Microbench: the TMA tile against cuBLASLt's int8 product on the real picture
+// shapes — the gate the card sets before any picture run.
+
+const lt_ = cuda.cublaslt;
+const workspace_bytes = 32 << 20; // cuda_gemm's own; duplicated so the test needs no family import
+
+const image_h3 align(16) = @embedFile("fatbin_h3").*;
+
+/// Per-shape wall-clock of `reps` back-to-back launches of `f`, ns each.
+fn timeKernel(f: cuda.Function, s: cuda.Stream, shared: u32, args: *cuda.Args, grid_x: u32, reps: usize, io: std.Io) !i96 {
+    const start = gpu_check.now(io);
+    for (0..reps) |_| try cuda.launch.launch(f, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 256 }, .shared = shared }, s, args);
+    try s.synchronize();
+    return @divTrunc(gpu_check.now(io) - start, @as(i96, @intCast(reps)));
+}
+
+/// Per-shape wall-clock of `reps` cuBLASLt int8 products (C i32), ns each.
+fn timeLt(gm: *const lt_.Gemm, a: u64, b: u64, cc: u64, w: u64, s: cuda.Stream, reps: usize, io: std.Io) !i96 {
+    const start = gpu_check.now(io);
+    for (0..reps) |_| try gm.runInt(a, b, cc, w, workspace_bytes, s.handle);
+    try s.synchronize();
+    return @divTrunc(gpu_check.now(io) - start, @as(i96, @intCast(reps)));
+}
+
+/// A/B the picture projections on the same device buffers: `h3_gemm_int8_tma` writes bf16 from its
+/// own persistent tiles; cuBLASLt sums into int32 (what the old path paid h3_dequantize to read).
+pub fn bench(gpu: gpu_check.Gpu) !void {
+    const io = gpu.io;
+    const cap = try gpu.ctx.capability();
+    try gpu_check.expect(cap == 121, "h3 int8 tma benchmark needs sm_121, got sm_{d}", .{cap});
+    const enc = try encoder(gpu.d);
+    var s = try cuda.Stream.init(gpu.d, false);
+    defer s.deinit();
+    const a = gpu.gpa;
+
+    var mod = try cuda.Module.load(gpu.d, &image_h3);
+    defer mod.unload();
+    const f = try tmaFunction(mod, "h3_gemm_int8_tma");
+
+    var lt = try lt_.Library.open();
+    defer lt.close();
+    const handle = try lt_.createHandle(&lt);
+    var ws = try cuda.DeviceBuffer.alloc(gpu.d, workspace_bytes);
+    defer ws.free();
+
+    // the four projections, (name, rows M, n N, k K): qkvc, out, fc1, fc2
+    const cases = [_]struct { name: []const u8, rows: usize, n: usize, k: usize }{
+        .{ .name = "qkvc", .rows = 4120, .n = 21504, .k = 5376 },
+        .{ .name = "out ", .rows = 4120, .n = 5376, .k = 7168 },
+        .{ .name = "fc1 ", .rows = 4120, .n = 28672, .k = 5376 },
+        .{ .name = "fc2 ", .rows = 4120, .n = 5376, .k = 14336 },
+    };
+    const reps = 5;
+    for (cases, 0..) |sh, i| {
+        var prng = std.Random.DefaultPrng.init(0x1398 + i);
+        const rng = prng.random();
+        const xq = try a.alloc(i8, sh.rows * sh.k);
+        defer a.free(xq);
+        const wq = try a.alloc(i8, sh.n * sh.k);
+        defer a.free(wq);
+        const xs = try a.alloc(f32, sh.rows);
+        defer a.free(xs);
+        const wsv = try a.alloc(f32, sh.n);
+        defer a.free(wsv);
+        for (xq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        for (wq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
+        for (xs) |*v| v.* = 0.001 + 0.004 * rng.float(f32);
+        for (wsv) |*v| v.* = 0.002 + 0.006 * rng.float(f32);
+
+        var d_xq = try cuda.DeviceBuffer.alloc(gpu.d, xq.len);
+        defer d_xq.free();
+        var d_xs = try cuda.DeviceBuffer.alloc(gpu.d, xs.len * 4);
+        defer d_xs.free();
+        var d_wq = try cuda.DeviceBuffer.alloc(gpu.d, wq.len);
+        defer d_wq.free();
+        var d_ws = try cuda.DeviceBuffer.alloc(gpu.d, wsv.len * 4);
+        defer d_ws.free();
+        var d_out = try cuda.DeviceBuffer.alloc(gpu.d, sh.rows * sh.n * 2);
+        defer d_out.free();
+        var d_acc = try cuda.DeviceBuffer.alloc(gpu.d, sh.rows * sh.n * 4);
+        defer d_acc.free();
+        try d_xq.upload(0, std.mem.sliceAsBytes(xq));
+        try d_xs.upload(0, std.mem.sliceAsBytes(xs));
+        try d_wq.upload(0, std.mem.sliceAsBytes(wq));
+        try d_ws.upload(0, std.mem.sliceAsBytes(wsv));
+
+        // TallTile, persistent grid of min(SMs, tiles) CTAs
+        const sm: usize = @intCast(try gpu.ctx.attribute(.multiprocessor_count));
+        var maps: [2]TensorMap = undefined;
+        try encodeTiled(enc, &maps[0], d_xq.ptr, sh.rows, sh.k, 256);
+        try encodeTiled(enc, &maps[1], d_wq.ptr, sh.n, sh.k, 128);
+        var args: cuda.Args = .{};
+        args.add(maps[0]);
+        args.add(maps[1]);
+        for ([_]u64{ d_xs.ptr, d_ws.ptr, d_out.ptr }) |p| args.add(p);
+        for ([_]usize{ sh.rows, sh.n, sh.k }) |v| args.add(@as(c_int, @intCast(v)));
+        const grid_x: u32 = @intCast(@min(sm, (sh.rows + 255) / 256 * (sh.n / 128)));
+        try cuda.launch.launch(f, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, s, &args);
+        try s.synchronize();
+        const ours = try timeKernel(f, s, tma_shared_bytes, &args, grid_x, reps, io);
+
+        // cuBLASLt int8 on the same inputs, C int32
+        var ltg = try lt_.Gemm.init(&lt, handle, .{ .ta = .t, .m = sh.n, .n = sh.rows, .k = sh.k, .a = .i8, .b = .i8, .c = .i32, .lda = sh.k, .ldb = sh.k, .ldc = sh.n }, workspace_bytes);
+        defer ltg.deinit();
+        try ltg.runInt(d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, workspace_bytes, s.handle);
+        try s.synchronize();
+        const ltns = try timeLt(&ltg, d_wq.ptr, d_xq.ptr, d_acc.ptr, ws.ptr, s, reps, io);
+
+        const flops: f64 = 2.0 * @as(f64, @floatFromInt(sh.rows)) * @as(f64, @floatFromInt(sh.n)) * @as(f64, @floatFromInt(sh.k));
+        const lt_ms = @as(f64, @floatFromInt(ltns)) / std.time.ns_per_ms;
+        const ours_ms = @as(f64, @floatFromInt(ours)) / std.time.ns_per_ms;
+        std.debug.print("BENCH h3_int8_tma {s} M={d} N={d} K={d}: tile={d:.2} ms ({d:.1} TOPS) cublaslt={d:.2} ms ({d:.1} TOPS) ratio={d:.3}x\n", .{
+            sh.name, sh.rows, sh.n, sh.k, ours_ms, flops / (ours_ms * 1e9), lt_ms, flops / (lt_ms * 1e9), lt_ms / ours_ms,
+        });
+    }
+}
