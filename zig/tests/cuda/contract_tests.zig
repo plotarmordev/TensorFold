@@ -29,6 +29,7 @@ const h3_k = @import("contract_h3.zig");
 const h3_prep = @import("contract_h3_prep.zig");
 const h3_topk_k = @import("contract_h3_topk.zig");
 const h3_int8_k = @import("contract_h3_int8.zig");
+const h3_fp4_k = @import("contract_h3_fp4.zig");
 const h3d_k = @import("contract_h3_image_decoder.zig");
 const h3p_k = @import("contract_h3_image_prompt.zig");
 const h3m_k = @import("contract_h3_image_modulation.zig");
@@ -325,6 +326,9 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     var h3_quantize = h3_int8_k.Quantize{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_quantize"), .arena = std.heap.ArenaAllocator.init(a) };
     defer h3_quantize.deinit();
     try kernels.append(a, h3_quantize.kernel());
+    var h3_fp4 = h3_fp4_k.Quantize{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_quantize_fp4"), .arena = std.heap.ArenaAllocator.init(a) };
+    defer h3_fp4.deinit();
+    try kernels.append(a, h3_fp4.kernel());
     // the TMA products' encoder needs sm_90+; contract them on GB10 only: the plain product, fc1's
     // SwiGLU epilogue against the plain product then h3_swiglu, and the control at a width off whole tiles
     var h3_tma: [3]h3_int8_k.GemmTma = undefined;

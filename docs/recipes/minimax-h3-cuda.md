@@ -871,6 +871,87 @@ The prompt column includes the host check (316 tokens: 18.0 s encoding, 15.0 s r
 speed receipts. The second phase reverse-applied `bench-154-base.patch` (main's products) and drew the pilot prompt
 again: both 2048-1 latents are sha256 `8d067d75…`, byte-equal — the canonical algorithm still runs at 24 rows.
 
+### Card 147: `--fp4`, every projection block-scaled NVFP4 on GB10's FP4 tensor cores — opt-in, a different picture
+
+GB10 multiplies e2m1 operands at one e4m3 scale every 16 values of K natively (cuBLASLt `CUDA_R_4F_E2M1` with
+`VEC16_UE4M3` scales, fp32 sums, bf16 out). The stop-rule microbench came first:
+[`bench-147-fp4.sh`](minimax-h3-cuda/bench-147-fp4.sh) at `99900221` (job `top-7878316ecbe3`, cuBLASLt 13.1.1,
+the dtype and scale-mode values read from the toolkit's headers) timed `tf-cuda-test h3-fp4-bench` on the four
+projections a 2048² picture runs, 4,120 rows each, against the int8 TN product on every one — the default runs
+`qkvc` and `fc1` int8 and `out` and `fc2` bf16, so the last two rows compare against a path the default does not take:
+
+| projection | M × N × K | int8 ms (TOPS) | NVFP4 ms (TOPS) | int8 / NVFP4 |
+|---|---|---:|---:|---:|
+| qkvc | 4,120 × 21,504 × 5,376 | 6.25 (152) | 3.04 (313) | 2.06× |
+| out | 4,120 × 5,376 × 7,168 | 2.03 (157) | 0.94 (336) | 2.15× |
+| fc1 | 4,120 × 28,672 × 5,376 | 8.21 (155) | 4.15 (306) | 1.98× |
+| fc2 | 4,120 × 5,376 × 14,336 | 4.20 (151) | 4.66 (136) | 0.90× |
+
+Three of four are twice the int8 rate, so the path was built: `--fp4` (`Fp4.quantize`, `cuda_fp4.zig`) rotates
+every projection's weight rows in 128-wide Hadamard chunks as `cuda_int8.zig` does, stores e2m1 codes and their
+e4m3 scales in cuBLASLt's 128 × 4 tiles (`h3_quantize_fp4`) and frees the bf16 weights; `h3_norm_quant_fp4` writes
+`qkvc`'s and `fc1`'s rows straight from the norm, `out` and `fc2` quantize their rows first, and every product
+writes bf16 from its own tile — no int32 planes, no `h3_dequantize`. `out` and `fc2`, bf16 at the default, run
+NVFP4 too. The int8 default and `--bf16` run unchanged.
+
+[`bench-147-ab.sh`](minimax-h3-cuda/bench-147-ab.sh) at `ff4705f5` (job `top-3f34c366b021`, 22 November,
+`H3_PROFILE=1` on every side) ran the bench three times in one window: with `--fp4`, at this commit's int8 default,
+and with `bench-147-base.patch` reverse-applied — the job checks that the result is current main's `zig/` tree
+(`cdaf007a1`, after card 149) before the base phase runs. Each ran the pilot fox cold, then the three
+unseen prompts (`harbour`, `meadow`, `steam`) warm. Every selftest passed on every side, every server exited 0, and
+the int8 default's four latents and PNGs are byte for byte main's.
+
+| side | cold s | warm 1 / 2 / 3 s | transformer s | peak MiB |
+|---|---:|---:|---:|---:|
+| main (TMA int8 qkvc and fc1) | 151.2 | 13.2 / 13.1 / 13.2 | 10.7 / 10.8 / 10.7 | 78,019 |
+| this commit, int8 default | 149.3 | 13.2 / 13.1 / 13.1 | 10.7 / 10.8 / 10.7 | 78,019 |
+| `--fp4` | 151.3 | 10.8 / 10.6 / 10.6 | 8.4 / 8.2 / 8.2 | 64,473 |
+
+`H3_PROFILE` stage times, warm runs 1 / 2 / 3 (main | int8 default | `--fp4`, s):
+
+| stage | main | int8 default | `--fp4` |
+|---|---:|---:|---:|
+| norms | 0.61 / 0.61 / 0.61 | 0.62 / 0.62 / 0.61 | 0.55 / 0.55 / 0.55 |
+| q k v gate | 1.64 / 1.63 / 1.65 | 1.63 / 1.64 / 1.64 | 0.97 / 0.96 / 0.97 |
+| heads | 0.94 / 0.95 / 0.95 | 0.94 / 0.95 / 0.95 | 0.95 / 0.95 / 0.95 |
+| attention | 1.79 / 1.79 / 1.80 | 1.76 / 1.77 / 1.78 | 1.80 / 1.75 / 1.76 |
+| attention out | 1.13 / 1.14 / 1.14 | 1.15 / 1.16 / 1.16 | 0.39 / 0.38 / 0.38 |
+| mlp in | 2.20 / 2.20 / 2.20 | 2.18 / 2.20 / 2.19 | 1.86 / 1.80 / 1.81 |
+| mlp out | 2.29 / 2.29 / 2.28 | 2.27 / 2.27 / 2.28 | 1.69 / 1.68 / 1.68 |
+
+`fc2` gains least, as its 0.90× product predicted; `out` and `fc2` gain most against main because the default runs
+them in bf16. An earlier `--fp4` server exited 139 once its request pipe closed: a ReleaseSafe build (job
+`top-f37c7d07a44b`) put the fault inside `cuDevicePrimaryCtxRelease_v2`, which calls back into cuBLASLt after FP4
+products, and `Gemms.deinit` had already unloaded it; `Model.tryDeinit` now closes cuBLASLt after the release, and
+this job's `--fp4` server exits 0.
+
+`h3_quantize_fp4` is under the kernel contract (`kernel-contract h3_quantize_fp4`, `contract_h3_fp4.zig`): every e4m3 block
+scale and e2m1 code against the float64 rotation at the byte cuBLASLt's 128 × 4 tiles read, the tiles' padding
+left unwritten, NaN and infinity blocks by a stated rule. The self-test checks `h3_norm_quant_fp4` byte for byte
+against `h3_norm` then `h3_quantize_fp4`, with the gated add and without it (block 0's first norm).
+[`fp4-contract-job.sh`](minimax-h3-cuda/fp4-contract-job.sh) at `f932e2a2` (job `top-38463791b90e`) passed the
+self-test, `h3_quantize_fp4`'s non-finite, repeat and eight-shape gates (exact by its own check; it declares no
+sums), and both launches' limits on all five SMs against their recorded usage (26-28 and 32-48 registers, bound
+256). The job fails when the audit itself does: at `ef9f033e` (job `top-bc3758fe57cb`, exit 1) all ten fp4 limit
+lines pass, and the audit's 59 problems are stale usage records across the images (GLM BF16, exl3's controls and h3's
+own: `h3_norm`, `h3_quantize`, `h3_norm_quant` and the fp4 pair record 128 static shared bytes where nvcc 13.0 now
+reports 1,024) beside its planted controls — main's records to refresh, not this card's launches.
+
+The picture does not hold. Against episode 1's Mac latent and PNG, the fox's `2048-1` measures
+**latent cosine 0.8758 and mean diff 26.48** (`tools/zig/h3_image_compare.py`) and **PSNR 15.28 dB** (numpy, the
+PNGs' RGB mean squared error), missing every gate (0.99, 4.1, 28.2 dB). Main's side of the same job measures
+0.9952, 4.01 and 28.69 dB. Against main's pictures of the same job the unseen prompts
+land at latent cosine 0.885, 0.922 and 0.951 and mean diff 22.0, 22.7 and 16.5, the mean HSV saturation 49.0,
+108.2 and 62.4 against main's 57.3, 112.1 and 75.0: the muted colours of mmh3's NVFP4 (the study's lever 9). One
+mantissa bit at a scale per 16 values draws a different composition of the prompt, not a defect.
+
+![Main's int8 picture (left) beside `--fp4` (right), seed 42, 2048² shrunk to 512: the pilot fox (top) and the
+unseen `steam` prompt (bottom). `--fp4` draws a different picture of the same prompt, with fewer saturated
+colours.](minimax-h3-cuda/int8-vs-fp4.png)
+
+`--fp4` stays **opt-in** (`H3_LINEAR=fp4` in the bench scripts): 19% faster warm than main's TMA int8 (10.7 s
+against 13.2 s), 13.5 GB less resident, and a different picture — never the default, which keeps episode 1's gates.
+
 ### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
 
 I ran [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) again at `99c900f5` (job `top-a84c94b49c92`, GB10,

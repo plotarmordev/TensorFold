@@ -68,6 +68,7 @@ pub const Int8 = struct {
     /// quantized.
     pub fn quantize(self: *Model) !void {
         if (self.gated) return error.H3NotPictureModel; // the dense forward's three of q, k, v only
+        if (self.fp4 != null) return error.Quantized;
         try self.ctx.makeCurrent();
         // the TMA images are sm_90+; older targets carry a trap stub in their place
         if (try self.ctx.capability() < 90) return error.H3Int8RequiresSm90;

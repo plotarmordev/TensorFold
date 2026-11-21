@@ -13,6 +13,7 @@ pub const fused_test = @import("cuda_fused_test.zig");
 pub const image_host = @import("image_host.zig");
 const Gemms = @import("cuda_gemm.zig").Gemms;
 pub const Int8 = @import("cuda_int8.zig").Int8;
+pub const Fp4 = @import("cuda_fp4.zig").Fp4;
 pub const Rows = @import("cuda_rows.zig").Rows;
 
 pub const head_dim = 128;
@@ -27,7 +28,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -50,6 +51,8 @@ pub const Model = struct {
     gemms: Gemms,
     /// The projections in int8 after `Int8.quantize`; their bf16 buffers are then empty.
     int8: ?*Int8 = null,
+    /// The projections in block-scaled NVFP4 after `Fp4.quantize` (opt-in): their bf16 buffers are then empty.
+    fp4: ?*Fp4 = null,
     hidden: usize,
     inner: usize,
     heads: usize,
@@ -128,6 +131,7 @@ pub const Model = struct {
         self.hosts = .empty;
         self.blocks = &.{};
         self.int8 = null;
+        self.fp4 = null;
         self.load_stages = .{ .{}, .{} };
         self.load_failed = false;
         self.retained_next = null;
@@ -147,7 +151,10 @@ pub const Model = struct {
         // the legacy default stream: work queued by the caller's framework comes first
         self.stream = .{ .d = d, .handle = null };
         self.gemms = try Gemms.init(gpa, d);
-        errdefer if (ordinary_cleanup) self.gemms.deinit();
+        errdefer if (ordinary_cleanup) {
+            self.gemms.deinit();
+            self.gemms.lt.close();
+        };
         ordinary_cleanup = false;
         self.opened = seconds();
         return self;
@@ -179,9 +186,11 @@ pub const Model = struct {
         host.free(self);
         weights.free(self);
         if (self.int8) |t| t.deinit(self);
+        if (self.fp4) |t| t.deinit(self);
         self.gemms.deinit();
         self.module.unload();
         _ = self.driver.api.cuDevicePrimaryCtxRelease_v2(self.ctx.device);
+        self.gemms.lt.close();
         self.driver.close();
         self.gpa.destroy(self);
     }
@@ -211,7 +220,7 @@ pub const Model = struct {
         args.add(scale);
         args.add(shift);
         args.add(eps);
-        if (q == 0) try self.launch("h3_norm", .{ .x = @intCast(g.rows) }, 256, 0, &args) else try self.launch("h3_norm_quant", .{ .x = @intCast(g.rows) }, 256, 0, &args);
+        if (q == 0) try self.launch("h3_norm", .{ .x = @intCast(g.rows) }, 256, 0, &args) else if (self.fp4 != null) try self.launch("h3_norm_quant_fp4", .{ .x = @intCast(g.rows) }, 256, 0, &args) else try self.launch("h3_norm_quant", .{ .x = @intCast(g.rows) }, 256, 0, &args);
     }
 
     /// softmax(q k) v for `count` query tiles from `first`; `queries` is how many a head's lists are laid out for.
@@ -302,6 +311,7 @@ pub const Model = struct {
     /// the int8 reserve may synchronise the stream.
     pub fn warm(self: *Model, rows: usize) !void {
         const inner = self.inner;
+        if (self.fp4) |t| return t.warm(self, rows);
         if (self.int8) |t| {
             try t.warm(self, rows);
         } else {
@@ -334,10 +344,12 @@ pub const Model = struct {
         const video_tiles = tiles - prefix;
         const count = checked.count;
         var mark = seconds();
-        // the int8 scratch the fused launches share: norm_quant fills xq/xs, the products read them
+        // the int8 scratch the fused launches share: norm_quant fills xq/xs, the products read them; the fp4
+        // one holds a step's normed rows as e2m1 codes and tiled scales, refilled by every norm and quantize
         const lay = if (self.int8) |t| try t.layout(self, rows) else null;
-        const iq: u64 = if (lay) |l| l.xq else 0;
-        const is: u64 = if (lay) |l| l.xs else 0;
+        const lay4 = if (self.fp4) |t| try t.layout(self, rows) else null;
+        const iq: u64 = if (lay) |l| l.xq else if (lay4) |l| l.q else 0;
+        const is: u64 = if (lay) |l| l.xs else if (lay4) |l| l.s else 0;
         for (self.blocks[0..count], 0..) |*b, index| {
             const tab = in.tables + index * table_bytes;
             const par = index & 1;
@@ -348,6 +360,8 @@ pub const Model = struct {
                 // the TMA product writes the bf16 qkvc rows straight into g.qkvc — h3_heads reads
                 // them, the int32 sums and h3_dequantize's pass are gone
                 try t.gemm(self, lay.?, t.blocks[index].qkvc, g.qkvc, rows);
+            } else if (self.fp4) |t| {
+                try t.gemm(self, lay4.?, t.blocks[index].qkvc, g.qkvc, rows);
             } else {
                 try self.gemms.run(self.stream, g.xn, b.qkvc.ptr, g.qkvc, rows, width, hidden);
             }
@@ -393,12 +407,12 @@ pub const Model = struct {
                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
                 try self.lap("gate mix", &mark);
             }
-            try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
+            if (self.fp4) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
             try self.lap("attention out", &mark);
             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m, iq, is);
             try self.lap("norms", &mark);
             if (self.int8) |t| try t.gemm(self, lay.?, t.blocks[index].fc1, g.act, rows) else {
-                try self.gemms.run(self.stream, g.xn, b.fc1.ptr, g.wide, rows, 2 * self.mlp, hidden);
+                if (self.fp4) |t| try t.gemm(self, lay4.?, t.blocks[index].fc1, g.wide, rows) else try self.gemms.run(self.stream, g.xn, b.fc1.ptr, g.wide, rows, 2 * self.mlp, hidden);
                 var args: cuda.Args = .{};
                 args.add(g.wide);
                 args.add(g.act);
@@ -407,7 +421,7 @@ pub const Model = struct {
                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
             }
             try self.lap("mlp in", &mark);
-            try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
+            if (self.fp4) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
             try self.lap("mlp out", &mark);
         }
         {
