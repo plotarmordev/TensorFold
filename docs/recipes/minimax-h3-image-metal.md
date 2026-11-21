@@ -1547,7 +1547,8 @@ Warm A/B, M5 Ultra, ReleaseFast `tf-h3-image-server` per build: main `d9d87fe67`
 render path differs only in the profile switch (unprofiled, each kernel keeps its barrier; an encoder's last barrier
 is new). One resident server a session, card 34's pilot prompt, seed 42, one cold then three warm 2048 requests,
 each session holding `/tmp/tensorfold-model.lock` for its own 30-55 s, run back to back in one window with no other
-model running; load is the one-minute average before → after. Every step of the six sessions below is
+model running; load is the one-minute average before → after. Every step of the five committed sessions (these four
+and the profile below) is
 `timing_valid=true` (a head session that speech interrupted, and a main fast session drawn while speech was playing,
 were rerun once speech had been quiet for a minute).
 
@@ -1561,18 +1562,21 @@ were rerun once speech had been quiet for a minute).
 The head is as fast as main and draws the same bytes. Normal mode: every latent of both builds is sha1 `776b443a…`,
 the value card 135 pinned, and every PNG `85098fa9…`; against episode 1's Mac latent and PNG
 (`h3-image-runs/34/t2i-2048.latent.f32`, `fox-2048-seed42.png`, `904814d6…`) that pair gives cosine 0.995459, PSNR
-28.674 dB and mean pixel diff 3.903, card 80's rule. Fast mode draws a different picture on purpose: every latent
+28.6735 dB (card 150's 28.673 is the same value cut at three places, not rounded) and mean pixel diff 3.903, card 80's
+rule. Fast mode draws a different picture on purpose: every latent
 of both builds is `b4aece7d…` and every PNG `a2c9eb0c…`. Logs: `h3-image-fast-and-normal/mac-main-normal`,
 `mac-normal`, `mac-main-drafts` and `mac-drafts` (`.server.log.txt`). These replace two earlier sessions at load
 37-88, whose fast requests took 7.4-9.6 s on the same step GPU time.
 
-In-picture profile: `tf-h3-image-server … profile` (`h3-image-fast-and-normal/mac-profile.server.log.txt`), run in
-the same window right after the A/B under the lock, load 6.0 → 8.4, one cold and three warm requests, every step
-`timing_valid=true`, latents and PNGs the normal mode's bytes. Each kernel launch runs in its own encoder between two
+In-picture profile: `tf-h3-image-server … profile` (`h3-image-fast-and-normal/mac-profile.server.log.txt`), retaken
+after the fix that sums each kernel's command buffer into a step's GPU time, under the lock with no other model
+running, load 4.7 → 4.5, one cold and three warm requests, every step `timing_valid=true`, latents and PNGs the normal
+mode's bytes. Each kernel launch runs in its own encoder between two
 GPU timestamp counter samples (`mtl.counters`, the stage boundary sampling this M5 supports), so a row is that
 kernel's GPU time summed over its launches in the six steps and none of its neighbours'. A product, `h3_attention`
 and the per-block passes launch 300 times (6 steps x 50 blocks); `h3_quantize_rows` 900, before qkv, attention out and
-fc2 (fc1 takes `h3_norm_quant`'s rows). The last warm request's kernels add to 9.20 s against the unprofiled 9.20 s.
+fc2 (fc1 takes `h3_norm_quant`'s rows). The last warm request's kernels add to 9.20 s; its six command-buffer-timed
+steps to 9.18 s (1.53 s each), against the unprofiled 9.20 s.
 
 The peaks are the silicon's, worked out for this M5 Ultra, as Apple publishes none: 80 GPU cores (`gpu-core-count`)
 at the 1,620 MHz top GPU state (the IORegistry's `voltage-states9`), times 4,096 int8 ops and 2,048 bf16 flops a core
@@ -1581,10 +1585,10 @@ and cycle: **531 TOPS int8 and 265 TFLOPS bf16**. The per-cycle rates are card 1
 
 | Kernel | Stage | Seconds (6 steps) | Rate | Of the silicon peak |
 |---|---|---:|---:|---:|
-| `h3_gemm_32x64_i8` | q k v gate | 2.067 | 138 TOPS | 26% |
-| `h3_gemm_32x64_i8` | mlp in (fc1) | 2.733 | 139 TOPS | 26% |
-| `h3_gemm_32x64_i8` | mlp out (fc2) | 1.568 | 122 TOPS | 23% |
-| `h3_gemm_32x64_i8` | attention out | 0.774 | 123 TOPS | 23% |
+| `h3_gemm_32x64_i8` | q k v gate | 2.064 | 138 TOPS | 26% |
+| `h3_gemm_32x64_i8` | mlp in (fc1) | 2.729 | 140 TOPS | 26% |
+| `h3_gemm_32x64_i8` | mlp out (fc2) | 1.573 | 121 TOPS | 23% |
+| `h3_gemm_32x64_i8` | attention out | 0.777 | 123 TOPS | 23% |
 | `h3_attention` | attention | 1.519 | 96 TFLOPS | 36% |
 | `h3_quantize_rows` | quantize (900 launches: before qkv, out and fc2) | 0.153 | | |
 | `h3_heads` | heads | 0.102 | | |
