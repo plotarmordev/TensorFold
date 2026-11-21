@@ -1624,9 +1624,10 @@ stage after the last pass falls from 0.23 to 0.07 s at 2048 and from 0.91 to 0.2
 from 0.54 to 0.56 s and from 1.75 to 1.82 s, since 11 or 21 smaller passes replace 1 or 4.
 
 **Warm A/B, 22 Nov, M5 Ultra.** ReleaseFast `tf-h3-image-server` a side, one session a side under
-`/tmp/tensorfold-model.lock` (`lockf`, held while the server runs, 52-67 s): card 34's pilot cold, then the harbour,
-meadow and steam prompts warm and unseen, seed 42, 2048x2048. Sessions ran main, head, head, main, main, head, head.
-Every PNG and latent is byte-identical between the sides. Seconds, decoder stage (GPU decode plus PNG) / total:
+`/tmp/tensorfold-model.lock` (`lockf`, held while the server runs, 52-97 s): card 34's pilot cold, then the harbour,
+meadow and steam prompts warm and unseen, seed 42, 2048x2048. Each round is one session of each build, the first
+alternating between them. Every PNG and latent is byte-identical between the sides. Decoder stage (GPU decode plus
+PNG) and total, seconds, rounds 1 and 3:
 
 | Request | main, round 1 | this card, round 1 | main, round 3 | this card, round 3 |
 |---|---|---|---|---|
@@ -1636,14 +1637,27 @@ Every PNG and latent is byte-identical between the sides. Seconds, decoder stage
 | warm steam | 0.76 / 10.66 | 0.62 / 10.57 | 0.76 / 10.97 | 0.66 / 11.48 |
 | load (one minute) | 5.2-5.6 | 5.0-14.4 | 10.1-16.6 | 12.0-18.2 |
 
-The decoder stage falls from 0.73-0.78 s to 0.61-0.66 s on every request, 0.13 s on the mean: the 0.23-0.28 s after
-main's one pass becomes 0.06-0.11 s, less the 0.05 s the smaller passes add to the decode. The totals carry the prompt
-stage's CPU noise (0.67-1.65 s warm on either side). Over all eight requests a side they average 11.39 s for main and
-11.29 s for this card; the six warm ones alone average 11.31 and 11.44 s, this card's meadow in round 3 losing 0.95 s
-in its prompt. Without the prompt, warm 6 steps plus decoder come to 9.71-10.00 s for main and 9.55-10.02 s for this
-card, means 9.89 and 9.81 s. Rounds 2 and 4 ran at load 16-49 while other workers' tests ran, and a fifth main session
-at load 61-96. Every decoder stage there (main 0.95-3.82 s, this card 0.62-8.31 s) is the machine's, so they are left
-out.
+On a quiet machine the decoder stage falls from 0.73-0.78 s to 0.61-0.66 s on every request, 0.13 s on the mean: the
+0.23-0.28 s after main's one pass becomes 0.06-0.11 s, less the 0.05 s the smaller passes add to the decode. The warm
+totals also carry the prompt stage's CPU noise (0.67-1.65 s on either side, this card's meadow in round 3 losing 0.95 s
+there). Other workers' builds loaded the machine through every other round. The warm totals of every completed round
+(mean of the three warm requests, seconds, and the one-minute load across both sessions):
+
+| Round | Load | main | this card |
+|---|---|---|---|
+| 1 | 5-14 | 11.15 | 11.06 |
+| 2 | 16-34 | 14.14 | 11.30 |
+| 3 | 10-18 | 11.47 | 11.82 |
+| 6 | 19-35 | 11.99 | 11.48 |
+| 8 | 23-38 | 16.30 | 11.37 |
+| 9 | 34-50 | 16.50 | 19.57 |
+
+The warm requests average 11.54 s on main and 11.46 s on this card over rounds 1, 3 and 6, the lowest one-minute load
+at their warm requests; with round 2 (a hair lower over the whole session) in place of 6 they are 12.26 and 11.39 s,
+and over all six 13.59 and 12.77 s. This card is faster in four rounds of six. Under load main's decoder stage
+stretches to 0.87-3.82 s, its single-threaded deflate after the pass, while the band thread hides most of it behind the
+GPU (round 9 loaded both). Rounds 4 (this card only), 5 and 7 (main only, load 57-99) lost their partner session to the
+load and are left out.
 
 ### Next, ranked
 
