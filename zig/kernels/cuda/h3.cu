@@ -1,5 +1,6 @@
 // MiniMax H3 / FastH3's transformer blocks on CUDA in the checkpoint's bf16: the row, routing and attention kernels.
 #include "h3_attention.cuh"
+#include "h3_int8_tma.cuh"
 #include "common/reduce.cuh"
 
 namespace tf_h3 {
@@ -109,121 +110,6 @@ __global__ void __launch_bounds__(256) h3_heads(
             *reinterpret_cast<uint32_t*>(TQ + at + j) = pack2(a[0], a[1]);
             *reinterpret_cast<uint32_t*>(TK + at + j) = pack2(b[0], b[1]);
             *reinterpret_cast<uint32_t*>(TV + at + j) = *reinterpret_cast<const uint32_t*>(vr + c0 + j);
-        }
-    }
-}
-
-// A bf16 from a pack2 word by element index.
-__device__ __forceinline__ float unpack(const uint32_t* p, int e) {
-    const __nv_bfloat162 v = *reinterpret_cast<const __nv_bfloat162*>(p + (e >> 1));
-    return f(e & 1 ? v.y : v.x);
-}
-
-// h3_heads over an int8 product's int32 sums: each value is dequantized as h3_dequantize rounds it
-// (ACC SX[row] SW[col] to bf16), then the same head RMSNorm and split-half rotary run, so TQ/TK/TV match
-// h3_dequantize + h3_heads without the bf16 qkvc rows between them. Once per row, like h3_heads — card 120
-// measured folding this into attention's tile loop 11x slower. Grid [tiles], 256 threads.
-
-// q/k in registers rounded to bf16 two a word, rows read 16B at a time; card 128's 252-register float arrays spilled.
-
-// A quarter's rotary partner lies in another quarter: the partner's int32 group is reloaded and dequantized again.
-__global__ void __launch_bounds__(256) h3_heads_i8(
-        const int* ACC, const float* SX, const float* SW,
-        const __nv_bfloat16* NQ, const __nv_bfloat16* NK, const float* COS, const float* SIN,
-        const int* ROWOF, __nv_bfloat16* TQ, __nv_bfloat16* TK, __nv_bfloat16* TV, int H, int stride, int ROT, int slots,
-        float eps) {
-    const int tile = blockIdx.x, s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32, slot = tile * 64 + s;
-    const int row = ROWOF[slot];
-    const bool live = row >= 0;
-    const float sx = SX[live ? row : 0];
-    const float* cs = COS + static_cast<size_t>(live ? row : 0) * ROT;
-    const float* sn = SIN + static_cast<size_t>(live ? row : 0) * ROT;
-    // the rotary partner of c0 + 32h + j sits ±ROT over; ROT is a four-multiple, so each 4-wide group is one side
-    for (int head = 0; head < H; ++head) {
-        const int* qr = ACC + static_cast<size_t>(live ? row : 0) * stride + head * 128;
-        const int* kr = qr + H * 128;
-        const int* vr = kr + H * 128;
-        const float* wq = SW + head * 128;
-        const float* wk = wq + H * 128;
-        const float* wv = wk + H * 128;
-        // q and k held rounded to bf16 (two a word), so the norm sums and the rotary see h3_dequantize's values
-        uint32_t qp[16], kp[16];
-        float sq = 0.0f, sk = 0.0f;
-#pragma unroll
-        for (int i = 0; i < 8; ++i) {
-            const int4 a4 = live ? reinterpret_cast<const int4*>(qr + c0)[i] : make_int4(0, 0, 0, 0);
-            const int4 b4 = live ? reinterpret_cast<const int4*>(kr + c0)[i] : make_int4(0, 0, 0, 0);
-            const float4 wa = live ? reinterpret_cast<const float4*>(wq + c0)[i] : make_float4(0.f, 0.f, 0.f, 0.f);
-            const float4 wb = live ? reinterpret_cast<const float4*>(wk + c0)[i] : make_float4(0.f, 0.f, 0.f, 0.f);
-            const float q0 = bf(a4.x * sx * wa.x), q1 = bf(a4.y * sx * wa.y), q2 = bf(a4.z * sx * wa.z), q3 = bf(a4.w * sx * wa.w);
-            const float k0 = bf(b4.x * sx * wb.x), k1 = bf(b4.y * sx * wb.y), k2 = bf(b4.z * sx * wb.z), k3 = bf(b4.w * sx * wb.w);
-            sq += q0 * q0;
-            sq += q1 * q1;
-            sq += q2 * q2;
-            sq += q3 * q3;
-            sk += k0 * k0;
-            sk += k1 * k1;
-            sk += k2 * k2;
-            sk += k3 * k3;
-            qp[2 * i] = pack2(q0, q1);
-            qp[2 * i + 1] = pack2(q2, q3);
-            kp[2 * i] = pack2(k0, k1);
-            kp[2 * i + 1] = pack2(k2, k3);
-        }
-        // a row's four quarters sit in neighbouring lanes
-        sq += __shfl_xor_sync(0xffffffffu, sq, 1);
-        sq += __shfl_xor_sync(0xffffffffu, sq, 2);
-        sk += __shfl_xor_sync(0xffffffffu, sk, 1);
-        sk += __shfl_xor_sync(0xffffffffu, sk, 2);
-        if (!live) continue;
-        const float qi = rsqrtf(sq / 128.0f + eps), ki = rsqrtf(sk / 128.0f + eps);
-        const size_t at = (static_cast<size_t>(head) * slots + slot) * 128 + c0;
-#pragma unroll
-        for (int i = 0; i < 8; ++i) {
-            const float4 wv4 = reinterpret_cast<const float4*>(wv + c0)[i];
-            const int4 va = reinterpret_cast<const int4*>(vr + c0)[i];
-            float a[4], b[4], vc[4];
-#pragma unroll
-            for (int e = 0; e < 4; ++e) {
-                const int c = c0 + 4 * i + e;
-                a[e] = bf(unpack(qp, 4 * i + e) * qi * f(NQ[c]));
-                b[e] = bf(unpack(kp, 4 * i + e) * ki * f(NK[c]));
-            }
-            vc[0] = bf(va.x * sx * wv4.x);
-            vc[1] = bf(va.y * sx * wv4.y);
-            vc[2] = bf(va.z * sx * wv4.z);
-            vc[3] = bf(va.w * sx * wv4.w);
-            const int cb = c0 + 4 * i;
-            if (cb < 2 * ROT) {
-                const bool grp_low = cb < ROT; // uniform per group: cb and ROT are multiples of four
-                const int p0 = grp_low ? cb + ROT : cb - ROT;
-                const int t0 = grp_low ? cb : cb - ROT;
-                const int4 pa = *reinterpret_cast<const int4*>(qr + p0);
-                const int4 pb = *reinterpret_cast<const int4*>(kr + p0);
-                const float4 wpa = *reinterpret_cast<const float4*>(wq + p0);
-                const float4 wpb = *reinterpret_cast<const float4*>(wk + p0);
-                const uint2 npa = *reinterpret_cast<const uint2*>(NQ + p0);
-                const uint2 npb = *reinterpret_cast<const uint2*>(NK + p0);
-
-                const float4 co = *reinterpret_cast<const float4*>(cs + t0);
-                const float4 si = *reinterpret_cast<const float4*>(sn + t0);
-                const float sign = grp_low ? -1.0f : 1.0f;
-                const float qpp[4] = {pa.x * sx * wpa.x, pa.y * sx * wpa.y, pa.z * sx * wpa.z, pa.w * sx * wpa.w};
-                const float kpp[4] = {pb.x * sx * wpb.x, pb.y * sx * wpb.y, pb.z * sx * wpb.z, pb.w * sx * wpb.w};
-                const float npav[4] = {unpack(&npa.x, 0), unpack(&npa.x, 1), unpack(&npa.y, 0), unpack(&npa.y, 1)};
-                const float npbv[4] = {unpack(&npb.x, 0), unpack(&npb.x, 1), unpack(&npb.y, 0), unpack(&npb.y, 1)};
-                const float cov[4] = {co.x, co.y, co.z, co.w}, siv[4] = {si.x, si.y, si.z, si.w};
-#pragma unroll
-                for (int e = 0; e < 4; ++e) {
-                    const float nq_ = npav[e], nk_ = npbv[e]; // npa/npb hold the partner group's four norms
-                    const float qp_ = bf(bf(qpp[e]) * qi * nq_), kp_ = bf(bf(kpp[e]) * ki * nk_);
-                    a[e] = bf(a[e] * bf(cov[e])) + bf(sign * qp_ * bf(siv[e]));
-                    b[e] = bf(b[e] * bf(cov[e])) + bf(sign * kp_ * bf(siv[e]));
-                }
-            }
-            *reinterpret_cast<uint2*>(TQ + at + 4 * i) = make_uint2(pack2(a[0], a[1]), pack2(a[2], a[3]));
-            *reinterpret_cast<uint2*>(TK + at + 4 * i) = make_uint2(pack2(b[0], b[1]), pack2(b[2], b[3]));
-            *reinterpret_cast<uint2*>(TV + at + 4 * i) = make_uint2(pack2(vc[0], vc[1]), pack2(vc[2], vc[3]));
         }
     }
 }
@@ -343,35 +229,6 @@ __global__ void __launch_bounds__(256) h3_swiglu(const __nv_bfloat16* F, __nv_bf
     }
 }
 
-// A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336 (fc1's half-row, the widest input).
-constexpr int quantize_chunks = 14;
-
-// h3_swiglu over an int8 product's int32 sums [gate | value]: each sum to bf16 as h3_dequantize rounds it, then the
-// same silu and product, so A matches the two kernels' output without the bf16 rows between them.
-
-// Grid [rows], a row a block of 256 reading 4-wide int4/float4 groups — the grid-stride loop was the cost.
-__global__ void __launch_bounds__(256) h3_swiglu_int8(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* A, int N) {
-    const int r = blockIdx.x, groups = N >> 2;
-    const int* acc = ACC + static_cast<size_t>(r) * 2 * N;
-    const float s = SX[r];
-#pragma unroll
-    for (int i = 0; i < quantize_chunks; ++i) {
-        const int g = threadIdx.x + 256 * i;
-        if (g < groups) {
-            const int4 ag = reinterpret_cast<const int4*>(acc + 4 * g)[0];
-            const int4 av = reinterpret_cast<const int4*>(acc + N + 4 * g)[0];
-            const float4 wg = *reinterpret_cast<const float4*>(SW + 4 * g);
-            const float4 wv = *reinterpret_cast<const float4*>(SW + N + 4 * g);
-            const float gg[4] = {bf(ag.x * s * wg.x), bf(ag.y * s * wg.y), bf(ag.z * s * wg.z), bf(ag.w * s * wg.w)};
-            const float vv[4] = {bf(av.x * s * wv.x), bf(av.y * s * wv.y), bf(av.z * s * wv.z), bf(av.w * s * wv.w)};
-            uint2 out;
-            out.x = pack2(bf(gg[0] / (1.0f + expf(-gg[0]))) * vv[0], bf(gg[1] / (1.0f + expf(-gg[1]))) * vv[1]);
-            out.y = pack2(bf(gg[2] / (1.0f + expf(-gg[2]))) * vv[2], bf(gg[3] / (1.0f + expf(-gg[3]))) * vv[3]);
-            *reinterpret_cast<uint2*>(A + static_cast<size_t>(r) * N + 4 * g) = out;
-        }
-    }
-}
-
 // A warp's 128 values, four a lane in order, through the orthonormal Walsh-Hadamard transform in place.
 __device__ __forceinline__ void hadamard128(float v[4]) {
     const float a = v[0] + v[1], b = v[0] - v[1], c = v[2] + v[3], d = v[2] - v[3];
@@ -403,6 +260,9 @@ __device__ __forceinline__ void rotated_chunk(const __nv_bfloat16* x, int c, flo
     v[3] = hi.y;
     hadamard128(v);
 }
+
+// A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336, the widest projection input.
+constexpr int quantize_chunks = 14;
 
 // Each bf16 row of X (M, K) Hadamard-rotated in 128-wide chunks, then to int8 Q at the row's absmax / 127 in S.
 // A row and its weights' rows rotate alike, so their products' sums are the unrotated ones. The rotated chunks stay in
@@ -488,20 +348,6 @@ __global__ void __launch_bounds__(256) h3_norm_quant(
     }
 }
 
-// Y (M, N) = bf16(ACC SX[row] SW[col]): an int8 product's int32 sums back to bf16 rows. Grid-stride, four a thread.
-__global__ void __launch_bounds__(256) h3_dequantize(const int* ACC, const float* SX, const float* SW, __nv_bfloat16* Y, int M, int N) {
-    const size_t quads = static_cast<size_t>(M) * N / 4;
-    for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < quads; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
-        const size_t at = i * 4, r = at / N, n = at % N;
-        const int4 a = reinterpret_cast<const int4*>(ACC)[i];
-        const float4 w = *reinterpret_cast<const float4*>(SW + n);
-        const float s = SX[r];
-        __nv_bfloat162* y = reinterpret_cast<__nv_bfloat162*>(Y + at);
-        y[0] = __floats2bfloat162_rn(a.x * s * w.x, a.y * s * w.y);
-        y[1] = __floats2bfloat162_rn(a.z * s * w.z, a.w * s * w.w);
-    }
-}
-
 __global__ void __launch_bounds__(128) h3_attention(
         const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V, const int* LIST, const int* SIZES,
         const int* ROWOF, __nv_bfloat16* Y, int slots, int heads, int queries, int keys, int first_query, int per_query,
@@ -565,6 +411,36 @@ __global__ void __launch_bounds__(256) h3_rows_out(const __nv_bfloat16* X, const
 // X += delta V, the Euler step, in picture.euler's two roundings. Grid-stride.
 __global__ void __launch_bounds__(256) h3_euler(float* X, const float* V, float delta, int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) X[i] = __fadd_rn(X[i], __fmul_rn(delta, V[i]));
+}
+
+// The TMA int8 products (h3_int8_tma.cuh, mmh3's 256x128 TallTile): plain writes bf16 rows, swiglu
+// writes silu(gate) * up at n / 2 for weights whose rows h3_swiglu_rows interleaved pairwise. N must
+// be a multiple of 128: the grid has no edge tile.
+__global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma(
+        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
+        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
+    h3_int8::gemm_kernel<h3_int8::TallTile, false>(map_a, map_b, XS, WS, C, M, N, K);
+}
+
+__global__ void __launch_bounds__(256, 1) h3_swiglu_int8_tma(
+        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
+        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
+    h3_int8::gemm_kernel<h3_int8::TallTile, true>(map_a, map_b, XS, WS, C, M, N, K);
+}
+
+// Interleaves an fc1's int8 weight rows and fp32 scales pairwise for the swiglu epilogue: product
+// column 2f the gate and 2f + 1 the up of feature f (mmh3 interleaves in eights; pairs match our
+// epilogue's one-feature words). Grid [N / 2], 256 threads.
+__global__ void __launch_bounds__(256) h3_swiglu_rows(const int8_t* SRC, const float* SWS, int8_t* DST, float* DWS, int K) {
+    const int f = blockIdx.x;
+    if (threadIdx.x == 0) {
+        DWS[2 * f] = SWS[f];
+        DWS[2 * f + 1] = SWS[f + gridDim.x];
+    }
+    for (int c = threadIdx.x * 4; c < K; c += blockDim.x * 4) {
+        *reinterpret_cast<int*>(DST + (2 * f) * K + c) = *reinterpret_cast<const int*>(SRC + f * K + c);
+        *reinterpret_cast<int*>(DST + (2 * f + 1) * K + c) = *reinterpret_cast<const int*>(SRC + (f + gridDim.x) * K + c);
+    }
 }
 
 } // extern "C"

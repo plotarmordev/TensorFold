@@ -1,0 +1,5 @@
+# MiniMax-H3-Image on the Spark: mmh3 raced again, after the encoder, decoder, passes and int8-product cards
+
+- `side-by-side-job.sh` runs card 132's five-run order on three new prompts neither server has seen (`prompts/orchard`, `foundry`, `canal`) and prints both engines' walls and stage lines to the job log.
+- Measured on TOP's GB10 at `99c900f5` (job `top-a84c94b49c92`): our warm 2048² picture took 13.93/14.19/14.01 s on the unseen prompts and 12.08 s on the repeated fox. mmh3's server took 10.60/10.60/10.59 s and 10.10 s. mmh3 is still ahead by 3.4 s on unseen prompts, made up of the bf16 prompt encoder (+1.8 s), the transformer (+1.35 s) and the decoder (+0.5 s). The 7 s goal is not met.
+- The episode-1 gates hold unchanged: latent cosine 0.9952, 28.69 dB, mean difference 4.015. Selftests passed, and the same-latent `reference` held at relative error 3.27e-3. The receipts are in `docs/recipes/minimax-h3-cuda.md` under card 149, with rows added to `docs/h3-image-fast-and-normal.md`'s table.

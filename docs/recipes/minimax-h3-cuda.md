@@ -661,6 +661,70 @@ costs G n-sized round trips — only an own-mma product folding scales in regist
 Card 129's three tile geometries plateaued at 0.74–0.79× of cuBLASLt's int8 rate, so the round's open part stays a
 TMA + persistent-grid int8 product at mmh3's ~172 TOPS, not a library call.
 
+### Card 146: our own TMA + persistent-grid int8 product on `qkvc` and `fc1` — kept
+
+`h3_int8_tma.cuh` ports mmh3's int8 GEMM (`int8_gemm.cu` at
+[`9c0652f`](https://github.com/mmh3-org/mmh3/tree/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375), MIT). Copied: TMA
+loads of 128-byte K slices of both int8 operands under a 128B swizzle into a two-stage mbarrier ring, one CTA per
+SM walking the output tiles in bands of eight tile rows (mmh3's `group_m` default), eight warps on
+`mma.sync.m16n8k32.s8` into int32, its 256×128 tile, and an epilogue that applies the row and column scales in
+registers and writes bf16 from the tile. Not copied: the cp.async fallback, the low-rank adapter, the bias, the
+column-maxima tracking, none of which an H3 picture projection uses, and the 128×256 tile, which lost on every
+shape below. The grid has no edge tile, so `cuda_int8.zig` refuses a projection whose N is not a multiple of 128
+(cuBLASLt took any N divisible by 4). ConvRot (`convrot.cuh`) stays `h3_quantize`'s 128-wide rotation. The
+epilogue rounds as the replaced kernels did, so `qkvc` writes bf16 rows straight to plain `h3_heads` and `fc1`'s
+epilogue writes `silu(gate) * up` (`h3_swiglu_rows` interleaves its gate and up weight rows). `h3_dequantize`,
+`h3_heads_i8` and `h3_swiglu_int8` are deleted, and so are card 145's int8-only admission rules for `h3_heads_i8`.
+
+Stop rule (`bench-146-contract.sh` at `643ce1ba`, job `top-22c3ccdf2c2a`, 21 November, `tf-cuda-test
+h3-int8-bench`, cuBLASLt int8 in the same job, GB10, driver 580.173.02): the product beats cuBLASLt on all four
+picture shapes at M = 4,120. The same job ran the contract: all three kernels pass gates 1-4, the planted control
+goes red, and the live sm_121 limits match the records (222 and 219 registers). The wide 128×256 tile, measured
+on earlier heads, lost on every shape and is gone.
+
+| shape (N × K) | TMA product | cuBLASLt |
+|---|---:|---:|
+| `qkvc` 21,504 × 5,376 | 5.20 ms, 183.1 TOPS (1.18×) | 6.13 ms, 155.4 TOPS |
+| `out` 5,376 × 7,168 | 1.68 ms, 189.4 TOPS (1.20×) | 2.01 ms, 157.9 TOPS |
+| `fc1` 28,672 × 5,376 | 6.92 ms, 183.5 TOPS (1.17×) | 8.06 ms, 157.5 TOPS |
+| `fc2` 5,376 × 14,336 | 3.70 ms, 171.4 TOPS (1.19×) | 4.40 ms, 144.3 TOPS |
+
+The kernel-contract entries live in `contract_h3_int8.zig`. `cuda h3 int8 tma product h3_gemm_int8_tma`
+compares every output against the float64 formula, covering classes at the planted NaN row scale and infinite
+column scale, and values within the bound at four served shapes including `qkvc`'s real fan-out. `cuda h3 int8
+tma swiglu` runs fc1's served path (`h3_swiglu_rows` then `h3_swiglu_int8_tma`) and must match the plain product
+followed by `h3_swiglu` byte for byte, up to `fc1`'s real shape. The planted control launches the plain product at
+N = 392, a width cuBLASLt accepted, and must fail gate 3 on the columns the whole-tile grid leaves unwritten.
+
+The picture A/B is `bench-146-ab.sh` at `1a354cc9`, after card 145 merged (job `top-0c0de4c93177`, 21 November,
+exit 0, `H3_PROFILE=1`). Main is re-measured in the same job by reverse-applying `bench-146-base.patch`. Each
+phase runs the pilot's fox cold, then three prompts never used before (`prompts/tram`, `greenhouse`, `trench`).
+Every selftest passed in both phases, and the decoder's same-latent bound held (relative error 3.33e-3 against a
+3e-2 bound). The job byte-compared the three warm latents and PNGs (runs 2-4), all identical between the phases;
+it did not compare the cold fox. On the fox, the episode-1 gates measured latent cosine 0.9952 (recomputed on the
+fetched fox against `h3-image-runs/34/t2i-2048.latent.f32`), 28.69 dB and 4.01 mean difference. Six steps, no gate
+changed.
+
+| warm 2048² | wall s | transformer s | `q k v gate` s | `heads` s | `mlp in` s | `mlp out` s |
+|---|---:|---:|---:|---:|---:|---:|
+| this card, tram | 14.2 | 10.9 | 1.66 | 0.94 | 2.22 | 2.27 |
+| this card, greenhouse | 14.3 | 10.9 | 1.67 | 0.94 | 2.24 | 2.29 |
+| this card, trench | 14.3 | 10.9 | 1.66 | 0.96 | 2.22 | 2.27 |
+| main, tram | 15.7 | 12.3 | 1.86 | 1.11 | 3.31 | 2.29 |
+| main, greenhouse | 15.7 | 12.3 | 1.87 | 1.11 | 3.30 | 2.31 |
+| main, trench | 15.9 | 12.4 | 1.87 | 1.11 | 3.33 | 2.31 |
+
+A step takes 1.77 s against 2.08 s, and cold runs are 151.7 s against 147.3 s. The other stages (norms 0.62,
+attention 1.82, attention out 1.17 s) are unchanged within 0.03 s. An earlier run of the same A/B at
+`eaca2f60`, before card 145 merged (job `top-a257456502de`), measured 14.1 s against 16.1 s, its warm latents
+byte-identical too.
+
+`out` and `fc2` stay bf16. The product beats cuBLASLt on their shapes too, but card 139 measured per-256-of-K
+scales on them at 28.02 dB and 4.27, below the gates, and `160c5d8b`'s 256-wide rotation in mmh3's ConvRot
+style left the picture at 28.14 dB. Folding the same scales in registers changes only the fp32 order of a
+sum that is otherwise exact, so it should give the same picture (inferred, not run). This card ran no picture
+for them.
+
 ### Card 143: the prompt encoder resident in int8 per-row products — measured and reverted
 
 Qwen3-VL's 50 text layers went resident as int8 products through the cuBLASLt int8 path the transformer already
@@ -806,6 +870,60 @@ GPU encoder's rows). All selftests passed.
 The prompt column includes the host check (316 tokens: 18.0 s encoding, 15.0 s reference), so these walls are not
 speed receipts. The second phase reverse-applied `bench-154-base.patch` (main's products) and drew the pilot prompt
 again: both 2048-1 latents are sha256 `8d067d75…`, byte-equal — the canonical algorithm still runs at 24 rows.
+
+### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
+
+I ran [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) again at `99c900f5` (job `top-a84c94b49c92`, GB10,
+driver 580.173.02). That is main with cards 143, 144, 145 and 146 in. Of those, card 143's int8 encoder was
+reverted, so the bf16 encoder still runs. The job used the same five-run order as card 132, but with three new
+prompts neither server had seen: [`orchard`, `foundry` and `canal`](minimax-h3-cuda/prompts), 37, 42 and 35 tokens.
+Seed 42, six steps, 2048², mmh3's defaults. Every run is listed. The job log carries all of them.
+
+| Run | Prompt | TensorFold wall | mmh3 client wall (server `seconds`) |
+|---|---|---:|---:|
+| cold | fox | 154.2 s (prompt weights 56.0, model 52.1) | 17.62 s (17.12) |
+| warm 1 | orchard (unseen) | **13.93 s** | **10.60 s** (10.20) |
+| warm 2 | foundry (unseen) | **14.19 s** | **10.60 s** (10.28) |
+| warm 3 | canal (unseen) | **14.01 s** | **10.59 s** (10.24) |
+| repeated, labelled | fox again (its states kept by us; re-encoded by mmh3) | 12.08 s | 10.10 s (9.72) |
+
+Stage columns, per warm run. Ours come from the three servers' own lines. mmh3's come from its server log, which
+rounds to 0.1 s:
+
+| Stage | TensorFold orchard / foundry / canal | mmh3 orchard / foundry / canal | TensorFold repeat | mmh3 repeat |
+|---|---:|---:|---:|---:|
+| Prompt | 1.96 / 2.05 / 1.93 s | 0.2 / 0.2 / 0.2 s | 0.01 s (kept) | 0.2 s |
+| Transformer, 6 steps | 10.77 / 10.92 / 10.86 s (1.77–1.81 a step) | ~9.5 each (2.0, then 1.5 a step) | 10.84 s | ~9.0 (1.5 a step) |
+| Decoder | 1.18 / 1.22 / 1.22 s (0.79 s on the GPU) | 0.6 / 0.7 / 0.6 s | 1.23 s (0.79) | 0.7 s |
+
+**mmh3 still wins. I am 3.4 s behind on unseen prompts.** Our unseen runs take 13.9–14.2 s (mean 14.04 s) against
+mmh3's 10.6 s client wall (mean 10.60 s), 1.32× its time. The card's ≤ 7 s is 7.0 s away. On the repeated prompt I
+am 2.0 s behind (12.08 s against 10.10 s). Since card 132's window, our unseen wall has dropped 1.0 s (15.0–15.1 s
+then), all of it in the transformer (12.5–12.7 → 10.8–10.9 s, cards 145 and 146) and the decoder (1.2–1.3 → 0.79 s
+on the GPU, card 144). mmh3 has stayed where it was (10.1–10.6 s then and now).
+
+The 3.4 s splits into three parts:
+
+- **Prompt, +1.8 s.** Our bf16 encoder takes 1.9–2.05 s at 35–42 tokens. The fox's 24 tokens took 1.05 s, and card
+  132's 31–32 tokens took 1.23 s. mmh3's resident int8 encoder takes 0.2 s at any of these lengths. The jump above
+  32 tokens looks like the 33–64-row band where card 154 found cuBLASLt refusing the canonical algorithm [INFERENCE,
+  not traced]. Card 143's int8 encoder would close this stage (0.16 s) but missed the picture gates, so it stays
+  reverted.
+- **Transformer, +1.35 s.** 1.78 s a step against mmh3's 1.5 s. `out` and `fc2` are still bf16 (card 146), and
+  attention is 1.8 s a picture (round 2 above).
+- **Decoder, +0.5 s.** 0.79 s on the GPU against mmh3's 0.6–0.7 s, plus 0.4 s outside the GPU (PNG and host)
+  that mmh3's line does not count the same way.
+
+mmh3's client wall is 0.35–0.4 s above its own `seconds` because of HTTP and the 0.5 s status poll. Against its
+server figure the gap is 3.8 s.
+
+The same picture as episode 1, by the existing gates, unchanged. Run 1's fox latent against
+`h3-image-runs/34/t2i-2048.latent.f32` has cosine **0.9952** (≥ 0.99). Its PNG against episode 1's
+`ep1-mac-fast/2048-warm1.png` measures **28.69 dB** PSNR (≥ 28.2) and a mean difference of **4.015** (≤ 4.1). The
+fox latent is sha256 `8d067d75…`, byte-equal to card 154's. Run 5 is byte-identical to run 1. The transformer,
+decoder and prompt selftests passed. The same-latent `reference` held: 85.543% of bytes identical, 99.887% within
+1, at most 7 apart, 56.42 dB, relative error 3.27e-3 against the 3e-2 bound. Both engines ran six steps. mmh3's
+seed draws other noise, so its side is reported as times only.
 
 ### The side-by-side: mmh3's warm server beside ours, unseen prompts (20 November)
 
