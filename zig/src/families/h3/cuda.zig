@@ -133,7 +133,10 @@ pub const Model = struct {
         // the legacy default stream: work queued by the caller's framework comes first
         self.stream = .{ .d = d, .handle = null };
         self.gemms = try Gemms.init(gpa, d);
-        errdefer if (ordinary_cleanup) self.gemms.deinit();
+        errdefer if (ordinary_cleanup) {
+            self.gemms.deinit();
+            self.gemms.lt.close();
+        };
         ordinary_cleanup = false;
         self.opened = seconds();
         return self;
@@ -169,6 +172,7 @@ pub const Model = struct {
         self.gemms.deinit();
         self.module.unload();
         _ = self.driver.api.cuDevicePrimaryCtxRelease_v2(self.ctx.device);
+        self.gemms.lt.close();
         self.driver.close();
         self.gpa.destroy(self);
     }
