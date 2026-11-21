@@ -36,6 +36,7 @@ test "environment: every strict reader refuses bad text before opening a model, 
 
 const Case = struct { name: []const u8, raw: []const u8, n: u64 };
 const valid = [_]Case{
+    .{ .name = "TF_QWEN_KV_HOST_GIB", .raw = "8", .n = 8 },
     .{ .name = "TF_CACHE_EVICT", .raw = "main", .n = 0 },
     .{ .name = "TF_CACHE_EVICT", .raw = "decayed_resume", .n = 1 },
     .{ .name = "TF_FLASHNEXT_BATCH_DRAWS", .raw = "0", .n = 0 },
@@ -473,4 +474,12 @@ test "environment: TENSORFOLD_PARALLEL takes the flag over the setting, blank ke
         try t.expect(std.mem.indexOf(u8, why, "TENSORFOLD_PARALLEL") != null);
         try t.expect(std.mem.indexOf(u8, why, "or auto") != null);
     }
+}
+
+test "environment: Qwen host GiB cap is strict, bounded and blank as unset" {
+    const name = "TF_QWEN_KV_HOST_GIB";
+    for ([_]?[]const u8{ null, "", " \t\r\n" }) |raw| try t.expectEqual(@as(u64, 0), try e.value(u64, name, raw, 0));
+    try t.expectEqual(@as(u64, 8), try e.value(u64, name, "8", 0));
+    try t.expectEqual(@as(u64, std.math.maxInt(u64) >> 30), try e.value(u64, name, "17179869183", 0));
+    for ([_][]const u8{ "0", "-1", "bad", "1.5", "17179869184" }) |raw| try t.expectError(error.InvalidEnvironment, e.value(u64, name, raw, 0));
 }
