@@ -177,3 +177,14 @@ test "h3 int8: the TMA product refuses an N off whole 128-column tiles and h3_qu
     try std.testing.expectError(error.BadGeometry, int8.checkGeometry(21504, 5376 + 64));
     try std.testing.expectError(error.BadGeometry, int8.checkGeometry(21504, 14336 + 128));
 }
+test "h3 int8: quantize refuses a GPU below sm_90 before allocating, then needs the driver's TMA encoder" {
+    const m = try mock.model();
+    defer mock.clean(m);
+    m.gated = false;
+    mock.sm = 86;
+    try std.testing.expectError(error.H3Int8RequiresSm90, h3.Int8.quantize(m));
+    try std.testing.expect(m.int8 == null);
+    try std.testing.expectEqual(@as(usize, 0), mock.at);
+    mock.sm = 121;
+    try std.testing.expectError(error.MissingSymbol, h3.Int8.quantize(m));
+}

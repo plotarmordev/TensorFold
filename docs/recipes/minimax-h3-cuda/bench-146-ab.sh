@@ -38,8 +38,9 @@ for f in 2048-1 2048-2 2048-3 2048-4; do
     for ext in latent.f32 png; do
         a=/work/out/h3-image-bench/$f.$ext
         b=/work/out/h3-image-bench-base/$f.$ext
-        [ -f "$a" ] && [ -f "$b" ] || continue
-        if cmp -s "$a" "$b"; then echo "$f.$ext identical"; else echo "$f.$ext DIFFERENT"; fi
+        if [ ! -f "$a" ] || [ ! -f "$b" ]; then echo "$f.$ext MISSING"; status=1
+        elif cmp -s "$a" "$b"; then echo "$f.$ext identical"
+        else echo "$f.$ext DIFFERENT"; status=1; fi
     done
 done
 exit "$status"

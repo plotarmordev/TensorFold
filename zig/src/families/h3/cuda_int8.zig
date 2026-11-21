@@ -12,6 +12,7 @@
 //! per-256-of-K groups this product does not fold (card 139).
 const std = @import("std");
 const cuda = @import("cuda");
+const report = @import("report.zig");
 const h3 = @import("cuda.zig");
 const Model = h3.Model;
 
@@ -68,6 +69,8 @@ pub const Int8 = struct {
     pub fn quantize(self: *Model) !void {
         if (self.gated) return error.H3NotPictureModel; // the dense forward's three of q, k, v only
         try self.ctx.makeCurrent();
+        // the TMA images are sm_90+; older targets carry a trap stub in their place
+        if (try self.ctx.capability() < 90) return error.H3Int8RequiresSm90;
         const enc = try encoder(&self.driver); // refuse early on a driver without TMA
         const t = try self.gpa.create(Int8);
         t.* = .{ .blocks = &.{}, .enc = enc, .scratch = .{ .d = &self.driver, .ptr = 0, .len = 0 } };
@@ -85,10 +88,12 @@ pub const Int8 = struct {
     /// result pairwise (gate rows' first half against the up rows' second) for the fc1 epilogue.
     fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize, swiglu: bool) !Weight {
         try checkGeometry(n, k);
-        const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * 4), .n = n, .k = k, .swiglu = swiglu };
+        var w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * 4), .n = n, .k = k, .swiglu = swiglu };
+        errdefer release(self, &w.q);
+        var tmp: cuda.DeviceBuffer = .{ .d = &self.driver, .ptr = 0, .len = 0 };
+        defer release(self, &tmp);
         if (swiglu) {
-            var tmp = try cuda.DeviceBuffer.alloc(&self.driver, w.q.len);
-            defer tmp.free();
+            tmp = try cuda.DeviceBuffer.alloc(&self.driver, w.q.len);
             try launchQuantize(self, bf16.ptr, tmp.ptr, tmp.ptr + n * k, n, k);
             var args: cuda.Args = .{};
             for ([_]u64{ tmp.ptr, tmp.ptr + n * k, w.q.ptr, w.scales() }) |a| args.add(a);
@@ -101,6 +106,17 @@ pub const Int8 = struct {
         bf16.free();
         bf16.* = .{ .d = &self.driver, .ptr = 0, .len = 0 };
         return w;
+    }
+
+    /// Frees `b` once the queued launches that may still use it have finished; a failed drain
+    /// retains it rather than free memory a kernel may still touch.
+    fn release(self: *Model, b: *cuda.DeviceBuffer) void {
+        if (b.ptr == 0) return;
+        self.drain() catch |e| {
+            report.say("H3 int8 weight buffer retained: {t}", .{e});
+            return;
+        };
+        b.free();
     }
 
     pub fn deinit(t: *Int8, self: *Model) void {

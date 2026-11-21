@@ -73,8 +73,8 @@ pub const cuda_pending = [_]CudaRecord{
 /// The picture's TMA products (h3_int8_tma.cuh): sm_121's usage from GB10's live check; sm_120's
 /// pending the five-SM limits job.
 pub const cuda_tma_pending = [_]CudaRecord{
-    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(224) },
-    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(218) },
+    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(222) },
+    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(219) },
     .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = @import("registry.zig").none },
 };
 
