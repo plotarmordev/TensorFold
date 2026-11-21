@@ -188,3 +188,17 @@ test "h3 int8: quantize refuses a GPU below sm_90 before allocating, then needs 
     mock.sm = 121;
     try std.testing.expectError(error.MissingSymbol, h3.Int8.quantize(m));
 }
+test "h3 fp4: a failed scratch growth keeps the old scratch for the model's cleanup to free" {
+    const m = try mock.model();
+    defer mock.clean(m);
+    var t: h3.Fp4 = .{ .blocks = &.{}, .handle = null, .scratch = .{ .d = &m.driver, .ptr = 0, .len = 0 } };
+    const small = try t.layout(m, 2);
+    mock.alloc_fail = true;
+    try std.testing.expectError(error.NotReady, t.layout(m, 4));
+    mock.alloc_fail = false;
+    try std.testing.expectEqual(small.q, t.scratch.ptr);
+    try std.testing.expectEqual(@as(usize, 2), t.rows);
+    try std.testing.expectEqual(@as(usize, 0), mock.frees);
+    t.scratch.free();
+    try std.testing.expectEqual(@as(usize, 1), mock.frees);
+}

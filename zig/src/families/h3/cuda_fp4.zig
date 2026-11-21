@@ -126,9 +126,11 @@ pub const Fp4 = struct {
     fn reserve(t: *Fp4, self: *Model, rows: usize) !void {
         if (rows <= t.rows) return;
         try self.stream.synchronize();
+        var scratch = try cuda.DeviceBuffer.alloc(&self.driver, std.mem.alignForward(usize, rows * t.widest(self) / 2, 16) + lt_.scaleBytes(rows, t.widest(self)));
+        errdefer scratch.free();
+        try scratch.fill8(0, null); // the padding rows of the scale tiles never change
         t.scratch.free();
-        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, std.mem.alignForward(usize, rows * t.widest(self) / 2, 16) + lt_.scaleBytes(rows, t.widest(self)));
-        try t.scratch.fill8(0, null); // the padding rows of the scale tiles never change
+        t.scratch = scratch;
         t.rows = rows;
     }
 
