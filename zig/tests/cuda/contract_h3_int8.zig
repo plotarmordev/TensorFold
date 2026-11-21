@@ -227,30 +227,57 @@ pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8) !cuda.Function {
     return f;
 }
 
-/// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact.
-pub fn gemmTmaSpec() c.Spec {
+/// What a GemmTma registration launches: the plain product, fc1's SwiGLU epilogue on interleaved
+/// rows, or the control - the plain product at a width cuBLASLt took (n % 4) but the TMA grid,
+/// whole 128-column tiles only, leaves partly unwritten.
+pub const Mode = enum { plain, swiglu, control };
+
+/// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact; SwiGLU's
+/// is h3_swiglu's on the plain product's [gate | up] halves, bit for bit.
+pub fn gemmTmaSpec(mode: Mode) c.Spec {
+    const served: []const c.Shape = switch (mode) {
+        .plain => &.{
+            .{ .rows = 16, .n = 128, .k = 128 }, // one tile, one stage
+            .{ .rows = 300, .n = 128, .k = 256 }, // a partial M tile and two K blocks
+            .{ .rows = 64, .n = 384, .k = 384 }, // three N tiles past a partial M tile
+            .{ .rows = 16, .n = 21504, .k = 5376 }, // qkvc's real fan-out and depth
+        },
+        .swiglu => &.{
+            .{ .rows = 16, .n = 256, .k = 128 }, // one feature tile
+            .{ .rows = 300, .n = 512, .k = 256 }, // a partial M tile, two tiles and K blocks
+            .{ .rows = 256, .n = 2 * mlp, .k = hidden }, // fc1's real fan-out
+        },
+        .control => &.{.{ .rows = 16, .n = 392, .k = 128 }}, // n % 8 keeps the epilogue's 16-byte stores aligned
+    };
     return .{
-        .name = "cuda h3 int8 tma product h3_gemm_int8_tma",
+        .name = switch (mode) {
+            .plain => "cuda h3 int8 tma product h3_gemm_int8_tma",
+            .swiglu => "cuda h3 int8 tma swiglu h3_swiglu_rows + h3_swiglu_int8_tma",
+            .control => "control: h3_gemm_int8_tma at a width off whole 128-column tiles",
+        },
         .accum = .none, // int32 sums, exact: no fp accumulator for gate 4 to stress
         .depth = none,
         .ops = 3,
         .out = .bf16,
         .nan = .{ .stated = "a nonfinite row or column scale reaches every output it multiplies, as h3_dequantize's did" },
-        .tiles = .{ .{}, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 128, .step = 128, .min = 128 } },
-        .served = &.{
-            .{ .rows = 16, .n = 128, .k = 128 }, // one tile, one stage
-            .{ .rows = 300, .n = 128, .k = 256 }, // a partial M tile and two K blocks
-            .{ .rows = 64, .n = 384, .k = 384 }, // three N tiles past a partial M tile
-            .{ .rows = 256, .n = 21504, .k = 5376 }, // qkvc's real fan-out
+        .tiles = switch (mode) {
+            .plain => .{ .{}, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 128, .step = 128, .min = 128 } },
+            .swiglu => .{ .{}, .{ .size = 256, .step = 256, .min = 256 }, .{ .size = 128, .step = 128, .min = 128 } },
+            .control => .{ .{}, .{}, .{} },
         },
+        .served = served,
+        .replaces = if (mode == .swiglu) "h3_gemm_int8_tma then h3_swiglu" else null,
         .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
     };
 }
 
-/// C (rows, n) bf16 = (X int8 rows,k . W int8 n,k)^T * xs[rows] * ws[n], as the TMA kernel writes it.
+/// C (rows, n) bf16 = (X int8 rows,k . W int8 n,k)^T * xs[rows] * ws[n], as the TMA kernel writes
+/// it; in swiglu mode W's rows are [gate | up], interleaved on the device as fc1's are, and C is
+/// silu(gate) * up, (rows, n / 2).
 pub const GemmTma = struct {
     rig: rig_.Rig,
-    f: cuda.Function,
+    mode: Mode,
+    mod: cuda.Module,
     enc: Encode,
     arena: std.heap.ArenaAllocator,
     shape: c.Shape = undefined,
@@ -258,8 +285,8 @@ pub const GemmTma = struct {
     wq: []i8 = &.{},
     xs: []f32 = &.{},
     ws: []f32 = &.{},
-    dev: [5]u64 = @splat(0),
-    msg: [200]u8 = undefined,
+    /// xq, xs, wq, ws, out; swiglu adds the interleaved wq, ws and the baseline's two buffers.
+    dev: [9]u64 = @splat(0),
 
     pub fn deinit(t: *GemmTma) void {
         t.rig.deinit();
@@ -267,13 +294,22 @@ pub const GemmTma = struct {
     }
 
     pub fn kernel(t: *GemmTma) g.Kernel {
-        return .{ .spec = gemmTmaSpec(), .ctx = t, .vt = &vt };
+        return .{ .spec = gemmTmaSpec(t.mode), .ctx = t, .vt = &vt, .control = if (t.mode == .control) .shapes else null };
     }
 
     const vt = g.hooks(GemmTma);
 
+    fn outColumns(t: *const GemmTma) usize {
+        return if (t.mode == .swiglu) t.shape.n / 2 else t.shape.n;
+    }
+
     pub fn prepare(t: *GemmTma, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
-        if (shape.k % 128 != 0 or shape.n % 128 != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
+        const width: usize = switch (t.mode) {
+            .plain => 128,
+            .swiglu => 256,
+            .control => 8,
+        };
+        if (shape.k % 128 != 0 or shape.n % width != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
         t.rig.reset();
         _ = t.arena.reset(.retain_capacity);
         t.shape = shape;
@@ -299,79 +335,96 @@ pub const GemmTma = struct {
         t.dev[1] = try t.rig.input(std.mem.sliceAsBytes(t.xs));
         t.dev[2] = try t.rig.input(std.mem.sliceAsBytes(t.wq));
         t.dev[3] = try t.rig.input(std.mem.sliceAsBytes(t.ws));
-        t.dev[4] = try t.rig.output(shape.rows * shape.n * 2);
+        t.dev[4] = try t.rig.output(shape.rows * t.outColumns() * 2);
+        if (t.mode == .swiglu) {
+            t.dev[5] = try t.rig.scratch(shape.n * shape.k);
+            t.dev[6] = try t.rig.scratch(shape.n * 4);
+            t.dev[7] = try t.rig.scratch(shape.rows * shape.n * 2);
+            t.dev[8] = try t.rig.scratch(shape.rows * shape.n);
+        }
         return true;
     }
 
-    pub fn run(t: *GemmTma) !void {
+    /// One TMA product launch: `wq` and `ws` the weight rows and scales it reads, into `out`.
+    fn product(t: *GemmTma, name: [:0]const u8, wq: u64, ws: u64, out: u64) !void {
         var maps: [2]TensorMap = undefined;
         try encodeTiled(t.enc, &maps[0], t.dev[0], t.shape.rows, t.shape.k, 256);
-        try encodeTiled(t.enc, &maps[1], t.dev[2], t.shape.n, t.shape.k, 128);
+        try encodeTiled(t.enc, &maps[1], wq, t.shape.n, t.shape.k, 128);
         var args: cuda.Args = .{};
         args.add(maps[0]);
         args.add(maps[1]);
-        for ([_]u64{ t.dev[1], t.dev[3], t.dev[4] }) |p| args.add(p);
+        for ([_]u64{ t.dev[1], ws, out }) |p| args.add(p);
         for ([_]usize{ t.shape.rows, t.shape.n, t.shape.k }) |v| args.add(@as(c_int, @intCast(v)));
-        args.add(@as(c_int, 8));
         const sm: usize = @intCast(try t.rig.gpu.ctx.attribute(.multiprocessor_count));
         const tiles = (t.shape.rows + 255) / 256 * (t.shape.n / 128);
-        try cuda.launch.launch(t.f, .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
+        try cuda.launch.launch(try tmaFunction(t.mod, name), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
+    }
+
+    pub fn run(t: *GemmTma) !void {
+        if (t.mode == .swiglu) {
+            var args: cuda.Args = .{};
+            for ([_]u64{ t.dev[2], t.dev[3], t.dev[5], t.dev[6] }) |p| args.add(p);
+            args.add(@as(c_int, @intCast(t.shape.k)));
+            try cuda.launch.launch(try t.mod.function("h3_swiglu_rows"), .{ .grid = .{ .x = @intCast(t.shape.n / 2) }, .block = .{ .x = 256 } }, t.rig.s, &args);
+            try t.product("h3_swiglu_int8_tma", t.dev[5], t.dev[6], t.dev[4]);
+        } else try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[4]);
         try t.rig.s.synchronize();
     }
 
-    pub fn count(t: *GemmTma) usize {
-        return t.shape.rows * t.shape.n;
+    /// SwiGLU's baseline: the plain product on the original [gate | up] rows, then h3_swiglu.
+    pub fn replaced(t: *GemmTma) ![]const u8 {
+        try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[7]);
+        var args: cuda.Args = .{};
+        for ([_]u64{ t.dev[7], t.dev[8] }) |p| args.add(p);
+        for ([_]usize{ t.shape.rows, t.shape.n / 2 }) |v| args.add(@as(c_int, @intCast(v)));
+        try cuda.launch.launch(try t.mod.function("h3_swiglu"), .{ .grid = .{ .x = 256 }, .block = .{ .x = 256 } }, t.rig.s, &args);
+        return t.rig.bytes(t.dev[8], t.shape.rows * t.shape.n);
     }
 
-    /// The float64 product: exact int32 dot over the whole row (the mma order is irrelevant to it),
-    /// then acc * xs * ws in fp32, rounded to bf16 as the store does.
-    fn product(t: *GemmTma, out: []f64) !void {
+    pub fn count(t: *GemmTma) usize {
+        return t.shape.rows * t.outColumns();
+    }
+
+    /// The float64 product: exact int32 dots over the whole row (the mma order is irrelevant to
+    /// them), then acc * xs * ws in fp32 rounded to bf16 as the store does; SwiGLU then rounds
+    /// silu(gate) and silu * up to bf16 as h3_swiglu does.
+    pub fn reference(t: *GemmTma, want: []f64, mag: []f64) !void {
         const k = t.shape.k;
         const n = t.shape.n;
-        for (0..t.shape.rows) |row| for (0..n) |col| {
-            var dot: i64 = 0;
-            for (0..k) |j| dot += @as(i64, t.xq[row * k + j]) * t.wq[col * k + j];
-            const v: f32 = @as(f32, @floatFromInt(dot)) * t.xs[row] * t.ws[col];
-            out[row * n + col] = c.fromBf16(c.toBf16(v));
-        };
-    }
-
-    pub fn reference(t: *GemmTma, want: []f64, mag: []f64) !void {
-        try t.product(want);
-        const k = t.shape.k;
-        for (0..t.shape.rows) |row| for (0..t.shape.n) |col| {
-            var sum: u64 = 0;
-            for (0..k) |j| sum += @abs(@as(i64, t.xq[row * k + j]) * t.wq[col * k + j]);
-            mag[row * t.shape.n + col] = @as(f64, @floatFromInt(sum)) * t.xs[row] * t.ws[col];
-        };
-    }
-
-    /// Beyond the float64 bound: a planted nonfinite scale must still land on its row or column.
-    pub fn check(t: *GemmTma, at: g.Gate) !?[]const u8 {
-        if (at != .nonfinite) return null;
-        const s = t.shape;
-        const got = try t.rig.bytes(t.dev[4], s.rows * s.n * 2);
-        var planted: usize = 0;
-        for (0..s.rows) |row| {
-            if (std.math.isFinite(t.xs[row])) continue;
-            planted += 1;
-            for (0..s.n) |col| {
-                const v = c.read(.bf16, got, row * s.n + col);
-                if (std.math.isFinite(v)) return try std.fmt.bufPrint(&t.msg, "row {d}'s nonfinite scale left output {d} finite: {e}", .{ row, col, v });
+        const cols = t.outColumns();
+        const half = n / 2;
+        for (0..t.shape.rows) |row| for (0..cols) |col| {
+            const x = t.xq[row * k ..][0..k];
+            const at = row * cols + col;
+            if (t.mode != .swiglu) {
+                const dot = dots(x, t.wq[col * k ..][0..k]);
+                want[at] = c.fromBf16(c.toBf16(@as(f32, @floatFromInt(dot[0])) * t.xs[row] * t.ws[col]));
+                mag[at] = @as(f64, @floatFromInt(dot[1])) * t.xs[row] * t.ws[col];
+                continue;
             }
-        }
-        for (0..s.n) |col| {
-            if (std.math.isFinite(t.ws[col])) continue;
-            planted += 1;
-            for (0..s.rows) |row| {
-                const v = c.read(.bf16, got, row * s.n + col);
-                if (std.math.isFinite(v)) return try std.fmt.bufPrint(&t.msg, "column {d}'s nonfinite scale left output {d} finite: {e}", .{ col, row, v });
-            }
-        }
-        if (planted == 0) return "no planted scale reached a launched output: no proof";
-        return null;
+            const gd = dots(x, t.wq[col * k ..][0..k]);
+            const ud = dots(x, t.wq[(col + half) * k ..][0..k]);
+            const gate = c.fromBf16(c.toBf16(@as(f32, @floatFromInt(gd[0])) * t.xs[row] * t.ws[col]));
+            const up = c.fromBf16(c.toBf16(@as(f32, @floatFromInt(ud[0])) * t.xs[row] * t.ws[col + half]));
+            const g32: f32 = @floatCast(gate);
+            const silu = c.fromBf16(c.toBf16(g32 / (1 + @exp(-g32))));
+            want[at] = c.fromBf16(c.toBf16(@floatCast(silu * up)));
+            mag[at] = @abs(want[at]);
+        };
     }
 };
+
+/// A row's int32 dot with a weight row and the sum of its terms' magnitudes.
+fn dots(x: []const i8, w: []const i8) [2]i64 {
+    var dot: i64 = 0;
+    var sum: i64 = 0;
+    for (x, w) |a, b| {
+        const p = @as(i64, a) * b;
+        dot += p;
+        sum += @intCast(@abs(p));
+    }
+    return .{ dot, sum };
+}
 
 // ---------------------------------------------------------------------------
 // Microbench: the TMA tile against cuBLASLt's int8 product on the real picture
@@ -412,7 +465,6 @@ pub fn bench(gpu: gpu_check.Gpu) !void {
     var mod = try cuda.Module.load(gpu.d, &image_h3);
     defer mod.unload();
     const f = try tmaFunction(mod, "h3_gemm_int8_tma");
-    const f_wide = try tmaFunction(mod, "h3_gemm_int8_tma_wide");
 
     var lt = try lt_.Library.open();
     defer lt.close();
@@ -461,27 +513,20 @@ pub fn bench(gpu: gpu_check.Gpu) !void {
         try d_wq.upload(0, std.mem.sliceAsBytes(wq));
         try d_ws.upload(0, std.mem.sliceAsBytes(wsv));
 
-        // our two tilings (mmh3's TallTile and WideTile), persistent grid of min(SMs, tiles) CTAs
+        // TallTile, persistent grid of min(SMs, tiles) CTAs
         const sm: usize = @intCast(try gpu.ctx.attribute(.multiprocessor_count));
-        var ours: [2]i96 = undefined;
-        for ([_]struct { kern: cuda.Function, m: u32, n: u32 }{
-            .{ .kern = f, .m = 256, .n = 128 },
-            .{ .kern = f_wide, .m = 128, .n = 256 },
-        }, 0..) |t, ti| {
-            var maps: [2]TensorMap = undefined;
-            try encodeTiled(enc, &maps[0], d_xq.ptr, sh.rows, sh.k, t.m);
-            try encodeTiled(enc, &maps[1], d_wq.ptr, sh.n, sh.k, t.n);
-            var args: cuda.Args = .{};
-            args.add(maps[0]);
-            args.add(maps[1]);
-            for ([_]u64{ d_xs.ptr, d_ws.ptr, d_out.ptr }) |p| args.add(p);
-            for ([_]usize{ sh.rows, sh.n, sh.k, 8 }) |v| args.add(@as(c_int, @intCast(v)));
-            const tiles = (sh.rows + t.m - 1) / t.m * (sh.n / t.n);
-            const grid_x: u32 = @intCast(@min(sm, tiles));
-            try cuda.launch.launch(t.kern, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, s, &args);
-            try s.synchronize();
-            ours[ti] = try timeKernel(t.kern, s, tma_shared_bytes, &args, grid_x, reps, io);
-        }
+        var maps: [2]TensorMap = undefined;
+        try encodeTiled(enc, &maps[0], d_xq.ptr, sh.rows, sh.k, 256);
+        try encodeTiled(enc, &maps[1], d_wq.ptr, sh.n, sh.k, 128);
+        var args: cuda.Args = .{};
+        args.add(maps[0]);
+        args.add(maps[1]);
+        for ([_]u64{ d_xs.ptr, d_ws.ptr, d_out.ptr }) |p| args.add(p);
+        for ([_]usize{ sh.rows, sh.n, sh.k }) |v| args.add(@as(c_int, @intCast(v)));
+        const grid_x: u32 = @intCast(@min(sm, (sh.rows + 255) / 256 * (sh.n / 128)));
+        try cuda.launch.launch(f, .{ .grid = .{ .x = grid_x }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, s, &args);
+        try s.synchronize();
+        const ours = try timeKernel(f, s, tma_shared_bytes, &args, grid_x, reps, io);
 
         // cuBLASLt int8 on the same inputs, C int32
         var ltg = try lt_.Gemm.init(&lt, handle, .{ .ta = .t, .m = sh.n, .n = sh.rows, .k = sh.k, .a = .i8, .b = .i8, .c = .i32, .lda = sh.k, .ldb = sh.k, .ldc = sh.n }, workspace_bytes);
@@ -492,11 +537,9 @@ pub fn bench(gpu: gpu_check.Gpu) !void {
 
         const flops: f64 = 2.0 * @as(f64, @floatFromInt(sh.rows)) * @as(f64, @floatFromInt(sh.n)) * @as(f64, @floatFromInt(sh.k));
         const lt_ms = @as(f64, @floatFromInt(ltns)) / std.time.ns_per_ms;
-        for (ours, [_][]const u8{ "tall", "wide" }) |ns, label| {
-            const ours_ms = @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
-            std.debug.print("BENCH h3_int8_tma {s} {s} M={d} N={d} K={d}: tile={d:.2} ms ({d:.1} TOPS) cublaslt={d:.2} ms ({d:.1} TOPS) ratio={d:.3}x\n", .{
-                sh.name, label, sh.rows, sh.n, sh.k, ours_ms, flops / (ours_ms * 1e9), lt_ms, flops / (lt_ms * 1e9), lt_ms / ours_ms,
-            });
-        }
+        const ours_ms = @as(f64, @floatFromInt(ours)) / std.time.ns_per_ms;
+        std.debug.print("BENCH h3_int8_tma {s} M={d} N={d} K={d}: tile={d:.2} ms ({d:.1} TOPS) cublaslt={d:.2} ms ({d:.1} TOPS) ratio={d:.3}x\n", .{
+            sh.name, sh.rows, sh.n, sh.k, ours_ms, flops / (ours_ms * 1e9), lt_ms, flops / (lt_ms * 1e9), lt_ms / ours_ms,
+        });
     }
 }

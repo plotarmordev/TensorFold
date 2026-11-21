@@ -413,31 +413,19 @@ __global__ void __launch_bounds__(256) h3_euler(float* X, const float* V, float 
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) X[i] = __fadd_rn(X[i], __fmul_rn(delta, V[i]));
 }
 
-// The TMA int8 products (h3_int8_tma.cuh, mmh3's tile): plain writes bf16 rows, swiglu writes
-// silu(gate) * up at n / 2 for weights whose rows h3_swiglu_rows interleaved pairwise. Both come in
-// a 256x128 tile (TallTile) or a 128x256 one (WideTile); the host's records name which it picked.
+// The TMA int8 products (h3_int8_tma.cuh, mmh3's 256x128 TallTile): plain writes bf16 rows, swiglu
+// writes silu(gate) * up at n / 2 for weights whose rows h3_swiglu_rows interleaved pairwise. N must
+// be a multiple of 128: the grid has no edge tile.
 __global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma(
         const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
-        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K, int group_m) {
-    h3_int8::gemm_kernel<h3_int8::TallTile, false>(map_a, map_b, XS, WS, C, M, N, K, group_m);
-}
-
-__global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma_wide(
-        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
-        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K, int group_m) {
-    h3_int8::gemm_kernel<h3_int8::WideTile, false>(map_a, map_b, XS, WS, C, M, N, K, group_m);
+        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
+    h3_int8::gemm_kernel<h3_int8::TallTile, false>(map_a, map_b, XS, WS, C, M, N, K);
 }
 
 __global__ void __launch_bounds__(256, 1) h3_swiglu_int8_tma(
         const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
-        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K, int group_m) {
-    h3_int8::gemm_kernel<h3_int8::TallTile, true>(map_a, map_b, XS, WS, C, M, N, K, group_m);
-}
-
-__global__ void __launch_bounds__(256, 1) h3_swiglu_int8_tma_wide(
-        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
-        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K, int group_m) {
-    h3_int8::gemm_kernel<h3_int8::WideTile, true>(map_a, map_b, XS, WS, C, M, N, K, group_m);
+        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
+    h3_int8::gemm_kernel<h3_int8::TallTile, true>(map_a, map_b, XS, WS, C, M, N, K);
 }
 
 // Interleaves an fc1's int8 weight rows and fp32 scales pairwise for the swiglu epilogue: product

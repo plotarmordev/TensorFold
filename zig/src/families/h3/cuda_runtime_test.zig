@@ -168,3 +168,12 @@ test "h3 runtime: packing rejects invalid lines duplicates sizes and holes befor
     try std.testing.expectError(error.BadH3Packing, m.forward(&in));
     try std.testing.expectEqual(@as(usize, 0), m.geometry.used);
 }
+test "h3 int8: the TMA product refuses an N off whole 128-column tiles and h3_quantize's K" {
+    const int8 = @import("cuda_int8.zig");
+    try int8.checkGeometry(21504, 5376); // qkvc
+    try int8.checkGeometry(2 * 14336, 5376); // fc1, gate and up rows
+    try std.testing.expectError(error.BadGeometry, int8.checkGeometry(2 * 14400 + 64, 5376)); // an fc1 with mlp % 64 != 0
+    try std.testing.expectError(error.BadGeometry, int8.checkGeometry(21504 + 4, 5376)); // n % 4 alone, as cuBLASLt took
+    try std.testing.expectError(error.BadGeometry, int8.checkGeometry(21504, 5376 + 64));
+    try std.testing.expectError(error.BadGeometry, int8.checkGeometry(21504, 14336 + 128));
+}

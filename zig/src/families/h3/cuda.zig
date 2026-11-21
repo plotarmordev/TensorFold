@@ -27,7 +27,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_gemm_int8_tma_wide", "h3_swiglu_int8_tma", "h3_swiglu_int8_tma_wide", "h3_swiglu_rows" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -142,10 +142,8 @@ pub const Model = struct {
         try self.function("h3_attention").allowDynamicShared(attention_shared);
         // the TMA products' two-stage rings (h3_int8_tma.cuh Config::shared_bytes), once at setup so
         // no launch needs the attribute raced against the stream
-        try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared_max);
-        try self.function("h3_gemm_int8_tma_wide").allowDynamicShared(@import("cuda_int8.zig").gemm_shared_max);
-        try self.function("h3_swiglu_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared_max);
-        try self.function("h3_swiglu_int8_tma_wide").allowDynamicShared(@import("cuda_int8.zig").gemm_shared_max);
+        try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
+        try self.function("h3_swiglu_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
         // the legacy default stream: work queued by the caller's framework comes first
         self.stream = .{ .d = d, .handle = null };
         self.gemms = try Gemms.init(gpa, d);

@@ -27,6 +27,7 @@ namespace h3_int8 {
 constexpr int tma_block_k = 128;
 constexpr int tma_stages = 2;
 constexpr int tma_warps = 8;
+constexpr int tma_group_m = 8; // tile rows a band walks before moving right (mmh3's default)
 
 __device__ __forceinline__ uint32_t h3_shared_address(const void *pointer) {
     return static_cast<uint32_t>(__cvta_generic_to_shared(pointer));
@@ -139,14 +140,13 @@ struct TileGrid {
     int tiles_n;
     int tiles;
     int k_blocks;
-    int group_m;
 
-    // Tiles go down group_m rows of tiles before moving right, so the CTAs in flight share rows of
-    // activations and columns of weights in L2.
+    // Tiles go down tma_group_m rows of tiles before moving right, so the CTAs in flight share rows
+    // of activations and columns of weights in L2.
     __device__ void coordinates(int tile, int &tile_m, int &tile_n) const {
-        const int tiles_per_group = group_m * tiles_n;
-        const int first_tile_m = tile / tiles_per_group * group_m;
-        const int group_height = min(tiles_m - first_tile_m, group_m);
+        const int tiles_per_group = tma_group_m * tiles_n;
+        const int first_tile_m = tile / tiles_per_group * tma_group_m;
+        const int group_height = min(tiles_m - first_tile_m, tma_group_m);
         tile_m = first_tile_m + tile % tiles_per_group % group_height;
         tile_n = tile % tiles_per_group / group_height;
     }
@@ -247,7 +247,7 @@ template <typename Config, bool SWIGLU>
 __device__ __forceinline__ void
     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
                 const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
-                __nv_bfloat16 *__restrict__ output, int m, int n, int k, int group_m) {
+                __nv_bfloat16 *__restrict__ output, int m, int n, int k) {
     extern __shared__ __align__(1024) uint8_t shared_memory[];
     const uint32_t shared_base = (h3_shared_address(shared_memory) + 1023) & ~1023u;
     const uint32_t barriers = shared_base + tma_stages * Config::stage_bytes;
@@ -258,7 +258,6 @@ __device__ __forceinline__ void
     grid.tiles_n = n / Config::block_n;
     grid.tiles = grid.tiles_m * grid.tiles_n;
     grid.k_blocks = k / tma_block_k;
-    grid.group_m = group_m;
 
     if (threadIdx.x == 0) {
         for (int stage = 0; stage < tma_stages; stage++) {
@@ -398,6 +397,5 @@ __device__ __forceinline__ void
 }
 
 using TallTile = GemmConfig<256, 128, 4>;
-using WideTile = GemmConfig<128, 256, 4>;
 
 } // namespace h3_int8

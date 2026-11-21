@@ -24,25 +24,30 @@ fn encoder(d: *cuda.Driver) !Encode {
     return d.lib.lookup(Encode, "cuTensorMapEncodeTiled") orelse error.MissingSymbol;
 }
 
-/// The largest Config::shared_bytes of the product's two tiles (WideTile's): 2 stages of
-/// (128 + 256) * 128 bytes, the 1 KiB alignment slack and the barriers.
-pub const gemm_shared_max = 2 * (128 + 256) * 128 + 1024 + 2 * 16;
+/// TallTile's Config::shared_bytes: 2 stages of (256 + 128) * 128 bytes, the 1 KiB alignment slack
+/// and the barriers.
+pub const gemm_shared = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
+const block_m = 256;
+const block_n = 128;
 
-/// A projection (N, K): its int8 rows, then N fp32 row scales. `tile` chooses the product's tile
-/// (0: 256x128 TallTile, 1: 128x256 WideTile, which needs N % 256 == 0); `group_m` its L2 band
-/// height; `swiglu` marks fc1's pairwise-interleaved rows.
+/// A projection (N, K): its int8 rows, then N fp32 row scales; `swiglu` marks fc1's
+/// pairwise-interleaved rows.
 pub const Weight = struct {
     q: cuda.DeviceBuffer,
     n: usize,
     k: usize,
-    tile: c_int = 0,
-    group_m: c_int = 8,
     swiglu: bool = false,
 
     pub fn scales(w: Weight) u64 {
         return w.q.ptr + w.n * w.k;
     }
 };
+
+/// h3_quantize's K (quantize_chunks) and the product's whole N tiles: the grid has no edge tile, so
+/// an N off 128 would leave its last columns unwritten.
+pub fn checkGeometry(n: usize, k: usize) !void {
+    if (k % 128 != 0 or k > 14336 or n % block_n != 0) return error.BadGeometry;
+}
 
 /// One block's quantized projections; fc1's rows and scales interleave gate/up pairs for the
 /// swiglu epilogue (h3_swiglu_rows).
@@ -79,7 +84,7 @@ pub const Int8 = struct {
     /// The bf16 (n, k) rows to int8 at h3_quantize's per-row scales; `swiglu` interleaves the
     /// result pairwise (gate rows' first half against the up rows' second) for the fc1 epilogue.
     fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize, swiglu: bool) !Weight {
-        if (k % 128 != 0 or k > 14336 or n % 4 != 0) return error.BadGeometry; // h3_quantize's quantize_chunks
+        try checkGeometry(n, k);
         const w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * 4), .n = n, .k = k, .swiglu = swiglu };
         if (swiglu) {
             var tmp = try cuda.DeviceBuffer.alloc(&self.driver, w.q.len);
@@ -117,8 +122,6 @@ pub const Int8 = struct {
     /// silu(gate) * up at (rows, w.n / 2) when w.swiglu interleaved the weights.
     pub fn gemm(t: *Int8, self: *Model, lay: Scratch, w: Weight, out: u64, rows: usize) !void {
         var maps: [2]TensorMap = undefined;
-        const block_m: u32 = if (w.tile == 0) 256 else 128;
-        const block_n: u32 = if (w.tile == 0) 128 else 256;
         try encode(t.enc, &maps[0], lay.xq, rows, w.k, block_m);
         try encode(t.enc, &maps[1], w.q.ptr, w.n, w.k, block_n);
         var args: cuda.Args = .{};
@@ -126,15 +129,11 @@ pub const Int8 = struct {
         args.add(maps[1]);
         for ([_]u64{ lay.xs, w.scales(), out }) |a| args.add(a);
         for ([_]usize{ rows, w.n, w.k }) |v| args.add(@as(c_int, @intCast(v)));
-        args.add(w.group_m);
         const sm: usize = @intCast(try self.ctx.attribute(.multiprocessor_count));
         const tiles = (rows + block_m - 1) / block_m * (w.n / block_n);
         const blocks: u32 = @intCast(@min(sm, tiles));
-        const name: usize = if (w.swiglu)
-            (if (w.tile == 0) Model.functionIndex("h3_swiglu_int8_tma") else Model.functionIndex("h3_swiglu_int8_tma_wide"))
-        else
-            (if (w.tile == 0) Model.functionIndex("h3_gemm_int8_tma") else Model.functionIndex("h3_gemm_int8_tma_wide"));
-        try self.launchShared(name, blocks, 256, gemm_shared_max, &args);
+        const name = if (w.swiglu) Model.functionIndex("h3_swiglu_int8_tma") else Model.functionIndex("h3_gemm_int8_tma");
+        try self.launchShared(name, blocks, 256, gemm_shared, &args);
     }
 
     /// Room for `rows` before a step is captured: `layout` then only hands out buffers.
