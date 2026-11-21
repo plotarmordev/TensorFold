@@ -1376,6 +1376,56 @@ query tiles were not tried: a 64 x 64 tile's fp32 scores and bf16 probabilities 
 and 128 query rows would need 48 KiB against the 32 KiB limit. The kernel is unchanged from main. The receipts
 (`ab151.sh`, server logs, latents and PNGs) are in `h3-image-runs/151`, outside the repo.
 
+### Card 162: scores in registers and 128-row query tiles, measured and reverted
+
+I kept `h3_attention`'s q·kᵀ scores in the product's cooperative tensor instead of the 16 KiB fp32 `st` tile, so 128
+query rows fit: 18,944 threadgroup bytes instead of 25,856 for 64 rows. A layout probe on the M5
+(`matmul2d_descriptor(64, 64, 128)`, 8 simdgroups) gives each lane 4-column quarters of 16-column row chunks. A
+chunk's four quarters sit on lanes `l`, `l^1`, `l^8` and `l^9`. Its running sum is passed through those lanes by
+`simd_shuffle_xor` (^1, ^9, ^1, ^9) in column order. Every fp32 sum then rounds exactly as main's quarter-row thread
+rounds it, and row maxima go through a 1 KiB `part` tile. That leaves two barriers per key tile instead of four.
+Unlike card 151's shuffles, the reduction order is main's.
+
+Microbench on main's 2048 geometry (56 heads, 65 key tiles, 4,122 rows), built with the engine's compile options
+(safe math, fast functions, language 4.1). These are best-of-30 times under `/tmp/tensorfold-model.lock`, two runs,
+load 41-47 from other builders' compiles:
+
+| Kernel | Threadgroup bytes | Time | Output vs main |
+|---|---:|---:|---|
+| main | 25,856 | 5.01-5.01 ms | — |
+| scores in registers, 64-row tiles | 9,472 | 4.89-4.90 ms | 29,546,496 of 29,546,496 bf16 values bit-equal |
+| scores in registers, 128-row tiles | 18,944 | 5.95-5.95 ms | bit-equal |
+
+128 rows lose by 19%: there are half as many threadgroups (33 x 56) with twice the registers each. With exp inside
+the per-role branch, the 64-row tiles ran 5.36 ms. Moving it ahead of the chain and selecting the sum gave 4.89 ms.
+Built with Metal's default fast math instead, the two forms differed from main in 53 and 1,136 values by one bf16 step:
+fast math contracts `acc * scale - next`, which main's `st` round trip prevents. With the engine's options it passed
+`h3-image-contract` (32 of 32 kernels, 36 of 36 controls red, no limit problems).
+
+End to end at 64-row tiles: warm 2048 on a resident `tf-h3-image-server`, seed 42, two prompts not used before (a
+lighthouse, a cello), one cold and three warm requests each, against current main's build (`337abc0a3`) in the same
+session. Each server held `/tmp/tensorfold-model.lock` for its own run. Load is shown before → after each request:
+
+| Build, prompt | Warm request (6 steps, decoder, total) | Load |
+|---|---|---|
+| main, lighthouse | 9.25 / 0.78 / 10.04 s; 9.30 / 0.79 / 10.10 s; 9.24 / 0.77 / 10.01 s | 13.5 → 12.0 |
+| registers, lighthouse | 9.37 / 0.78 / 10.16 s; 10.18 / 0.79 / 11.22 s; 9.23 / 0.81 / 10.06 s | 13.6 → 17.1 |
+| main, cello (rerun) | 10.08 / 1.11 / 11.24 s; spoiled (197 s, see below); 9.37 / 0.80 / 10.18 s | 18.4 → 30.7 |
+
+Every warm latent and PNG is byte-identical to main's on the same prompt and run (`cmp`, lighthouse and cello runs
+2-4), so the picture gates hold by identity. Another builder's GPU job (`tf-exl3-encode`, outside the lock) spoiled
+the first cello pair: main 10.31-10.87 s and the candidate 9.39-11.46 s in six steps. Both were renamed
+`*.spoiled.server.log`. On the rerun, main's second warm request took 197 s; the Desk paused the GPU for the voice
+server, and no further GPU run was started. So the candidate's cello rerun and the `--draft-steps 3` fast mode were
+not measured.
+
+**Not kept.** The 0.12 ms saved per call is ~36 ms a picture (300 block calls), under 0.4%. The one clean pair
+(lighthouse) has warm steps 9.23-9.37 s against main's 9.24-9.30 s, with no win visible. The kernel would also depend on
+the M5 cooperative layout above, which is undocumented, where main's `st` round trip is layout-agnostic. By the rule
+(kept only if faster), I reverted the code. The variant (`h3_attention.r64.metal`), the layout probe, the
+microbench (`bench.swift`, `cand.metal`), `ab162.sh`, the server logs, latents and PNGs are in `h3-image-runs/162`,
+outside the repo.
+
 ### Card 152: the decoder on the tensor units
 
 A per-kernel trace of main's warm 2048 decode (`fc8aa2d45`, one dispatch a command buffer timed to completion, a
@@ -1464,6 +1514,20 @@ latents' SHA-256 are in [`docs/receipts/h3-image-decoder-152-fast`](../receipts/
 The decoder stage drops by 0.54-0.64 s in each request, and every total comes in lower. The latents are
 bit-identical request for request. The two builds' PNGs differ by the decoder's rounding alone: 53.3-56.6 dB, mean
 0.14-0.29, max 5-9.
+
+### Card 160: the Euler on the GPU, checked against the host's
+
+I found this card's change already on main: card 137 (`e0d1072fb`) runs `h3_euler` after each step's head on the
+resident `video_latents`, with one upload before step 1 and one download before the decoder (`runSteps` in
+`tests/h3_image.zig`). What it lacked was a test: the kernel contract checks `h3_euler` against float64 within a
+bound, and card 137's latent sha1 was a one-off receipt. I added `the steps' Euler on the GPU leaves main's
+host-Euler latent bit for bit` to `test-h3-image-server` (in `zig build test`): on one binding of the synthetic
+checkpoint it runs the six steps with the GPU Euler, then main's old loop (velocity down, `picture.euler` on the host,
+the latent up each step) and requires the two latents' bytes equal. Scaling the host's delta by 0.999 turns it red.
+
+I did not take a new warm 2048 A/B: this branch's render path is byte for byte main's, so it would time the same
+binary twice. Card 137's A/B above is the measurement of this lever: flat on wall clock (head 11.13-11.74 s, base
+11.06-11.79 s), since about 0.1 s a step of host round-trips does not show next to a 1.6 s step.
 
 ### Next, ranked
 
