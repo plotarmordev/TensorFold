@@ -856,9 +856,9 @@ already unloaded it; `Model.tryDeinit` now closes cuBLASLt after the release, an
 scale and e2m1 code against the float64 rotation at the byte cuBLASLt's 128 × 4 tiles read, the tiles' padding
 left unwritten, NaN and infinity blocks by a stated rule. The self-test checks `h3_norm_quant_fp4` byte for byte
 against `h3_norm` then `h3_quantize_fp4`. [`fp4-contract-job.sh`](minimax-h3-cuda/fp4-contract-job.sh) at
-`58fddf13` (job `top-23cf045b93e7`) passed the self-test, `h3_quantize_fp4`'s non-finite, repeat and eight-shape
-gates (exact by its own check; it declares no sums), and both launches' limits on all five SMs against their
-recorded usage (26-28 and 32-48 registers, bound 256).
+`f932e2a2` (job `top-38463791b90e`, exit 0) passed the self-test, `h3_quantize_fp4`'s non-finite, repeat and
+eight-shape gates (exact by its own check; it declares no sums), and both launches' limits on all five SMs against
+their recorded usage (26-28 and 32-48 registers, bound 256).
 
 The picture does not hold. Against episode 1's Mac latent and PNG, the fox's `2048-1` measures
 **latent cosine 0.8758 and mean diff 26.48** (`tools/zig/h3_image_compare.py`) and **PSNR 15.28 dB** (numpy, the
