@@ -144,6 +144,7 @@ test {
     _ = @import("image_key.zig");
     _ = @import("image_pieces.zig");
     _ = @import("image_reuse_test.zig");
+    _ = @import("image_share_test.zig");
     _ = @import("media_fetch.zig");
     _ = @import("videos.zig");
     _ = @import("stream_preflight_test.zig");
@@ -189,6 +190,7 @@ test {
     _ = @import("cancel_route_test.zig");
     _ = @import("prompt_list_test.zig");
     _ = @import("hf_eos_http_test.zig");
+    _ = @import("eos_phase.zig");
     _ = @import("token_stream_test.zig");
     _ = @import("reply_gpu_seconds_test.zig");
     _ = @import("spark_wire.zig");
@@ -355,6 +357,7 @@ test {
     _ = @import("ocr/geometry_test.zig");
     _ = @import("ocr/markdown_test.zig");
     _ = @import("ocr/budget_test.zig");
+    _ = @import("ocr/page_markdown_test.zig");
     _ = @import("ocr/mistral_test.zig");
     _ = @import("ocr/mistral_sdk_test.zig");
     _ = @import("ocr/run_test.zig");

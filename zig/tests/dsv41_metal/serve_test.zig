@@ -6,15 +6,16 @@ const fs = @import("fixture_serve.zig");
 const ff = @import("fixture_fwd.zig");
 
 const api = host.api;
-const Served = host.serve_lanes.Served;
+pub const Served = host.serve_lanes.Served;
 const testing = std.testing;
-const gpa = testing.allocator;
-const io = testing.io;
+pub const gpa = testing.allocator;
+pub const io = testing.io;
 pub const seed = 71;
 
 test {
     _ = @import("boot_test.zig");
     _ = @import("tree_test.zig");
+    _ = @import("serve_early_test.zig");
     _ = @import("steps_test.zig");
     _ = @import("steps_serve_test.zig");
     _ = @import("vision_boot_test.zig");
