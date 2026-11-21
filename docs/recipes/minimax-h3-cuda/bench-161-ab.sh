@@ -7,6 +7,7 @@
 # TOP has no PIL: the episode-1 gates run on the fetched 2048-1 picture and latent with tools/zig/h3_image_compare.py.
 # Results: /work/out/h3-161-{card,main}{,-fast} and SUMMARY lines on stdout.
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-161-ab.sh
+# Run at 34cb7c3 (job top-9d39affb92e3): the timed picks lost and are reverted; the patch is the receipt of what ran.
 set -eu
 here=docs/recipes/minimax-h3-cuda
 pilot=/assets/drama3-pilot/h3-image-pilot
