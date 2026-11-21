@@ -34,7 +34,7 @@ test "Ornith MTP lanes: drafted replies are plain decoding's, alone and four at 
     defer pool.pop();
     const model = try q.model.Model.loadDeferred(gpa, io, dir, 128);
     defer model.deinit();
-    try model.loadMtp(io, mtp_dir);
+    try model.loadMtpRelease(io, mtp_dir);
     try model.loadShare(0);
     var runner = try q.decode_round.Runner.initReady(gpa, model, lengths.len, 256, 1);
     defer runner.deinit();

@@ -49,10 +49,10 @@ test "Ornith MTP layer: bf16 weights load 4-bit and its rows match mlx-lm's" {
 
     const m = try Model.loadDeferred(a, io, dir, 128);
     defer m.deinit();
-    try m.loadMtp(io, mtp_dir);
-    try std.testing.expectError(error.MtpLoaded, m.loadMtp(io, mtp_dir));
+    try m.loadMtpRelease(io, mtp_dir);
+    try std.testing.expectError(error.MtpLoaded, m.loadMtpRelease(io, mtp_dir));
     try m.loadShare(0);
-    try std.testing.expectError(error.MtpAfterShare, m.loadMtp(io, mtp_dir));
+    try std.testing.expectError(error.MtpAfterShare, m.loadMtpRelease(io, mtp_dir));
     const w = m.weights.mtp orelse return error.MtpNotLoaded;
     const h = m.config.hidden;
     try std.testing.expectEqual(.{ h, 2 * h, @as(u8, 4) }, .{ w.fc.n, w.fc.k, w.fc.bits });
@@ -61,7 +61,7 @@ test "Ornith MTP layer: bf16 weights load 4-bit and its rows match mlx-lm's" {
 
     var runner = try Runner.init(a, m, 1, 64);
     defer runner.deinit();
-    var sc = try mtp.Scratch.init(m.device, m.frame.capacity, h, m.config.vocab);
+    var sc = try mtp.Scratch.init(m.device, m.frame.capacity, h, m.config.vocab, 1);
     defer sc.deinit();
     const rows = ids.len;
     const input = try m.device.buffer(rows * h * 2, @import("metal").ResourceOptions.shared);
@@ -69,7 +69,7 @@ test "Ornith MTP layer: bf16 weights load 4-bit and its rows match mlx-lm's" {
     @memcpy(input.slice(u16, rows * h), hidden);
     var round = try Round.init(a, &.{.{ .slot = 0, .start = 0, .capacity = runner.capacity, .ids = ids }}, @intCast(m.config.conv_kernel), 1, @intCast(m.config.vocab));
     defer round.deinit();
-    const out = try mtp.pass(&runner, &round, &sc, .{ .buffer = input });
+    const out = try mtp.pass(&runner, &round, &sc, .{ .buffer = input }, .last);
     const got: [*]const u16 = @ptrCast(@alignCast(out.buffer.contents() + out.offset));
     // bf16 rounding through fc, attention and eight of 256 experts (a near-tied pick can flip), not 4-bit noise: both quantize alike
     for (0..rows) |r| {
@@ -101,7 +101,7 @@ test "Ornith MTP drafts: once a step on the target's rows, its greedy drafts mat
 
     const m = try Model.loadDeferred(a, io, dir, 128);
     defer m.deinit();
-    try m.loadMtp(io, mtp_dir);
+    try m.loadMtpRelease(io, mtp_dir);
     try m.loadShare(0);
     var runner = try Runner.init(a, m, 1, 256);
     defer runner.deinit();

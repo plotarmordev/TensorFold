@@ -78,26 +78,18 @@ pub const Stages = struct {
     reduce: ?Reduce = null,
     /// Head seam picks (one u32 a row), required with `Reduce.argmax`: the ranks must pick the same token.
     picks: ?Ref = null,
-    /// The final norm's gain: the target's, or the MTP layer's for its pass.
-    norm: ?wts.Tensor = null,
-    /// Where the head writes: the frame's logits, or the MTP layer's own so the target's stay readable.
-    logits: ?Ref = null,
     /// A prompt chunk's tail (prompt_tail.zig): the last layer's o projection, MLP and final norm from this row on.
     tail_from: ?u32 = null,
-
-    /// Layer `index`: the target's, then (at `config.layers`) the MTP layer.
-    fn layerAt(s: *const Stages, index: usize) wts.Layer {
-        const w = &s.model.weights;
-        return if (index < w.layers.len) w.layers[index] else w.mtp.?.layer;
-    }
-
+    /// The norm before the head: the target's, or the MTP head's own (mtp.zig).
+    norm: ?wts.Tensor = null,
+    /// Where the head writes its logits: the frame's, or the MTP head's own (the target's last row stays readable).
+    logits: ?Ref = null,
     /// The rows layer `index`'s post and the final norm run: the tail's on the last layer, else every row.
     fn rowsAt(s: *const Stages, index: usize) Span {
         const f = &s.model.frame;
         if (s.tail_from) |t0| if (index + 1 == s.model.config.layers) return .{ .t0 = t0, .n = s.rows - t0, .dims = f.get(.tail_dims) };
         return .{ .t0 = 0, .n = s.rows, .dims = f.get(.dims) };
     }
-
     pub fn begin(s: *Stages, lane: *@import("core").segments.Lane) !void {
         const m = s.model;
         if (s.rows == 0 or s.rows > m.frame.capacity or lane.k != 0) return error.BadFrameRows;
@@ -118,7 +110,7 @@ pub const Stages = struct {
         const m = s.model;
         const f = &m.frame;
         const e = lane.enc;
-        const layer = s.layerAt(index);
+        const layer = layerAt(m, index);
         const h: u32 = @intCast(m.config.hidden);
         try m.kernels.norm(e, s.hidden, s.pending, wts.ref(layer.norm), f.get(.eps), f.get(.dims), s.residual, f.get(.input), f.get(.sums), h, s.rows);
         e.barrier();
@@ -134,11 +126,11 @@ pub const Stages = struct {
     pub fn mixer(s: *Stages, lane: *@import("core").segments.Lane, index: usize) !void {
         const m = s.model;
         if (s.keysOnly(index)) {
-            try s.hooks.keys.?(s.hooks.ptr, lane.enc, index, m.weights.layers[index].mixer.attention, &m.frame, s.rows);
+            try s.hooks.keys.?(s.hooks.ptr, lane.enc, index, layerAt(m, index).mixer.attention, &m.frame, s.rows);
             lane.enc.barrier();
             return;
         }
-        switch (s.layerAt(index).mixer) {
+        switch (layerAt(m, index).mixer) {
             .linear => |g| try s.hooks.gdn(s.hooks.ptr, lane.enc, index, g, &m.frame, s.rows),
             .attention => |a| try s.hooks.attention(s.hooks.ptr, lane.enc, index, a, &m.frame, s.rows),
         }
@@ -149,7 +141,7 @@ pub const Stages = struct {
         const m = s.model;
         const f = &m.frame;
         var e = lane.enc;
-        const layer = s.layerAt(index);
+        const layer = layerAt(m, index);
         const h: u32 = @intCast(m.config.hidden);
         const t = s.rowsAt(index);
         const out = switch (layer.mixer) {
@@ -335,6 +327,11 @@ const Span = struct {
         return .{ .buffer = r.buffer, .offset = r.offset + @as(usize, t.t0) * 4 };
     }
 };
+
+/// Block `index` of the layer program; one past the last is the MTP head's block (mtp.zig).
+pub fn layerAt(m: *const Model, index: usize) wts.Layer {
+    return if (index == m.config.layers) m.weights.mtp.?.layer else m.weights.layers[index];
+}
 
 /// A norm's or the MLP gate's group sums for the frame's padded rows.
 pub fn sums(f: *Frame, field: @import("gpu_frame.zig").Field, rows: u32) @import("quant_gpu.zig").Sums {

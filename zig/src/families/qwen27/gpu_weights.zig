@@ -18,8 +18,11 @@ pub const Attention = struct { q: Linear, kv: Linear, out: Linear, q_norm: Tenso
 pub const Moe = struct { router: row_gpu.Weights, gate: row_gpu.Experts, up: row_gpu.Experts, down: row_gpu.Experts, shared_gate: row_gpu.Weights, shared_up: row_gpu.Weights, shared_down: row_gpu.Weights };
 /// With experts, `gu` and `down` are the shared expert's.
 pub const Layer = struct { norm: Tensor, post_norm: Tensor, gu: Linear, down: Linear, moe: ?Moe = null, mixer: union(@import("config.zig").Kind) { linear: Gdn, attention: Attention } };
-/// The MTP layer: fc over [norm_embed(embed(token)) | norm_hidden(hidden)], one attention block, its norm.
+/// The MTP draft head (the 27B's `mtp-4bit.safetensors`, or Ornith's bf16 release via mtp_load); norms hold 1 + w.
 pub const Mtp = struct { norm_embed: Tensor, norm_hidden: Tensor, fc: Linear, layer: Layer, norm: Tensor };
+
+/// The draft head's file, beside the checkpoint's shards (as CUDA's 35B loader names it).
+pub const mtp_file = "mtp-4bit.safetensors";
 
 pub const Weights = struct {
     allocator: std.mem.Allocator,
@@ -27,7 +30,7 @@ pub const Weights = struct {
     embed: projection.Triple,
     norm: Tensor,
     head: Linear,
-    /// The MTP layer, once loadMtp read it; embed and head stay the target's.
+    /// The draft head, once loadMtp read it; embed and head stay the target's.
     mtp: ?Mtp = null,
     owned: std.ArrayList(mtl.Buffer) = .empty,
     runs: std.ArrayList([]projection.Run) = .empty,
@@ -267,8 +270,8 @@ const Builder = struct {
         return b.block(s, try std.fmt.bufPrint(&name, "model.layers.{d}.", .{i}), s.local.kind(i), b.widths.layers[i]);
     }
 
-    /// One decoder layer under `prefix` (a target layer's, or the MTP layer's `mtp.layers.0.`) at widths `w`.
-    fn block(b: Builder, s: *const cfg.Shard, prefix: []const u8, kind: cfg.Kind, w: [widths.members]Width) !Layer {
+    /// One decoder layer under `prefix` (a target layer's, or the draft head's `mtp.layers.0.`) at widths `w`.
+    fn block(b: Builder, s: *const cfg.Shard, prefix: []const u8, kind: cfg.Kind, w: [widths.members]widths.Width) !Layer {
         var arena = std.heap.ArenaAllocator.init(b.allocator);
         defer arena.deinit();
         const a = arena.allocator();
@@ -398,6 +401,35 @@ pub fn load(allocator: std.mem.Allocator, device: mtl.Device, checkpoint: *const
     return .{ .allocator = allocator, .layers = layers, .embed = embed, .norm = norm, .head = head, .owned = owned, .runs = runs };
 }
 
+/// The draft head from `checkpoint`, whose `mtp.*` tensors were added with `repacked` deferral (or staged by mtp_load);
+/// one rank, 4-bit g64.
+pub fn loadMtp(w: *Weights, device: mtl.Device, checkpoint: *const cp.Checkpoint, s: *const cfg.Shard) !void {
+    if (s.ranks != 1) return error.MtpNeedsOneRank;
+    const c = s.local;
+    const prefix: []const u8 = if (checkpoint.has("language_model.mtp.norm.weight")) "language_model." else if (checkpoint.has("mtp.norm.weight")) "" else return error.MissingMtpHead;
+    var stage = cp.Stage{ .device = device };
+    defer stage.deinit();
+    const ws: widths.Widths = .{ .allocator = w.allocator, .layers = &.{}, .embed = widths.uniform, .head = widths.uniform };
+    const b = Builder{ .allocator = w.allocator, .device = device, .checkpoint = checkpoint, .prefix = prefix, .owned = &w.owned, .stage = &stage, .runs = &w.runs, .widths = &ws };
+    const four: [widths.members]widths.Width = @splat(widths.uniform);
+    const head: Mtp = .{
+        .norm_embed = try b.tensor("mtp.pre_fc_norm_embedding.weight", .bf16, &.{c.hidden}),
+        .norm_hidden = try b.tensor("mtp.pre_fc_norm_hidden.weight", .bf16, &.{c.hidden}),
+        // the input is [norm_embed(embed(token)), norm_hidden(hidden)]: embedding first, as the file's fc was trained
+        .fc = try b.linear(&.{.{ .module = "mtp.fc", .n = c.hidden, .w = widths.uniform }}, 2 * c.hidden),
+        .layer = try b.block(s, "mtp.layers.0.", .attention, four),
+        .norm = try b.tensor("mtp.norm.weight", .bf16, &.{c.hidden}),
+    };
+    if (device.tensorUnits()) {
+        var jobs: std.ArrayList(lane.Order) = .empty;
+        defer jobs.deinit(w.allocator);
+        try regJobs(w.allocator, &jobs, head.fc);
+        try layerJobs(w.allocator, &jobs, head.layer);
+        try lane.regOrder(device, jobs.items);
+    }
+    w.mtp = head;
+}
+
 /// Tensor-unit projections leave load in lane_projection.reg_layout, the order quant_gpu's reg kernel reads.
 fn laneOrder(a: std.mem.Allocator, device: mtl.Device, layers: []const Layer, head: Linear) !void {
     var jobs: std.ArrayList(lane.Order) = .empty;
@@ -405,31 +437,6 @@ fn laneOrder(a: std.mem.Allocator, device: mtl.Device, layers: []const Layer, he
     for (layers) |l| try layerJobs(a, &jobs, l);
     try regJobs(a, &jobs, head);
     try lane.regOrder(device, jobs.items);
-}
-
-/// The MTP layer from the 4-bit `language_model.mtp.*` tensors mtp_load staged, into `w.mtp`; one rank only.
-pub fn loadMtp(w: *Weights, device: mtl.Device, checkpoint: *const cp.Checkpoint, s: *const cfg.Shard) !void {
-    if (s.ranks != 1) return error.MtpNeedsOneRank;
-    const c = s.local;
-    var stage = cp.Stage{ .device = device };
-    defer stage.deinit();
-    const b = Builder{ .allocator = w.allocator, .device = device, .checkpoint = checkpoint, .prefix = "language_model.", .owned = &w.owned, .stage = &stage, .runs = &w.runs, .widths = undefined };
-    const width: [widths.members]Width = @splat(widths.uniform);
-    const mtp = Mtp{
-        .norm_embed = try b.tensor("mtp.pre_fc_norm_embedding.weight", .bf16, &.{c.hidden}),
-        .norm_hidden = try b.tensor("mtp.pre_fc_norm_hidden.weight", .bf16, &.{c.hidden}),
-        .fc = try b.linear(&.{.{ .module = "mtp.fc", .n = c.hidden, .w = widths.uniform }}, 2 * c.hidden),
-        .layer = try b.block(s, "mtp.layers.0.", .attention, width),
-        .norm = try b.tensor("mtp.norm.weight", .bf16, &.{c.hidden}),
-    };
-    if (device.tensorUnits()) {
-        var jobs: std.ArrayList(lane.Order) = .empty;
-        defer jobs.deinit(w.allocator);
-        try regJobs(w.allocator, &jobs, mtp.fc);
-        try layerJobs(w.allocator, &jobs, mtp.layer);
-        try lane.regOrder(device, jobs.items);
-    }
-    w.mtp = mtp;
 }
 
 /// A layer's projections that take the reg kernel.

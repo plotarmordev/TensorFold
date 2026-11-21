@@ -53,6 +53,12 @@ pub const Engine = engine.Engine;
 pub const Config = config.Config;
 pub const Model = config.Model;
 pub const Stream = stream.Stream;
+
+/// The named cut points the backend honors for this request.
+pub fn cutPoints(s: *const Stream) []const u32 {
+    return s.chunks;
+}
+
 pub const Sampling = sampling.Sampling;
 pub const Penalties = sampling.Penalties;
 pub const SuffixLookup = proposer.SuffixLookup;

@@ -169,7 +169,7 @@ that each setting changed a reply. Each stable fallback is null. The release bac
 | --- | --- |
 | `arithmetic` | `TF_DSV41_NUCLEUS`, `TF_DSV41_CONTEXT`, `TF_DSV41_ROWS_CAP`, `TF_DSV41_POOL_TOKENS`, `TF_DSV41_KV_SPLIT`, `TF_DSV41_KV_SPLIT_UNION_MIB` |
 | `debug` | `TF_DSV41_LAYERS`, `TF_DSV41_NEEDS_POOL` |
-| `experimental` | `TF_DSV41_EXPERT_TOPP`, `TF_DSV41_OWN_PREFILL`, `TF_DSV41_PREFILL_PIECES`, `TF_DSV41_SLOTS`, `TF_DSV41_MHC_DEFER`, `TF_DSV41_DRAFTS`, `TF_DSV41_SAMPLING`, `TF_DSV41_IMAGES`, `TF_DSV41_BIAS_VL`, `TF_DSV41_ENGRAM_DIR`, `TF_DSV41_SCHEMA_PROMPT`, `TF_DSV41_TOOL_GRAMMAR` |
+| `experimental` | `TF_DSV41_EXPERT_TOPP`, `TF_DSV41_OWN_PREFILL`, `TF_DSV41_PREFILL_PIECES`, `TF_DSV41_SLOTS`, `TF_DSV41_MHC_DEFER`, `TF_DSV41_DRAFTS`, `TF_DSV41_SAMPLING`, `TF_DSV41_IMAGES`, `TF_DSV41_BIAS_VL`, `TF_DSV41_ENGRAM_DIR`, `TF_DSV41_SCHEMA_PROMPT`, `TF_DSV41_TOOL_GRAMMAR`, `TF_DSV41_COPY_DRAFTER` |
 
 The DeepSeek-V4.1 Metal server also reads `TF_DSV41_PREFILL_PIECES`: there `1` runs a prompt in steps between the
 other streams' rounds ([environment](environment.md)); `stable` leaves it absent, so prompts run whole.
@@ -198,6 +198,8 @@ take `true`/`on`/`yes` and `false`/`off`/`no`, and `MHC_DEFER` and `COEF_LATE` t
 their old readers read as on and which is now refused. The others read any text but `0` as on before, so a word
 form there is refused by name rather than read the other way.
 Other switches take exactly `0` or `1`, with their existing whitespace trims.
+`TF_DSV41_COPY_DRAFTER=1` turns the lookup planner on regardless of `TF_DSV41_LOOKUP_PLAN`, and refuses when
+`TF_DSV41_LOOKUP` is blank or off.
 
 The served-knob accessor also treats empty and whitespace-only values as absent, so knobs outside the table,
 such as `PF_TBO`, `PREFILL` and `PROMPT_TAIL`, keep their defaults. The table's intentional refusals include
