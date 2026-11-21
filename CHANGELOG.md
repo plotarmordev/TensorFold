@@ -1,8 +1,16 @@
 # What's new in TensorFold
 
-Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](docs/release-notes-1.0.0.md) for the native binary's supported models and migration details.
+Each release's page on GitHub has its notes and measurements. See [the 1.0.0 release notes](docs/release-notes-1.0.0.md) for the native binary's supported models and migration details. For Desktop installers and changes awaiting a Desktop build, see the [Desktop changelog](app/CHANGELOG.md).
 
 ## Unreleased
+
+- Kernel contract: the GLM record for `df_sumn` under nvcc 13.3 (40 registers) is the one checked; a stale generic 33-register entry no longer overrides it (#4291). Thanks to @Bizuayeu.
+
+- Docs: Desktop's packaged release notes move to `app/CHANGELOG.md`, apart from the engine's, with a link each way (#4284). Thanks to @garvrao80.
+
+
+
+
 
 - Qwen dense and MoE hybrids on CUDA: opt-in `TF_QWEN_KV_HOST=1` keeps the KV pages in mapped pinned host memory, with the state and verify runs on the device, so a long window can fit on a card with little room left beside the weights; it needs `TF_QWEN_KV_PAGES`, `TF_QWEN_KV_PAGES_ALL=1`, `--parallel 1` and a discrete GPU, takes an optional `TF_QWEN_KV_HOST_GIB` cap, refuses spill, disk snapshots and `TF_QWEN_KV_SHARE` by name, and trades speed for room, since attention reads the pages over the device interconnect; unset, the plan and every path stay as they were (#2637). Thanks to @MaverickKB.
 
@@ -13,10 +21,6 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Qwen3.8-27B on Metal: a lone sampled stream's DFlash2 draft tree ranks its candidates with the stream's own keyed draw, so the drafts follow what the target samples; the target still decides every token, and greedy and multi-stream rounds are unchanged (#3978). Thanks to @hobbesd.
 
 - Lane host: concurrent identical prompts join a leader that is filling a prompt state it will keep, so they reuse its whole fill and return the same tokens they would alone; a prompt whose state would not be kept, a zero budget, the leader's cancellation or a timeout still runs on its own (#3693, refs #3397, #3487). Thanks to @bikepresentbal.
-
-
-
-
 
 - Load prefetch: DeepSeek's checkpoint reader makes the same number of allocations on every run, so the allocation-failure host test passes on macOS (#4344).
 
