@@ -503,6 +503,47 @@ test "the steps' Euler on the GPU leaves main's host-Euler latent bit for bit" {
     try expectSameLatent(x, resident);
 }
 
+test "profile times each picture kernel on the GPU's counters and leaves the latent bit for bit" {
+    const device = try mtl.Device.init();
+    if (!device.tensorUnits() or mtl.counters.query(device).mode() == .unsupported) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var environ_map: std.process.Environ.Map = .init(testing.allocator);
+    defer environ_map.deinit();
+    const init = std.process.Init{
+        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
+        .arena = &arena,
+        .gpa = testing.allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .preopens = .empty,
+    };
+    var f = try residentFixture(init, a, tmp.dir, dir_path, device);
+    defer {
+        for (&f.cases) |*c| c.case.file.deinit();
+        f.folder.heads.deinit();
+        for (f.folder.ck.shards) |*shard| shard.deinit();
+        testing.allocator.free(f.folder.ck.shards);
+    }
+    const case = &f.cases[0].case;
+    var b = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
+    defer b.release();
+    const plain = (try image_tool.free(a, b.model, &f.folder, case, try std.fmt.allocPrint(a, "{s}/plain", .{dir_path}))).rows;
+    b.model.profile = true;
+    const profiled = (try image_tool.free(a, b.model, &f.folder, case, try std.fmt.allocPrint(a, "{s}/profiled", .{dir_path}))).rows;
+    try expectSameLatent(plain, profiled);
+    // a picture's blocks are dense: no routing and no pooled branch
+    for (h3.stages, b.model.spent) |stage, seconds| {
+        if (std.mem.eql(u8, stage, "routing") or std.mem.eql(u8, stage, "gate mix")) continue;
+        errdefer std.debug.print("stage {s}: {d} s\n", .{ stage, seconds });
+        try testing.expect(seconds > 0 and seconds < 1);
+    }
+}
+
 test "a failed bind releases every Metal object it made" {
     const device = try mtl.Device.init();
     if (!device.tensorUnits()) return error.SkipZigTest;
