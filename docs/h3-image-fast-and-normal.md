@@ -17,8 +17,8 @@ column includes the draft's lift inside its six-step count.
 |---|---:|---:|---:|---:|---|
 | Spark normal | 0.0 | 12.9 | 1.3 | 14.2 | `top-30920108b62e` |
 | Spark fast (`--draft-steps 3`) | 0.0 | 8.6 | 1.4 | 9.9 | `top-c2896139b5eb` |
-| Mac normal | 0.0 | 9.4 | 1.4 | 10.8 | `h3-image-fast-and-normal/mac-normal.server.log.txt` |
-| Mac fast (`--draft-steps 3`) | 0.0 | 6.4 | 1.5 | 7.8 | `h3-image-fast-and-normal/mac-drafts.server.log.txt` |
+| Mac normal | 0.0 | 9.2 | 0.8 | 10.0 | `h3-image-fast-and-normal/mac-normal.server.log.txt` |
+| Mac fast (`--draft-steps 3`) | 0.0 | 6.1 | 0.7 | 6.8 | `h3-image-fast-and-normal/mac-drafts.server.log.txt` |
 | Spark normal, card 149, same prompt again | 0.0 | 10.8 | 1.2 | 12.1 | `top-a84c94b49c92` (one run) |
 | Spark normal, card 149, unseen prompts | 2.0 | 10.9 | 1.2 | 14.0 | `top-a84c94b49c92` (three runs) |
 | mmh3 server, same job, unseen prompts | 0.2 | ~9.5 | 0.6 | 10.6 | `top-a84c94b49c92` (three runs) |
@@ -27,17 +27,19 @@ The Spark rows come from two `swarm gpu-run` jobs of
 [`bench-script.sh`](recipes/minimax-h3-cuda/bench-script.sh) and
 [`bench-drafts.sh`](recipes/minimax-h3-cuda/bench-drafts.sh) at `fa508cd6d` (the card's base, `origin/main`),
 whose per-run numbers are in `h3-image-fast-and-normal/spark-normal-SUMMARY.md` and
-`spark-drafts-SUMMARY.md`. The Mac rows are `tf-h3-image-server` (ReleaseFast, this card's head: main's server
-reads its model paths one slot off since `cbda09ccf`, so no request ever started — fixed here) fed four
-request lines under `/tmp/tensorfold-model.lock`, timing lines and the full logs in the same folder. Each
+`spark-drafts-SUMMARY.md`. The Mac rows are card 148's head (ReleaseFast; its render path is main's, `d9d87fe67`,
+whose sessions beside it in the same folder drew the same bytes in the same times) fed four request lines under
+`/tmp/tensorfold-model.lock`, the load average 5-7 (4.9-7.1) with no other model running, every step `timing_valid=true`. Each
 server keeps the transformer bound across requests: "drawing steps" is the transformer's six steps (the three
 half-canvas drafts plus the lift and three full steps on fast), and totals are the server's own prompt-to-PNG
 line.
 
 The same warm 15.5 → 10.7 s gap the Spark port measured in card 131 shows here at a better baseline: on main
-the fast mode cuts each deployment's warm picture by ~30% (Spark −4.3 s, Mac −3.0 s), all of it in the
-drawing steps — three half-size steps at a quarter of the pixels are much cheaper than the three full-size
-steps they replace.
+the fast mode cuts each deployment's warm picture by a quarter to a third (Spark −4.3 s, Mac −3.1 s), all of it
+in the drawing steps — three half-size steps at a quarter of the pixels are much cheaper than the three full-size
+steps they replace. The Mac fast row's warm pictures took 6.82, 6.83 and 6.83 s (normal 9.96 s each). Earlier
+sessions at load 74-79 drew them in 7.4-8.5 s on the same 6.1 s of step GPU, so the fast row's wall moves with CPU
+load; those sessions are replaced.
 
 Card 149 added the last three rows, measured at `99c900f5` once the encoder, decoder, passes and int8-product cards
 had merged. Its runs are not this table's warm repeats. The first row is a single repeat of the fox after it was

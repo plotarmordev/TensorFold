@@ -60,9 +60,10 @@ enlarged bilinearly, noised back to the next step's sigma (`--renoise-sigma X` o
 size for the remaining steps. A different picture than the six-step run, not a faster copy of it. A canvas side
 must be a multiple of 64 pixels for the latent grid to halve; anything else refuses with H3BadCascadeGrid.
 A bad request prints its error and the server reads the next line.
-Start it with `profile` after `MODEL_DIR` to print each request's six steps by stage, each stage in its own command
-buffer: `rows in`, `norms`, `q k v gate`, `heads`, `attention`, `attention out`, `mlp in`, `mlp out`, `final`. The
-waits make the request slower than an unprofiled one, so the stage seconds are for diagnosis, not for a speed gate.
+Start it with `profile` after `MODEL_DIR` to print each request's six steps by kernel: each launch runs in its own
+encoder, timed by the GPU's timestamp counters at its start and end (`rows in`, `norm`, `norm quant`, `quantize`,
+`q k v gate`, `heads`, `attention`, `attention out`, `mlp in`, `swiglu`, `mlp out`, `gate add`, `head`, `euler`). The
+waits make the request slower than an unprofiled one, so the kernel seconds are for diagnosis, not for a speed gate.
 
 At startup the server puts every weight file it maps (text encoder, refiner, transformer, step heads) and the decoder's
 bf16 weights in one residency set on the three stages' queues (`holdWeights`), and prints the GiB it holds: 117.6 on
@@ -1426,6 +1427,53 @@ the M5 cooperative layout above, which is undocumented, where main's `st` round 
 microbench (`bench.swift`, `cand.metal`), `ab162.sh`, the server logs, latents and PNGs are in `h3-image-runs/162`,
 outside the repo.
 
+### Card 169: the int8 product's operands through threadgroup memory, measured and reverted
+
+Card 150 found the int8 product's operand gather binding at 25-28% of the tensor units' int8 peak. The candidate
+(`f9d131dc3`) kept `h3_gemm_32x64_i8`'s tiles, warps, MMA chain and per-256 fold, but staged each K step through
+threadgroup memory. The threadgroup's 128 threads load A's 64 rows and B's 128 rows as one 16-byte device read
+apiece a row half (wide and coalesced). Each warp's fragments are then two 4-byte threadgroup reads, with rows
+48 bytes apart so a fragment's lanes hit distinct banks. Stages are double-buffered: the next step's reads wait in
+three `int4` registers a thread while the current stage multiplies, with one barrier a step. That is 18 KiB of
+threadgroup memory, and the register cost is 12 words a thread, not card 150's second fragment set. The fold order
+is unchanged, so every replay's output was byte-identical to main's on all four shapes.
+
+Replayed alone with card 150's `metal_bench` launch: 4,120 rows, the `product()` grid, random int8 operands and
+scales. Each set ran main and candidate interleaved three times in one lock hold (medians of the warm reps). This
+Mac was not quiet: other checkouts' builds and GPU tests held load at 75-128 through every all-shape set, and main's
+own replays ran 0-3x above card 150's 6.88/2.54/9.13/5.22 ms. Medians of the nine paired replays a side (sets at
+loads 75-81, 96-97 and 124-128):
+
+| Candidate | qkv | out | fc1 | fc2 | Verdict |
+|---|---:|---:|---:|---:|---|
+| main (same sets) | 8.32 ms | 3.21 ms | 9.75 ms | 7.79 ms | kept |
+| staged, 32-deep steps, pitch 48 | 8.00 ms | 3.47 ms | 10.75 ms | 6.97 ms | ties: wins two shapes, loses two |
+
+In the pairs where main ran within 4% of card 150's times, the two ran even: qkv 6.93 vs 6.86 ms, 6.84 vs
+7.01 ms; out 2.62 vs 2.41 ms; fc1 9.16 vs 9.10 ms, 9.41 vs 9.23 ms. Variants, all measured on attention out against
+main in the same lock hold:
+
+| Variant | out, candidate / main | Note |
+|---|---|---|
+| 32-deep, rows 32 bytes apart (bank conflicts) | 5.77 / 6.47 ms | no worse than pitch 48: banks do not bind |
+| 32-deep, rows 64 bytes apart | 6.19 / 6.47 ms | |
+| 64-deep steps, 30 KiB, six `int4` a thread | 4.51-9.88 / 2.94-6.59 ms | 37-53% slower across three passes |
+| 128-deep steps | — | 54 KiB of threadgroup memory, over the 32 KiB limit |
+| `matmul2d` 32x64x32 straight from the staged tile | 7.87-7.93 / 6.39-6.42 ms | 23% slower: the op's own threadgroup tensor loads |
+
+Staged or not, the fragments still reach the tensor unit through the same eight-element cooperative-tensor copies,
+and wide device reads do not change that. The candidate pays for that copy in barriers and threadgroup round trips
+instead of in scalar device reads, so it lands even. No candidate showed an isolated gain to carry into the served
+A/B. Under this load an A/B would also measure the neighbours (card 150's quiet round moved 0.2-0.4 s with load
+alone). So the served A/B was not run. By the rule (kept only if faster), the code was reverted. The kernel is
+main's.
+
+On the candidate commit, `test-h3-gemm` was green (28 s). The kernel contract's `h3 product` set passed gates 1-4 on
+all four kernels (63 s, load 51-66), with one limit problem: the registry declares `h3_gemm_32x64_i8` at 0
+threadgroup bytes against the candidate's 18,432, a declaration a kept kernel would have had to raise. The receipts
+(`bench.py`, `spec.json`, `bench.log` with every set's timings and loads, the candidate and every variant's source)
+are in `h3-image-runs/169`, outside the repo.
+
 ### Card 152: the decoder on the tensor units
 
 A per-kernel trace of main's warm 2048 decode (`fc8aa2d45`, one dispatch a command buffer timed to completion, a
@@ -1528,6 +1576,80 @@ the latent up each step) and requires the two latents' bytes equal. Scaling the 
 I did not take a new warm 2048 A/B: this branch's render path is byte for byte main's, so it would time the same
 binary twice. Card 137's A/B above is the measurement of this lever: flat on wall clock (head 11.13-11.74 s, base
 11.06-11.79 s), since about 0.1 s a step of host round-trips does not show next to a 1.6 s step.
+
+### Card 148: the Spark's latest four cards on the Metal path
+
+Each Spark card checked against what this path already runs ([minimax-h3-cuda.md](minimax-h3-cuda.md) for the Spark
+receipts). None leaves a Metal change to try that earlier cards have not already measured or that a profile does not
+bound below run noise, so the render path is unchanged; the only code change is the counter-timed `profile` below:
+
+| Spark card | Spark result | On the Metal path |
+|---|---|---|
+| 143, resident int8 text encoder | **Reverted**: prompt 1.22 → 0.16 s, but the fox missed card 80's rule (27.47 dB, mean 4.44) | Skipped: no win on the Spark. The prompt path stays bf16 (`hp_gemm`), resident, with kept states. |
+| 144, decoder toward 0.7 s | Kept: `h3d_flash` fuses scores, softmax, p·v and unheads; 0.84 → 0.78 s GPU | Already here: `h3d_attention` has been one fused kernel since card 124 (point 2): fp32 scores, a max-subtracted softmax and p·v in one launch, two passes over the tile's keys rather than an online softmax. Card 152 took the decode to **0.49 s** of GPU, under the Spark's 0.7 s target. FP16 products lost here too (card 152). |
+| 145, passes outside the products | Kept, then folded into 146: `h3_heads_i8` and `h3_swiglu_int8` read the int8 products' int32 sums 16 bytes at a time | Nothing to port: the int8 product here writes bf16 from its epilogue (card 136), so no int32 rows exist to dequantize. The bf16 passes left — `h3_heads` 0.10 s and `h3_swiglu` 0.10 s of the 9.20 s profiled below, their lanes' loads already coalesced — bound a wider-load rewrite to a few hundredths of a second, the size card 162 dropped as noise. `h3_norm_quant` (card 135) is the fusion that did carry. |
+| 146, own int8 product | Kept: TMA ring, persistent grid in bands of eight, scales and SwiGLU in the epilogue; 171.4-189.4 TOPS, a step 2.08 → 1.77 s | Scales in the epilogue: here since card 136. SwiGLU in the epilogue: lost twice (card 135, 1.63-1.73 s against 1.53 s a step; card 150's spill receipts). TMA: no Metal counterpart; card 150's 4-byte operand loads won isolated and lost the served A/B. Banded walk: `swizzle` 6 already walks 64 of a 2048 picture's 65 row tiles under each weight tile (card 81); a persistent grid's other gain, overlapping a TMA prologue, needs the TMA this GPU lacks. |
+
+Warm A/B, M5 Ultra, ReleaseFast `tf-h3-image-server` per build: main `d9d87fe67` against this card's head, whose
+render path differs only in the profile switch (unprofiled, each kernel keeps its barrier; an encoder's last barrier
+is new). One resident server a session, card 34's pilot prompt, seed 42, one cold then three warm 2048 requests,
+each session holding `/tmp/tensorfold-model.lock` for its own 30-55 s, run back to back in one window with no other
+model running; load is the one-minute average before → after. Every step of the five committed sessions (these four
+and the profile below) is
+`timing_valid=true` (a head session that speech interrupted, and a main fast session drawn while speech was playing,
+were rerun once speech had been quiet for a minute).
+
+| Session | Warm totals | 6 steps | Decoder | Load |
+|---|---|---|---|---|
+| main, normal | 9.97, 9.97, 9.96 s | 9.20 s | 0.75-0.76 s | 5.4 → 4.9 |
+| head, normal | 9.96, 9.96, 9.96 s | 9.20-9.21 s | 0.75 s | 4.9 → 5.3 |
+| main, fast (`--draft-steps 3`) | 6.82, 6.82, 6.83 s | 6.07-6.09 s | 0.74 s | 6.8 → 6.0 |
+| head, fast (`--draft-steps 3`) | 6.82, 6.83, 6.83 s | 6.08 s | 0.74-0.75 s | 6.1 → 7.1 |
+
+The head is as fast as main and draws the same bytes. Normal mode: every latent of both builds is sha1 `776b443a…`,
+the value card 135 pinned, and every PNG `85098fa9…`; against episode 1's Mac latent and PNG
+(`h3-image-runs/34/t2i-2048.latent.f32`, `fox-2048-seed42.png`, `904814d6…`) that pair gives cosine 0.995459, PSNR
+28.6735 dB (card 150's 28.673 is the same value cut at three places, not rounded) and mean pixel diff 3.903, card 80's
+rule. Fast mode draws a different picture on purpose: every latent
+of both builds is `b4aece7d…` and every PNG `a2c9eb0c…`. Logs: `h3-image-fast-and-normal/mac-main-normal`,
+`mac-normal`, `mac-main-drafts` and `mac-drafts` (`.server.log.txt`). These replace two earlier sessions at load
+37-88, whose fast requests took 7.4-9.6 s on the same step GPU time.
+
+In-picture profile: `tf-h3-image-server … profile` (`h3-image-fast-and-normal/mac-profile.server.log.txt`), retaken
+after the fix that sums each kernel's command buffer into a step's GPU time, under the lock with no other model
+running, load 4.7 → 4.5, one cold and three warm requests, every step `timing_valid=true`, latents and PNGs the normal
+mode's bytes. Each kernel launch runs in its own encoder between two
+GPU timestamp counter samples (`mtl.counters`, the stage boundary sampling this M5 supports), so a row is that
+kernel's GPU time summed over its launches in the six steps and none of its neighbours'. A product, `h3_attention`
+and the per-block passes launch 300 times (6 steps x 50 blocks); `h3_quantize_rows` 900, before qkv, attention out and
+fc2 (fc1 takes `h3_norm_quant`'s rows). The last warm request's kernels add to 9.20 s; its six command-buffer-timed
+steps to 9.18 s (1.53 s each), against the unprofiled 9.20 s.
+
+The peaks are the silicon's, worked out for this M5 Ultra, as Apple publishes none: 80 GPU cores (`gpu-core-count`)
+at the 1,620 MHz top GPU state (the IORegistry's `voltage-states9`), times 4,096 int8 ops and 2,048 bf16 flops a core
+and cycle: **531 TOPS int8 and 265 TFLOPS bf16**. The per-cycle rates are card 150's chained-`mma_16x32` probe
+(493 TOPS, 255 TFLOPS: 3,804 and 1,968 a core and cycle at that clock) rounded up to the powers of two.
+
+| Kernel | Stage | Seconds (6 steps) | Rate | Of the silicon peak |
+|---|---|---:|---:|---:|
+| `h3_gemm_32x64_i8` | q k v gate | 2.064 | 138 TOPS | 26% |
+| `h3_gemm_32x64_i8` | mlp in (fc1) | 2.729 | 140 TOPS | 26% |
+| `h3_gemm_32x64_i8` | mlp out (fc2) | 1.573 | 121 TOPS | 23% |
+| `h3_gemm_32x64_i8` | attention out | 0.777 | 123 TOPS | 23% |
+| `h3_attention` | attention | 1.519 | 96 TFLOPS | 36% |
+| `h3_quantize_rows` | quantize (900 launches: before qkv, out and fc2) | 0.153 | | |
+| `h3_heads` | heads | 0.102 | | |
+| `h3_swiglu` | swiglu | 0.098 | | |
+| `h3_norm_quant` | norm quant | 0.082 | | |
+| `h3_norm` | norm | 0.067 | | |
+| `h3_head_norm` | head | 0.018 | | |
+| `h3_rows_in` | rows in | 0.015 | | |
+| `h3_gate_add` | gate add | 0.001 | | |
+| `h3_euler` | euler | 0.000 | | |
+
+The products run at card 150's isolated replay rates (138, 125, 139, 122 TOPS) inside the picture, so neighbouring
+kernels do not slow them; at a quarter of the int8 peak the operand gather card 150 found is still what binds. The
+memory passes below them are 0.54 s of the 9.20 s together.
 
 ### Next, ranked
 

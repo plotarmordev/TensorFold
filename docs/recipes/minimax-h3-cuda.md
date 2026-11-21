@@ -1069,8 +1069,8 @@ What each engine does that the other doesn't, at this head:
   `add_norm_quantize` launch family is 1.34 s a picture to our fused set's ~2.4 s. Its text
   encoder is INT8 too and stays resident, so an unseen prompt costs 0.2 s where ours costs 1.2 s.
   It saves cuBLASLt's picks and its INT8 tilings to disk (`~/.cache/mmh3`), so a cold request pays
-  no algorithm search; our cold picture pays one 4-7 s search on its first step (card 141 owns
-  the same cache for us).
+  no algorithm search; ours searches in `warm`, before step 1, and the same cache measured no
+  saving here (card 141, below).
 - **Neither side runs the other's headline trick**: where the card names block-scaled FP8/NVFP4
   projections and fused quantized attention, both engines were measured there and neither ships
   it on this model — our MXFP8 products missed every gate (`160c7687`, cosine 0.9664, 11.5 apart
@@ -1278,5 +1278,29 @@ and ~1.1 s fast. Every latent was byte-identical between the phases: the int8 su
 round once to bf16 from fp32 sums (no split-K among the three candidates, I infer). So the gates hold unchanged:
 latent cosine 0.9952 against episode 1's Mac latent, the same PNG as main's, selftests PASS, and the same-latent
 `reference` at 56.42 dB, relative error 3.27e-3 under 3e-2.
-Timing only pays once a pick outlives its shape: card 141's on-disk pick cache, keyed so neighbouring row counts
-share one search, plus more than three candidates to choose from.
+Timing only pays once a pick outlives its shape, and card 141 below found no cold-start gain from keeping picks on
+disk either.
+
+### Card 141: cuBLASLt's picks and INT8 tilings kept on disk — measured, no saving shown
+
+I tried a file of cuBLASLt's picks (`~/.cache/tensorfold/h3-cublaslt-algos.bin`: four records, keyed by GPU,
+driver and cuBLASLt version), read at start so `Model.warm`/`Int8.warm` skip their heuristic searches, on fork
+branch `feat/141-minimax-h3-image-on-the-spark-save-cubla` at head `0ec2c573e` (PR #111, not merged). It shows no
+measurable cold-start gain on the GB10 (driver 580.173.02), so none of its code is on main; its
+`docs/recipes/minimax-h3-cuda/cache-ab.sh` on that branch re-runs the A/B (`bench-script.sh` twice in one job,
+the file absent then present, one cold 2048² picture each way plus three warm).
+
+- **First step:** 2.07 s without the file, 2.08 s with it (`top-454e16a285ad`). The searches run in `warm`, before
+  step 1, so step 1 cannot show them.
+- **`warm`:** the ~1.2 s figure (cold transformer, `warm` included, 41.91 → 40.75 s in `top-454e16a285ad`) is one
+  pair inside run-to-run noise; a later pair reverses it, 40.56 → 41.00 s (`top-f545b5d9d842`), and another went
+  42.5 → 45.4 s (`top-00c3ab555c05`). Warm means were unchanged (12.6 s both ways in the first pair).
+- **Cold wall:** 152.8 s without the file, 149.6 s with it (`top-a2dd6c37cd7f`), one cold run each way. The other
+  pairs, also one cold run a side, read 155.9 → 147.1, 157.8 → 151.4 and 171.4 → 169.9 s; their gap sits in load
+  and the prompt stage, not the searches, and the with-file phase always runs second on page caches the first one
+  warmed.
+- **Picture:** the cold latents were bit-identical with and without the file in every pair (also
+  `top-ac6a89d0864f`, `top-7b2ab71ad054`, `top-7dbd8a219bb8`).
+
+The int8 handle leak its review found (a plan stored before its pick was recorded) lived only in that cache code:
+main's int8 products no longer plan through cuBLASLt, so no fix lands here.
