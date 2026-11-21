@@ -15,6 +15,8 @@ pub var unloads: usize = 0;
 pub var hosts: usize = 0;
 pub var last_freed: u64 = 0;
 pub var host_guard: ?*const fn () bool = null;
+/// The device's compute capability, 10 * major + minor.
+pub var sm: c_int = 0;
 fn current(_: abi.Context) callconv(.c) c_int {
     return 0;
 }
@@ -30,8 +32,12 @@ fn contextDevice(out: *abi.Device) callconv(.c) c_int {
     out.* = 0;
     return 0;
 }
-fn deviceAttribute(out: *c_int, _: abi.DeviceAttribute, _: abi.Device) callconv(.c) c_int {
-    out.* = 0;
+fn deviceAttribute(out: *c_int, a: abi.DeviceAttribute, _: abi.Device) callconv(.c) c_int {
+    out.* = switch (a) {
+        .compute_capability_major => @divTrunc(sm, 10),
+        .compute_capability_minor => @mod(sm, 10),
+        else => 0,
+    };
     return 0;
 }
 fn alloc(out: *u64, n: usize) callconv(.c) c_int {
@@ -106,6 +112,7 @@ pub fn model() !*h3.Model {
     hosts = 0;
     last_freed = 0;
     host_guard = null;
+    sm = 0;
     const m = try std.testing.allocator.create(h3.Model);
     m.* = undefined;
     m.gpa = std.testing.allocator;

@@ -325,9 +325,15 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     var h3_quantize = h3_int8_k.Quantize{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_quantize"), .arena = std.heap.ArenaAllocator.init(a) };
     defer h3_quantize.deinit();
     try kernels.append(a, h3_quantize.kernel());
-    var h3_dequantize = h3_int8_k.Dequantize{ .rig = .{ .gpu = gpu, .s = s }, .f = try h3_mod.function("h3_dequantize"), .arena = std.heap.ArenaAllocator.init(a) };
-    defer h3_dequantize.deinit();
-    try kernels.append(a, h3_dequantize.kernel());
+    // the TMA products' encoder needs sm_90+; contract them on GB10 only: the plain product, fc1's
+    // SwiGLU epilogue against the plain product then h3_swiglu, and the control at a width off whole tiles
+    var h3_tma: [3]h3_int8_k.GemmTma = undefined;
+    const h3_tma_live = cap == 121;
+    if (h3_tma_live) for (&h3_tma, [_]h3_int8_k.Mode{ .plain, .swiglu, .control }) |*t, mode| {
+        t.* = .{ .rig = .{ .gpu = gpu, .s = s }, .mode = mode, .mod = h3_mod, .enc = try h3_int8_k.encoder(gpu.d), .arena = std.heap.ArenaAllocator.init(a) };
+    };
+    defer if (h3_tma_live) for (&h3_tma) |*t| t.deinit();
+    if (h3_tma_live) for (&h3_tma) |*t| try kernels.append(a, t.kernel());
     var h3d_mod = try cuda.Module.load(gpu.d, &images.h3_image_decoder);
     defer h3d_mod.unload();
     const h3d_which = comptime std.enums.values(h3d_k.Which);
