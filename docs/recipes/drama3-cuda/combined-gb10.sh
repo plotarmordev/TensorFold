@@ -15,8 +15,11 @@ nvcc=/usr/local/cuda/bin/nvcc
 out=/work/out/drama3-combined
 here=docs/recipes/drama3-cuda
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
-(cd "$compact" && echo 'f447d4ba6cbb79ddadbd4148ec3b8eb6b5ea8bf54a13d24f552f93474b0dd07d  MANIFEST.sha256' | sha256sum -c &&
-    echo "manifest: $(sha256sum -c MANIFEST.sha256 | grep -c ': OK$') OK")
+(
+    cd "$compact"
+    echo 'f447d4ba6cbb79ddadbd4148ec3b8eb6b5ea8bf54a13d24f552f93474b0dd07d  MANIFEST.sha256' | sha256sum -c
+    sha256sum -c MANIFEST.sha256
+)
 export GIT_INDEX_FILE=/work/base.index
 git read-tree HEAD
 git rm -q --cached "$here/combined-gb10.sh" "$here/combined-base.patch"
