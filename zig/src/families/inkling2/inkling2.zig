@@ -10,6 +10,7 @@ pub const loop = @import("loop.zig");
 pub const mini_weights = @import("mini_weights.zig");
 pub const mini_model = @import("mini_model.zig");
 pub const mini_backend = @import("mini_backend.zig");
+pub const mini_snap = @import("mini_snap.zig");
 /// The float64 reference the CUDA forward's greedy tokens are checked against.
 pub const mini_ref = @import("mini_ref.zig");
 /// The native CUDA registry's entry for inkling2_loop (native/cuda_families.zig).
@@ -28,6 +29,7 @@ test {
     _ = @import("mini_visit.zig");
     _ = mini_weights;
     _ = mini_backend;
+    _ = mini_snap;
     _ = mini_ref;
     _ = native;
 }
