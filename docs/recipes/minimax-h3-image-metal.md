@@ -1529,6 +1529,24 @@ I did not take a new warm 2048 A/B: this branch's render path is byte for byte m
 binary twice. Card 137's A/B above is the measurement of this lever: flat on wall clock (head 11.13-11.74 s, base
 11.06-11.79 s), since about 0.1 s a step of host round-trips does not show next to a 1.6 s step.
 
+### Card 148: the Spark's latest four cards on the Metal path
+
+Each Spark card checked against what this path already runs ([minimax-h3-cuda.md](minimax-h3-cuda.md) for the Spark
+receipts). None leaves a Metal change to try that earlier cards have not already measured or that a profile does not
+bound below run noise, so no code changes here:
+
+| Spark card | Spark result | On the Metal path |
+|---|---|---|
+| 143, resident int8 text encoder | **Reverted**: prompt 1.22 → 0.16 s, but the fox missed card 80's rule (27.47 dB, mean 4.44) | Skipped: no win on the Spark. The prompt path stays bf16 (`hp_gemm`), resident, with kept states. |
+| 144, decoder toward 0.7 s | Kept: `h3d_flash` fuses scores, softmax, p·v and unheads; 0.84 → 0.78 s GPU | Already here: `h3d_attention` has been one online-softmax kernel since card 124 (point 2), and card 152 took the decode to **0.49 s** of GPU, under the Spark's 0.7 s target. FP16 products lost here too (card 152). |
+| 145, passes outside the products | Kept, then folded into 146: `h3_heads_i8` and `h3_swiglu_int8` read the int8 products' int32 sums 16 bytes at a time | Nothing to port: the int8 product here writes bf16 from its epilogue (card 136), so no int32 rows exist to dequantize. The bf16 passes left — `heads` 0.10 s of 9.2 s, `h3_swiglu` about 0.1 s (106 GB a picture at memory rate, its lanes' loads already coalesced) — bound a wider-load rewrite to a few hundredths of a second, the size card 162 dropped as noise. `h3_norm_quant` (card 135) is the fusion that did carry. |
+| 146, own int8 product | Kept: TMA ring, persistent grid in bands of eight, scales and SwiGLU in the epilogue; 177-187 TOPS, a step 2.08 → 1.77 s | Scales in the epilogue: here since card 136. SwiGLU in the epilogue: lost twice (card 135, 1.63-1.73 s against 1.53 s a step; card 150's spill receipts). TMA: no Metal counterpart; card 150's 4-byte operand loads won isolated and lost the served A/B. Banded walk: `swizzle` 6 already walks 64 of a 2048 picture's 65 row tiles under each weight tile (card 81); a persistent grid's other gain, overlapping a TMA prologue, needs the TMA this GPU lacks. |
+
+Card 140's normal and fast Mac times ([h3-image-fast-and-normal.md](../h3-image-fast-and-normal.md)) and the
+in-picture Metal counter profile card 150 handed on both need a Mac GPU window: a resident server session a mode,
+warm runs three a build, under `/tmp/tensorfold-model.lock`, at a load where no run is contention-spoiled. With
+no render change on this card, main's binary is the one to time.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
