@@ -9,8 +9,7 @@ const std = @import("std");
 const cuda = @import("cuda");
 const lt_ = cuda.cublaslt;
 const h3 = @import("cuda.zig");
-const gemm_ = @import("cuda_gemm.zig");
-const workspace_bytes = gemm_.workspace_bytes;
+const workspace_bytes = @import("cuda_gemm.zig").workspace_bytes;
 const Model = h3.Model;
 
 /// A projection (N, K): its int8 rows, then N fp32 row scales.
@@ -103,15 +102,11 @@ pub const Int8 = struct {
         try self.launch("h3_swiglu_int8", .{ .x = @intCast(rows) }, 256, 0, &args);
     }
 
-    /// Room and plans for `rows` before a step is captured: `layout` then only hands out buffers. A new shape's
-    /// plan takes the fastest of cuBLASLt's candidates, timed on block 0's weights (scratch rows, unread).
+    /// Room and plans for `rows` before a step is captured: `layout` then only hands out buffers.
     pub fn warm(t: *Int8, self: *Model, rows: usize) !void {
-        const lay = try t.layout(self, rows);
-        for ([_]Weight{ t.blocks[0].qkvc, t.blocks[0].fc1 }) |w| {
-            if (t.plans.contains(.{ rows, w.n, w.k })) continue;
-            const p = try t.plan(self, rows, w.n, w.k);
-            try gemm_.fastest(&self.gemms.lt, p, self.stream, .{ rows, w.n, w.k }, "int8", .{ w.q.ptr, lay.xq, lay.acc, self.gemms.workspace.ptr, workspace_bytes, self.stream.handle });
-        }
+        try t.reserve(self, rows);
+        _ = try t.plan(self, rows, 3 * self.inner, self.hidden);
+        _ = try t.plan(self, rows, 2 * self.mlp, self.hidden);
     }
 
     fn widest(_: *const Int8, self: *const Model) usize {
@@ -127,7 +122,7 @@ pub const Int8 = struct {
     }
 
     /// Column-major D^T (n, rows) = W (k, n stored)^T . X^T (k, rows), int32 sums: cuBLASLt's int8 TN layout.
-    fn plan(t: *Int8, self: *Model, rows: usize, n: usize, k: usize) !*lt_.Gemm {
+    fn plan(t: *Int8, self: *Model, rows: usize, n: usize, k: usize) !*const lt_.Gemm {
         const got = try t.plans.getOrPut(self.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
         errdefer t.plans.removeByPtr(got.key_ptr);

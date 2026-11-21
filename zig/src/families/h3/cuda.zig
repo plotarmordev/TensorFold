@@ -285,12 +285,10 @@ pub const Model = struct {
     }
 
     /// Warm the shape's scratch and plans so a `step` launches nothing but kernels and products:
-    /// the int8 reserve and every (rows, n, k) plan the blocks use, each new picture plan the fastest of
-    /// cuBLASLt's candidates timed on block 0's weights and the prepared geometry's rows. Host-side, after
-    /// `geometry.prepare`: it synchronises the stream and overwrites the geometry's scratch rows.
+    /// the int8 reserve and every (rows, n, k) plan the blocks use. Host-side planning; growing
+    /// the int8 reserve may synchronise the stream.
     pub fn warm(self: *Model, rows: usize) !void {
         const inner = self.inner;
-        const g = &self.geometry;
         if (self.int8) |t| {
             try t.warm(self, rows);
         } else {
@@ -298,8 +296,8 @@ pub const Model = struct {
             _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
         }
         // `out` and `fc2` keep their bf16 weights in both modes
-        try self.gemms.tuned(self.stream, g.ya, self.blocks[0].out.ptr, g.y, rows, self.hidden, inner);
-        try self.gemms.tuned(self.stream, g.act, self.blocks[0].fc2.ptr, g.y, rows, self.hidden, self.mlp);
+        _ = try self.gemms.plan(rows, self.hidden, inner);
+        _ = try self.gemms.plan(rows, self.hidden, self.mlp);
     }
 
     /// The launches of `forward` once `plan` and `geometry.prepare` ran: capturable work only —
