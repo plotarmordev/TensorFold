@@ -852,11 +852,13 @@ q k v gate 1.85 / 1.85 / 1.88 → 0.97 / 0.97 / 0.98, heads 1.10 / 1.12 / 1.12 �
 inside `cuDevicePrimaryCtxRelease_v2`, which calls back into cuBLASLt after FP4 products, and `Gemms.deinit` had
 already unloaded it; `Model.tryDeinit` now closes cuBLASLt after the release, and this job's `--fp4` server exits 0.
 
-`h3_quantize_fp4` is under the kernel contract (`kernel-contract h3 fp4`, `contract_h3_fp4.zig`): every e4m3 block
+`h3_quantize_fp4` is under the kernel contract (`kernel-contract h3_quantize_fp4`, `contract_h3_fp4.zig`): every e4m3 block
 scale and e2m1 code against the float64 rotation at the byte cuBLASLt's 128 × 4 tiles read, the tiles' padding
 left unwritten, NaN and infinity blocks by a stated rule. The self-test checks `h3_norm_quant_fp4` byte for byte
-against `h3_norm` then `h3_quantize_fp4`. Both launches are pending records until
-[`fp4-contract-job.sh`](minimax-h3-cuda/fp4-contract-job.sh) prints their measured usage.
+against `h3_norm` then `h3_quantize_fp4`. [`fp4-contract-job.sh`](minimax-h3-cuda/fp4-contract-job.sh) at
+`58fddf13` (job `top-23cf045b93e7`) passed the self-test, `h3_quantize_fp4`'s non-finite, repeat and eight-shape
+gates (exact by its own check; it declares no sums), and both launches' limits on all five SMs against their
+recorded usage (26-28 and 32-48 registers, bound 256).
 
 The picture does not hold. Against episode 1's Mac latent and PNG, the fox's `2048-1` measures
 **latent cosine 0.8758 and mean diff 26.48** (`tools/zig/h3_image_compare.py`) and **PSNR 15.28 dB** (numpy, the
