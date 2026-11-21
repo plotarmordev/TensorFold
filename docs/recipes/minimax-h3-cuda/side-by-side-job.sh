@@ -2,8 +2,9 @@
 # TensorFold's and mmh3's warm servers render the same five 2048² prompts back to back on TOP's
 # GB10 in one job — the card's side-by-side:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/side-by-side-job.sh
-# The prompt list is the pilot's fox (episode 1's gate prompt), the three files in ./prompts/ that
-# neither server has seen, then the fox once more. Runs 1-4 of each engine are cold-then-unseen;
+# The prompt list is the pilot's fox (episode 1's gate prompt), three files in ./prompts/ that
+# neither server has seen (card 149's orchard, foundry and canal; card 132 used harbour, meadow and
+# steam), then the fox once more. Runs 1-4 of each engine are cold-then-unseen;
 # run 5 is the repeated-prompt number, reported separately and labelled, never part of the
 # headline. Seed 42 and the checkpoint's six distilled steps throughout; mmh3's defaults are those
 # six sigmas, dense BF16 attention and its INT8 ConvRot linears, ours the default build (qkvc and
@@ -12,18 +13,19 @@
 # resident servers, runs 2-4 are the unseen warm runs, run 5 the labelled repeat, and the
 # selftests plus the same-latent `reference` compare gate it as ever. Phase 2 is
 # mmh3-server-job.sh's timing half (no CUPTI trace): `mmh3 server` answers the same five prompts
-# in the same order. Our numbers land in /work/out/h3-side-by-side (its SUMMARY.md), mmh3's in
+# in the same order. Our numbers land in /work/out/h3-side-by-side, mmh3's in
 # /work/out/mmh3-side-by-side: each request's client wall, the server's own generation report,
-# the PNGs and SUMMARY.md's per-run table.
+# the PNGs and SUMMARY.md's per-run table. Both sides' walls and stage lines also go to the job log.
 set -eu
 here=docs/recipes/minimax-h3-cuda
 pilot=/assets/drama3-pilot
 stage=$pilot/mmh3-9c0652f
 models=$pilot/models/MiniMax-H3-Image-mmh3
 pilot_prompt=$pilot/h3-image-pilot/prompt.txt
-list="$pilot_prompt $here/prompts/harbour.txt $here/prompts/meadow.txt $here/prompts/steam.txt $pilot_prompt"
+unseen="$here/prompts/orchard.txt $here/prompts/foundry.txt $here/prompts/canal.txt"
+list="$pilot_prompt $unseen $pilot_prompt"
 out=/work/out/mmh3-side-by-side
-for path in "$pilot_prompt" "$here/prompts/harbour.txt" "$here/prompts/meadow.txt" "$here/prompts/steam.txt" \
+for path in "$pilot_prompt" $unseen \
     "$models/diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors" \
     "$models/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors" \
     "$models/vae/minimax_h3_image_vae_fp16.safetensors" "$stage/src/vendor"; do
@@ -125,4 +127,15 @@ for n, line in enumerate(reports, 1):
 PY
 printf '%s\n' $list > "$out/run-prompts.txt"
 python3 /work/mmh3_summary.py
+
+# The job log is the receipt (TOP sweeps a finished job's outputs after 3 h): both sides' runs.
+ours=/work/out/h3-side-by-side
+echo "=== TensorFold ==="
+cat "$ours/settings" "$ours/selftests" "$ours/2048-reference.compare.log"
+for run in 1 2 3 4 5; do
+    echo "--- run $run: $(awk 'NR == 1 { s = $1 } END { printf "%.2f s wall", $1 - s }' "$ours/2048-$run.time")"
+    cat "$ours/2048-$run.prompt.log" "$ours/2048-$run.image.log" "$ours/2048-$run.decoder.log"
+done
+echo "=== mmh3 ==="
+cat "$out/SUMMARY.md" "$out/requests.log" "$out/server.log"
 echo "side-by-side job done"
