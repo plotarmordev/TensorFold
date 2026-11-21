@@ -894,30 +894,30 @@ e4m3 scales in cuBLASLt's 128 × 4 tiles (`h3_quantize_fp4`) and frees the bf16 
 writes bf16 from its own tile — no int32 planes, no `h3_dequantize`. `out` and `fc2`, bf16 at the default, run
 NVFP4 too. The int8 default and `--bf16` run unchanged.
 
-[`bench-147-ab.sh`](minimax-h3-cuda/bench-147-ab.sh) at `4db152c3` (job `top-de182f9404bc`, 21 November,
+[`bench-147-ab.sh`](minimax-h3-cuda/bench-147-ab.sh) at `ff4705f5` (job `top-3f34c366b021`, 22 November,
 `H3_PROFILE=1` on every side) ran the bench three times in one window: with `--fp4`, at this commit's int8 default,
 and with `bench-147-base.patch` reverse-applied — the job checks that the result is current main's `zig/` tree
-(`ef68ece55`, card 146's TMA int8 products) before the base phase runs. Each ran the pilot fox cold, then the three
+(`cdaf007a1`, after card 149) before the base phase runs. Each ran the pilot fox cold, then the three
 unseen prompts (`harbour`, `meadow`, `steam`) warm. Every selftest passed on every side, every server exited 0, and
 the int8 default's four latents and PNGs are byte for byte main's.
 
 | side | cold s | warm 1 / 2 / 3 s | transformer s | peak MiB |
 |---|---:|---:|---:|---:|
-| main (TMA int8 qkvc and fc1) | 151.8 | 13.3 / 13.2 / 13.2 | 10.8 / 10.8 / 10.7 | 78,019 |
-| this commit, int8 default | 152.8 | 13.2 / 13.2 / 13.2 | 10.8 / 10.8 / 10.8 | 78,019 |
-| `--fp4` | 151.5 | 10.7 / 10.7 / 10.7 | 8.2 / 8.3 / 8.3 | 64,473 |
+| main (TMA int8 qkvc and fc1) | 151.2 | 13.2 / 13.1 / 13.2 | 10.7 / 10.8 / 10.7 | 78,019 |
+| this commit, int8 default | 149.3 | 13.2 / 13.1 / 13.1 | 10.7 / 10.8 / 10.7 | 78,019 |
+| `--fp4` | 151.3 | 10.8 / 10.6 / 10.6 | 8.4 / 8.2 / 8.2 | 64,473 |
 
 `H3_PROFILE` stage times, warm runs 1 / 2 / 3 (main | int8 default | `--fp4`, s):
 
 | stage | main | int8 default | `--fp4` |
 |---|---:|---:|---:|
-| norms | 0.62 / 0.62 / 0.62 | 0.62 / 0.63 / 0.62 | 0.55 / 0.55 / 0.55 |
-| q k v gate | 1.65 / 1.64 / 1.64 | 1.64 / 1.64 / 1.66 | 0.96 / 0.97 / 0.97 |
-| heads | 0.96 / 0.94 / 0.94 | 0.93 / 0.95 / 0.95 | 0.95 / 0.96 / 0.96 |
-| attention | 1.80 / 1.80 / 1.80 | 1.80 / 1.80 / 1.83 | 1.75 / 1.77 / 1.79 |
-| attention out | 1.15 / 1.15 / 1.15 | 1.16 / 1.16 / 1.15 | 0.41 / 0.43 / 0.43 |
-| mlp in | 2.20 / 2.20 / 2.21 | 2.20 / 2.21 / 2.22 | 1.80 / 1.83 / 1.85 |
-| mlp out | 2.28 / 2.28 / 2.28 | 2.28 / 2.26 / 2.27 | 1.64 / 1.67 / 1.67 |
+| norms | 0.61 / 0.61 / 0.61 | 0.62 / 0.62 / 0.61 | 0.55 / 0.55 / 0.55 |
+| q k v gate | 1.64 / 1.63 / 1.65 | 1.63 / 1.64 / 1.64 | 0.97 / 0.96 / 0.97 |
+| heads | 0.94 / 0.95 / 0.95 | 0.94 / 0.95 / 0.95 | 0.95 / 0.95 / 0.95 |
+| attention | 1.79 / 1.79 / 1.80 | 1.76 / 1.77 / 1.78 | 1.80 / 1.75 / 1.76 |
+| attention out | 1.13 / 1.14 / 1.14 | 1.15 / 1.16 / 1.16 | 0.39 / 0.38 / 0.38 |
+| mlp in | 2.20 / 2.20 / 2.20 | 2.18 / 2.20 / 2.19 | 1.86 / 1.80 / 1.81 |
+| mlp out | 2.29 / 2.29 / 2.28 | 2.27 / 2.27 / 2.28 | 1.69 / 1.68 / 1.68 |
 
 `fc2` gains least, as its 0.90× product predicted; `out` and `fc2` gain most against main because the default runs
 them in bf16. An earlier `--fp4` server exited 139 once its request pipe closed: a ReleaseSafe build (job
