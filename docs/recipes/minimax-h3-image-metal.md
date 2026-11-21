@@ -1427,6 +1427,53 @@ the M5 cooperative layout above, which is undocumented, where main's `st` round 
 microbench (`bench.swift`, `cand.metal`), `ab162.sh`, the server logs, latents and PNGs are in `h3-image-runs/162`,
 outside the repo.
 
+### Card 169: the int8 product's operands through threadgroup memory, measured and reverted
+
+Card 150 found the int8 product's operand gather binding at 25-28% of the tensor units' int8 peak. The candidate
+(`f9d131dc3`) kept `h3_gemm_32x64_i8`'s tiles, warps, MMA chain and per-256 fold, but staged each K step through
+threadgroup memory. The threadgroup's 128 threads load A's 64 rows and B's 128 rows as one 16-byte device read
+apiece a row half (wide and coalesced). Each warp's fragments are then two 4-byte threadgroup reads, with rows
+48 bytes apart so a fragment's lanes hit distinct banks. Stages are double-buffered: the next step's reads wait in
+three `int4` registers a thread while the current stage multiplies, with one barrier a step. That is 18 KiB of
+threadgroup memory, and the register cost is 12 words a thread, not card 150's second fragment set. The fold order
+is unchanged, so every replay's output was byte-identical to main's on all four shapes.
+
+Replayed alone with card 150's `metal_bench` launch: 4,120 rows, the `product()` grid, random int8 operands and
+scales. Each set ran main and candidate interleaved three times in one lock hold (medians of the warm reps). This
+Mac was not quiet: other checkouts' builds and GPU tests held load at 75-128 through every all-shape set, and main's
+own replays ran 0-3x above card 150's 6.88/2.54/9.13/5.22 ms. Medians of the nine paired replays a side (sets at
+loads 75-81, 96-97 and 124-128):
+
+| Candidate | qkv | out | fc1 | fc2 | Verdict |
+|---|---:|---:|---:|---:|---|
+| main (same sets) | 8.32 ms | 3.21 ms | 9.75 ms | 7.79 ms | kept |
+| staged, 32-deep steps, pitch 48 | 8.00 ms | 3.47 ms | 10.75 ms | 6.97 ms | ties: wins two shapes, loses two |
+
+In the pairs where main ran within 4% of card 150's times, the two ran even: qkv 6.93 vs 6.86 ms, 6.84 vs
+7.01 ms; out 2.62 vs 2.41 ms; fc1 9.16 vs 9.10 ms, 9.41 vs 9.23 ms. Variants, all measured on attention out against
+main in the same lock hold:
+
+| Variant | out, candidate / main | Note |
+|---|---|---|
+| 32-deep, rows 32 bytes apart (bank conflicts) | 5.77 / 6.47 ms | no worse than pitch 48: banks do not bind |
+| 32-deep, rows 64 bytes apart | 6.19 / 6.47 ms | |
+| 64-deep steps, 30 KiB, six `int4` a thread | 4.51-9.88 / 2.94-6.59 ms | 37-53% slower across three passes |
+| 128-deep steps | — | 54 KiB of threadgroup memory, over the 32 KiB limit |
+| `matmul2d` 32x64x32 straight from the staged tile | 7.87-7.93 / 6.39-6.42 ms | 23% slower: the op's own threadgroup tensor loads |
+
+Staged or not, the fragments still reach the tensor unit through the same eight-element cooperative-tensor copies,
+and wide device reads do not change that. The candidate pays for that copy in barriers and threadgroup round trips
+instead of in scalar device reads, so it lands even. No candidate showed an isolated gain to carry into the served
+A/B. Under this load an A/B would also measure the neighbours (card 150's quiet round moved 0.2-0.4 s with load
+alone). So the served A/B was not run. By the rule (kept only if faster), the code was reverted. The kernel is
+main's.
+
+On the candidate commit, `test-h3-gemm` was green (28 s). The kernel contract's `h3 product` set passed gates 1-4 on
+all four kernels (63 s, load 51-66), with one limit problem: the registry declares `h3_gemm_32x64_i8` at 0
+threadgroup bytes against the candidate's 18,432, a declaration a kept kernel would have had to raise. The receipts
+(`bench.py`, `spec.json`, `bench.log` with every set's timings and loads, the candidate and every variant's source)
+are in `h3-image-runs/169`, outside the repo.
+
 ### Card 152: the decoder on the tensor units
 
 A per-kernel trace of main's warm 2048 decode (`fc8aa2d45`, one dispatch a command buffer timed to completion, a
