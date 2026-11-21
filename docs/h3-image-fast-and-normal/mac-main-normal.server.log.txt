@@ -1,0 +1,52 @@
+load before: { 5.44 18.95 24.70 }
+Apple M5 Ultra: prompt weights mapped and kernels built in 5.4 s
+Apple M5 Ultra: decoder weights in bf16 in 0.5 s
+loaded the prompt encoder, transformer weights and decoder in 12.6 s; ready
+info: h3 image weights: 117.6 GiB kept wired between requests, inside 70% of 256 GiB of RAM
+117.6 GiB of weights held resident
+24 tokens; text encoder, 50 layers: 0.27 s wall, 0.27 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.55 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/main-normal-1/picture.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.75 s in all; wrote out/main-normal-1/picture.png at 2048x2048
+out/main-normal-1/picture: prompt 0.28 s, case 0.01 s, transformer bound 0.84 s, 6 steps 9.22 s, decoder 0.75 s, total 11.10 s
+24 tokens; prompt states kept: text encoder and refiner skipped
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/main-normal-2/picture.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.76 s in all; wrote out/main-normal-2/picture.png at 2048x2048
+out/main-normal-2/picture: prompt 0.00 s, case 0.00 s, transformer reused 0.00 s, 6 steps 9.20 s, decoder 0.76 s, total 9.97 s
+24 tokens; prompt states kept: text encoder and refiner skipped
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.54 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/main-normal-3/picture.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.76 s in all; wrote out/main-normal-3/picture.png at 2048x2048
+out/main-normal-3/picture: prompt 0.00 s, case 0.01 s, transformer reused 0.00 s, 6 steps 9.20 s, decoder 0.76 s, total 9.97 s
+24 tokens; prompt states kept: text encoder and refiner skipped
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.54 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.53 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/main-normal-4/picture.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.75 s in all; wrote out/main-normal-4/picture.png at 2048x2048
+out/main-normal-4/picture: prompt 0.00 s, case 0.00 s, transformer reused 0.00 s, 6 steps 9.20 s, decoder 0.75 s, total 9.96 s
+load after: { 4.92 16.52 23.44 }

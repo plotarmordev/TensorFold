@@ -14,7 +14,7 @@ const usage =
     \\  tf-h3-image-prompt, tf-h3-image (free) and tf-h3-image-decoder do, and prints a timing line;
     \\  a request with the last one's canvas, rows and tags reuses its transformer binding;
     \\  a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256)
-    \\  profile: each request's six steps by stage, each stage in its own command buffer (slower; diagnostic)
+    \\  profile: each request's six steps by kernel, each launch timed by the GPU's timestamp counters (slower; diagnostic)
     \\  --draft-steps N runs every request's first N steps on the half-size canvas, as mmh3's does:
     \\  a different picture, faster (the free run only; no reference edits)
     \\
@@ -242,7 +242,7 @@ fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Enc
         break :out try image_tool.drafted(a, model, draft_binding.*.?.model, &case, &draft_case, p.sched, draft_steps, p.noise_latent, prefix);
     } else try image_tool.free(a, model, folder, &case, prefix);
     if (profile) {
-        std.debug.print("{s}: steps by stage, each stage in its own command buffer:\n", .{prefix});
+        std.debug.print("{s}: steps by kernel, each launch timed by the GPU's timestamp counters:\n", .{prefix});
         for (h3.stages, model.spent) |stage, seconds| std.debug.print("  {s}: {d:.3} s\n", .{ stage, seconds });
     }
     const denoised = mtl.clock.seconds();
