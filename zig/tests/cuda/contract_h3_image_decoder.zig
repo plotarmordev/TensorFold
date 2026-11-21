@@ -10,7 +10,7 @@ const contract = core.contract;
 const c = contract.spec;
 const g = contract.gates;
 
-pub const Which = enum { post_quant, embed, rms_norm, layer_norm, linear, finish_bias, finish_scale, res_norm, softmax, heads, attention, unheads, swiglu };
+pub const Which = enum { post_quant, embed, rms_norm, layer_norm, linear, finish_bias, finish_scale, res_norm, heads, attention, flash, swiglu };
 
 /// h3_image_decoder.cu's H3dShape, the trailing argument every decoder kernel takes.
 const Shape64 = extern struct {
@@ -54,11 +54,6 @@ const norm_why = "a bf16 output follows the sum of squares as ss^-1/2: a bf16 su
 fn dotK(s: c.Shape) usize {
     return s.k;
 }
-/// softmax's row: a scaled score (one op), its exponential, the sum over the row, the divide, the bf16 store.
-fn softChain(s: c.Shape) usize {
-    return s.n + 8;
-}
-
 pub fn spec(w: Which) c.Spec {
     return switch (w) {
         .post_quant => .{ .name = "cuda h3 image decoder h3d_post_quant", .accum = .f32, .depth = dot24, .ops = 1, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 256, .k = 24 }, .{ .rows = 4, .n = 256, .k = 24 }, .{ .rows = 2, .n = 64, .k = 24 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the 24-term dot's bf16 output hides a bf16 sum's error" } },
@@ -71,9 +66,9 @@ pub fn spec(w: Which) c.Spec {
         .res_norm => .{ .name = "cuda h3 image decoder h3d_res_norm", .accum = .f32, .depth = normChain, .ops = 12, .mids = 2, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 1024, .k = 1024 }, .{ .rows = 261, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .heads => .{ .name = "cuda h3 image decoder h3d_heads", .accum = .f32, .depth = headChain, .ops = 8, .mids = 4, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 3072 }, .{ .rows = 2, .n = 64, .k = 3072 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .attention => .{ .name = "cuda h3 image decoder h3d_attention", .accum = .f32, .depth = attnChain, .ops = 8, .mids = 0, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 64 }, .{ .rows = 2, .n = 64, .k = 64 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "softmax weights in [0, 1] with fp32 scores: the bf16 output hides a bf16 sum's error" } },
-        .softmax => .{ .name = "cuda h3 image decoder h3d_softmax", .accum = .f32, .depth = softChain, .ops = 3, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 1 }, .{ .rows = 2, .n = 64, .k = 1 }, .{ .rows = 1, .n = 512, .k = 1 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "fp32 scores and a fp32 row sum: bf16 output hides a bf16 sum's error" } },
+        // bf16(exp) weights enter both p . v and the row sum: one rounding in the numerator, one in the denominator
+        .flash => .{ .name = "cuda h3 image decoder h3d_flash", .accum = .f32, .depth = attnChain, .ops = 12, .mids = 2, .out = .bf16, .served = &.{ .{ .rows = 1, .n = 261, .k = 64 }, .{ .rows = 2, .n = 64, .k = 64 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "online fp32 softmax whose bf16 weights enter p . v and its row sum alike: the bf16 output hides a bf16 sum's error" } },
         .swiglu => .{ .name = "cuda h3 image decoder h3d_swiglu", .accum = .none, .depth = none, .ops = 4, .mids = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 4096, .k = 8192 }, .{ .rows = 65, .n = 4096, .k = 8192 } } },
-        .unheads => .{ .name = "cuda h3 image decoder h3d_unheads", .accum = .none, .depth = none, .ops = 0, .out = .bf16, .served = &.{ .{ .rows = 261, .n = 1024, .k = 1 }, .{ .rows = 64, .n = 1024, .k = 1 } } },
     };
 }
 
@@ -88,8 +83,7 @@ pub fn symbol(w: Which) [:0]const u8 {
         .res_norm => "h3d_res_norm",
         .heads => "h3d_heads",
         .attention => "h3d_attention",
-        .softmax => "h3d_softmax",
-        .unheads => "h3d_unheads",
+        .flash => "h3d_flash",
         .swiglu => "h3d_swiglu",
     };
 }
@@ -319,7 +313,7 @@ pub const Dec = struct {
                 self.outs = 3 * tiles * 16 * tokens * 64;
                 self.p = .{ .tiles = @intCast(tiles), .tokens = @intCast(tokens), .eps = 1e-5 };
             },
-            .attention => {
+            .attention, .flash => {
                 if (s.k != 64 or s.n > 288) return false;
                 const tiles = s.rows;
                 const tokens = s.n;
@@ -334,26 +328,6 @@ pub const Dec = struct {
                 _ = try self.output(tiles * tokens * 1024 * 2);
                 self.outs = tiles * tokens * 1024;
                 self.p = .{ .tiles = @intCast(tiles), .tokens = @intCast(tokens), .scale = 0.125 };
-            },
-            .softmax => {
-                // s.rows rows of s.n fp32 scores; out bf16 probabilities of the same count.
-                if (s.n > 512) return false;
-                const sc = try self.values(s.rows * s.n, -30, 30, fill, rng, false, true);
-                self.in = .{ .a = sc, .rows = s.rows, .n = s.n, .k = 1, .scale = 0.125 };
-                _ = try self.upload(sc, false);
-                _ = try self.output(s.rows * s.n * 2);
-                self.outs = s.rows * s.n;
-                self.p = .{ .tokens = @intCast(s.n), .scale = 0.125 };
-            },
-            .unheads => {
-                // one tile of s.rows tokens: o fp32 packed [16 heads, tokens, 64], out the [tokens, 1,024] rows.
-                if (s.n != 1024) return false;
-                const o = try self.values(16 * s.rows * 64, -2, 2, fill, rng, false, true);
-                self.in = .{ .a = o, .rows = s.rows, .n = s.n, .k = 1, .tiles = 1, .tokens = s.rows };
-                _ = try self.upload(o, false);
-                _ = try self.output(s.rows * 1024 * 2);
-                self.outs = s.rows * 1024;
-                self.p = .{ .tiles = 1, .tokens = @intCast(s.rows) };
             },
             .swiglu => {
                 if (s.n != 4096 or s.k != 8192) return false;
@@ -417,20 +391,15 @@ pub const Dec = struct {
                 a.add(self.p);
                 try self.go(.{ .x = @intCast((self.p.tokens + 7) / 8), .y = 16, .z = @intCast(self.p.tiles) }, .{ .x = 256 }, &a);
             },
-            .softmax => {
-                for (b[0..2]) |p| a.add(p);
+            .flash => {
+                for (b[0..4]) |p| a.add(p);
                 a.add(self.p);
-                try self.go(.{ .x = @intCast(s.rows) }, .{ .x = 128 }, &a);
+                try self.go(.{ .x = @intCast((self.p.tokens + 63) / 64), .y = 16, .z = @intCast(self.p.tiles) }, .{ .x = 128 }, &a);
             },
             .res_norm => {
                 for (b[0..5]) |p| a.add(p);
                 a.add(self.p);
                 try self.go(.{ .x = @intCast(s.rows) }, .{ .x = 256 }, &a);
-            },
-            .unheads => {
-                for (b[0..2]) |p| a.add(p);
-                a.add(self.p);
-                try self.go(.{ .x = @intCast(s.rows), .y = 16 }, .{ .x = 64 }, &a);
             },
             .swiglu => {
                 for (b[0..2]) |p| a.add(p);
@@ -459,10 +428,8 @@ pub const Dec = struct {
             .finish_bias, .finish_scale => ref.finish(self.in, want, mag),
             .res_norm => ref.resNorm(self.in, s, want, mag),
             .heads => ref.heads(self.in, s, want, mag),
-            .attention => ref.attention(self.in, s, want, mag),
-            .softmax => ref.softmax(self.in, s, want, mag),
+            .attention, .flash => ref.attention(self.in, s, want, mag),
             .swiglu => ref.swiglu(self.in, want, mag),
-            .unheads => ref.unheads(self.in, want, mag),
         }
     }
 
