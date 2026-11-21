@@ -25,8 +25,7 @@ run() { # TREE MODEL NAME [ARGS...]: greedy codes into NAME.codes, stderr into N
 run "$main_tree" "$fp8" fp8-main
 run "$root" "$fp8" fp8-head
 cmp "$out/fp8-main.codes" "$out/fp8-head.codes"
-# --replay 1 checks frames, graph replay, poison/reset and PCM chunk 1 vs 1 exactly, then PCM across codec chunks; main's
-# CUDA codec runs cuBLAS at the chunk's shape, so its low bits may differ there: the one stop accepted, reported below
+# --replay 1 gates frames, graph, poison/reset and chunk 1 vs 1; main's CUDA codec may differ at chunk 4 (below)
 replay() { # NAME [ARGS...]: every check passes, or the first codec-chunk compare (chunk 4) is the only one that fails
     name=$1
     shift
