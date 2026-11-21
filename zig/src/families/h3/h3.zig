@@ -46,7 +46,8 @@ pub const stages = [_][]const u8{ "rows in", "norm", "norm quant", "quantize", "
 /// A profiled encoder's GPU timestamp counters at its start and end, and the clocks that convert their ticks.
 const Stamps = struct { samples: mtl.counters.SampleBuffer, pass: mtl.counters.ComputePass, clock: mtl.counters.ClockSample };
 
-pub const Pass = struct { cb: mtl.CommandBuffer, enc: mtl.ComputeEncoder };
+/// A forward's open command buffer and encoder, and the GPU seconds of the buffers it has finished.
+pub const Pass = struct { cb: mtl.CommandBuffer, enc: mtl.ComputeEncoder, gpu: f64 = 0 };
 
 pub const Model = struct {
     gpa: std.mem.Allocator,
@@ -386,7 +387,7 @@ pub const Model = struct {
         if (!self.profile) return;
         pass.enc.end();
         pass.cb.commit();
-        _ = try finish(pass.cb);
+        pass.gpu += try finish(pass.cb);
         const s = &self.stamps.?;
         const ticks = try s.samples.resolveCompleted(2);
         defer ticks.deinit();
@@ -488,7 +489,7 @@ pub const Model = struct {
         @memcpy(self.audio_latents.slice(f32, audio.len), audio);
         const pool = mtl.objc.Pool.push();
         defer pool.pop();
-        var pass: Pass = undefined;
+        var pass: Pass = .{ .cb = undefined, .enc = undefined };
         if (self.profile) {
             if (self.stamps == null) {
                 const samples = try mtl.counters.SampleBuffer.init(self.device, 2);
@@ -498,7 +499,6 @@ pub const Model = struct {
             self.stamps.?.clock = mtl.counters.sampleClocks(self.device);
         }
         try self.next(&pass);
-        var gpu: f64 = 0;
         const enc = &pass.enc;
         // a first frame's rows enter like video rows on every pass and are never stepped
         const media = self.text + self.condition;
@@ -515,7 +515,7 @@ pub const Model = struct {
             pass.enc.end();
             pass.cb.commit();
             if (n == queued.len) {
-                gpu += try finish(queued[0]);
+                pass.gpu += try finish(queued[0]);
                 std.mem.copyForwards(mtl.CommandBuffer, queued[0 .. n - 1], queued[1..n]);
                 n -= 1;
             }
@@ -524,7 +524,7 @@ pub const Model = struct {
             self.paused += gpu_turn.yield(t.io, t.at);
             try self.next(&pass);
         }
-        for (queued[0..n]) |cb| gpu += try finish(cb);
+        for (queued[0..n]) |cb| pass.gpu += try finish(cb);
         const last = self.blocks[self.blocks.len - 1].tables;
         // Only the stepped rows are ever read: prompt rows are re-copied into x each step and head_norm skips them.
         const skip = media * hidden * 2;
@@ -547,13 +547,13 @@ pub const Model = struct {
         }
         pass.enc.end();
         pass.cb.commit();
-        gpu += try finish(pass.cb);
+        pass.gpu += try finish(pass.cb);
         if (self.give_way) |t| self.paused += gpu_turn.yield(t.io, t.at);
         if (video_velocity.len > 0) @memcpy(video_velocity, self.video_velocity.slice(f32, video_velocity.len));
         if (audio_velocity.len > 0) @memcpy(audio_velocity, self.audio_velocity.slice(f32, audio_velocity.len));
         const wall = mtl.clock.seconds() - started;
         const timing_valid = if (self.give_way) |t| self.paused == 0 and gpu_turn.clean(t.io, t.at, mark) else false;
-        return .{ .wall = wall, .gpu = gpu, .paused = self.paused, .timing_valid = timing_valid };
+        return .{ .wall = wall, .gpu = pass.gpu, .paused = self.paused, .timing_valid = timing_valid };
     }
 
     /// The resident video rows after `forward`'s uploads and Euler steps, (video, video_in) f32.

@@ -542,6 +542,13 @@ test "profile times each picture kernel on the GPU's counters and leaves the lat
         errdefer std.debug.print("stage {s}: {d} s\n", .{ stage, seconds });
         try testing.expect(seconds > 0 and seconds < 1);
     }
+    // a profiled step's GPU time spans every kernel's counter-timed encoder (within the clocks' conversion)
+    b.model.spent = @splat(0);
+    const took = try b.model.forward(case.noise, &.{}, 0, null, &.{}, &.{});
+    var kernels: f64 = 0;
+    for (b.model.spent) |seconds| kernels += seconds;
+    errdefer std.debug.print("step GPU {d} s, kernels {d} s\n", .{ took.gpu, kernels });
+    try testing.expect(took.gpu > 0.9 * kernels);
 }
 
 test "a failed bind releases every Metal object it made" {
