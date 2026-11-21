@@ -2,13 +2,8 @@
 # bench-script.sh twice in one GPU window: the picks file absent (the first cold run writes it), then
 # present. The two cold latents are compared bit for bit at the end; a difference fails the job.
 set -eu
-model=/assets/drama3-pilot/models/MiniMax-H3-Image
-pilot=/assets/drama3-pilot/h3-image-pilot
 commit=$(git -c safe.directory='*' rev-parse HEAD)
-bin=/work/out/tensorfold-cuda-$commit
 out=/work/out/h3-image-cache-ab
-export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-H3_BUILD=sm121 sh docs/recipes/minimax-h3-cuda/cuda-build.sh
 cachefile=$HOME/.cache/tensorfold/h3-cublaslt-algos.bin
 rm -rf "$out" && mkdir -p "$out"
 runbench() { # runbench OUTDIR [VAR=value...]: the bench's four 2048 runs into its own out

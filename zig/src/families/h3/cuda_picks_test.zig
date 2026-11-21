@@ -32,15 +32,10 @@ pub fn run(a: std.mem.Allocator) !void {
     model.inner = 1024;
     model.mlp = 2048;
     model.hidden = 4096;
-    var handle: lt_.Handle = null;
-    try model.gemms.lt.check(model.gemms.lt.api.cublasLtCreate(&handle), "cublasLtCreate");
-    var int8: h3.Int8 = .{ .blocks = &.{}, .handle = handle, .scratch = .{ .d = &model.driver, .ptr = 0, .len = 0 } };
-    defer {
-        var it = int8.plans.valueIterator();
-        while (it.next()) |g| g.deinit();
-        int8.plans.deinit(a);
-        _ = model.gemms.lt.api.cublasLtDestroy(handle);
-    }
+    const int8 = try model.gpa.create(h3.Int8);
+    int8.* = .{ .blocks = &.{}, .handle = null, .scratch = .{ .d = &model.driver, .ptr = 0, .len = 0 } };
+    defer int8.deinit(model); // its plans, the scratch warm reserved, its handle
+    try model.gemms.lt.check(model.gemms.lt.api.cublasLtCreate(&int8.handle), "cublasLtCreate");
     const int8_shape = [3]u64{ 8, 3 * model.inner, model.hidden };
     try picks.put(a, .int8, int8_shape, refused);
     try int8.warm(model, 8);

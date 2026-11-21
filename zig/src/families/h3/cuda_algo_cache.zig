@@ -1,9 +1,9 @@
 //! The model's cuBLASLt picks kept on disk: the bf16 Linears' (n, k) algorithms and the INT8 products'
-//! (rows, n, k) ones, under the GPU's name and driver and cuBLASLt's versions. A start whose file
+//! (rows, n, k) ones, under the GPU's name, the CUDA driver API version and cuBLASLt's. A start whose file
 //! matches skips every heuristic search; a key mismatch, a missing, torn or corrupt file is a miss —
 //! the search runs as before and `save` rewrites the table.
 //!
-//! `TF_H3_ALGO_CACHE` steers the file: a path of its own (the bench's A/B), or `off` to skip it;
+//! `TF_H3_ALGO_CACHE` steers the file: a path of its own, or `off` to skip it;
 //! otherwise it lives at ~/.cache/tensorfold/h3-cublaslt-algos.bin.
 const std = @import("std");
 const platform = @import("sys");
@@ -15,6 +15,8 @@ const key_bytes = 256;
 /// Magic, key and the record count: a file cut anywhere, even between records, fails the count.
 const head_bytes = magic.len + key_bytes + @sizeOf(u64);
 const max_path = 1024;
+/// Far past any model's distinct shapes (a 656-byte file holds four); a larger file is not ours.
+const max_file = 1 << 20;
 
 /// Which product a record is for: the algo bytes cuBLASLt gives are opaque, so a kind separates a
 /// bf16 Linear's pick from an int8 Gemm's at the same dimensions.
@@ -38,7 +40,8 @@ pub const Picks = struct {
     file_len: usize = 0,
     off: bool = false,
 
-    /// The file's key: GPU name, driver and cuBLASLt versions — a pick under any other is useless.
+    /// The file's key: GPU name, CUDA driver API and cuBLASLt versions — a pick under any other is useless.
+    /// Two driver releases of one API version share a key; `cublasLtMatmulAlgoCheck` still vets each record.
     pub fn identity(d: *const cuda.Driver, ctx: *const cuda.Context, lt: *const lt_.Library) [key_bytes]u8 {
         var line: [key_bytes]u8 = @splat(0);
         var name_buf: [192]u8 = undefined;
@@ -175,15 +178,19 @@ pub const Picks = struct {
         }
     }
 
+    /// The file's bytes into the table. A link, FIFO or anything past `max_file` at the path is a
+    /// miss: the open never follows or blocks, and a pipe cannot seek to its length.
     fn readFile(p: *Picks, gpa: std.mem.Allocator) void {
         var zfile: [max_path]u8 = undefined;
         const f = p.file[0..p.file_len];
         @memcpy(zfile[0..f.len], f);
         zfile[f.len] = 0;
-        const fd = platform.c.open(zfile[0..f.len :0], .{ .ACCMODE = .RDONLY }, @as(platform.c.mode_t, 0));
+        const fd = platform.c.open(zfile[0..f.len :0], .{ .ACCMODE = .RDONLY, .NOFOLLOW = true, .NONBLOCK = true, .CLOEXEC = true }, @as(platform.c.mode_t, 0));
         if (fd < 0) return;
         defer _ = platform.c.close(fd);
-        var data = gpa.alloc(u8, 4 << 20) catch return;
+        const end = platform.c.lseek(fd, 0, platform.c.SEEK.END);
+        if (end < 0 or end > max_file or platform.c.lseek(fd, 0, platform.c.SEEK.SET) != 0) return;
+        const data = gpa.alloc(u8, @intCast(end)) catch return;
         defer gpa.free(data);
         var got: usize = 0;
         while (got < data.len) {
@@ -350,18 +357,36 @@ test "h3 cublaslt picks: a record with an unknown kind tag makes the whole file 
     try std.testing.expectEqual(@as(usize, 0), q.entries.items.len);
 }
 
-test "h3 cublaslt picks: a bare TF_H3_ALGO_CACHE filename saves in the working directory" {
+test "h3 cublaslt picks: a bare TF_H3_ALGO_CACHE filename saves in the working directory; a link or FIFO there is a miss" {
     const a = std.testing.allocator;
-    const name = "h3-picks-bare-test.bin";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const old_fd = platform.c.open(".", .{});
+    defer _ = platform.c.close(old_fd);
+    const tmpz = try std.fmt.allocPrintSentinel(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
+    defer a.free(tmpz);
+    try std.testing.expect(platform.c.chdir(tmpz) == 0);
+    defer _ = platform.c.fchdir(old_fd);
     var p: Picks = .{ .key = @splat(2) };
     defer p.entries.deinit(a);
-    try std.testing.expect(p.namedPath(name));
+    try std.testing.expect(p.namedPath("picks.bin"));
     try std.testing.expectEqual(@as(usize, 0), p.dir_len);
     try p.put(a, .bf16, .{ 64, 64, 64 }, .{ .data = @splat(5) });
     p.save(a);
-    defer _ = platform.c.unlink(name);
     var q: Picks = .{ .key = @splat(2), .file = p.file, .file_len = p.file_len };
     defer q.entries.deinit(a);
     q.readFile(a);
     try std.testing.expectEqual(@as(usize, 1), q.entries.items.len);
+    // a link to that valid file, and a FIFO no writer opens: neither is followed nor waited on
+    try std.testing.expect(platform.c.symlink("picks.bin", "link.bin") == 0);
+    try std.testing.expect(mkfifo("fifo.bin", 0o600) == 0);
+    for ([_][]const u8{ "link.bin", "fifo.bin" }) |name| {
+        var r: Picks = .{ .key = @splat(2) };
+        defer r.entries.deinit(a);
+        try std.testing.expect(r.namedPath(name));
+        r.readFile(a);
+        try std.testing.expectEqual(@as(usize, 0), r.entries.items.len);
+    }
 }
+
+extern "c" fn mkfifo(path: [*:0]const u8, mode: platform.c.mode_t) c_int;

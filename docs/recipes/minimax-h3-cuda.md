@@ -157,7 +157,7 @@ Every projection's plan starts as a `cublasLtMatmulAlgoGetHeuristic` search: the
 at a canonical 16,384 rows per (n, k) and each int8 product once at the picture's own (rows, n, k), all
 inside `warm` before the first step. `tf-h3-image-cuda` keeps the picks
 in `~/.cache/tensorfold/h3-cublaslt-algos.bin` (a `TFH3LT2` header, the identity line and the record
-count, then fixed records): keyed by GPU name, CUDA driver and cuBLASLt version, so another card, driver
+count, then fixed records): keyed by GPU name, CUDA driver API version and cuBLASLt version, so another card, driver
 or toolkit is a miss, as is a missing file, one cut short of its count (even between records) or a record
 of unknown kind; the searches then run as before and `deinit` rewrites the table
 whole. A record the device still refuses (`cublasLtMatmulAlgoCheck` says no: a bit flip behind a valid
@@ -182,18 +182,20 @@ for bit, failing the job on a difference. On the GB10 (driver 580.173.02, commit
 | 2048² warm 2, with cache | 13.9 | — | 0.0 | 12.6 | 2.10 | — |
 | 2048² warm 3, with cache | 13.9 | — | 0.0 | 12.7 | 2.09 | — |
 
-What the file saves is the four searches inside `Model.warm`/`Int8.warm`, before the first step: the
-cold transformer (which includes `warm`) went **41.91 → 40.75 s, ~1.2 s**, one cold run each, while the
-warm mean held at 12.6 s and the cold latents were bit-identical. The file held four records, because the bf16
-shapes collapse to a few distinct (n, k) under their canonical rows and the int8 products to theirs. The
-wall gap in this table (155.9 → 147.1 s) is wider than load (−2.2 s) plus transformer (−1.2 s): the
-rest is prompt-stage noise, and phase B runs on page caches phase A warmed.
+What the file saves is the four searches inside `Model.warm`/`Int8.warm`, before the first step: in this
+one pair the cold transformer (which includes `warm`) went 41.91 → 40.75 s, ~1.2 s, while the warm mean held
+at 12.6 s and the cold latents were bit-identical. That is a single-pair observation, inside run-to-run
+noise: a later review A/B measured the cold transformer 40.56 → 41.00 s the other way. The file held four
+records, because the bf16 shapes collapse to a few distinct (n, k) under their canonical rows and the int8
+products to theirs. The wall gap in this table (155.9 → 147.1 s) is wider than load (−2.2 s) plus
+transformer (−1.2 s): the rest is prompt-stage noise, and phase B runs on page caches phase A warmed.
 
 Two later runs of `cache-ab.sh` on TOP, both exit 0, every selftest passing and the cold latents
 bit-identical again: `top-ac6a89d0864f` at `49d1cdd7c` (the `TFH3LT2` format; phase A wrote a 656-byte
 file, the 272-byte header and four records, and phase B read it; cold 148.7 s with the cache,
 transformer 40.4 s, warm mean 13.9 s with transformer 12.6 s) and `top-a2dd6c37cd7f`, whose one cold run
-each way measured a wall of **152.8 s without the file and 149.6 s with it**.
+each way measured a wall of **152.8 s without the file and 149.6 s with it**; the review's A/B measured
+157.8 → 151.4 s. Each pair is one cold run per side.
 
 ### Fewer steps: the draft canvas, not the PDMD LoRA
 

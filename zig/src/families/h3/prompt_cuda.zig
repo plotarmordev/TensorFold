@@ -232,7 +232,7 @@ const Products = struct {
                 l.algo = probe.algo;
             } else if (!p.fits(&l, &l.algo, &checked)) {
                 // the plain product's algorithm cannot add the bias at this shape: ask for one that can
-                if (bias != 0) try l.pick();
+                if (bias != 0) try l.pick(workspace_bytes);
                 if (bias == 0 or !p.fits(&l, &l.algo, &checked)) {
                     std.log.warn("h3 prompt cuda: no cuBLASLt algorithm for ({d}, {d}, {d}) bias {}", .{ rows, n, k, bias != 0 });
                     return error.NoAlgorithm;
