@@ -6,7 +6,7 @@
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 H3_BUILD=sm121 sh "$here/cuda-build.sh"
-/work/sm121/bin/tf-h3-image-cuda --self-test
+LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib /work/sm121/bin/tf-h3-image-cuda --self-test
 status=0
 H3_BUILD=contract H3_CONTRACT="h3 fp4" sh "$here/cuda-build.sh" || status=$?
 echo "kernel-contract h3 fp4 exit $status"
