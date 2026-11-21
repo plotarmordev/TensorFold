@@ -171,8 +171,8 @@ pub const Quantize = struct {
             for (0..16) |i| {
                 const got = nvfp4.e2m1((codes[i / 2] >> @intCast(4 * (i % 2))) & 15);
                 const e = rot * m[i];
-                const low = if (scale == 0) 0 else nearest((v[i] - e) / scale * (1 - std.math.sign(v[i] - e) * 0x1p-22), false);
-                const high = if (scale == 0) 0 else nearest((v[i] + e) / scale * (1 + std.math.sign(v[i] + e) * 0x1p-22), true);
+                const low = if (scale == 0) 0 else nearest((v[i] - e) / scale * (1 - std.math.copysign(@as(f64, 0x1p-22), v[i] - e)), false);
+                const high = if (scale == 0) 0 else nearest((v[i] + e) / scale * (1 + std.math.copysign(@as(f64, 0x1p-22), v[i] + e)), true);
                 if (!(got >= low and got <= high)) return try std.fmt.bufPrint(&t.msg, "row {d} block {d} code {d} is {d} where float64 gives {d} to {d}", .{ row, b, i, got, low, high });
             }
         };
