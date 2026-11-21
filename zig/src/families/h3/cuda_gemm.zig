@@ -20,13 +20,14 @@ pub const Gemms = struct {
         return .{ .gpa = gpa, .lt = lt, .workspace = try cuda.DeviceBuffer.alloc(d, workspace_bytes) };
     }
 
+    /// The plans and workspace; the library stays open for `Model` to close after its context's release,
+    /// whose teardown calls back into cuBLASLt once FP4 products have run.
     pub fn deinit(g: *Gemms) void {
         var it = g.plans.valueIterator();
         while (it.next()) |l| l.deinit();
         g.plans.deinit(g.gpa);
         g.algos.deinit(g.gpa);
         g.workspace.free();
-        g.lt.close();
     }
 
     /// y (rows, n) = x (rows, k) . w (n, k)^T in bf16 with fp32 sums, on `stream`.

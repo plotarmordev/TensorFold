@@ -31,6 +31,7 @@ selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or
 }
 selftest transformer "$bin/tf-h3-image-cuda" --self-test
 case ${H3_DECODER:-} in exact) decflag=--exact ;; tc) decflag=--tc ;; *) decflag= ;; esac
+case ${H3_LINEAR:-int8} in bf16) linflag=--bf16 ;; fp4) linflag=--fp4 ;; *) linflag= ;; esac
 selftest decoder "$bin/tf-h3-image-decoder-cuda" selftest $decflag
 selftest prompt "$bin/tf-h3-image-prompt-cuda" selftest /work/out/h3-prompt-selftest
 sample() { # until killed, twice a second: time, GPU memory used (MiB), power (W), the compute processes' memory (MiB)
@@ -57,8 +58,8 @@ image() { # the resident transformer renders $case; the server's log since the l
         # captures each step as one CUDA graph, which those waits would keep it from doing
         # H3_DRAFT_STEPS (+ optional H3_RENOISE_SIGMA) names --draft-steps (and --renoise-sigma): mmh3's
         # half-canvas drafts, beside bench-drafts.sh like H3_LINEAR sits beside bench-bf16.sh
-        # shellcheck disable=SC2046 # --bf16 or no word at all: int8 (qkvc and fc1) is the default
-        H3_PROFILE=${H3_PROFILE-} "$bin/tf-h3-image-cuda" "$model" --serve $([ "${H3_LINEAR:-int8}" = bf16 ] && echo --bf16) ${H3_DRAFT_STEPS:+--draft-steps "$H3_DRAFT_STEPS"} ${H3_RENOISE_SIGMA:+--renoise-sigma "$H3_RENOISE_SIGMA"} <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
+        # shellcheck disable=SC2046 # $linflag is empty at the int8 default; --bf16 and --fp4 are the opt-ins
+        H3_PROFILE=${H3_PROFILE-} "$bin/tf-h3-image-cuda" "$model" --serve $linflag ${H3_DRAFT_STEPS:+--draft-steps "$H3_DRAFT_STEPS"} ${H3_RENOISE_SIGMA:+--renoise-sigma "$H3_RENOISE_SIGMA"} <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         server=$!
         exec 3>"$out/requests" 4<"$out/replies"
@@ -142,3 +143,5 @@ if [ -z "${H3_BENCH_SKIP_COMPARE:-}" ] && [ -f "$out/2048-1.latent.f32" ]; then
     stage compare "$bin/tf-h3-image-decoder-cuda" reference "$model" "$out/2048-1.latent.f32" 128 128 \
         "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048 $decflag
 fi
+# a failed selftest still gets its timings and summary, then fails the job
+if grep -q " FAIL$" "$out/selftests"; then exit 1; fi

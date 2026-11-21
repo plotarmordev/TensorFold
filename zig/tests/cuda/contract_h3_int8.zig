@@ -15,7 +15,7 @@ const inner = 7168;
 const mlp = 14336;
 
 /// A rotated value: the lane's 4-point transform, five shuffle butterflies, then the 1 / sqrt(128) product.
-fn rotationChain(_: c.Shape) usize {
+pub fn rotationChain(_: c.Shape) usize {
     return 2 + 5 + 1;
 }
 fn none(_: c.Shape) usize {
@@ -40,7 +40,7 @@ pub fn quantizeSpec() c.Spec {
 }
 
 /// The Sylvester Hadamard sign of row `i`, column `j`: h3.cu's lane transform then its shuffle butterflies.
-fn sign(i: usize, j: usize) f64 {
+pub fn sign(i: usize, j: usize) f64 {
     return if (@popCount(i & j) % 2 == 0) 1 else -1;
 }
 

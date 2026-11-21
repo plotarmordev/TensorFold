@@ -102,6 +102,7 @@ pub const usage =
     \\  w4a8                      int8-activation prompt matmuls on affine-4 tiles: float64 of their formula, rows (synthetic)
     \\  carveout [MiB] [card]     GB10 display memory: round trips and bandwidth (SKIP without the card)
     \\  nvfp4 <dir>               NVFP4 projections against recorded lane-matmul and prompt-GEMM fixture bytes
+    \\  h3-fp4-bench DTYPE MODE   cuBLASLt block-scaled NVFP4 against the int8 product on MiniMax-H3's four picture shapes
     \\  moe                       softmax routing and SwiGLU experts against host references, then moe-live
     \\  moe-live                  a captured bucket's padding rows: never routed, planned or combined (synthetic)
     \\  moe-router-bench          tf_moe_router against its register tiles by row count, alternating (35B-A3B shape)

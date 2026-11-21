@@ -1,4 +1,5 @@
 // MiniMax H3 / FastH3's transformer blocks on CUDA in the checkpoint's bf16: the row, routing and attention kernels.
+#include "nvfp4q.cuh"
 #include "h3_attention.cuh"
 #include "h3_int8_tma.cuh"
 #include "common/reduce.cuh"
@@ -261,6 +262,23 @@ __device__ __forceinline__ void rotated_chunk(const __nv_bfloat16* x, int c, flo
     hadamard128(v);
 }
 
+// One lane's four rotated values of a row's 128-wide chunk `c` as NVFP4: the quad's absmax picks the block's
+// e4m3 scale and each value its e2m1 code; the low lane of the quad stores the scale at cuBLASLt's tiled offset.
+__device__ __forceinline__ void store_fp4(const float v[4], size_t row, int c, int lane, int K, uint8_t* Q, uint8_t* S) {
+    float most = fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3])));
+#pragma unroll
+    for (int o = 1; o < 4; o <<= 1) most = fmaxf(most, __shfl_xor_sync(0xffffffffu, most, o));
+    const nvfp4q::Scale sc = nvfp4q::block_scale(most, 1.0f);
+    uint32_t codes = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) codes |= nvfp4q::e2m1(v[j] * sc.mul) << (4 * j);
+    *reinterpret_cast<uint16_t*>(Q + row * (K >> 1) + c * 64 + lane * 2) = static_cast<uint16_t>(codes);
+    if ((lane & 3) == 0) {
+        const int b = c * 8 + (lane >> 2), tiles_k = (K / 16 + 3) / 4;
+        const size_t tile = (row / 128) * tiles_k + b / 4;
+        S[tile * 512 + (row % 32) * 16 + (row % 128 / 32) * 4 + b % 4] = static_cast<uint8_t>(sc.sf8);
+    }
+}
 // A warp's most chunks of a quantized row: K up to 8 * 14 * 128 = 14,336, the widest projection input.
 constexpr int quantize_chunks = 14;
 
@@ -348,6 +366,59 @@ __global__ void __launch_bounds__(256) h3_norm_quant(
     }
 }
 
+// h3_quantize's rotated rows as NVFP4 for cuBLASLt's 16-element block scaling: a block's four lanes reduce its
+// absmax, its e4m3 scale is e4m3(amax / 6) (nvfp4q) and its values e2m1(v / scale) 4-bit codes, Q (M, K / 2)
+// bytes. S holds the scale at cuBLASLt's 128 x 4 tiled offset, b a 16-block (row r, block b: tile (r / 128, b / 4),
+// then (r % 32) * 16 + (r % 128 / 32) * 4 + b % 4); padding past M and K is the caller's to clear (the weights'
+// N and K / 16 fill whole tiles). Grid [M], 256 threads.
+__global__ void __launch_bounds__(256) h3_quantize_fp4(const __nv_bfloat16* X, uint8_t* Q, uint8_t* S, int K) {
+    const size_t row = blockIdx.x;
+    const __nv_bfloat16* x = X + row * K;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = K >> 7;
+    for (int c = warp; c < chunks; c += 8) {
+        float v[4];
+        rotated_chunk(x, c, v);
+        store_fp4(v, row, c, lane, K, Q, S);
+    }
+}
+
+// h3_norm and h3_quantize_fp4 as one launch: the gated add and its squares run exactly as h3_norm runs them
+// (the same thread/stride and block_sum_serial order); the rotation, block scales and codes run unchanged on
+// the normed values, which each lane recomputes as modulated() rounded to bf16 — the same values h3_quantize_fp4
+// reads from h3_norm's output row. Grid [M], 256 threads.
+__global__ void __launch_bounds__(256) h3_norm_quant_fp4(
+    __nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
+    const float* GT, const float* TAB, const int* LINE,
+    uint8_t* Q, uint8_t* S, int C, int gate, int scale, int shift, float eps) {
+    __shared__ float scratch[32];
+    const int row = blockIdx.x, line = LINE[row];
+    __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
+    float sq = 0.0f;
+    if (gate >= 0) {
+        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
+        const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
+        for (int c = threadIdx.x; c < C; c += blockDim.x) {
+            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
+            x[c] = __float2bfloat16(v);
+            sq += v * v;
+        }
+    } else {
+        for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
+    }
+    const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
+    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
+    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = C >> 7;
+    for (int c = warp; c < chunks; c += 8) {
+        const int base = c * 128 + lane * 4;
+        float v[4];
+#pragma unroll
+        for (int j = 0; j < 4; ++j)
+            v[j] = f(__float2bfloat16(modulated(f(x[base + j]), inv, f(NW[base + j]), s[base + j], h[base + j])));
+        hadamard128(v);
+        store_fp4(v, row, c, lane, C, Q, S);
+    }
+}
 __global__ void __launch_bounds__(128) h3_attention(
         const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V, const int* LIST, const int* SIZES,
         const int* ROWOF, __nv_bfloat16* Y, int slots, int heads, int queries, int keys, int first_query, int per_query,
