@@ -277,17 +277,11 @@ pub const Gemm = struct {
         errdefer _ = api.cublasLtMatrixLayoutDestroy(g.b);
         g.c = try layout(lt, s.c, s.m, s.n, s.ldc, s.batch, s.sc);
         errdefer _ = api.cublasLtMatrixLayoutDestroy(g.c);
-        var pref: Preference = null;
-        try lt.check(api.cublasLtMatmulPreferenceCreate(&pref), "cublasLtMatmulPreferenceCreate");
-        defer _ = api.cublasLtMatmulPreferenceDestroy(pref);
-        const limit: u64 = workspace_limit;
-        try lt.check(api.cublasLtMatmulPreferenceSetAttribute(pref, pref_max_workspace_bytes, &limit, @sizeOf(u64)), "set workspace");
-        var found: [1]Heuristic = undefined;
-        var count: c_int = 0;
-        try lt.check(api.cublasLtMatmulAlgoGetHeuristic(handle, g.desc, g.a, g.b, g.c, g.c, pref, 1, &found, &count), "cublasLtMatmulAlgoGetHeuristic");
-        if (count < 1 or found[0].state != 0) return error.NoAlgorithm;
-        g.algo = found[0].algo;
-        g.workspace_need = found[0].workspace_size;
+        var buf: [max_candidates]Heuristic = undefined;
+        const ranked = try candidates(lt, handle, g.desc, g.a, g.b, g.c, workspace_limit, &buf);
+        if (ranked.len == 0) return error.NoAlgorithm;
+        g.algo = ranked[0].algo;
+        g.workspace_need = ranked[0].workspace_size;
         return g;
     }
 
@@ -328,6 +322,27 @@ pub const Gemm = struct {
         return l;
     }
 };
+
+/// How many of the heuristic's algorithms `candidates` asks for.
+pub const max_candidates = 16;
+
+/// The heuristic's runnable algorithms for a descriptor within `workspace_limit`, its first choice first, in `buf`.
+pub fn candidates(lt: *const Library, handle: Handle, desc: MatmulDesc, a: Layout, b: Layout, c: Layout, workspace_limit: usize, buf: *[max_candidates]Heuristic) Error![]const Heuristic {
+    const api = lt.api;
+    var pref: Preference = null;
+    try lt.check(api.cublasLtMatmulPreferenceCreate(&pref), "cublasLtMatmulPreferenceCreate");
+    defer _ = api.cublasLtMatmulPreferenceDestroy(pref);
+    const limit: u64 = workspace_limit;
+    try lt.check(api.cublasLtMatmulPreferenceSetAttribute(pref, pref_max_workspace_bytes, &limit, @sizeOf(u64)), "set workspace");
+    var found: c_int = 0;
+    try lt.check(api.cublasLtMatmulAlgoGetHeuristic(handle, desc, a, b, c, c, pref, max_candidates, buf, &found), "cublasLtMatmulAlgoGetHeuristic");
+    var kept: usize = 0;
+    for (buf[0..@intCast(found)]) |h| if (h.state == 0 and h.workspace_size <= workspace_limit) {
+        buf[kept] = h;
+        kept += 1;
+    };
+    return buf[0..kept];
+}
 
 /// A handle for `Gemm` plans, which share it.
 pub fn createHandle(lt: *const Library) Error!Handle {
