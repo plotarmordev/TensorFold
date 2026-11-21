@@ -49,12 +49,13 @@ pub fn quantize(m: *const Model, enc: mtl.ComputeEncoder, x: Ref, rows: usize, k
 
 /// `d` = x w^T for a linear of n x k. A picture's: x to int8 a scale per 256 values of K, the weights' int8 rows
 /// bound per block (`qi`); a clip's bf16. `quantized` when xq/xs already hold x's int8 rows (h3_norm_quant's).
-fn linear(m: *const Model, enc: mtl.ComputeEncoder, x: mtl.Buffer, w: Ref, d: mtl.Buffer, n: usize, k: usize, qi: h3.Int8, quantized: bool) void {
-    if (!m.base) return gemm(m, enc, x, w, d, n, k);
+fn linear(m: *Model, pass: *h3.Pass, x: mtl.Buffer, w: Ref, d: mtl.Buffer, n: usize, k: usize, qi: h3.Int8, quantized: bool) !void {
+    if (!m.base) return gemm(m, pass.enc, x, w, d, n, k);
     if (!quantized) {
-        quantize(m, enc, .{ .buffer = x }, m.rows, k, group, .{ .buffer = m.xq }, .{ .buffer = m.xs });
-        enc.barrier();
+        quantize(m, pass.enc, .{ .buffer = x }, m.rows, k, group, .{ .buffer = m.xq }, .{ .buffer = m.xs });
+        try m.lap(pass, "quantize");
     }
+    const enc = pass.enc;
     // the scales' slots are past product's own; an encoder keeps them across its pipeline change
     enc.setBuffer(m.xs, 0, 4);
     enc.setBuffer(qi.s.buffer, qi.s.offset, 5);
@@ -111,20 +112,20 @@ fn attend(m: *const Model, enc: mtl.ComputeEncoder, list: mtl.Buffer, queries: u
 }
 
 /// Block `index` of a forward; the block before left its MLP's rows in y, added here with this block's first norm.
-pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
+pub fn run(m: *Model, pass: *h3.Pass, index: usize) !void {
     const b = &m.blocks[index];
     const enc = &pass.enc;
     const heads = m.heads;
     const gates: ?Ref = if (index == 0) null else m.blocks[index - 1].tables;
     norm(m, enc.*, b.norm1, gates, h3.gate_m, b.tables, h3.scale_a, h3.shift_a);
-    m.lap(pass, "norms");
-    if (m.base) linear(m, enc.*, m.xn, b.q, m.qkv, 3 * m.inner, m.hidden, b.int8.q, false) else {
+    try m.lap(pass, "norm");
+    if (m.base) try linear(m, pass, m.xn, b.q, m.qkv, 3 * m.inner, m.hidden, b.int8.q, false) else {
         gemm(m, enc.*, m.xn, b.q, m.qr, m.inner, m.hidden);
         gemm(m, enc.*, m.xn, b.k, m.kr, m.inner, m.hidden);
         gemm(m, enc.*, m.xn, b.v, m.vr, m.inner, m.hidden);
         if (!m.dense) gemm(m, enc.*, m.xn, b.compress, m.cr, m.inner, m.hidden);
     }
-    m.lap(pass, "q k v gate");
+    try m.lap(pass, "q k v gate");
     enc.setPipeline(m.pipeline("h3_heads"));
     // the released layout's rows hold each head's q, k and v together: 384 values a row and head
     enc.setBuffer(if (m.base) m.qkv else m.qr, 0, 0);
@@ -141,10 +142,10 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
     enc.setBuffer(m.tk, 0, 11);
     enc.setBuffer(m.tv, 0, 12);
     enc.dispatchGroups(mtl.Size.of(m.rows, heads, 1), mtl.Size.of(32, 1, 1));
-    m.lap(pass, "heads");
+    try m.lap(pass, "heads");
     if (m.dense) {
         attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, false);
-        m.lap(pass, "attention");
+        try m.lap(pass, "attention");
     } else {
         enc.setPipeline(m.pipeline("h3_pool"));
         enc.setBuffer(m.tq, 0, 0);
@@ -156,11 +157,11 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
         enc.setBuffer(m.vp, 0, 6);
         enc.dispatchGroups(mtl.Size.of(m.tiles, heads, 1), mtl.Size.of(32, 1, 1));
         m.route(enc.*);
-        m.lap(pass, "routing");
+        try m.lap(pass, "routing");
         // the prefix's query tiles see every tile; a video tile sees the prefix and its chosen tiles
         attend(m, enc.*, m.all_tiles, m.prefix_tiles, m.tiles, 0, false);
         attend(m, enc.*, m.chosen, m.tiles - m.prefix_tiles, m.prefix_tiles + m.keep, m.prefix_tiles, true);
-        m.lap(pass, "attention");
+        try m.lap(pass, "attention");
         // the pooled branch gated into the attention rows in place
         enc.setPipeline(m.pipeline("h3_gate_mix"));
         enc.setBuffer(m.qr, 0, 0);
@@ -169,23 +170,28 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) void {
         enc.setBuffer(m.slot.buffer, m.slot.offset, 3);
         enc.setValue([3]i32{ @intCast(m.rows), @intCast(heads), @intCast(m.tiles) }, 4);
         enc.dispatchThreads(mtl.Size.of(m.rows, heads, 1), mtl.Size.of(64, 4, 1));
-        m.lap(pass, "gate mix");
+        try m.lap(pass, "gate mix");
     }
-    linear(m, enc.*, m.qr, b.out, m.y, m.hidden, m.inner, b.int8.out, false);
-    m.lap(pass, "attention out");
-    if (m.base) normQuant(m, enc.*, b.norm2, b.tables, h3.gate_a, b.tables, h3.scale_m, h3.shift_m) else norm(m, enc.*, b.norm2, b.tables, h3.gate_a, b.tables, h3.scale_m, h3.shift_m);
-    m.lap(pass, "norms");
+    try linear(m, pass, m.qr, b.out, m.y, m.hidden, m.inner, b.int8.out, false);
+    try m.lap(pass, "attention out");
+    if (m.base) {
+        normQuant(m, enc.*, b.norm2, b.tables, h3.gate_a, b.tables, h3.scale_m, h3.shift_m);
+        try m.lap(pass, "norm quant");
+    } else {
+        norm(m, enc.*, b.norm2, b.tables, h3.gate_a, b.tables, h3.scale_m, h3.shift_m);
+        try m.lap(pass, "norm");
+    }
     // the first projection's rows are [value | gate] ([gate | value] in the released layout), one product
-    linear(m, enc.*, m.xn, b.fc1, m.wide, 2 * m.mlp, m.hidden, b.int8.fc1, true);
-    enc.barrier();
+    try linear(m, pass, m.xn, b.fc1, m.wide, 2 * m.mlp, m.hidden, b.int8.fc1, true);
+    try m.lap(pass, "mlp in");
     enc.setPipeline(m.pipeline("h3_swiglu"));
     enc.setBuffer(m.wide, 0, 0);
     enc.setValue([3]i32{ @intCast(m.rows), @intCast(m.mlp), @intFromBool(m.base) }, 1);
     enc.setBuffer(m.act, 0, 2);
     enc.dispatchThreads(mtl.Size.of(m.mlp, m.rows, 1), mtl.Size.of(256, 1, 1));
-    m.lap(pass, "mlp in");
-    linear(m, enc.*, m.act, b.fc2, m.y, m.hidden, m.mlp, b.int8.fc2, false);
-    m.lap(pass, "mlp out");
+    try m.lap(pass, "swiglu");
+    try linear(m, pass, m.act, b.fc2, m.y, m.hidden, m.mlp, b.int8.fc2, false);
+    try m.lap(pass, "mlp out");
 }
 
 test "h3 gemm: 32x64-warp products write every tile as MLX's 32x32 band of 4 does, across a band edge and a ragged tile" {
@@ -497,14 +503,14 @@ test "h3 gemm: a clip's linears stay bf16, bit for bit main's MLX product, whole
         defer m.wide.deinit();
         const mlx = try mtl.Pipeline.init(device, lib, if (rows % 64 == 0) kernels.gemm_whole else kernels.gemm_ragged, false);
         defer mlx.deinit();
-        const cb = queue.commandBuffer();
-        const enc = cb.compute(.concurrent);
-        product(enc, mlx, 2, m.xn, .{ .buffer = w }, old, rows, n, k, 256);
-        linear(&m, enc, m.xn, .{ .buffer = w }, m.wide, n, k, .{ .w = .{ .buffer = w }, .s = .{ .buffer = w } }, false);
-        enc.end();
-        cb.commit();
-        cb.wait();
-        try std.testing.expect(cb.failure() == null);
+        var pass: h3.Pass = .{ .cb = queue.commandBuffer(), .enc = undefined };
+        pass.enc = pass.cb.compute(.concurrent);
+        product(pass.enc, mlx, 2, m.xn, .{ .buffer = w }, old, rows, n, k, 256);
+        try linear(&m, &pass, m.xn, .{ .buffer = w }, m.wide, n, k, .{ .w = .{ .buffer = w }, .s = .{ .buffer = w } }, false);
+        pass.enc.end();
+        pass.cb.commit();
+        pass.cb.wait();
+        try std.testing.expect(pass.cb.failure() == null);
         try std.testing.expectEqualSlices(u16, old.slice(u16, rows * n), m.wide.slice(u16, rows * n));
     }
 }

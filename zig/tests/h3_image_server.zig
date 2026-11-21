@@ -14,7 +14,7 @@ const usage =
     \\  tf-h3-image-prompt, tf-h3-image (free) and tf-h3-image-decoder do, and prints a timing line;
     \\  a request with the last one's canvas, rows and tags reuses its transformer binding;
     \\  a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256)
-    \\  profile: each request's six steps by stage, each stage in its own command buffer (slower; diagnostic)
+    \\  profile: each request's six steps by kernel, each launch timed by the GPU's timestamp counters (slower; diagnostic)
     \\  --draft-steps N runs every request's first N steps on the half-size canvas, as mmh3's does:
     \\  a different picture, faster (the free run only; no reference edits)
     \\
@@ -242,7 +242,7 @@ fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Enc
         break :out try image_tool.drafted(a, model, draft_binding.*.?.model, &case, &draft_case, p.sched, draft_steps, p.noise_latent, prefix);
     } else try image_tool.free(a, model, folder, &case, prefix);
     if (profile) {
-        std.debug.print("{s}: steps by stage, each stage in its own command buffer:\n", .{prefix});
+        std.debug.print("{s}: steps by kernel, each launch timed by the GPU's timestamp counters:\n", .{prefix});
         for (h3.stages, model.spent) |stage, seconds| std.debug.print("  {s}: {d:.3} s\n", .{ stage, seconds });
     }
     const denoised = mtl.clock.seconds();
@@ -501,6 +501,54 @@ test "the steps' Euler on the GPU leaves main's host-Euler latent bit for bit" {
         h3.picture.euler(x, velocity, f.folder.pdd.deltas[k]);
     }
     try expectSameLatent(x, resident);
+}
+
+test "profile times each picture kernel on the GPU's counters and leaves the latent bit for bit" {
+    const device = try mtl.Device.init();
+    if (!device.tensorUnits() or mtl.counters.query(device).mode() == .unsupported) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var environ_map: std.process.Environ.Map = .init(testing.allocator);
+    defer environ_map.deinit();
+    const init = std.process.Init{
+        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
+        .arena = &arena,
+        .gpa = testing.allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .preopens = .empty,
+    };
+    var f = try residentFixture(init, a, tmp.dir, dir_path, device);
+    defer {
+        for (&f.cases) |*c| c.case.file.deinit();
+        f.folder.heads.deinit();
+        for (f.folder.ck.shards) |*shard| shard.deinit();
+        testing.allocator.free(f.folder.ck.shards);
+    }
+    const case = &f.cases[0].case;
+    var b = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
+    defer b.release();
+    const plain = (try image_tool.free(a, b.model, &f.folder, case, try std.fmt.allocPrint(a, "{s}/plain", .{dir_path}))).rows;
+    b.model.profile = true;
+    const profiled = (try image_tool.free(a, b.model, &f.folder, case, try std.fmt.allocPrint(a, "{s}/profiled", .{dir_path}))).rows;
+    try expectSameLatent(plain, profiled);
+    // a picture's blocks are dense: no routing and no pooled branch
+    for (h3.stages, b.model.spent) |stage, seconds| {
+        if (std.mem.eql(u8, stage, "routing") or std.mem.eql(u8, stage, "gate mix")) continue;
+        errdefer std.debug.print("stage {s}: {d} s\n", .{ stage, seconds });
+        try testing.expect(seconds > 0 and seconds < 1);
+    }
+    // a profiled step's GPU time spans every kernel's counter-timed encoder (within the clocks' conversion)
+    b.model.spent = @splat(0);
+    const took = try b.model.forward(case.noise, &.{}, 0, null, &.{}, &.{});
+    var kernels: f64 = 0;
+    for (b.model.spent) |seconds| kernels += seconds;
+    errdefer std.debug.print("step GPU {d} s, kernels {d} s\n", .{ took.gpu, kernels });
+    try testing.expect(took.gpu > 0.9 * kernels);
 }
 
 test "a failed bind releases every Metal object it made" {

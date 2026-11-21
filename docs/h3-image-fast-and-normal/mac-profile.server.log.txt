@@ -1,0 +1,120 @@
+load before: { 4.67 5.11 7.77 }
+Apple M5 Ultra: prompt weights mapped and kernels built in 5.4 s
+Apple M5 Ultra: decoder weights in bf16 in 0.5 s
+loaded the prompt encoder, transformer weights and decoder in 12.6 s; ready
+info: h3 image weights: 117.6 GiB kept wired between requests, inside 70% of 256 GiB of RAM
+117.6 GiB of weights held resident
+24 tokens; text encoder, 50 layers: 0.27 s wall, 0.26 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.69 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 1.67 s wall, 1.54 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 1.66 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/profile-1/picture.latent.f32: [24, 128, 128] normalised float32
+out/profile-1/picture: steps by kernel, each launch timed by the GPU's timestamp counters:
+  rows in: 0.015 s
+  norm: 0.067 s
+  norm quant: 0.081 s
+  quantize: 0.153 s
+  q k v gate: 2.059 s
+  heads: 0.102 s
+  routing: 0.000 s
+  attention: 1.524 s
+  gate mix: 0.000 s
+  attention out: 0.775 s
+  mlp in: 2.725 s
+  swiglu: 0.098 s
+  mlp out: 1.585 s
+  gate add: 0.001 s
+  head: 0.019 s
+  euler: 0.000 s
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.73 s in all; wrote out/profile-1/picture.png at 2048x2048
+out/profile-1/picture: prompt 0.27 s, case 0.01 s, transformer bound 0.81 s, 6 steps 10.02 s, decoder 0.74 s, total 11.85 s
+24 tokens; prompt states kept: text encoder and refiner skipped
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 1.66 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/profile-2/picture.latent.f32: [24, 128, 128] normalised float32
+out/profile-2/picture: steps by kernel, each launch timed by the GPU's timestamp counters:
+  rows in: 0.015 s
+  norm: 0.067 s
+  norm quant: 0.081 s
+  quantize: 0.153 s
+  q k v gate: 2.065 s
+  heads: 0.102 s
+  routing: 0.000 s
+  attention: 1.515 s
+  gate mix: 0.000 s
+  attention out: 0.780 s
+  mlp in: 2.732 s
+  swiglu: 0.098 s
+  mlp out: 1.569 s
+  gate add: 0.001 s
+  head: 0.018 s
+  euler: 0.000 s
+2048x2048 canvas: decoded 121 tiles in 0.49 s (0.48 s on the GPU, 0.00 s waited for speech), 0.74 s in all; wrote out/profile-2/picture.png at 2048x2048
+out/profile-2/picture: prompt 0.00 s, case 0.00 s, transformer reused 0.00 s, 6 steps 10.01 s, decoder 0.74 s, total 10.75 s
+24 tokens; prompt states kept: text encoder and refiner skipped
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.68 s wall, 1.54 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 1.66 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 1.66 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/profile-3/picture.latent.f32: [24, 128, 128] normalised float32
+out/profile-3/picture: steps by kernel, each launch timed by the GPU's timestamp counters:
+  rows in: 0.015 s
+  norm: 0.067 s
+  norm quant: 0.082 s
+  quantize: 0.153 s
+  q k v gate: 2.071 s
+  heads: 0.102 s
+  routing: 0.000 s
+  attention: 1.518 s
+  gate mix: 0.000 s
+  attention out: 0.772 s
+  mlp in: 2.739 s
+  swiglu: 0.098 s
+  mlp out: 1.561 s
+  gate add: 0.001 s
+  head: 0.018 s
+  euler: 0.000 s
+2048x2048 canvas: decoded 121 tiles in 0.50 s (0.48 s on the GPU, 0.00 s waited for speech), 0.74 s in all; wrote out/profile-3/picture.png at 2048x2048
+out/profile-3/picture: prompt 0.00 s, case 0.00 s, transformer reused 0.00 s, 6 steps 10.01 s, decoder 0.74 s, total 10.75 s
+24 tokens; prompt states kept: text encoder and refiner skipped
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.68 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 1.66 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.67 s wall, 1.53 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/profile-4/picture.latent.f32: [24, 128, 128] normalised float32
+out/profile-4/picture: steps by kernel, each launch timed by the GPU's timestamp counters:
+  rows in: 0.015 s
+  norm: 0.067 s
+  norm quant: 0.082 s
+  quantize: 0.153 s
+  q k v gate: 2.064 s
+  heads: 0.102 s
+  routing: 0.000 s
+  attention: 1.519 s
+  gate mix: 0.000 s
+  attention out: 0.777 s
+  mlp in: 2.729 s
+  swiglu: 0.098 s
+  mlp out: 1.573 s
+  gate add: 0.001 s
+  head: 0.018 s
+  euler: 0.000 s
+2048x2048 canvas: decoded 121 tiles in 0.49 s (0.48 s on the GPU, 0.00 s waited for speech), 0.74 s in all; wrote out/profile-4/picture.png at 2048x2048
+out/profile-4/picture: prompt 0.00 s, case 0.01 s, transformer reused 0.00 s, 6 steps 10.01 s, decoder 0.74 s, total 10.76 s
+load after: { 4.54 5.01 7.55 }
