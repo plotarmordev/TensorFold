@@ -180,8 +180,10 @@ The other pool classes conservatively retain the audit's `arithmetic` classifica
 Images and vision bias also have independent rows. `ENGRAM_DIR` is reported as `<set>`; its path is never printed
 by the registry line. The legacy `TF_DSV41_TOOL_GRAMMAR` alias has a server-wide reader, although this row covers
 DeepSeek CUDA. A present `TENSORFOLD_TOOL_GRAMMAR` takes precedence and suppresses the masked legacy row.
+`FLOAT_LINEAR` is off by default and is not one of this table's rows: with it unset a projection a pack keeps as a
+float matrix alone is refused, as before.
 
-All 81 `TF_DSV41_*` settings that DeepSeek validates are rows of the shared startup table in
+All 82 `TF_DSV41_*` settings that DeepSeek validates are rows of the shared startup table in
 `zig/src/platform/environment.zig` (see [environment settings](environment.md)). Their readers read through that
 table; the served-knob readers of `PREFILL_ROWS` and `INDEX_BUDGET_MIB` keep their own stricter refusals after it.
 `Model.open` and the AOT planner check those rows before any allocation, device or checkpoint work, and a later
@@ -271,3 +273,13 @@ On a verified four-rank verbs relay with no opposite-rank link, `tf-tp-test suit
 exchange references, including that exchange in graph replays. NCCL selects those receive ports by channel on this
 topology. The suite prints the reason, the two reference types and the number of comparisons left out; all sums,
 gathers, remaining graph nodes and timing sweeps still run. Other topologies keep the complete suite.
+
+
+### Qwen host KV placement
+
+`TF_QWEN_KV_HOST=1` is an opt-in identical-output placement switch for the dense and MoE CUDA Qwen hybrids (#2637).
+It places only KV pages in mapped pinned-host memory; state and verify runs stay on the device.
+It requires a discrete GPU, `TF_QWEN_KV_PAGES`, `TF_QWEN_KV_PAGES_ALL=1` and `--parallel 1`.
+Integrated GPUs, spill, disk snapshots and `TF_QWEN_KV_SHARE` are refused. The GiB cap is documented in [environment.md](environment.md).
+Unset keeps the existing plan and device-page behavior. Host tests prove planning and allocation ownership only;
+model token equality, MTP and resumed-prompt equality still require the same-checkpoint device receipt.

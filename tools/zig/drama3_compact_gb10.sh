@@ -26,8 +26,8 @@ run "$main_tree" "$fp8" fp8-main
 run "$root" "$fp8" fp8-head
 cmp "$out/fp8-main.codes" "$out/fp8-head.codes"
 run "$root" "$compact" compact --codec "$codec" --replay 1
-# a pruned checkpoint: an unpruned NVFP4 one keeps the original router in every layer and stops here
-grep -q 'routed experts NVFP4 in 40 of 40 layers; compact routers in 40 of 40 layers' "$out/compact.log"
+# a pruned checkpoint compacts only the layers that dropped experts: NVFP4 in all 40 and at least one compact router
+grep -q 'routed experts NVFP4 in 40 of 40 layers; compact routers in [1-9][0-9]* of 40 layers' "$out/compact.log"
 # batched prefill is gated within its own capacity: cross-capacity frames may differ near a tie (docs/drama3-prefill.md)
 run "$root" "$compact" compact-batched --codec "$codec" --max-rows 64 --replay 1
 cmp -s "$out/compact.codes" "$out/compact-batched.codes" && capacity=equal || capacity=differ

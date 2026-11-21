@@ -19,6 +19,9 @@ column includes the draft's lift inside its six-step count.
 | Spark fast (`--draft-steps 3`) | 0.0 | 8.6 | 1.4 | 9.9 | `top-c2896139b5eb` |
 | Mac normal | 0.0 | 9.4 | 1.4 | 10.8 | `h3-image-fast-and-normal/mac-normal.server.log.txt` |
 | Mac fast (`--draft-steps 3`) | 0.0 | 6.4 | 1.5 | 7.8 | `h3-image-fast-and-normal/mac-drafts.server.log.txt` |
+| Spark normal, card 149, same prompt again | 0.0 | 10.8 | 1.2 | 12.1 | `top-a84c94b49c92` (one run) |
+| Spark normal, card 149, unseen prompts | 2.0 | 10.9 | 1.2 | 14.0 | `top-a84c94b49c92` (three runs) |
+| mmh3 server, same job, unseen prompts | 0.2 | ~9.5 | 0.6 | 10.6 | `top-a84c94b49c92` (three runs) |
 
 The Spark rows come from two `swarm gpu-run` jobs of
 [`bench-script.sh`](recipes/minimax-h3-cuda/bench-script.sh) and
@@ -35,6 +38,13 @@ The same warm 15.5 → 10.7 s gap the Spark port measured in card 131 shows here
 the fast mode cuts each deployment's warm picture by ~30% (Spark −4.3 s, Mac −3.0 s), all of it in the
 drawing steps — three half-size steps at a quarter of the pixels are much cheaper than the three full-size
 steps they replace.
+
+Card 149 added the last three rows, measured at `99c900f5` once the encoder, decoder, passes and int8-product cards
+had merged. Its runs are not this table's warm repeats. The first row is a single repeat of the fox after it was
+drawn cold. The other two are means over three prompts the server had never seen, and mmh3's server ran in the
+same TOP job. The rows lower the Spark's warm normal picture from 14.2 to 12.1 s. On unseen prompts it takes 14.0 s
+against mmh3's 10.6 s, so mmh3 is still 3.4 s ahead. Every run and the stage breakdown are in
+[the CUDA recipe's card 149 section](recipes/minimax-h3-cuda.md#card-149-the-race-again-after-the-encoder-decoder-passes-and-int8-product-cards-21-november).
 
 ## Pictures
 

@@ -67,6 +67,10 @@ Without Xcode's Metal compiler it warns `skipping offline Metal shader checks` a
 tests that need Linux, CUDA or a Metal device skip themselves.
 
 `native` writes `zig-out/native/bin/tensorfold-native`, the server.
+On Linux, `zig build native` compiles for the build machine's CPU, so the binary can stop with `Illegal instruction` on a
+machine without the same features (AVX-512, for example). To build for another machine, name its CPU: `-Dcpu=baseline`
+runs on any x86_64, as the release archives do, and `-Dcpu=x86_64_v3` on an x86-64-v3-capable machine (AVX2 class).
+
 Structured output and required tool calls need the release archive's `lib/` or `zig build grammar -Dxgrammar=DIR`; prepare DIR with `git clone --branch v0.2.8 --recurse-submodules https://github.com/mlc-ai/xgrammar` (use the native build's same `--prefix` for grammar).
 To build one stripped server for one GPU (`zig build -Dgpu=spark -Dnvcc=...`, about 69% smaller than the four-target server), see [Build a server for one GPU](RUNBOOK.md#build-a-server-for-one-gpu).
 The `apple_m1` CPU target keeps the macOS binary compatible with M1 through M5.

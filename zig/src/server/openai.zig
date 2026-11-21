@@ -28,7 +28,6 @@ const Conn = @import("http_conn.zig").Conn;
 const Value = json.Value;
 const Cx = errors.Cx;
 const Allocator = std.mem.Allocator;
-
 /// Where a chat reply goes: the client's socket, or a Responses or Messages translation of it.
 pub const Out = struct {
     ctx: *anyopaque,
@@ -54,6 +53,7 @@ pub fn post(srv: *Server, conn: *Conn, a: Allocator, is_chat: bool) void {
         const err = errorBody(a, &cx, if (is_chat) "messages" else "prompt") catch return;
         return routes.sendValue(conn, a, cx.status(), wrapError(a, err) catch return);
     };
+    if (@import("auth_scope.zig").witnessDenial(conn.key_scopes, body)) |why| return @import("auth_scope_reply.zig").deny(conn, false, why);
     var client: ClientOut = .{ .conn = conn, .a = a, .startup_at = startup_at };
     run(srv, a, client.out(), .{ .conn = conn }, is_chat, body);
 }
@@ -108,13 +108,14 @@ pub fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value, format: ?[]const u
     const exact_bytes = asked and try @import("logprobs.zig").offered(srv, cx.a);
     const logprobs = if (is_chat) try fields.probabilityOptions(cx, body, exact_bytes) else try fields.legacyLogprobs(cx, body, exact_bytes);
     if (!cx.skip_request_log) if (srv.config.request_log) |path| request_log.append(cx.a, path, body);
-    var input: chat.Input = .{ .fields = undefined, .format = format };
+    var input: chat.Input = .{ .fields = undefined, .format = format, .execution_witness = try @import("witness_reply.zig").asked(srv, cx, body) };
     if (is_chat) {
         input.messages = try messages.normalizeWith(cx, body.get("messages"), "system", srv.needs_user_after_tool, srv.media());
         input.tools = if (srv.text.native_deepseek) try @import("deepseek_request.zig").active(cx, body.get("tools"), body.get("tool_choice")) else try tool_specs.active(cx, body.get("tools"), body.get("tool_choice"));
     } else if (body.get("messages")) |m| if (m == .array and m.array.len > 0) {
         input.messages = try messages.normalizeWith(cx, m, "system", srv.needs_user_after_tool, srv.media());
     };
+    input.messages = try @import("deferred_tools.zig").resolve(cx, input.messages, body.get("tools"), srv.text.deferred_native);
     const prompts: []const []const u8 = if (!is_chat and input.messages.array.len == 0) try prompt_list.texts(cx, body.get("prompt")) else &.{};
     if (!is_chat and input.messages.array.len == 0) input.prompt = if (prompts.len > 0) .{ .text = prompts[0] } else try completion_prompt.legacyPrompt(srv, cx, body.get("prompt"));
     // ``body.get("max_tokens") or body.get("max_completion_tokens")``: both are ints or None by now
@@ -129,7 +130,7 @@ pub fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value, format: ?[]const u
         input.temperature = if (t == .float) t.float else std.fmt.parseFloat(f64, t.int) catch 0;
     };
     const sampling = try json.newObject(cx.a);
-    for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "seed", "priority", "model", "draft", "thinking_budget", "ignore_eos", "return_token_ids", "stop", "grammar_budget" } ++ grammar.fields) |k| if (body.get(k)) |v| try sampling.put(cx.a, k, v);
+    for ([_][]const u8{ "temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty", "seed", "priority", "model", "draft", "thinking_budget", "ignore_eos", "return_token_ids", "stop", "grammar_budget", "deadline_s" } ++ grammar.fields) |k| if (body.get(k)) |v| try sampling.put(cx.a, k, v);
     try grammar.refusal(cx, body);
     if (input.tools.len > 0 and try tool_specs.choiceRequiresCall(cx.a, body.get("tool_choice"))) try sampling.put(cx.a, "tool_call_required", .{ .bool = true });
     if (body.field("parallel_tool_calls")) |p| if (p == .bool and !p.bool) try sampling.put(cx.a, "tool_call_single", .{ .bool = true });
@@ -273,6 +274,7 @@ pub const Run = struct {
         try o.put(r.a, "tensorfold", reply.runtime);
         try o.put(r.a, "speculative", reply.speculative);
         if (r.turn) |t| try o.put(r.a, "cortheon", try t.summary(r.a));
+        if (reply.execution_witness) |w| try o.put(r.a, "execution_witness", w) else if (r.plan.input.execution_witness) try o.put(r.a, "execution_witness", try @import("witness_reply.zig").missing(r.a, r.srv));
     }
 
     /// ``ToolCallPolicy.finish``: the reply's calls parsed out of its content.

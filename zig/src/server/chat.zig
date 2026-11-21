@@ -20,6 +20,7 @@ const Server = server_mod.Server;
 const Mailbox = @import("mailbox.zig").Mailbox;
 const StopHook = @import("stop_hook.zig").StopHook;
 const engine_refusal = @import("engine_refusal.zig");
+const witness_reply = @import("witness_reply.zig");
 const Value = json.Value;
 const Cx = errors.Cx;
 const Allocator = std.mem.Allocator;
@@ -52,6 +53,8 @@ pub const Input = struct {
     image_bytes: images.ByteLimits = .{},
     /// With a known window, the reply may fill all the room the prompt leaves; max_tokens otherwise.
     fill_room: bool = false,
+    /// ``"execution_witness": true``: the reply binds the witness, its prompt, resolved request and tokens.
+    execution_witness: bool = false,
 };
 
 /// A streamed piece: content text (a string) or a delta object (reasoning or tool calls).
@@ -94,6 +97,7 @@ pub const Reply = struct {
     prompt_logprobs: ?Value = null,
     loop_stop: ?u32 = null, // the loop period when --loop-guard-stop ended the reply in its reasoning
     reasoning_recovered: bool = false, // ended at its end token in an unclosed think block: content repeats it
+    execution_witness: ?Value = null, // the reply binding, when the request asked (witness_reply.zig)
 };
 
 pub const Failure = error{ Refused, Cancelled, Failed, OutOfMemory };
@@ -141,6 +145,7 @@ pub const Prepared = struct {
     stops: fields_mod.Stops,
     preparing: bool,
     frames: []const ?api.Size = &.{}, // each image part's tower input size, in part order (prompt.Rendered.frames)
+    deadline_ns: ?i96 = null, // "deadline_s": the server ends the reply there itself (finish_reason "deadline")
 };
 
 /// Render ``input`` and run every check that can refuse it, before anything reaches the client or the engine.
@@ -223,14 +228,20 @@ pub fn prepare(srv: *Server, cx: *Cx, input: Input, gone: anytype) Failure!Prepa
             request.think_close = srv.think_close;
             request.think_end = srv.think_close_end;
         }
+        @import("tool_think.zig").apply(&request, srv.config.tool_think_close and srv.info.capability(.thinking_budget) and (fields_mod.flag(f, "tool_call_required") orelse false), srv.think_close, srv.think_close_end);
         // The answer quota is separate only on engines that enforce it.
         if (srv.info.capability(.answer_limit)) @import("thinking_reserve.zig").apply(&request, srv.config.thinking_reserve, if (window > 0) window - n else std.math.maxInt(u32), srv.think_close_end);
     }
     request.logprobs = input.logprobs;
     request.prompt_logprobs = input.prompt_logprobs;
     if (try engine_refusal.of(srv.engine, cx, &request)) |message| return cx.refuse(message);
+    const deadline: ?i96 = if (f.get("deadline_s")) |v| blk: {
+        const s = (if (v == .bool) null else v.float64()) orelse return cx.refuse("deadline_s must be a number of seconds");
+        if (!(s > 0 and s <= 1e6)) return cx.refuse("deadline_s must be more than 0 and at most 1000000 seconds");
+        break :blk received + @as(i96, @intFromFloat(s * std.time.ns_per_s));
+    } else null;
     if (input.trace) |trace| trace.prepared(&request, thinking, effort);
-    return .{ .input = input, .request = request, .prompt_len = rendered.ids.len, .received = received, .thinking = thinking, .reasoning = reasoning, .effort = effort, .sampled = sampling != null, .drafts = drafts, .token_ids = fields_mod.flag(f, "return_token_ids") orelse false, .stops = stops_opt, .preparing = preparing, .frames = rendered.frames };
+    return .{ .input = input, .request = request, .prompt_len = rendered.ids.len, .received = received, .thinking = thinking, .reasoning = reasoning, .effort = effort, .sampled = sampling != null, .drafts = drafts, .token_ids = fields_mod.flag(f, "return_token_ids") orelse false, .stops = stops_opt, .preparing = preparing, .frames = rendered.frames, .deadline_ns = deadline };
 }
 
 /// Submit a prepared request and collect its reply; ``sink`` hears the stream (null: not streamed).
@@ -260,9 +271,11 @@ pub fn generate(srv: *Server, cx: *Cx, prepared: Prepared, sink: ?Sink, gone: an
     if (stops_opt.strings.len > 0) request.stop = .{ .ctx = &stop_hook, .check = StopHook.check };
     var box: Mailbox = .{ .io = io, .gpa = srv.gpa };
     defer box.deinit();
+    if (sink != null) request.unread = &box.unread; // a streamed reply's reader can fall behind; a whole one cannot
     const id = srv.next_id.fetchAdd(1, .monotonic);
     if (srv.keepalive) |k| k.begin(); // the GPU is busy: the idle ticker holds its commits
     defer if (srv.keepalive) |k| k.end();
+    const bound = if (input.execution_witness and srv.witness != null) try witness_reply.admit(srv, a, &request, stops_opt.strings) else null;
     srv.engine.submit(id, &request, .{ .ctx = &box, .event = Mailbox.onEvent }) catch |e| return switch (e) {
         error.Busy => refusals.count(srv, .engine_busy, cx.wait(wait.engine_busy, "the engine is busy; retry shortly", .{})),
         error.Closed => refusals.count(srv, .engine_unavailable, cx.wait(wait.engine_unavailable, "the engine is unavailable; retry after it restarts", .{})),
@@ -273,7 +286,7 @@ pub fn generate(srv: *Server, cx: *Cx, prepared: Prepared, sink: ?Sink, gone: an
     };
     srv.release(preparing, null); // a background request waits only while a foreground one prepares
     preparing = false;
-    var gen: Generation = .{ .srv = srv, .a = a, .box = &box, .id = id, .asked = input.cancel, .reply_id = input.id, .seed = if (request.sampling) |v| v.seed else null, .sink = sink, .thinking = prepared.reasoning or (srv.text.vtable.format != .kimi and srv.info.capability(.reasoning) and reply_text.isChannel(srv.markers)), .chat = input.prompt == null, .stops = .{ .strings = stops_opt.strings }, .ignore_eos = stops_opt.ignore_eos, .max_tokens = request.max_tokens, .tools = input.tools, .token_ids = prepared.token_ids, .lp = if (request.logprobs != null) .{ .positions = if (sink) |s| s.tokens != null else false } else null, .loop_stop = request.loop_stop, .single = fields_mod.flag(input.fields, "tool_call_single") orelse false, .required = fields_mod.flag(input.fields, "tool_call_required") orelse false, .recover = input.prompt == null and request.structure == null };
+    var gen: Generation = .{ .srv = srv, .a = a, .box = &box, .id = id, .asked = input.cancel, .reply_id = input.id, .seed = if (request.sampling) |v| v.seed else null, .sink = sink, .thinking = prepared.reasoning or (srv.text.vtable.format != .kimi and srv.info.capability(.reasoning) and reply_text.isChannel(srv.markers)), .chat = input.prompt == null, .stops = .{ .strings = stops_opt.strings }, .ignore_eos = stops_opt.ignore_eos, .max_tokens = request.max_tokens, .tools = input.tools, .token_ids = prepared.token_ids, .lp = if (request.logprobs != null) .{ .positions = if (sink) |s| s.tokens != null else false } else null, .loop_stop = request.loop_stop, .single = fields_mod.flag(input.fields, "tool_call_single") orelse false, .required = fields_mod.flag(input.fields, "tool_call_required") orelse false, .recover = input.prompt == null and request.structure == null, .deadline_ns = prepared.deadline_ns };
     defer srv.noteRequest(prepared.prompt_len, cached_tokens.within(box.cached, prepared.prompt_len), gen.collected.items.len, box.stats.drafted, box.stats.accepted, box.stats.rounds, received, gen.first_ns, gen.last_ns, box.stats.prefill_seconds, if (box.stats.prefill_seconds != null) box.stats.queued_seconds else null);
     errdefer if (!gen.engine_done) gen.cancel(); // the engine writes to the mailbox until it says finished
     if (srv.recipients and input.prompt == null) gen.recipient = try recipient_reply.Reading.of(a, srv.text, request.prompt, input.tools, prepared.reasoning);
@@ -283,10 +296,13 @@ pub fn generate(srv: *Server, cx: *Cx, prepared: Prepared, sink: ?Sink, gone: an
         gen.loop(gone) catch |e| break :blk e;
         break :blk gen.finish(cx, prepared.prompt_len, received, prepared.thinking, prepared.reasoning, effort, prepared.sampled, prepared.drafts);
     };
-    if (result) |r| {
-        if (input.trace) |trace| trace.timed(r);
-    } else |e| logEnded(input.id, e, cx.message, prepared.prompt_len, gen.collected.items.len, seconds(nowNs(io) - received));
-    return result;
+    var reply = result catch |e| {
+        logEnded(input.id, e, cx.message, prepared.prompt_len, gen.collected.items.len, seconds(nowNs(io) - received));
+        return e;
+    };
+    if (input.trace) |trace| trace.timed(reply);
+    if (bound) |b| reply.execution_witness = try witness_reply.value(a, srv, b, gen.collected.items, reply.finish_reason);
+    return reply;
 }
 
 /// The ``ended`` line of a submitted reply that ends without one: its client left, or it failed.
