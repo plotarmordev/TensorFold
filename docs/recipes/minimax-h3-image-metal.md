@@ -1539,13 +1539,43 @@ bound below run noise, so no code changes here:
 |---|---|---|
 | 143, resident int8 text encoder | **Reverted**: prompt 1.22 → 0.16 s, but the fox missed card 80's rule (27.47 dB, mean 4.44) | Skipped: no win on the Spark. The prompt path stays bf16 (`hp_gemm`), resident, with kept states. |
 | 144, decoder toward 0.7 s | Kept: `h3d_flash` fuses scores, softmax, p·v and unheads; 0.84 → 0.78 s GPU | Already here: `h3d_attention` has been one online-softmax kernel since card 124 (point 2), and card 152 took the decode to **0.49 s** of GPU, under the Spark's 0.7 s target. FP16 products lost here too (card 152). |
-| 145, passes outside the products | Kept, then folded into 146: `h3_heads_i8` and `h3_swiglu_int8` read the int8 products' int32 sums 16 bytes at a time | Nothing to port: the int8 product here writes bf16 from its epilogue (card 136), so no int32 rows exist to dequantize. The bf16 passes left — `heads` 0.10 s of 9.2 s, `h3_swiglu` about 0.1 s (106 GB a picture at memory rate, its lanes' loads already coalesced) — bound a wider-load rewrite to a few hundredths of a second, the size card 162 dropped as noise. `h3_norm_quant` (card 135) is the fusion that did carry. |
+| 145, passes outside the products | Kept, then folded into 146: `h3_heads_i8` and `h3_swiglu_int8` read the int8 products' int32 sums 16 bytes at a time | Nothing to port: the int8 product here writes bf16 from its epilogue (card 136), so no int32 rows exist to dequantize. The bf16 passes left — `heads` 0.11 s of the 9.5 s profiled below, `h3_swiglu` about 0.15 s (106 GB a picture at memory rate, its lanes' loads already coalesced) — bound a wider-load rewrite to a few hundredths of a second, the size card 162 dropped as noise. `h3_norm_quant` (card 135) is the fusion that did carry. |
 | 146, own int8 product | Kept: TMA ring, persistent grid in bands of eight, scales and SwiGLU in the epilogue; 177-187 TOPS, a step 2.08 → 1.77 s | Scales in the epilogue: here since card 136. SwiGLU in the epilogue: lost twice (card 135, 1.63-1.73 s against 1.53 s a step; card 150's spill receipts). TMA: no Metal counterpart; card 150's 4-byte operand loads won isolated and lost the served A/B. Banded walk: `swizzle` 6 already walks 64 of a 2048 picture's 65 row tiles under each weight tile (card 81); a persistent grid's other gain, overlapping a TMA prologue, needs the TMA this GPU lacks. |
 
-Card 140's normal and fast Mac times ([h3-image-fast-and-normal.md](../h3-image-fast-and-normal.md)) and the
-in-picture Metal counter profile card 150 handed on both need a Mac GPU window: a resident server session a mode,
-warm runs three a build, under `/tmp/tensorfold-model.lock`, at a load where no run is contention-spoiled. With
-no render change on this card, main's binary is the one to time.
+With no render change, this card's binary is main's (`ef68ece55`, ReleaseFast). One resident server a session,
+card 34's pilot prompt, seed 42, one cold then three warm 2048 requests, each session holding
+`/tmp/tensorfold-model.lock` for its own 40-50 s; other builders' compiles kept the load at 35-88. Every latent is
+sha1 `776b443a…`, the value card 135 pinned, so card 80's rule holds as it did for that latent; the PNGs are one
+byte string (`85098fa9…`).
+
+| Session | Warm totals | Steps (GPU) | Decoder | Load |
+|---|---|---|---|---|
+| normal | 10.08, 10.25, 10.19 s | 9.22-9.31 s | 0.80-0.82 s | 37-45 |
+| fast (`--draft-steps 3`) | 8.45, 7.42, 7.59 s | 6.15-6.16 s | 1.12-1.36 s | 74-79 |
+| fast, an earlier session | 9.60, 9.53, 9.14 s | 6.15-6.16 s | 1.37-1.79 s | 55-88 |
+
+The normal session's cold request waited 0.06-0.45 s a step for speech (`timing_valid=false`); its warm ones and
+every fast step are valid. The earlier fast session ran the same GPU work with more host time in the draft's first
+step and the decoder's PNG write, so card 140's table takes the second.
+
+In-picture profile: `tf-h3-image-server … profile`, which puts each stage of the six steps in its own command buffer
+and sums the buffers' GPU time, so a stage's seconds hold its kernels and its barriers but none of its neighbours'
+(`h3-image-fast-and-normal/mac-profile.server.log.txt`, two requests, load 73-84). No Xcode capture or counter
+sample was taken; the stage buffers are this path's per-kernel split, a product's stage carrying its input
+quantize. Rates are 300 calls of the stage's work at 4,120 rows over its seconds, against card 150's measured
+ceilings of this path (493 TOPS int8, 255 TFLOPS bf16):
+
+| Stage | Kernels | Seconds (6 steps) | Rate | Of the ceiling |
+|---|---|---:|---:|---:|
+| q k v gate | `h3_quantize_rows`, `h3_gemm_32x64_i8` | 2.17 | 132 TOPS | 27% |
+| attention | `h3_attention` | 1.58 | 95 TFLOPS | 37% |
+| attention out | `h3_quantize_rows`, `h3_gemm_32x64_i8` | 0.85 | 113 TOPS | 23% |
+| mlp in | `h3_gemm_32x64_i8`, `h3_swiglu` | 2.93 | 130 TOPS | 26% |
+| mlp out | `h3_quantize_rows`, `h3_gemm_32x64_i8` | 1.70 | 112 TOPS | 23% |
+| norms (`h3_norm`, `h3_norm_quant`), heads, rows in, final | | 0.30 | | |
+
+In the picture the products run at card 150's isolated replay rates less their quantize passes (138, 125, 139, 122
+TOPS replayed), so neighbouring stages do not slow them; the operand gather card 150 found is still what binds.
 
 ### Next, ranked
 

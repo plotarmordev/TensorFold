@@ -1,0 +1,54 @@
+Apple M5 Ultra: prompt weights mapped and kernels built in 0.6 s
+Apple M5 Ultra: decoder weights in bf16 in 1.4 s
+loaded the prompt encoder, transformer weights and decoder in 2.8 s; ready
+info: h3 image weights: 117.6 GiB kept wired between requests, inside 70% of 256 GiB of RAM
+117.6 GiB of weights held resident
+24 tokens; text encoder, 50 layers: 0.36 s wall, 0.27 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 1.74 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 2.30 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 3.52 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 1.74 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=true
+step 5/6: 1.71 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.71 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/profile-1/picture.latent.f32: [24, 128, 128] normalised float32
+out/profile-1/picture: steps by stage, each stage in its own command buffer:
+  rows in: 0.015 s
+  norms: 0.155 s
+  q k v gate: 2.173 s
+  heads: 0.109 s
+  routing: 0.000 s
+  attention: 1.578 s
+  gate mix: 0.000 s
+  quantize: 0.000 s
+  attention out: 0.846 s
+  mlp in: 2.937 s
+  mlp out: 1.710 s
+  final: 0.020 s
+2048x2048 canvas: decoded 121 tiles in 0.51 s (0.48 s on the GPU, 0.00 s waited for speech), 2.41 s in all; wrote out/profile-1/picture.png at 2048x2048
+out/profile-1/picture: prompt 0.37 s, case 0.01 s, transformer bound 0.93 s, 6 steps 12.73 s, decoder 2.41 s, total 16.47 s
+24 tokens; prompt states kept: text encoder and refiner skipped
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 42
+step 1/6: 4.15 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 1.88 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 1.70 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=false
+step 4/6: 1.71 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=false
+step 5/6: 2.93 s wall, 0.01 s GPU, 1.07 s waited for speech, timing_valid=false
+step 6/6: 1.70 s wall, 0.01 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote out/profile-2/picture.latent.f32: [24, 128, 128] normalised float32
+out/profile-2/picture: steps by stage, each stage in its own command buffer:
+  rows in: 0.019 s
+  norms: 0.152 s
+  q k v gate: 2.158 s
+  heads: 0.107 s
+  routing: 0.000 s
+  attention: 1.575 s
+  gate mix: 0.000 s
+  quantize: 0.000 s
+  attention out: 0.845 s
+  mlp in: 2.924 s
+  mlp out: 1.694 s
+  final: 0.019 s
+2048x2048 canvas: decoded 121 tiles in 0.52 s (0.49 s on the GPU, 0.00 s waited for speech), 2.20 s in all; wrote out/profile-2/picture.png at 2048x2048
+out/profile-2/picture: prompt 0.00 s, case 0.02 s, transformer reused 0.00 s, 6 steps 14.08 s, decoder 2.20 s, total 16.31 s
