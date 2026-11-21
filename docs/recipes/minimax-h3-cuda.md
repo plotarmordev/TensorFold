@@ -1110,3 +1110,40 @@ each phase now auditing its own five-SM `h3.fatbin`) repeats it: **14.51, 14.53,
 `mlp in` 3.29–3.34→3.21–3.22 s, `mlp out` 2.45–2.47→2.28 s; the same three latents byte-identical between
 phases. `kernel-contract-limits` passes both phases: `h3_heads_i8` takes 148/146/146/172/172 registers on
 sm_80/86/89/120/121, main's 252/246/246/255/255.
+
+`34cb7c3` (job `top-9d39affb92e3`, 21 November, exit 0 — a same-job A/B: `bench-161-ab.sh` on this commit, then
+`bench-161-base.patch` reverse-applied and the same prompts again, normal and `--draft-steps 3`) tried timing
+cuBLASLt's candidates instead of taking its first heuristic pick, and I reverted it. At each new shape
+`Model.warm` asked for 16 candidates, kept those within the 32 MiB workspace, ran main's pick and each of them
+once plus five timed runs on block 0's weights, and kept the fastest. cuBLASLt returned only **3** runnable
+candidates per product (4 at one fast-mode shape), and every unseen prompt is a new row count (4,120, 4,157,
+4,158, 4,164), so each warm picture paid the search again inside its transformer time. The TOPS it logged, main's
+pick against the fastest, at the four warm normal-mode shapes:
+
+| product (n, k) | int8 / bf16 | main's pick, TOPS | timed pick, TOPS |
+| --- | --- | --- | --- |
+| `qkvc` (21,504, 5,376) | int8 | 153.9–167.3 | 157.9–167.3 |
+| `fc1` (28,672, 5,376) | int8 | 155.3–158.0 | 155.7–158.6 |
+| `out` (5,376, 7,168) | bf16 | 75.0–92.2 | 81.3–92.2 |
+| `fc2` (5,376, 14,336) | bf16 | 74.0–87.0 | 76.7–87.0 |
+
+Most shapes kept main's pick; the gains are single runs of a 5-rep race (77.0→85.4 TOPS for `fc2` at 4,158 rows,
+75.0→81.3 for `out` at 4,164). The fast mode's half-canvas drafts (1,048–1,092 rows) gained more in the bf16
+products (80→90–93 TOPS), but those are under a tenth of its product time. Warm 2048², three unseen prompts
+after the pilot's prompt (each run: wall, prompt, transformer, decoder):
+
+- this commit: 16.82, 16.96, 17.97 s (prompt 2.47, 2.54, 3.22; transformer **13.15, 13.18, 13.53**; decoder
+  1.19, 1.23, 1.22); `q k v gate` 1.87–1.92 s, `mlp in` 3.31–3.35, `mlp out` 2.28–2.38, outside the blocks
+  **1.02–1.04 s**
+- main: 15.99, 16.07, 17.15 s (prompt 2.46, 2.51, 3.24; transformer **12.32, 12.32, 12.69**; decoder 1.19, 1.23,
+  1.20); `q k v gate` 1.86–1.91 s, `mlp in` 3.29–3.34, `mlp out` 2.30–2.44, outside the blocks 0.15–0.17 s
+- fast mode, this commit: 12.63, 12.72, 13.45 s (transformer 8.95, 9.02, 9.01; outside the blocks 1.30–1.31 s)
+- fast mode, main: 11.59, 11.93, 13.32 s (transformer 7.91, 7.86, 8.02; outside the blocks 0.20–0.21 s)
+
+The block stages moved by under 0.1 s, within run-to-run noise, while the per-shape search added ~0.85 s normal
+and ~1.1 s fast. Every latent was byte-identical between the phases: the int8 sums are exact, and the bf16 products
+round once to bf16 from fp32 sums (no split-K among the three candidates, I infer). So the gates hold unchanged:
+latent cosine 0.9952 against episode 1's Mac latent, the same PNG as main's, selftests PASS, and the same-latent
+`reference` at 56.42 dB, relative error 3.27e-3 under 3e-2.
+Timing only pays once a pick outlives its shape: card 141's on-disk pick cache, keyed so neighbouring row counts
+share one search, plus more than three candidates to choose from.
