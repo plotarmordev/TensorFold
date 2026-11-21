@@ -731,6 +731,64 @@ The prompt column includes the host check (316 tokens: 18.0 s encoding, 15.0 s r
 speed receipts. The second phase reverse-applied `bench-154-base.patch` (main's products) and drew the pilot prompt
 again: both 2048-1 latents are sha256 `8d067d75…`, byte-equal — the canonical algorithm still runs at 24 rows.
 
+### Card 147: `--fp4`, every projection block-scaled NVFP4 on GB10's FP4 tensor cores — opt-in, a different picture
+
+GB10 multiplies e2m1 operands at one e4m3 scale every 16 values of K natively (cuBLASLt `CUDA_R_4F_E2M1` with
+`VEC16_UE4M3` scales, fp32 sums, bf16 out). The stop-rule microbench came first:
+[`bench-147-fp4.sh`](minimax-h3-cuda/bench-147-fp4.sh) at `99900221` (job `top-7878316ecbe3`, cuBLASLt 13.1.1,
+the dtype and scale-mode values read from the toolkit's headers) timed `tf-cuda-test h3-fp4-bench` on the four
+projections a 2048² picture runs, 4,120 rows each, against the int8 TN product the transformer ships:
+
+| projection | M × N × K | int8 ms (TOPS) | NVFP4 ms (TOPS) | int8 / NVFP4 |
+|---|---|---:|---:|---:|
+| qkvc | 4,120 × 21,504 × 5,376 | 6.25 (152) | 3.04 (313) | 2.06× |
+| out | 4,120 × 5,376 × 7,168 | 2.03 (157) | 0.94 (336) | 2.15× |
+| fc1 | 4,120 × 28,672 × 5,376 | 8.21 (155) | 4.15 (306) | 1.98× |
+| fc2 | 4,120 × 5,376 × 14,336 | 4.20 (151) | 4.66 (136) | 0.90× |
+
+Three of four are twice the int8 rate, so the path was built: `--fp4` (`Fp4.quantize`, `cuda_fp4.zig`) rotates
+every projection's weight rows in 128-wide Hadamard chunks as `cuda_int8.zig` does, stores e2m1 codes and their
+e4m3 scales in cuBLASLt's 128 × 4 tiles (`h3_quantize_fp4`) and frees the bf16 weights; `h3_norm_quant_fp4` writes
+`qkvc`'s and `fc1`'s rows straight from the norm, `out` and `fc2` quantize their rows first, and every product
+writes bf16 from its own tile — no int32 planes, no `h3_dequantize`. `out` and `fc2`, bf16 at the default, run
+NVFP4 too. The int8 default and `--bf16` run unchanged.
+
+[`bench-147-ab.sh`](minimax-h3-cuda/bench-147-ab.sh) at `045b4f32` (job `top-86442278dd62`, 21 November,
+`H3_PROFILE=1` on every side) ran the bench three times in one window: with `--fp4`, at this commit's int8 default,
+and with `bench-147-base.patch` reverse-applied (main's files). Each ran the pilot fox cold, then the three unseen
+prompts (`harbour`, `meadow`, `steam`) warm. Every selftest passed on every side, and the int8 default's four
+latents and PNGs are byte for byte main's.
+
+| side | cold s | warm 1 / 2 / 3 s | transformer s | peak MiB |
+|---|---:|---:|---:|---:|
+| main (int8 qkvc and fc1) | 153.1 | 15.2 / 15.1 / 15.1 | 12.7 / 12.6 / 12.6 | 78,563 |
+| this commit, int8 default | 151.9 | 15.2 / 15.1 / 15.2 | 12.6 / 12.7 / 12.7 | 78,563 |
+| `--fp4` | 144.7 | 10.6 / 10.6 / 10.6 | 8.1 / 8.1 / 8.1 | 64,473 |
+
+Stage times for a warm picture (main → `--fp4`; the three runs agree to ±0.05 s): q k v gate 1.89 → 0.96, heads
+1.41 → 0.96, attention out 1.17 → 0.38, mlp in 3.33 → 1.82, mlp out 2.30 → 1.57, norms 0.61 → 0.55, attention
+1.80 → 1.75. `fc2` gains least, as its 0.90× product predicted; the rest comes from the products and from dropping the
+int32 round trip. The `--fp4` server of that job exited 139 once its request pipe closed after the last picture,
+every output already written; the int8 servers exited 0. A ReleaseSafe build (job `top-f37c7d07a44b`) put the fault
+inside `cuDevicePrimaryCtxRelease_v2`, jumping from `libcuda.so.1` to an unmapped address: the context's teardown
+calls back into cuBLASLt once FP4 products have run, and `Gemms.deinit` had already unloaded it. `Model.tryDeinit`
+now closes cuBLASLt after the release; the door refused every start of the confirming run (`62e3b512`) for four
+hours ("a test or another job is being set up"), so that run is still owed.
+
+The picture does not hold: `h3_image_compare.py` on the fox's `2048-1` against episode 1's Mac latent and PNG
+measured **latent cosine 0.8758, PSNR 15.28 dB, mean diff 26.48** — every gate missed (0.99, 28.2 dB, 4.1). Main's
+side of the same job measured 0.9952, 28.69 dB, 4.01. Against main's pictures of the same job the unseen prompts
+land at latent cosine 0.885, 0.922 and 0.951 and mean diff 22.1, 22.7 and 16.5, the mean HSV saturation 49.0,
+108.2 and 62.4 against main's 57.3, 112.1 and 75.0: the muted colours of mmh3's NVFP4 (the study's lever 9). One
+mantissa bit at a scale per 16 values draws a different composition of the prompt, not a defect.
+
+![Main's int8 picture (left) beside `--fp4` (right), seed 42, 2048² shrunk to 512: the pilot fox (top) and the
+unseen `steam` prompt (bottom). `--fp4` draws a different picture of the same prompt, with fewer saturated
+colours.](minimax-h3-cuda/int8-vs-fp4.png)
+
+`--fp4` stays **opt-in** (`H3_LINEAR=fp4` in the bench scripts): 30% faster warm, 14 GB less resident, and a
+different picture — never the default, which keeps episode 1's gates.
+
 ### The side-by-side: mmh3's warm server beside ours, unseen prompts (20 November)
 
 [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) puts both engines' resident servers
