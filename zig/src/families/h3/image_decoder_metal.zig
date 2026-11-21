@@ -270,9 +270,12 @@ pub const Decoder = struct {
     }
 
     /// The decoded picture [3, 16 rows, 16 cols] (normalised) of a raw latent: tiles in batches, blended in fp32.
-    pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, batch: usize, out: []f32) !Timing {
+    /// A `bands` sink (or null) is called as `bands.final(rows)` once the picture's first `rows` rows are final: its
+    /// passes then end at each tile row, so the sink can take a band while the GPU decodes the next.
+    pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, batch: usize, out: []f32, bands: anytype) !Timing {
         const t = try host.tiles(a, c, rows, cols);
-        const per = @min(batch, t.total());
+        const banded = @TypeOf(bands) != @TypeOf(null);
+        const per = @min(batch, if (banded) t.cols.len else t.total());
         try d.prepare(raw, rows, cols, t.h, t.w, per);
         var assembly = try vae.Assembler.init(a, t.rows, t.cols, 3, out);
         const tile = try a.alloc(f32, 3 * t.h * t.w * vae.cell_pixels * vae.cell_pixels);
@@ -280,7 +283,8 @@ pub const Decoder = struct {
         var took: Timing = .{};
         var k: usize = 0;
         while (k < t.total()) {
-            const n = @min(per, t.total() - k);
+            const row_end = if (banded) (k / t.cols.len + 1) * t.cols.len else t.total();
+            const n = @min(per, row_end - k);
             for (origins[0..n], 0..) |*o, i| {
                 const at = t.at(k + i);
                 o.* = .{ @intCast(at.row), @intCast(at.col) };
@@ -296,6 +300,10 @@ pub const Decoder = struct {
                 try assembly.place(at.r, at.c, tile);
             }
             k += n;
+            if (banded and k == row_end) {
+                const r = k / t.cols.len;
+                try bands.final(if (r == t.rows.len) assembly.height else t.rows[r].start);
+            }
         }
         return took;
     }

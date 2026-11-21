@@ -1,7 +1,7 @@
 //! MiniMax-H3-Image's image decoder on the host: the reference decoder over every tile, all cores, no GPU.
 const std = @import("std");
 const rounding = @import("bf16_round");
-const writer = @import("picture_writer");
+pub const writer = @import("picture_writer");
 pub const host = @import("image_decoder.zig");
 pub const vae = @import("picture_vae.zig");
 pub const reference = @import("image_decoder_reference.zig");
@@ -31,6 +31,67 @@ pub fn write(io: std.Io, a: std.mem.Allocator, decoded: []const f32, height: usi
     const file = try writer.png.encode(a, picture, want_width, want_height);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = file });
 }
+
+/// The canvas-sized PNG of a decoder's picture, streamed: each band of final rows is turned to RGB bytes and fed to one
+/// `png.Stream` on a CPU thread while the decoder goes on; `decoded` [3, height, width] is the decoder's `out`.
+pub const Bands = struct {
+    a: std.mem.Allocator,
+    decoded: []const f32,
+    height: usize,
+    width: usize,
+    rgb: []u8,
+    png: *writer.png.Stream,
+    done: usize = 0,
+    thread: ?std.Thread = null,
+    failed: ?anyerror = null,
+
+    pub fn init(a: std.mem.Allocator, decoded: []const f32, height: usize, width: usize) !Bands {
+        const png = try a.create(writer.png.Stream);
+        errdefer a.destroy(png);
+        try png.init(std.heap.page_allocator, width, height); // grown on the band's thread while `a` serves this one
+        errdefer png.deinit();
+        return .{ .a = a, .decoded = decoded, .height = height, .width = width, .rgb = try a.alloc(u8, 3 * width * height), .png = png };
+    }
+
+    /// Rows up to `rows` are final: the band since the last call goes to the PNG once the one before it is in.
+    pub fn final(b: *Bands, rows: usize) !void {
+        try b.join();
+        if (rows == b.done) return;
+        b.thread = try std.Thread.spawn(.{}, band, .{ b, b.done, rows });
+        b.done = rows;
+    }
+
+    /// The PNG, allocated with `a`, once every band is in.
+    pub fn finish(b: *Bands, a: std.mem.Allocator) ![]u8 {
+        try b.join();
+        return b.png.finish(a);
+    }
+
+    /// The stream and its buffers freed, after any band still being written.
+    pub fn deinit(b: *Bands) void {
+        b.join() catch {};
+        b.png.deinit();
+        b.a.destroy(b.png);
+        b.a.free(b.rgb);
+    }
+
+    fn join(b: *Bands) !void {
+        if (b.thread) |t| t.join();
+        b.thread = null;
+        if (b.failed) |err| return err;
+    }
+
+    fn band(b: *Bands, from: usize, to: usize) void {
+        const rgb = b.rgb[3 * from * b.width .. 3 * to * b.width];
+        vae.pixelRows(b.decoded, b.height, b.width, from, to, rgb) catch |err| {
+            b.failed = err;
+            return;
+        };
+        b.png.rows(rgb) catch |err| {
+            b.failed = err;
+        };
+    }
+};
 
 /// The decoder on the host: every parameter in bf16 as `plan` says, tiles decoded across every core.
 pub const Decoder = struct {

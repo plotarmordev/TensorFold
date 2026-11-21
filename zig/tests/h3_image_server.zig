@@ -710,10 +710,10 @@ test "speech arriving during the prompt encoder, denoising or the decoder holds 
     const latent = try a.alloc(f32, try h3.host.latentLength(20, 28));
     for (latent, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 17)) / 8 - 1;
     const pixels = try a.alloc(f32, 3 * 20 * 28 * h3.vae.cell_pixels * h3.vae.cell_pixels);
-    _ = try d.decode(a, &config, latent, 20, 28, 2, 1, pixels);
+    _ = try d.decode(a, &config, latent, 20, 28, 2, 1, pixels, null);
     const held_pixels = try a.alloc(f32, pixels.len);
     d.give_way = Arrival.at(io, lock, 2, hold_ms); // after the first of four tiles
-    const took = try d.decode(a, &config, latent, 20, 28, 2, 1, held_pixels);
+    const took = try d.decode(a, &config, latent, 20, 28, 2, 1, held_pixels, null);
     try Arrival.join();
     try testing.expect(took.paused >= least);
     try testing.expectEqualSlices(f32, pixels, held_pixels);
