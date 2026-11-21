@@ -1,6 +1,7 @@
-//! Device regression of the fused int8 launches against the kernels they fold: h3_norm_quant's rows must be
-//! byte-identical to h3_norm then h3_quantize, h3_heads_i8's and h3_swiglu_int8's to h3_dequantize then
-//! h3_heads / h3_swiglu. Every rounding and sum order is shared, so the check is equality, not a bound.
+//! Device regression of the fused launches against the kernels they fold: h3_norm_quant's rows must be
+//! byte-identical to h3_norm then h3_quantize, h3_norm_quant_fp4's to h3_norm then h3_quantize_fp4, h3_heads_i8's
+//! and h3_swiglu_int8's to h3_dequantize then h3_heads / h3_swiglu. Every rounding and sum order is shared, so the
+//! check is equality, not a bound.
 const std = @import("std");
 const cuda = @import("cuda");
 const h3 = @import("cuda.zig");
@@ -65,6 +66,8 @@ pub fn run(a: std.mem.Allocator) !void {
     defer x_dev.free();
     var x2_dev = try cuda.DeviceBuffer.fromHost(&driver, std.mem.sliceAsBytes(&x));
     defer x2_dev.free();
+    var x3_dev = try cuda.DeviceBuffer.fromHost(&driver, std.mem.sliceAsBytes(&x));
+    defer x3_dev.free();
     var y_dev = try cuda.DeviceBuffer.fromHost(&driver, std.mem.sliceAsBytes(&y));
     defer y_dev.free();
     var nw_dev = try cuda.DeviceBuffer.fromHost(&driver, std.mem.sliceAsBytes(&nw));
@@ -114,6 +117,28 @@ pub fn run(a: std.mem.Allocator) !void {
         for ([_]c_int{ C, gate_m, scale_a, shift_a }) |v| args.add(v);
         args.add(eps);
         try cuda.launch.launch(try module.function("h3_norm_quant"), .{ .grid = .{ .x = rows }, .block = .{ .x = 256 } }, stream, &args);
+    }
+    try stream.synchronize();
+
+    // ---- norm + fp4: h3_quantize_fp4 on the unfused chain's normed rows, the fused launch on x3_dev; the scales'
+    // tile padding is never written, so both buffers start alike
+    const fp4_scales = cuda.cublaslt.scaleBytes(rows, C);
+    var f1 = try cuda.DeviceBuffer.alloc(&driver, rows * C / 2 + fp4_scales);
+    defer f1.free();
+    try f1.fill8(0xAB, stream.handle);
+    var f2 = try cuda.DeviceBuffer.alloc(&driver, rows * C / 2 + fp4_scales);
+    defer f2.free();
+    try f2.fill8(0xAB, stream.handle);
+    {
+        var args: cuda.Args = .{};
+        for ([_]u64{ o_dev.ptr, f1.ptr, f1.ptr + rows * C / 2 }) |p| args.add(p);
+        args.add(@as(c_int, C));
+        try cuda.launch.launch(try module.function("h3_quantize_fp4"), .{ .grid = .{ .x = rows }, .block = .{ .x = 256 } }, stream, &args);
+        args = .{};
+        for ([_]u64{ x3_dev.ptr, y_dev.ptr, nw_dev.ptr, tab_dev.ptr, tab_dev.ptr, line_dev.ptr, f2.ptr, f2.ptr + rows * C / 2 }) |p| args.add(p);
+        for ([_]c_int{ C, gate_m, scale_a, shift_a }) |v| args.add(v);
+        args.add(eps);
+        try cuda.launch.launch(try module.function("h3_norm_quant_fp4"), .{ .grid = .{ .x = rows }, .block = .{ .x = 256 } }, stream, &args);
     }
     try stream.synchronize();
 
@@ -198,6 +223,8 @@ pub fn run(a: std.mem.Allocator) !void {
     const checks = .{
         .{ q1, q2, rows * C, "quantized rows" },
         .{ s1, s2, rows * 4, "row scales" },
+        .{ f1, f2, rows * C / 2 + fp4_scales, "fp4 codes and block scales" },
+        .{ x_dev, x3_dev, rows * C * 2, "fp4 gated stream rows" },
         .{ x_dev, x2_dev, rows * C * 2, "gated stream rows" },
         .{ tq1, tq2, heads * slots * 128 * 2, "q tiles" },
         .{ tk1, tk2, heads * slots * 128 * 2, "k tiles" },
@@ -214,5 +241,5 @@ pub fn run(a: std.mem.Allocator) !void {
             return error.H3FusedMismatch;
         }
     }
-    std.debug.print("H3 CUDA fused: h3_norm_quant, h3_heads_i8 and h3_swiglu_int8 match the unfused kernels byte for byte\n", .{});
+    std.debug.print("H3 CUDA fused: h3_norm_quant, h3_norm_quant_fp4, h3_heads_i8 and h3_swiglu_int8 match the unfused kernels byte for byte\n", .{});
 }
