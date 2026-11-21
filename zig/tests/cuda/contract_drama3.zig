@@ -1,9 +1,10 @@
-//! Drama 3's RMS norm rows (d3_rmsnorm, plain gamma and gated-norm form) and its CFG mix under the CUDA contract.
+//! Drama 3's RMS norm rows (d3_rmsnorm, plain gamma and gated-norm form), its compact router and its CFG mix under the CUDA contract.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
 const check = @import("check.zig");
 const rig_ = @import("contract_rig.zig");
+const router_k = @import("contract_drama3_router.zig");
 
 const contract = core.contract;
 const c = contract.spec;
@@ -185,22 +186,28 @@ pub const Mix = struct {
     }
 };
 
-/// The drama3 image's registrations: the norm rows and the CFG mix, onto `kernels`.
+/// The drama3 image's registrations: the norm rows, the compact router with its unmasked control and the CFG mix, onto `kernels`.
 pub const Set = struct {
     mod: ?cuda.Module = null,
     norm: ?Norm = null,
+    routers: [2]?router_k.Router = .{ null, null },
     mix: ?Mix = null,
 
     pub fn add(self: *Set, gpu: check.Gpu, s: cuda.Stream, kernels: *std.ArrayList(g.Kernel)) !void {
         self.mod = try cuda.Module.load(gpu.d, cuda.kernels.drama3);
         self.norm = try Norm.init(gpu, s, self.mod.?);
         try kernels.append(gpu.gpa, self.norm.?.kernel());
+        for (&self.routers, [_]bool{ false, true }) |*r, control| {
+            r.* = try router_k.Router.init(gpu, s, self.mod.?, control);
+            try kernels.append(gpu.gpa, r.*.?.kernel());
+        }
         self.mix = try Mix.init(gpu, s, self.mod.?);
         try kernels.append(gpu.gpa, self.mix.?.kernel());
     }
 
     pub fn deinit(self: *Set) void {
         if (self.mix) |*m| m.deinit();
+        for (&self.routers) |*r| if (r.*) |*x| x.deinit();
         if (self.norm) |*n| n.deinit();
         if (self.mod) |*m| m.unload();
     }
