@@ -462,6 +462,47 @@ test "resident binding, its weights held resident, matches fresh bindings across
     try expectSameLatent(fresh_a, resident_a2);
 }
 
+test "the steps' Euler on the GPU leaves main's host-Euler latent bit for bit" {
+    const device = try mtl.Device.init();
+    if (!device.tensorUnits()) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var environ_map: std.process.Environ.Map = .init(testing.allocator);
+    defer environ_map.deinit();
+    const init = std.process.Init{
+        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
+        .arena = &arena,
+        .gpa = testing.allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .preopens = .empty,
+    };
+    var f = try residentFixture(init, a, tmp.dir, dir_path, device);
+    defer {
+        for (&f.cases) |*c| c.case.file.deinit();
+        f.folder.heads.deinit();
+        for (f.folder.ck.shards) |*shard| shard.deinit();
+        testing.allocator.free(f.folder.ck.shards);
+    }
+    const case = &f.cases[0].case;
+    var b = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
+    defer b.release();
+    const resident = (try image_tool.free(a, b.model, &f.folder, case, try std.fmt.allocPrint(a, "{s}/resident", .{dir_path}))).rows;
+
+    // main's loop on the same binding: each step's velocity down, picture.euler on the host, the latent up again
+    const x = try a.dupe(f32, case.noise);
+    const velocity = try a.alloc(f32, x.len);
+    for (0..f.folder.pdd.steps()) |k| {
+        _ = try b.model.forward(x, &.{}, k, null, velocity, &.{});
+        h3.picture.euler(x, velocity, f.folder.pdd.deltas[k]);
+    }
+    try expectSameLatent(x, resident);
+}
+
 test "a failed bind releases every Metal object it made" {
     const device = try mtl.Device.init();
     if (!device.tensorUnits()) return error.SkipZigTest;

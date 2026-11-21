@@ -1515,6 +1515,20 @@ The decoder stage drops by 0.54-0.64 s in each request, and every total comes in
 bit-identical request for request. The two builds' PNGs differ by the decoder's rounding alone: 53.3-56.6 dB, mean
 0.14-0.29, max 5-9.
 
+### Card 160: the Euler on the GPU, checked against the host's
+
+I found this card's change already on main: card 137 (`e0d1072fb`) runs `h3_euler` after each step's head on the
+resident `video_latents`, with one upload before step 1 and one download before the decoder (`runSteps` in
+`tests/h3_image.zig`). What it lacked was a test: the kernel contract checks `h3_euler` against float64 within a
+bound, and card 137's latent sha1 was a one-off receipt. I added `the steps' Euler on the GPU leaves main's
+host-Euler latent bit for bit` to `test-h3-image-server` (in `zig build test`): on one binding of the synthetic
+checkpoint it runs the six steps with the GPU Euler, then main's old loop (velocity down, `picture.euler` on the host,
+the latent up each step) and requires the two latents' bytes equal. Scaling the host's delta by 0.999 turns it red.
+
+I did not take a new warm 2048 A/B: this branch's render path is byte for byte main's, so it would time the same
+binary twice. Card 137's A/B above is the measurement of this lever: flat on wall clock (head 11.13-11.74 s, base
+11.06-11.79 s), since about 0.1 s a step of host round-trips does not show next to a 1.6 s step.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
