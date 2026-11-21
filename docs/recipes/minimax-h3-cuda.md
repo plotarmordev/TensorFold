@@ -932,7 +932,10 @@ against `h3_norm` then `h3_quantize_fp4`, with the gated add and without it (blo
 [`fp4-contract-job.sh`](minimax-h3-cuda/fp4-contract-job.sh) at `f932e2a2` (job `top-38463791b90e`) passed the
 self-test, `h3_quantize_fp4`'s non-finite, repeat and eight-shape gates (exact by its own check; it declares no
 sums), and both launches' limits on all five SMs against their recorded usage (26-28 and 32-48 registers, bound
-256). The audit itself exits 1 there on 35 records of other kernels, so the job now gates on the ten fp4 limit lines.
+256). The job fails when the audit itself does: at `ef9f033e` (job `top-bc3758fe57cb`, exit 1) all ten fp4 limit
+lines pass, and the audit's 59 problems are stale usage records across the images (GLM BF16, exl3's controls and h3's
+own: `h3_norm`, `h3_quantize`, `h3_norm_quant` and the fp4 pair record 128 static shared bytes where nvcc 13.0 now
+reports 1,024) beside its planted controls — main's records to refresh, not this card's launches.
 
 The picture does not hold. Against episode 1's Mac latent and PNG, the fox's `2048-1` measures
 **latent cosine 0.8758 and mean diff 26.48** (`tools/zig/h3_image_compare.py`) and **PSNR 15.28 dB** (numpy, the
