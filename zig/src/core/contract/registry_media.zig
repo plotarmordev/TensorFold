@@ -65,6 +65,7 @@ pub const cuda = [_]CudaRecord{
 
 /// Launches still owed nvcc receipts; qualification refuses each SM until its receipt lands.
 pub const cuda_pending = [_]CudaRecord{
+    .{ .launch = .{ .name = "drama3 d3_router_compact", .symbol = "d3_router_compact", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
     // TOP's GB10 (sm_121, nvcc 13.0), job top-aaf334ae7ce0; no __launch_bounds__, so the driver allows 1024.
     .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 12, .static = 0, .bound = 0 } }, .later_pending = true },
 };

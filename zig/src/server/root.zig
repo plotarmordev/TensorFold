@@ -251,6 +251,8 @@ test {
     _ = @import("message_starts_test.zig");
     _ = @import("message_starts_proof_test.zig");
     _ = @import("message_marks_test.zig");
+    _ = @import("responses_namespace_translate_test.zig");
+    _ = @import("responses_namespace_output_test.zig");
     _ = @import("responses_store.zig");
     _ = @import("responses_owner_test.zig");
     _ = @import("responses_owner_socket_test.zig");
@@ -352,4 +354,5 @@ test {
     _ = @import("ocr/size_test.zig");
     _ = @import("ocr/prompt_ids_test.zig");
     _ = @import("ollama_e2e_test.zig");
+    _ = @import("open_connections_route_test.zig");
 }
