@@ -143,3 +143,5 @@ if [ -z "${H3_BENCH_SKIP_COMPARE:-}" ] && [ -f "$out/2048-1.latent.f32" ]; then
     stage compare "$bin/tf-h3-image-decoder-cuda" reference "$model" "$out/2048-1.latent.f32" 128 128 \
         "$out/2048-reference-gpu.png" "$out/2048-reference-host.png" 2048x2048 $decflag
 fi
+# a failed selftest still gets its timings and summary, then fails the job
+if grep -q " FAIL$" "$out/selftests"; then exit 1; fi
