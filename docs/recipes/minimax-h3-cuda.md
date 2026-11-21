@@ -182,25 +182,18 @@ for bit, failing the job on a difference. On the GB10 (driver 580.173.02, commit
 | 2048² warm 2, with cache | 13.9 | — | 0.0 | 12.6 | 2.10 | — |
 | 2048² warm 3, with cache | 13.9 | — | 0.0 | 12.7 | 2.09 | — |
 
-The honest read: the four searches the file skips cost **~1.2 s** of the cold picture (transformer
-41.91 → 40.75 s, all of it inside `warm` before step 1 — the per-step times are unchanged, the warm mean
-is unchanged at 12.6 s, and the cold latents are bit-identical). The wall gap is wider (155.9 → 147.1 s)
-but only ~3.3 s of it is accounted for by load (−2.2 s) and transformer (−1.2 s); the rest is
-prompt-stage noise the cache does not touch, and phase B runs on page caches phase A warmed, so wall is
-not the cache's receipt. The file held four records — the bf16 shapes collapse to a few distinct (n, k)
-under their canonical rows, the int8 products to theirs.
+What the file saves is the four searches inside `Model.warm`/`Int8.warm`, before the first step: the
+cold transformer (which includes `warm`) went **41.91 → 40.75 s, ~1.2 s**, one cold run each, while the
+warm mean held at 12.6 s and the cold latents were bit-identical. The file held four records, because the bf16
+shapes collapse to a few distinct (n, k) under their canonical rows and the int8 products to theirs. The
+wall gap in this table (155.9 → 147.1 s) is wider than load (−2.2 s) plus transformer (−1.2 s): the
+rest is prompt-stage noise, and phase B runs on page caches phase A warmed.
 
-**The card's "cold first step ≥ 3 s faster" is not met and cannot be met at step 1.** Step 1 itself is
-2.06–2.08 s cold or warm, with or without the file (job `top-a2dd6c37cd7f`: 2.06 s without, 2.08 s with;
-wall 152.8 → 149.6 s): the searches run in `warm`, before step 1 starts, so step 1 had no search time
-to lose. The cold transformer's ~29 s over a warm one sits ahead of step 1 too, and the file removes
-~1.2 s of it; the rest is staging and first-launch cost, which a picks file does not touch. Cutting
-it needs a faster `warm`/staging path.
-
-`49d1cdd7c` repeated the A/B under the `TFH3LT2` format (job `top-ac6a89d0864f`, exit 0): every selftest
-passed, phase A wrote a 656-byte file (the 272-byte header and four records), phase B read it, and the cold
-latents were bit-identical again; its printed table (cold 148.7 s, transformer 40.4 s, warm mean 13.9 s,
-transformer 12.6 s) sits within the runs above.
+Two later runs of `cache-ab.sh` on TOP, both exit 0, every selftest passing and the cold latents
+bit-identical again: `top-ac6a89d0864f` at `49d1cdd7c` (the `TFH3LT2` format; phase A wrote a 656-byte
+file, the 272-byte header and four records, and phase B read it; cold 148.7 s with the cache,
+transformer 40.4 s, warm mean 13.9 s with transformer 12.6 s) and `top-a2dd6c37cd7f`, whose one cold run
+each way measured a wall of **152.8 s without the file and 149.6 s with it**.
 
 ### Fewer steps: the draft canvas, not the PDMD LoRA
 
