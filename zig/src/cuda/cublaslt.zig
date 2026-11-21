@@ -130,7 +130,6 @@ pub const Linear = struct {
     a: Layout,
     b: Layout,
     c: Layout,
-    pref: Preference,
     algo: Algo,
     workspace_need: usize,
     epilogue: Epilogue, // fused into `algo`: `initEpilogue` asks, the algorithm decides
@@ -147,6 +146,25 @@ pub const Linear = struct {
 
     /// `initEpilogue` with X and W of type `in` (bf16, fp16, or fp32 for true fp32 products), fp32 compute.
     pub fn initTyped(lt: *const Library, m: u64, n: u64, k: u64, in: DataType, out: DataType, workspace_limit: usize, epilogue: Epilogue) Error!Linear {
+        var self = try layouts(lt, m, n, k, in, out);
+        errdefer self.deinit();
+        try self.pick(workspace_limit);
+        if (epilogue != .none) try self.fuse(epilogue, workspace_limit);
+        return self;
+    }
+
+    /// `init` with a kept algorithm `given` (as a cache file stored it): the heuristic's search is
+    /// skipped; `cublasLtMatmulAlgoCheck` proves it still fits `workspace_limit`. No epilogue.
+    pub fn initChecked(lt: *const Library, m: u64, n: u64, k: u64, out: DataType, workspace_limit: usize, given: Algo) Error!Linear {
+        var self = try layouts(lt, m, n, k, .bf16, out);
+        errdefer self.deinit();
+        self.workspace_need = try checkAlgo(lt, self.handle, self.desc, self.a, self.b, self.c, given, workspace_limit);
+        self.algo = given;
+        return self;
+    }
+
+    /// The descriptors and layouts of every init; the algorithm is left for `pick` or `checkAlgo`.
+    fn layouts(lt: *const Library, m: u64, n: u64, k: u64, in: DataType, out: DataType) Error!Linear {
         var self: Linear = undefined;
         self.lt = lt;
         try lt.check(lt.api.cublasLtCreate(&self.handle), "cublasLtCreate");
@@ -164,29 +182,19 @@ pub const Linear = struct {
         errdefer _ = lt.api.cublasLtMatrixLayoutDestroy(self.b);
         try lt.check(lt.api.cublasLtMatrixLayoutCreate(&self.c, out, n, m, @intCast(n)), "layout D");
         errdefer _ = lt.api.cublasLtMatrixLayoutDestroy(self.c);
-        try lt.check(lt.api.cublasLtMatmulPreferenceCreate(&self.pref), "cublasLtMatmulPreferenceCreate");
-        errdefer _ = lt.api.cublasLtMatmulPreferenceDestroy(self.pref);
-        const limit: u64 = workspace_limit;
-        try lt.check(lt.api.cublasLtMatmulPreferenceSetAttribute(self.pref, pref_max_workspace_bytes, &limit, @sizeOf(u64)), "set workspace");
-        try self.pick();
         self.epilogue = .none;
-        if (epilogue != .none) try self.fuse(epilogue, workspace_limit);
         return self;
     }
 
-    /// The heuristic's first algorithm for this shape and the descriptor's current epilogue, within the workspace limit.
-    pub fn pick(self: *Linear) Error!void {
-        var found: [1]Heuristic = undefined;
-        var count: c_int = 0;
-        try self.lt.check(self.lt.api.cublasLtMatmulAlgoGetHeuristic(self.handle, self.desc, self.a, self.b, self.c, self.c, self.pref, 1, &found, &count), "cublasLtMatmulAlgoGetHeuristic");
-        if (count < 1 or found[0].state != 0) return error.NoAlgorithm;
-        self.algo = found[0].algo;
-        self.workspace_need = found[0].workspace_size;
+    /// The heuristic's first algorithm for this shape and the descriptor's current epilogue, within `workspace_limit`.
+    pub fn pick(self: *Linear, workspace_limit: usize) Error!void {
+        const found = try search(self.lt, self.handle, self.desc, self.a, self.b, self.c, workspace_limit);
+        self.algo = found.algo;
+        self.workspace_need = found.workspace_size;
     }
 
     pub fn deinit(self: *Linear) void {
         const api = self.lt.api;
-        _ = api.cublasLtMatmulPreferenceDestroy(self.pref);
         _ = api.cublasLtMatrixLayoutDestroy(self.c);
         _ = api.cublasLtMatrixLayoutDestroy(self.b);
         _ = api.cublasLtMatrixLayoutDestroy(self.a);
@@ -215,16 +223,37 @@ pub const Linear = struct {
         const api = self.lt.api;
         const e: u32 = @backingInt(epilogue);
         try self.lt.check(api.cublasLtMatmulDescSetAttribute(self.desc, desc_epilogue, &e, @sizeOf(u32)), "set epilogue");
-        var checked: Heuristic = undefined;
-        if (api.cublasLtMatmulAlgoCheck(self.handle, self.desc, self.a, self.b, self.c, self.c, &self.algo, &checked) == 0 and checked.state == 0 and checked.workspace_size <= workspace_limit) {
+        if (checkAlgo(self.lt, self.handle, self.desc, self.a, self.b, self.c, self.algo, workspace_limit)) |need| {
             self.epilogue = epilogue;
-            self.workspace_need = @max(self.workspace_need, checked.workspace_size);
+            self.workspace_need = @max(self.workspace_need, need);
             return;
-        }
+        } else |_| {}
         const none: u32 = @backingInt(Epilogue.none);
         try self.lt.check(api.cublasLtMatmulDescSetAttribute(self.desc, desc_epilogue, &none, @sizeOf(u32)), "unset epilogue");
     }
 };
+
+/// The workspace `given` needs when cuBLASLt still runs it on these descriptors within `workspace_limit`.
+fn checkAlgo(lt: *const Library, handle: Handle, desc: MatmulDesc, a: Layout, b: Layout, c: Layout, given: Algo, workspace_limit: usize) Error!usize {
+    var checked: Heuristic = undefined;
+    const s = lt.api.cublasLtMatmulAlgoCheck(handle, desc, a, b, c, c, &given, &checked);
+    if (s != 0 or checked.state != 0 or checked.workspace_size > workspace_limit) return error.NoAlgorithm;
+    return checked.workspace_size;
+}
+
+/// The heuristic's first algorithm for these descriptors within `workspace_limit`.
+fn search(lt: *const Library, handle: Handle, desc: MatmulDesc, a: Layout, b: Layout, c: Layout, workspace_limit: usize) Error!Heuristic {
+    var pref: Preference = null;
+    try lt.check(lt.api.cublasLtMatmulPreferenceCreate(&pref), "cublasLtMatmulPreferenceCreate");
+    defer _ = lt.api.cublasLtMatmulPreferenceDestroy(pref);
+    const limit: u64 = workspace_limit;
+    try lt.check(lt.api.cublasLtMatmulPreferenceSetAttribute(pref, pref_max_workspace_bytes, &limit, @sizeOf(u64)), "set workspace");
+    var found: [1]Heuristic = undefined;
+    var count: c_int = 0;
+    try lt.check(lt.api.cublasLtMatmulAlgoGetHeuristic(handle, desc, a, b, c, c, pref, 1, &found, &count), "cublasLtMatmulAlgoGetHeuristic");
+    if (count < 1 or found[0].state != 0) return error.NoAlgorithm;
+    return found[0];
+}
 
 /// One column-major product `C = alpha op(A) op(B) + beta C`, C [m, n], batched with element strides; FP32 compute,
 /// or int32 sums when C is `.i32` (A and B `.i8`, see `Gemm.runInt`).
@@ -258,6 +287,24 @@ pub const Gemm = struct {
     workspace_need: usize,
 
     pub fn init(lt: *const Library, handle: Handle, s: Spec, workspace_limit: usize) Error!Gemm {
+        var g = try layouts(lt, handle, s);
+        errdefer g.deinit();
+        try g.pick(workspace_limit);
+        return g;
+    }
+
+    /// `init` with a kept algorithm `given` (as a cache file stored it): the heuristic's search is
+    /// skipped; `cublasLtMatmulAlgoCheck` proves it still fits `workspace_limit`.
+    pub fn initChecked(lt: *const Library, handle: Handle, s: Spec, workspace_limit: usize, given: Algo) Error!Gemm {
+        var g = try layouts(lt, handle, s);
+        errdefer g.deinit();
+        g.workspace_need = try checkAlgo(lt, handle, g.desc, g.a, g.b, g.c, given, workspace_limit);
+        g.algo = given;
+        return g;
+    }
+
+    /// The descriptors and batched layouts of both inits; the algorithm is left for `pick`/`checkAlgo`.
+    fn layouts(lt: *const Library, handle: Handle, s: Spec) Error!Gemm {
         if (s.m == 0 or s.n == 0 or s.k == 0 or s.batch == 0) return error.Invalid;
         var g: Gemm = undefined;
         g.lt = lt;
@@ -277,18 +324,14 @@ pub const Gemm = struct {
         errdefer _ = api.cublasLtMatrixLayoutDestroy(g.b);
         g.c = try layout(lt, s.c, s.m, s.n, s.ldc, s.batch, s.sc);
         errdefer _ = api.cublasLtMatrixLayoutDestroy(g.c);
-        var pref: Preference = null;
-        try lt.check(api.cublasLtMatmulPreferenceCreate(&pref), "cublasLtMatmulPreferenceCreate");
-        defer _ = api.cublasLtMatmulPreferenceDestroy(pref);
-        const limit: u64 = workspace_limit;
-        try lt.check(api.cublasLtMatmulPreferenceSetAttribute(pref, pref_max_workspace_bytes, &limit, @sizeOf(u64)), "set workspace");
-        var found: [1]Heuristic = undefined;
-        var count: c_int = 0;
-        try lt.check(api.cublasLtMatmulAlgoGetHeuristic(handle, g.desc, g.a, g.b, g.c, g.c, pref, 1, &found, &count), "cublasLtMatmulAlgoGetHeuristic");
-        if (count < 1 or found[0].state != 0) return error.NoAlgorithm;
-        g.algo = found[0].algo;
-        g.workspace_need = found[0].workspace_size;
         return g;
+    }
+
+    /// The heuristic's first algorithm for this shape within `workspace_limit`.
+    fn pick(g: *Gemm, workspace_limit: usize) Error!void {
+        const found = try search(g.lt, g.handle, g.desc, g.a, g.b, g.c, workspace_limit);
+        g.algo = found.algo;
+        g.workspace_need = found.workspace_size;
     }
 
     pub fn deinit(g: *Gemm) void {

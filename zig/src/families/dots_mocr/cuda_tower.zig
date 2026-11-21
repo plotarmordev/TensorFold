@@ -318,10 +318,6 @@ test "the GEMM plans: below max_plans shapes they stay; at it the stream drains 
             destroyed += 1;
             return 0;
         }
-        fn pref(_: lt.Preference) callconv(.c) lt.Status {
-            destroyed += 1;
-            return 0;
-        }
     };
     const a = std.testing.allocator;
     var d: cuda.Driver = .{ .lib = undefined, .api = undefined };
@@ -330,7 +326,6 @@ test "the GEMM plans: below max_plans shapes they stay; at it the stream drains 
     lib.api.cublasLtDestroy = Fake.handle;
     lib.api.cublasLtMatmulDescDestroy = Fake.desc;
     lib.api.cublasLtMatrixLayoutDestroy = Fake.layout;
-    lib.api.cublasLtMatmulPreferenceDestroy = Fake.pref;
     var t: Tower = undefined;
     t.gemms.gpa = a;
     t.gemms.plans = .empty;
@@ -347,7 +342,7 @@ test "the GEMM plans: below max_plans shapes they stay; at it the stream drains 
     }
     try t.trim(s);
     try std.testing.expectEqual(@as(usize, 1), Fake.waits);
-    try std.testing.expectEqual(@as(usize, max_plans * 6), Fake.destroyed); // handle, desc, three layouts, preference
+    try std.testing.expectEqual(@as(usize, max_plans * 5), Fake.destroyed); // handle, desc, three layouts
     try std.testing.expectEqual(@as(usize, 0), t.gemms.plans.count());
     cuda.copy_source.dropSpares(&d, cuda.copy_source.current());
 }

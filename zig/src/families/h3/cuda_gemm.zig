@@ -1,7 +1,10 @@
-//! The H3 CUDA family's products on the runtime's cuBLASLt `Linear`: bf16 in and out, fp32 sums, one algorithm a shape.
+//! The H3 CUDA family's products on the runtime's cuBLASLt `Linear`: bf16 in and out, fp32 sums, one
+//! algorithm a (n, k) shape kept in the model's picks file (`cuda_algo_cache.zig`) so a cold start
+//! skips the heuristic's search.
 const std = @import("std");
 const cuda = @import("cuda");
 const lt_ = cuda.cublaslt;
+const algo_cache = @import("cuda_algo_cache.zig");
 
 pub const workspace_bytes = 32 << 20;
 /// The rows each (n, k)'s algorithm is chosen at: smaller batches retain that algorithm.
@@ -11,6 +14,8 @@ pub const Gemms = struct {
     gpa: std.mem.Allocator,
     lt: lt_.Library,
     workspace: cuda.DeviceBuffer,
+    /// This device's stored picks, or null when the cache is off or has no home; `Int8` shares it.
+    picks: ?*algo_cache.Picks = null,
     algos: std.AutoHashMapUnmanaged([2]u64, lt_.Algo) = .empty,
     plans: std.AutoHashMapUnmanaged([3]u64, lt_.Linear) = .empty,
 
@@ -20,7 +25,16 @@ pub const Gemms = struct {
         return .{ .gpa = gpa, .lt = lt, .workspace = try cuda.DeviceBuffer.alloc(d, workspace_bytes) };
     }
 
+    /// The device identity's picks, read after `ctx` exists; kept until `deinit` saves the table.
+    pub fn loadPicks(g: *Gemms, d: *const cuda.Driver, ctx: *const cuda.Context) !void {
+        g.picks = try algo_cache.Picks.load(g.gpa, d, ctx, &g.lt);
+    }
+
     pub fn deinit(g: *Gemms) void {
+        if (g.picks) |p| {
+            p.save(g.gpa);
+            p.deinit(g.gpa);
+        }
         var it = g.plans.valueIterator();
         while (it.next()) |l| l.deinit();
         g.plans.deinit(g.gpa);
@@ -35,30 +49,62 @@ pub const Gemms = struct {
         try p.run(x, w, y, g.workspace.ptr, workspace_bytes, stream.handle);
     }
 
-    /// The shape's plan, running the algorithm cuBLASLt's heuristic picks for (canonical_rows, n, k) when it
-    /// accepts this shape, else the one it picks for the shape itself.
+    /// The shape's plan, running the algorithm cuBLASLt picked for (canonical_rows, n, k) — the
+    /// picks file's own when it matches, proven on this shape by `initChecked` — else `fallback`'s.
     pub fn plan(g: *Gemms, rows: usize, n: usize, k: usize) !*const lt_.Linear {
         const got = try g.plans.getOrPut(g.gpa, .{ rows, n, k });
         if (got.found_existing) return got.value_ptr;
         errdefer g.plans.removeByPtr(got.key_ptr);
         const chosen = try g.algoFor(n, k);
-        var l = try lt_.Linear.init(&g.lt, rows, n, k, .bf16, workspace_bytes);
-        errdefer l.deinit();
-        var checked: lt_.Heuristic = undefined;
-        const s = g.lt.api.cublasLtMatmulAlgoCheck(l.handle, l.desc, l.a, l.b, l.c, l.c, &chosen, &checked);
-        if (s == 0 and checked.state == 0 and checked.workspace_size <= workspace_bytes) {
-            l.algo = chosen;
-            l.workspace_need = checked.workspace_size;
-        }
-        got.value_ptr.* = l;
+        got.value_ptr.* = lt_.Linear.initChecked(&g.lt, rows, n, k, .bf16, workspace_bytes, chosen) catch |e| blk: {
+            if (e != error.NoAlgorithm) return e;
+            break :blk try g.fallback(rows, n, k, chosen);
+        };
         return got.value_ptr;
     }
 
-    fn algoFor(g: *Gemms, n: usize, k: usize) !lt_.Algo {
-        if (g.algos.get(.{ n, k })) |a| return a;
+    /// `chosen` refused at `rows`: a pick the canonical shape still runs is sound, so this shape asks
+    /// the heuristic for its own; one the canonical shape refuses too (a bit flip behind a valid
+    /// header, a workspace need that grew) is dropped and re-searched, so a corrupt file never repeats.
+    fn fallback(g: *Gemms, rows: usize, n: usize, k: usize, chosen: lt_.Algo) !lt_.Linear {
+        var canonical = lt_.Linear.initChecked(&g.lt, canonical_rows, n, k, .bf16, workspace_bytes, chosen) catch |e| {
+            if (e != error.NoAlgorithm) return e;
+            g.stale(.{ canonical_rows, n, k });
+            const fresh = try g.searched(n, k);
+            return lt_.Linear.initChecked(&g.lt, rows, n, k, .bf16, workspace_bytes, fresh) catch |e2| {
+                if (e2 != error.NoAlgorithm) return e2;
+                return lt_.Linear.init(&g.lt, rows, n, k, .bf16, workspace_bytes);
+            };
+        };
+        canonical.deinit();
+        return lt_.Linear.init(&g.lt, rows, n, k, .bf16, workspace_bytes);
+    }
+
+    /// The canonical shape's stored pick dropped after the device refused it; the (n, k) in `algos`
+    /// cleared the same way, so the next caller searches too.
+    fn stale(g: *Gemms, shape: [3]u64) void {
+        if (g.picks) |p| p.remove(.bf16, shape);
+        _ = g.algos.remove(.{ shape[1], shape[2] });
+    }
+
+    /// A fresh heuristic pick for (n, k), remembered in both maps; used on a miss and on a refusal.
+    fn searched(g: *Gemms, n: usize, k: usize) !lt_.Algo {
         var l = try lt_.Linear.init(&g.lt, canonical_rows, n, k, .bf16, workspace_bytes);
         defer l.deinit();
         try g.algos.put(g.gpa, .{ n, k }, l.algo);
+        if (g.picks) |p| try p.put(g.gpa, .bf16, .{ canonical_rows, n, k }, l.algo);
         return l.algo;
+    }
+
+    /// (n, k)'s canonical algorithm: the picks file's, this process's, else the heuristic's, which
+    /// is then remembered both ways.
+    fn algoFor(g: *Gemms, n: usize, k: usize) !lt_.Algo {
+        if (g.algos.get(.{ n, k })) |a| return a;
+        const shape = [3]u64{ canonical_rows, n, k };
+        if (g.picks) |p| if (p.get(.bf16, shape)) |a| {
+            try g.algos.put(g.gpa, .{ n, k }, a);
+            return a;
+        };
+        return g.searched(n, k);
     }
 };

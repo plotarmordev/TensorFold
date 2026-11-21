@@ -151,6 +151,52 @@ servers close, the script decodes the 2048² latent again with `reference`: the 
 decoder's on the same latent, written as PNGs, with the comparison in `2048-reference.compare.log`; the job exits
 non-zero past the bound. The host decoder needs the memory the servers held, so it runs once their arenas are free.
 
+### The cuBLASLt picks file
+
+Every projection's plan starts as a `cublasLtMatmulAlgoGetHeuristic` search: the bf16 products probe once
+at a canonical 16,384 rows per (n, k) and each int8 product once at the picture's own (rows, n, k), all
+inside `warm` before the first step. `tf-h3-image-cuda` keeps the picks
+in `~/.cache/tensorfold/h3-cublaslt-algos.bin` (a `TFH3LT2` header, the identity line and the record
+count, then fixed records): keyed by GPU name, CUDA driver API version and cuBLASLt version, so another card, driver
+or toolkit is a miss, as is a missing file, one cut short of its count (even between records) or a record
+of unknown kind; the searches then run as before and `deinit` rewrites the table
+whole. A record the device still refuses (`cublasLtMatmulAlgoCheck` says no: a bit flip behind a valid
+header, a workspace need that grew) is dropped, the search reruns and its pick replaces it, so a corrupt
+file never survives a start — `tf-h3-image-cuda --self-test` proves both fallbacks, bf16 and int8, on
+the device. `TF_H3_ALGO_CACHE` names another file (a bare name lands in the working directory) or, as
+`off`, skips it. The table is staged in a unique, exclusively created no-follow sibling and renamed into
+place, so a link planted beside the file is never written through and two writers never share a sibling.
+
+[`cache-ab.sh`](minimax-h3-cuda/cache-ab.sh) is the receipt: `bench-script.sh` on TOP twice in one job —
+once with the file absent (the searches write it), once with it — then compares the two cold latents bit
+for bit, failing the job on a difference. On the GB10 (driver 580.173.02, commit `673dec5b7`), the `h3_image_bench.py` tables:
+
+| run | wall s | load s | case s | transformer s | step 1 s | warm mean transformer s |
+|---|---:|---:|---:|---:|---:|---:|
+| 2048² cold, no cache | 155.9 | 53.6 | 0.0 | 41.9 | 2.07 | — |
+| 2048² warm 1, no cache | 13.8 | — | 0.0 | 12.5 | 2.06 | — |
+| 2048² warm 2, no cache | 14.0 | — | 0.0 | 12.7 | 2.06 | — |
+| 2048² warm 3, no cache | 13.9 | — | 0.0 | 12.6 | 2.06 | — |
+| 2048² cold, with cache | 147.1 | 51.4 | 0.0 | 40.8 | 2.08 | — |
+| 2048² warm 1, with cache | 13.9 | — | 0.0 | 12.6 | 2.09 | — |
+| 2048² warm 2, with cache | 13.9 | — | 0.0 | 12.6 | 2.10 | — |
+| 2048² warm 3, with cache | 13.9 | — | 0.0 | 12.7 | 2.09 | — |
+
+What the file saves is the four searches inside `Model.warm`/`Int8.warm`, before the first step: in this
+one pair the cold transformer (which includes `warm`) went 41.91 → 40.75 s, ~1.2 s, while the warm mean held
+at 12.6 s and the cold latents were bit-identical. That is a single-pair observation, inside run-to-run
+noise: a later review A/B measured the cold transformer 40.56 → 41.00 s the other way. The file held four
+records, because the bf16 shapes collapse to a few distinct (n, k) under their canonical rows and the int8
+products to theirs. The wall gap in this table (155.9 → 147.1 s) is wider than load (−2.2 s) plus
+transformer (−1.2 s): the rest is prompt-stage noise, and phase B runs on page caches phase A warmed.
+
+Two later runs of `cache-ab.sh` on TOP, both exit 0, every selftest passing and the cold latents
+bit-identical again: `top-ac6a89d0864f` at `49d1cdd7c` (the `TFH3LT2` format; phase A wrote a 656-byte
+file, the 272-byte header and four records, and phase B read it; cold 148.7 s with the cache,
+transformer 40.4 s, warm mean 13.9 s with transformer 12.6 s) and `top-a2dd6c37cd7f`, whose one cold run
+each way measured a wall of **152.8 s without the file and 149.6 s with it**; the review's A/B measured
+157.8 → 151.4 s. Each pair is one cold run per side.
+
 ### Fewer steps: the draft canvas, not the PDMD LoRA
 
 The card's two options were mmh3's PDMD 2-NFE LoRA and its `--draft-steps` half canvas
@@ -870,8 +916,8 @@ What each engine does that the other doesn't, at this head:
   `add_norm_quantize` launch family is 1.34 s a picture to our fused set's ~2.4 s. Its text
   encoder is INT8 too and stays resident, so an unseen prompt costs 0.2 s where ours costs 1.2 s.
   It saves cuBLASLt's picks and its INT8 tilings to disk (`~/.cache/mmh3`), so a cold request pays
-  no algorithm search; our cold picture pays one 4-7 s search on its first step (card 141 owns
-  the same cache for us).
+  no algorithm search; ours does the same since card 141 (`~/.cache/tensorfold/h3-cublaslt-algos.bin`,
+  ~1.2 s of `warm` skipped, above).
 - **Neither side runs the other's headline trick**: where the card names block-scaled FP8/NVFP4
   projections and fused quantized attention, both engines were measured there and neither ships
   it on this model — our MXFP8 products missed every gate (`160c7687`, cosine 0.9664, 11.5 apart

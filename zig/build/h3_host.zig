@@ -9,6 +9,14 @@ pub fn tests(b: *std.Build, target: std.Build.ResolvedTarget, test_step: *std.Bu
     const run = b.addRunArtifact(cases);
     b.step("test-h3-geometry", "H3 host admission and schedule regression fixtures").dependOn(&run.step);
     test_step.dependOn(&run.step);
+    if (target.result.os.tag == .linux or target.result.os.tag == .macos) {
+        // the picks file's bytes and fallbacks, no device needed
+        const picks_cuda = @import("cuda.zig").runtime(b, target, .debug, &.{});
+        const picks = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/cuda_algo_cache.zig"), .target = target, .optimize = .debug, .link_libc = true, .imports = &.{.{ .name = "cuda", .module = picks_cuda }} });
+        const picks_run = b.addRunArtifact(b.addTest(.{ .root_module = picks, .filters = &.{"h3 cublaslt picks:"} }));
+        b.step("test-h3-algo-cache", "H3's cuBLASLt picks file: round trip, foreign key, torn and missing reads").dependOn(&picks_run.step);
+        test_step.dependOn(&picks_run.step);
+    }
     if (target.result.os.tag != .macos) return;
     const metal = b.createModule(.{ .root_source_file = b.path("zig/src/metal/metal.zig"), .target = target, .optimize = .Debug, .link_libc = true });
     metal.linkFramework("Metal", .{});

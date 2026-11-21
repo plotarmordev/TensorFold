@@ -1,0 +1,5 @@
+# MiniMax-H3-Image on the Spark: cuBLASLt's picks kept on disk
+
+- `tf-h3-image-cuda` stores the algorithms cuBLASLt's heuristic chooses — each bf16 projection's canonical (n, k) pick and each int8 product's (rows, n, k) one — in `~/.cache/tensorfold/h3-cublaslt-algos.bin`, keyed by GPU name, CUDA driver version and cuBLASLt version. A start whose file matches skips every `cublasLtMatmulAlgoGetHeuristic` call (each pick is proven on its plan by `cublasLtMatmulAlgoCheck` first), so a cold picture pays no search.
+- A missing file, a foreign key (another GPU, driver or library), a file cut short of its record count (even between records) and a record of unknown kind are all misses, never failures: the searches run as before and the table is rewritten whole on close (staged in a unique, exclusively created no-follow sibling and renamed into place). `TF_H3_ALGO_CACHE=off` or a path of its own (a bare name lands in the working directory) steers the file.
+- Host tests cover the round trip, the miss kinds and a bare-filename save in `zig/src/families/h3/cuda_algo_cache.zig` (`zig build test-h3-algo-cache`, in `zig build test`).

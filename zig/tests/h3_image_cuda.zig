@@ -93,7 +93,8 @@ pub fn main(init: std.process.Init) !void {
     if (all.len == 2 and std.mem.eql(u8, all[1], "--self-test")) {
         try h3.modulation_test.run(init.gpa);
         try h3.fused_test.run(init.gpa);
-        return h3.rows_test.run(init.gpa);
+        try h3.rows_test.run(init.gpa);
+        return h3.picks_test.run(init.gpa);
     }
     var draft_steps: usize = 0;
     var load_threads: usize = 0;
