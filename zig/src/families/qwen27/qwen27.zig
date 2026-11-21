@@ -13,6 +13,8 @@ pub const attention_join = @import("attention_join.zig");
 pub const simd_attention = @import("simd_attention.zig");
 pub const decode_round = @import("decode_round.zig");
 pub const forward = @import("forward.zig");
+/// The MTP draft head's forward (the 27B's mtp-4bit.safetensors, or Ornith's bf16 `mtp.*` release).
+pub const mtp = @import("mtp.zig");
 pub const gdn = @import("gdn.zig");
 pub const gdn_contract = @import("gdn_contract.zig");
 pub const gdn_hook = @import("gdn_hook.zig");
@@ -26,8 +28,6 @@ pub const image_rows = @import("image_rows.zig");
 pub const gpu_weights = @import("gpu_weights.zig");
 pub const gpu_frame = @import("gpu_frame.zig");
 pub const model = @import("model.zig");
-/// The checkpoint's MTP layer (the bf16 release's `mtp.*`, 4-bit at load) and its forward.
-pub const mtp = @import("mtp.zig");
 /// The routed block's kernels (the kernel contract builds its row kernel's source as the engine does).
 pub const moe_gpu = @import("moe_gpu.zig");
 pub const projection = @import("projection.zig");
@@ -73,6 +73,8 @@ test {
     _ = checkpoint;
     _ = weights;
     _ = @import("weights_test.zig");
+    _ = @import("mtp_load_test.zig");
+    _ = @import("mtp_step_test.zig");
     _ = @import("geometry_test.zig");
     _ = @import("mtp_test.zig");
     _ = @import("slot_pages_test.zig");
