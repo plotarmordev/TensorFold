@@ -1,0 +1,1768 @@
+diff --git a/docs/recipes/drama3-cuda/cfg-mix-gb10.sh b/docs/recipes/drama3-cuda/cfg-mix-gb10.sh
+new file mode 100755
+index 000000000..38684be43
+--- /dev/null
++++ b/docs/recipes/drama3-cuda/cfg-mix-gb10.sh
+@@ -0,0 +1,11 @@
++#!/bin/sh
++# d3_cfg_mix's kernel contract on a DGX Spark (GB10, sm_121) with Zig 0.17.0 and CUDA 13.0's nvcc on PATH:
++#   sh docs/recipes/drama3-cuda/cfg-mix-gb10.sh
++# Gates 1-4, the planted gamma - 1 control (must go red) and the limits check; exits with tf-cuda-test's status.
++set -eu
++nvcc=$(command -v nvcc)
++echo "commit $(git rev-parse HEAD)"
++"$nvcc" --version | tail -n 1
++zig build install fatbins kernel-contract-fatbins -Dsm=121 -Dnvcc="$nvcc" -Doptimize=ReleaseFast --prefix zig-out/sm121
++zig build -Dgpu=spark -Dnvcc="$nvcc" --prefix zig-out/sm121
++exec zig-out/sm121/bin/tf-cuda-test kernel-contract d3_cfg_mix
+diff --git a/docs/run-guide.md b/docs/run-guide.md
+index d0de4f54c..3b270539d 100644
+--- a/docs/run-guide.md
++++ b/docs/run-guide.md
+@@ -131,10 +131,10 @@ The binary's `capabilities --json` response lists its supported flags and platfo
+ | `--drafter-bits 0\|4` | Drafter weight precision where the model offers a choice: 4 bits (the default), or 0 to keep bf16. Qwen3.8-27B on CUDA takes 4 only. |
+ | `--record DIR` | Write each stream's committed tokens, positions and tapped rows under DIR, for drafter training. CUDA Nemotron only; a single stream runs through the lane rounds, and recording stops below 25 GiB free disk. |
+ | `--keep-warm SECONDS` | Keep the Metal GPU active while idle for this long after a request, default 900; zero disables it. |
+-| `--cfg-gamma GAMMA` | Metal Drama speech: semantic guidance strength, finite 1–5; 0/default disables it. Only reference-conditioned requests are guided. Enabled replies report `X-Cfg-Gamma`; codec heads stay conditional. |
+-| `--cfg-allow-request-gamma` | Metal Drama speech: allow a finite 1–5 `X-Cfg-Gamma` request header; invalid values return 400 before engine submission. Without this opt-in, the server's gamma is fixed. |
+-| `--cfg-force-guided` | With an enabled Metal Drama guidance policy, exercise the unconditional state even at gamma 1. The semantic mix at 1 remains exact conditional-logit identity. |
+-| `--cfg-batched` | With enabled Metal Drama guidance, submit both independent backbone states in one command buffer rather than separate submissions. Weights are shared; extra state is included in admission. Not vectorized batching. |
++| `--cfg-gamma GAMMA` | Drama speech on Metal and CUDA: semantic guidance strength, finite 1–5; 0/default disables it. Only reference-conditioned requests are guided. Enabled replies report `X-Cfg-Gamma`; codec heads stay conditional. |
++| `--cfg-allow-request-gamma` | Drama speech on Metal and CUDA: allow a finite 1–5 `X-Cfg-Gamma` request header; invalid values return 400 before engine submission. Without this opt-in, the server's gamma is fixed. |
++| `--cfg-force-guided` | With an enabled Drama guidance policy, exercise the unconditional state even at gamma 1. The semantic mix at 1 remains exact conditional-logit identity. |
++| `--cfg-batched` | With enabled Drama guidance, run both independent backbone states without a host wait between them: one command buffer on Metal, two streams joined by events on CUDA, rather than separate submissions. Weights are shared; extra state is included in admission. Not vectorized batching. |
+ | `--silence-floor-dbfs DBFS` | Drama speech only: explicit frame-power floor for the silence guard, with no default floor. Calibrate below quiet intended speech using public or built-in speech. |
+ | `--silence-seconds SECONDS` | Drama speech only: stop after this continuous duration below the explicit floor, retaining audio and reporting `silence`. Unset by default: off; calibrate above intentional pauses. |
+ | `--silence-onset-s SECONDS` | Drama speech only: with the silence guard on, stop once this many seconds run below its floor while the synthesis has voiced less than `--silence-onset-voiced-s`, retaining audio and reporting `silence`. Off unless given; must be below `--silence-seconds`. |
+diff --git a/tools/zig/drama_guidance_check.py b/tools/zig/drama_guidance_check.py
+new file mode 100644
+index 000000000..9ca6af578
+--- /dev/null
++++ b/tools/zig/drama_guidance_check.py
+@@ -0,0 +1,95 @@
++"""GPU check for Drama 3 semantic CFG on CUDA: paired and separate guides give the same PCM, and gamma 1 is plain."""
++import argparse
++import json
++import os
++from pathlib import Path
++import sys
++
++from drama_reference_cache_check import TEXTS, serve
++
++GAMMAS = ("1", "1.5", "3")
++CFG = ["--cfg-gamma", "1.5", "--cfg-allow-request-gamma", "--cfg-force-guided"]
++MODES = {"plain": [], "separate": CFG, "paired": [*CFG, "--cfg-batched"]}
++# One row a chunk, and chunks longer than a reference so a voice's later requests resume its cached reference.
++ROWS = (1, 64)
++# The concurrent lanes: text index and gamma each.
++LANES = {"lane-a": (3, "3"), "lane-b": (4, "1.5")}
++
++
++def plan(voice):
++    """(step, voice, text, headers) per fixed text and gamma, each lane alone, then the lanes at once."""
++    steps = [(f"t{t}-g{g}", voice, TEXTS[t], {"X-Cfg-Gamma": g}) for t in range(3) for g in GAMMAS]
++    lanes = [(name, voice, TEXTS[t], {"X-Cfg-Gamma": g}) for name, (t, g) in LANES.items()]
++    return [*steps, *[(f"solo-{name}", *rest) for name, *rest in lanes], lanes]
++
++
++def require_reference(voices, voice):
++    """Guidance runs only for a reference-backed catalog voice; the built-in default has no reference."""
++    path = voices / f"{voice}.json"
++    if voice.lower() == "default" or not path.is_file() or not json.loads(path.read_text()).get("references"):
++        raise SystemExit(f"--voice {voice!r} must name a catalog voice with a reference in {voices}")
++
++
++def verdict(runs):
++    """Per prefill size: PCM, paired equals separate, gamma 1 is plain, above 1 differs, lanes equal solo, cache hit."""
++    problems = []
++    for rows, modes in runs.items():
++        separate, paired, plain = modes["separate"], modes["paired"], modes["plain"]
++        for mode, run in modes.items():
++            problems += [f"rows={rows} {name}: {mode} returned no PCM" for name, reply in run["replies"].items()
++                         if reply["bytes"] == 0]
++        for name, reply in separate["replies"].items():
++            if paired["replies"][name]["sha256"] != reply["sha256"]:
++                problems.append(f"rows={rows} {name}: paired PCM differs from separate")
++        for name, reply in plain["replies"].items():
++            for mode in ("separate", "paired"):
++                guided = modes[mode]["replies"]
++                if guided[name]["sha256"] != reply["sha256"]:
++                    problems.append(f"rows={rows} {name}: {mode} gamma 1 differs from the server without CFG")
++                for gamma in GAMMAS[1:]:
++                    mixed = name.removesuffix("-g1") + f"-g{gamma}"
++                    if guided[mixed]["sha256"] == guided[name]["sha256"]:
++                        problems.append(f"rows={rows} {mixed}: {mode} PCM equals gamma 1, so guidance changed nothing")
++        for mode in ("separate", "paired"):
++            guided = modes[mode]["replies"]
++            problems += [f"rows={rows} {name}: {mode} concurrent PCM differs from its solo run" for name in LANES
++                         if guided[name]["sha256"] != guided[f"solo-{name}"]["sha256"]]
++            if modes[mode]["cache_hits"] == 0:
++                problems.append(f"rows={rows}: {mode} never resumed a cached reference")
++    return problems
++
++
++def run_mode(args, env, flags, log, steps):
++    replies = serve(args, env, flags, log, steps)
++    return {"replies": replies, "cache_hits": log.read_text(errors="replace").count("reference cache hit")}
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--bin", type=Path, required=True, help="tensorfold-native built with this change (CUDA)")
++    parser.add_argument("--checkpoint", type=Path, required=True, help="fishaudio/drama-3 checkpoint directory")
++    parser.add_argument("--voices", type=Path, required=True, help="voice catalog directory for --voices")
++    parser.add_argument("--voice", required=True, help="a catalog voice in --voices whose reference has over 64 rows")
++    parser.add_argument("--out", type=Path, required=True, help="new directory for server logs and results.json")
++    parser.add_argument("--ready-timeout", type=float, default=900)
++    parser.add_argument("--timeout", type=float, default=300)
++    args = parser.parse_args()
++    require_reference(args.voices, args.voice)
++    args.out.mkdir(parents=True, exist_ok=False)
++    steps = plan(args.voice)
++    plain = [s for s in steps if not isinstance(s, list) and s[0].endswith("-g1")]
++    runs = {}
++    for rows in ROWS:
++        # each voice's later requests resume after its cached reference: a one-chunk suffix at large rows
++        env = {**os.environ, "TF_DRAMA_PREFILL_ROWS": str(rows), "TF_DRAMA_REFERENCE_CACHE": "2"}
++        runs[rows] = {mode: run_mode(args, env, flags, args.out / f"server-rows{rows}-{mode}.log",
++                                     plain if mode == "plain" else steps) for mode, flags in MODES.items()}
++    problems = verdict(runs)
++    result = {"pass": not problems, "problems": problems, "runs": runs}
++    (args.out / "results.json").write_text(json.dumps(result, indent=2) + "\n")
++    print(json.dumps({"pass": result["pass"], "problems": problems}, indent=2))
++    return 0 if not problems else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tools/zig/drama_reference_cache_check.py b/tools/zig/drama_reference_cache_check.py
+index d18520d42..f742b4bcb 100644
+--- a/tools/zig/drama_reference_cache_check.py
++++ b/tools/zig/drama_reference_cache_check.py
+@@ -26,11 +26,11 @@ def plan(voice):
+             ("repeat", voice, TEXTS[0]), [("lane-a", voice, TEXTS[3]), ("lane-b", voice, TEXTS[4])]]
+ 
+ 
+-def speak(port, voice, text, timeout):
++def speak(port, voice, text, headers=None, timeout=300):
+     body = json.dumps({"model": "fishaudio/drama-3", "input": text, "voice": voice,
+                        "response_format": "pcm", "stream": True}).encode()
+     request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/audio/speech", body,
+-                                     {"Content-Type": "application/json"})
++                                     {"Content-Type": "application/json", **(headers or {})})
+     digest, size, first = hashlib.sha256(), 0, None
+     started = time.monotonic()
+     with urllib.request.urlopen(request, timeout=timeout) as response:
+@@ -55,23 +55,23 @@ def ready(port, process, deadline):
+     raise TimeoutError("server not ready")
+ 
+ 
+-def run_pass(args, rows, cache, log):
++def serve(args, env, flags, log, steps):
++    """Each step's reply by name from a server started with `flags`; a list in `steps` is sent concurrently."""
+     with socket.socket() as probe:
+         probe.bind(("127.0.0.1", 0))
+         port = probe.getsockname()[1]
+-    env = {**os.environ, "TF_DRAMA_PREFILL_ROWS": str(rows), "TF_DRAMA_REFERENCE_CACHE": CACHE[cache]}
+     command = [str(args.bin), "serve", str(args.checkpoint), "--host", "127.0.0.1", "--port", str(port),
+                "--name", "fishaudio/drama-3", "--context", "8192", "--parallel", "2", "--no-drafts",
+-               "--prompt-cache-gib", "0", "--keep-warm", "0", "--voices", str(args.voices)]
++               "--prompt-cache-gib", "0", "--keep-warm", "0", "--voices", str(args.voices), *flags]
+     with log.open("w") as output:
+         server = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT)
+         try:
+             ready(port, server, time.monotonic() + args.ready_timeout)
+             replies = {}
+-            for step in plan(args.voice):
++            for step in steps:
+                 group = step if isinstance(step, list) else [step]
+                 with ThreadPoolExecutor(len(group)) as pool:
+-                    futures = {name: pool.submit(speak, port, voice, text, args.timeout) for name, voice, text in group}
++                    futures = {name: pool.submit(speak, port, *request, timeout=args.timeout) for name, *request in group}
+                 replies.update({name: future.result() for name, future in futures.items()})
+         finally:
+             server.terminate()
+@@ -80,6 +80,12 @@ def run_pass(args, rows, cache, log):
+             except subprocess.TimeoutExpired:
+                 server.kill()
+                 server.wait()
++    return replies
++
++
++def run_pass(args, rows, cache, log):
++    env = {**os.environ, "TF_DRAMA_PREFILL_ROWS": str(rows), "TF_DRAMA_REFERENCE_CACHE": CACHE[cache]}
++    replies = serve(args, env, [], log, plan(args.voice))
+     text = log.read_text(errors="replace")
+     return {"replies": replies, "cache_hits": text.count("reference cache hit"),
+             "cache_builds": text.count("reference cache built")}
+diff --git a/tools/zig/test_drama_guidance_check.py b/tools/zig/test_drama_guidance_check.py
+new file mode 100644
+index 000000000..6282a26bb
+--- /dev/null
++++ b/tools/zig/test_drama_guidance_check.py
+@@ -0,0 +1,86 @@
++"""The guidance check's verdict and voice requirement, without a server or GPU."""
++import copy
++import json
++from pathlib import Path
++import tempfile
++import unittest
++
++import drama_guidance_check as check
++
++
++def replies(names):
++    return {name: {"sha256": name.removeprefix("solo-"), "bytes": 4, "first_audio_s": 0.1, "total_s": 0.2}
++            for name in names}
++
++
++def matching():
++    names = [s[0] for step in check.plan("vesper") for s in (step if isinstance(step, list) else [step])]
++    guided = {"replies": replies(names), "cache_hits": 6}
++    plain = {"replies": replies(n for n in names if n.endswith("-g1")), "cache_hits": 2}
++    modes = {"plain": plain, "separate": guided, "paired": copy.deepcopy(guided)}
++    return {rows: copy.deepcopy(modes) for rows in check.ROWS}
++
++
++class VerdictTests(unittest.TestCase):
++    def test_equal_pcm_passes(self):
++        self.assertEqual(check.verdict(matching()), [])
++
++    def test_paired_that_differs_from_separate_fails(self):
++        runs = matching()
++        runs[64]["paired"]["replies"]["t1-g3"]["sha256"] = "other"
++        self.assertEqual(check.verdict(runs), ["rows=64 t1-g3: paired PCM differs from separate"])
++
++    def test_a_concurrent_lane_that_differs_from_its_solo_run_fails(self):
++        runs = matching()
++        runs[1]["separate"]["replies"]["lane-a"]["sha256"] = "other"
++        runs[1]["paired"]["replies"]["lane-a"]["sha256"] = "other"
++        self.assertEqual(check.verdict(runs), ["rows=1 lane-a: separate concurrent PCM differs from its solo run",
++                                               "rows=1 lane-a: paired concurrent PCM differs from its solo run"])
++
++    def test_gamma_one_that_differs_from_plain_fails(self):
++        runs = matching()
++        runs[1]["plain"]["replies"]["t2-g1"]["sha256"] = "other"
++        self.assertEqual(check.verdict(runs), ["rows=1 t2-g1: separate gamma 1 differs from the server without CFG",
++                                               "rows=1 t2-g1: paired gamma 1 differs from the server without CFG"])
++
++    def test_guided_replies_equal_to_gamma_one_fail(self):
++        runs = matching()
++        for mode in ("separate", "paired"):
++            replies_ = runs[1][mode]["replies"]
++            for t in range(3):
++                for gamma in ("1.5", "3"):
++                    replies_[f"t{t}-g{gamma}"]["sha256"] = f"t{t}-g1"
++        problems = check.verdict(runs)
++        self.assertEqual(len(problems), 12)
++        self.assertIn("rows=1 t0-g3: paired PCM equals gamma 1, so guidance changed nothing", problems)
++
++    def test_replies_without_pcm_fail_even_when_hashes_agree(self):
++        runs = matching()
++        for modes in runs.values():
++            for run in modes.values():
++                for reply in run["replies"].values():
++                    reply.update(bytes=0, sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
++        problems = check.verdict(runs)
++        self.assertIn("rows=1 t0-g1: plain returned no PCM", problems)
++        self.assertIn("rows=64 lane-a: paired returned no PCM", problems)
++
++    def test_a_guided_server_without_a_cache_hit_fails(self):
++        runs = matching()
++        runs[64]["separate"]["cache_hits"] = 0
++        self.assertEqual(check.verdict(runs), ["rows=64: separate never resumed a cached reference"])
++
++
++class VoiceTests(unittest.TestCase):
++    def test_only_a_reference_backed_catalog_voice_is_accepted(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            voices = Path(tmp)
++            (voices / "vesper.json").write_text(json.dumps({"references": [{"text": "A cloud.", "codes": "x"}]}))
++            (voices / "bare.json").write_text(json.dumps({"references": []}))
++            check.require_reference(voices, "vesper")
++            for voice in ("default", "Default", "bare", "missing"):
++                with self.assertRaises(SystemExit, msg=voice):
++                    check.require_reference(voices, voice)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/zig/build/cuda_window_host.zig b/zig/build/cuda_window_host.zig
+index 2aaf0522a..aa85bc12a 100644
+--- a/zig/build/cuda_window_host.zig
++++ b/zig/build/cuda_window_host.zig
+@@ -1,4 +1,4 @@
+-//! The exceptional CUDA window policy is CPU tested without a GPU module or shader producer.
++//! The exceptional CUDA window policy and Drama 3's CFG mix are CPU tested without a GPU module or shader producer.
+ const std = @import("std");
+ 
+ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, all: *std.Build.Step) void {
+@@ -13,6 +13,12 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, all: *std.Build.St
+     const run = b.addRunArtifact(b.addTest(.{ .root_module = m }));
+     b.step("test-window-fallback-host", "Exceptional prompt head policy through the CUDA source helper, without a GPU").dependOn(&run.step);
+     all.dependOn(&run.step);
++    const mix = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/drama_cfg_mix_test.zig"), .target = target, .optimize = .debug, .link_libc = true });
++    mix.addIncludePath(b.path("zig/kernels/cuda"));
++    mix.addCSourceFile(.{ .file = b.path("zig/tests/cuda/drama_cfg_mix_shim.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
++    const mix_run = b.addRunArtifact(b.addTest(.{ .root_module = mix }));
++    b.step("test-drama-cfg-mix-host", "Drama 3's CFG mix element body against float64, without a GPU").dependOn(&mix_run.step);
++    all.dependOn(&mix_run.step);
+ }
+ /// New pointwise and tower contracts beside main's row contracts.
+ pub fn contracts(b: *std.Build, target: std.Build.ResolvedTarget, cuda: *std.Build.Module, core: *std.Build.Module, all: *std.Build.Step) void {
+diff --git a/zig/build/drama3_host.zig b/zig/build/drama3_host.zig
+index 89b98e981..323862734 100644
+--- a/zig/build/drama3_host.zig
++++ b/zig/build/drama3_host.zig
+@@ -26,7 +26,7 @@ pub fn native(b: *std.Build, step: *std.Build.Step, family: *std.Build.Module, c
+     if (family.import_table.get("metal")) |runtime| mod.addImport("metal", runtime);
+     if (cuda) |c| mod.addImport("cuda", c);
+     step.dependOn(&b.addObject(.{ .name = name, .root_module = mod }).step);
+-    const tests = b.addTest(.{ .root_module = mod, .filters = &.{ "native silence guard:", "drama reference cache:", "drama voice encode:" } });
++    const tests = b.addTest(.{ .root_module = mod, .filters = &.{ "native silence guard:", "drama reference cache:", "drama voice encode:", "drama admission:" } });
+     step.dependOn(&b.addRunArtifact(tests).step);
+ }
+ 
+diff --git a/zig/kernels/cuda/drama3.cu b/zig/kernels/cuda/drama3.cu
+index 8ca2d20d1..450c40840 100644
+--- a/zig/kernels/cuda/drama3.cu
++++ b/zig/kernels/cuda/drama3.cu
+@@ -4,6 +4,7 @@
+ #include "drama3_attn.cuh"
+ #include "drama3_moe.cuh"
+ #include "drama3_sample.cuh"
++#include "drama3_cfg.h"
+ 
+ // Greedy picks (argmax, ties to the lower index): the main token over the candidates, or a code.
+ extern "C" __global__ void d3_argmax_main(const float* __restrict__ logits, int count, const int* __restrict__ cand_ids,
+@@ -78,3 +79,9 @@ extern "C" __global__ void d3_next_input(const int* __restrict__ frame, int* __r
+ extern "C" __global__ void d3_copy_i32(const int* __restrict__ src, int* __restrict__ dst, int n) {
+   for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
+ }
++
++// Semantic CFG over the candidate logits (semantic tokens and EOS); codec logits stay conditional.
++extern "C" __global__ void d3_cfg_mix(float* __restrict__ conditional, const float* __restrict__ unconditional, int n,
++                                      float gamma) {
++  d3_cfg_mix_at(conditional, unconditional, n, gamma, blockIdx.x * blockDim.x + threadIdx.x);
++}
+diff --git a/zig/kernels/cuda/drama3_cfg.h b/zig/kernels/cuda/drama3_cfg.h
+new file mode 100644
+index 000000000..3f250f5b2
+--- /dev/null
++++ b/zig/kernels/cuda/drama3_cfg.h
+@@ -0,0 +1,17 @@
++// Drama 3's semantic CFG mix of one candidate logit, shared by d3_cfg_mix and its host test.
++#pragma once
++
++#if defined(__CUDACC__)
++#define D3_CFG_HD __host__ __device__
++#else
++#define D3_CFG_HD
++#endif
++
++// Element i of n candidate logits (semantic tokens and EOS): c + (gamma - 1)(c - u); gamma 1 keeps c's bits, any u.
++D3_CFG_HD static inline void d3_cfg_mix_at(float* conditional, const float* unconditional, int n, float gamma, int i) {
++    if (i >= n || gamma == 1.0f) return;
++    float c = conditional[i];
++    conditional[i] = c + (gamma - 1.0f) * (c - unconditional[i]);
++}
++
++#undef D3_CFG_HD
+diff --git a/zig/src/core/contract/registry_media.zig b/zig/src/core/contract/registry_media.zig
+index 2d699f693..f9df10d66 100644
+--- a/zig/src/core/contract/registry_media.zig
++++ b/zig/src/core/contract/registry_media.zig
+@@ -62,7 +62,11 @@ pub const cuda = [_]CudaRecord{
+     .{ .launch = .{ .name = "fp8_experts prompt down f32", .symbol = "_ZN14tf_fp8_experts24fp8_expert_prompt_kernelILi1ELi0ELi4ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi", .image = "fp8_experts", .threads = 128 }, .usage = .{ .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 } } },
+     .{ .launch = .{ .name = "fp8_experts prompt down bf16", .symbol = "_ZN14tf_fp8_experts24fp8_expert_prompt_kernelILi1ELi3ELi4ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi", .image = "fp8_experts", .threads = 128 }, .usage = .{ .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 } } },
+ };
+-/// Drama 3's compact-checkpoint router, unmeasured: the GB10 check runs its contract and prints its RECORD.
++
++/// Launches still owed nvcc receipts; qualification refuses each SM until its receipt lands.
+ pub const cuda_pending = [_]CudaRecord{
++    // Drama 3's compact-checkpoint router, unmeasured: the GB10 check runs its contract and prints its RECORD.
+     .{ .launch = .{ .name = "drama3 d3_router_compact", .symbol = "d3_router_compact", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
++    // GB10 (sm_121, nvcc 13.0) by docs/recipes/drama3-cuda/cfg-mix-gb10.sh; no __launch_bounds__, so 1024 fit.
++    .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 12, .static = 0, .bound = 0 } }, .later_pending = true },
+ };
+diff --git a/zig/src/families/drama3/cuda/engine.zig b/zig/src/families/drama3/cuda/engine.zig
+index eabe0006f..1850c38ac 100644
+--- a/zig/src/families/drama3/cuda/engine.zig
++++ b/zig/src/families/drama3/cuda/engine.zig
+@@ -144,7 +144,7 @@ pub const Engine = struct {
+         }
+         if (e.w.nvfp4_layers > 0) try e.k.loadNvfp4();
+         errdefer e.freeState();
+-        try e.allocState();
++        try e.allocState(false);
+         errdefer {
+             e.stream.synchronize() catch {};
+             e.stream2.synchronize() catch {};
+@@ -193,11 +193,21 @@ pub const Engine = struct {
+     }
+ 
+     pub fn fork(base: *Engine) !*Engine {
++        return base.forkState(false);
++    }
++
++    /// CFG's independent backbone state, without codec tower caches, output frames or tower scratch.
++    pub fn forkBackbone(base: *Engine) !*Engine {
++        return base.forkState(true);
++    }
++
++    fn forkState(base: *Engine, backbone_only: bool) !*Engine {
+         const e = try base.gpa.create(Engine);
+         errdefer base.gpa.destroy(e);
+         e.* = base.*;
+         e.owns_model = false;
+         e.owner = base.owner orelse base;
++        if (backbone_only) e.o.max_rows = 1;
+         e.bufs = .empty;
+         e.graph = null;
+         e.stream = try cuda.Stream.init(&e.driver, true);
+@@ -209,7 +219,7 @@ pub const Engine = struct {
+         e.ev_join = try cuda.Event.init(&e.driver, false);
+         errdefer e.ev_join.deinit();
+         errdefer e.freeState();
+-        try e.allocState();
++        try e.allocState(backbone_only);
+         return e;
+     }
+ 
+@@ -228,7 +238,14 @@ pub const Engine = struct {
+         return b.ptr;
+     }
+ 
+-    fn allocState(e: *Engine) !void {
++    /// Device bytes this engine's own state holds (weights excluded): what one more lane or guide costs.
++    pub fn stateBytes(e: *const Engine) u64 {
++        var n: u64 = 0;
++        for (e.bufs.items) |b| n += b.len;
++        return n;
++    }
++
++    fn allocState(e: *Engine, backbone_only: bool) !void {
+         const R = e.o.max_rows;
+         const ctxn = e.o.max_ctx;
+         const kvb = ctxn * cfg.kv_heads * cfg.head_dim * 2;
+@@ -237,7 +254,7 @@ pub const Engine = struct {
+                 e.kv_bb[li] = .{ try e.alloc(kvb), try e.alloc(kvb) };
+             } else e.kv_bb[li] = .{ 0, 0 };
+         }
+-        for (0..cfg.tower_layers) |ti| e.kv_tw[ti] = .{ try e.alloc(kvb), try e.alloc(kvb) };
++        for (0..cfg.tower_layers) |ti| e.kv_tw[ti] = if (backbone_only) .{ 0, 0 } else .{ try e.alloc(kvb), try e.alloc(kvb) };
+         var n_gdn: usize = 0;
+         for (e.c.full_attention) |f| n_gdn += @intFromBool(!f);
+         const conv_b = cfg.conv_channels * 3 * 2;
+@@ -258,11 +275,9 @@ pub const Engine = struct {
+         e.pos = try e.alloc(8);
+         e.pos_bb = try e.alloc(8);
+         e.bb_input = try e.alloc(W * 4);
+-        e.t_xn = try e.alloc(R * H * 2);
+-        e.t_tmp = try e.alloc(R * H * 2);
+-        e.t_proj = try e.alloc(R * cfg.gdn_proj * 2);
+-        e.t_y = try e.alloc(R * 4096 * 2);
+-        e.t_q = try e.alloc(R * 4096 * 2);
++        inline for (.{ "t_xn", "t_tmp" }) |f| @field(e, f) = if (backbone_only) 0 else try e.alloc(R * H * 2);
++        e.t_proj = if (backbone_only) 0 else try e.alloc(R * cfg.gdn_proj * 2);
++        inline for (.{ "t_y", "t_q" }) |f| @field(e, f) = if (backbone_only) 0 else try e.alloc(R * 4096 * 2);
+         for (0..2) |li| {
+             e.pml[li] = try e.alloc(max_split_rows * 16 * kern.Kernels.attn_splits * 2 * 4);
+             e.pacc[li] = try e.alloc(max_split_rows * 16 * kern.Kernels.attn_splits * 256 * 4);
+@@ -271,8 +286,8 @@ pub const Engine = struct {
+         e.count = try e.alloc(8);
+         e.window = try e.alloc(16 * 4);
+         e.cur_input = try e.alloc(W * 4);
+-        e.frame = try e.alloc(W * 4);
+-        e.frames_out = try e.alloc(e.o.max_frames * W * 4);
++        e.frame = if (backbone_only) 0 else try e.alloc(W * 4);
++        e.frames_out = if (backbone_only) 0 else try e.alloc(e.o.max_frames * W * 4);
+         e.pframes = try e.alloc((ctxn + 1) * W * 4);
+         e.x = try e.alloc(R * H * 2);
+         e.xn = try e.alloc(R * H * 2);
+@@ -303,13 +318,13 @@ pub const Engine = struct {
+         const nblk = (pairs + 1023) / 1024;
+         e.plan = .{ .members = try e.alloc(pairs * 4), .items = try e.alloc(items * 3 * 4), .counts = try e.alloc(16), .rank = try e.alloc(pairs * 4), .hist = try e.alloc(nblk * cfg.experts * 4) };
+         e.hfin = try e.alloc(R * H * 2);
+-        e.th = .{ try e.alloc(R * H * 2), try e.alloc(R * H * 2) };
+-        e.mix = try e.alloc(R * 2 * H * 2);
+-        e.mixed = try e.alloc(R * H * 2);
+-        e.act = try e.alloc(R * cfg.tower_ffn * 2);
++        e.th = if (backbone_only) .{ 0, 0 } else .{ try e.alloc(R * H * 2), try e.alloc(R * H * 2) };
++        e.mix = if (backbone_only) 0 else try e.alloc(R * 2 * H * 2);
++        e.mixed = if (backbone_only) 0 else try e.alloc(R * H * 2);
++        e.act = if (backbone_only) 0 else try e.alloc(R * cfg.tower_ffn * 2);
+         e.hlast = try e.alloc(H * 2);
+         e.cand_logits = try e.alloc(e.w.n_cand * 4);
+-        e.code_logits = try e.alloc(cfg.codebook_size * 4);
++        e.code_logits = if (backbone_only) 0 else try e.alloc(cfg.codebook_size * 4);
+     }
+ 
+     pub fn buf(ptr: u64) Buf {
+@@ -370,7 +385,8 @@ pub const Engine = struct {
+         try e.put(e.pframes, std.mem.sliceAsBytes(rows));
+     }
+ 
+-    pub fn promptChunk(e: *Engine, n: usize, c0: usize, t: usize, probe: ?Probe) !void {
++    /// The backbone over prompt rows c0..c0+t of n, keeping the last row's final norm; no codec tower work.
++    pub fn backboneChunk(e: *Engine, n: usize, c0: usize, t: usize, probe: ?Probe) !void {
+         if (t == 0 or t > e.o.max_rows or c0 >= n or t > n - c0) return error.BadPromptChunk;
+         const k = &e.k;
+         const s = e.stream;
+@@ -386,6 +402,11 @@ pub const Engine = struct {
+         }
+         try k.rmsnorm(s, e.x, H, e.w.final_norm, e.hfin, H, t, H, cfg.eps, true);
+         if (probe) |p| try p.f(p.ctx, "backbone_final_norm", e.hfin, t, H, false);
++        if (c0 + t == n) try e.copyRow(e.hfin + (t - 1) * H * 2, e.hlast, H * 2);
++    }
++
++    pub fn promptChunk(e: *Engine, n: usize, c0: usize, t: usize, probe: ?Probe) !void {
++        try e.backboneChunk(n, c0, t, probe);
+         // the tower over this chunk's rows that have a next prompt row
+         const tt = @min(c0 + t, n - 1) - c0;
+         if (tt > 0) {
+@@ -400,7 +421,6 @@ pub const Engine = struct {
+                 hin = hout;
+             }
+         }
+-        if (c0 + t == n) try e.copyRow(e.hfin + (t - 1) * H * 2, e.hlast, H * 2);
+     }
+ 
+     pub fn finishPrompt(e: *Engine, rows: []const [W]i32) !void {
+@@ -447,8 +467,8 @@ pub const Engine = struct {
+ 
+     /// Device bytes of the state after `rows` prompt rows: both recurrent blocks, then each K and V cache's rows.
+     pub fn referenceBytes(e: *const Engine, rows: usize) usize {
+-        var caches: [ref_caches]u64 = undefined;
+-        return ref_rows.bytes(e.referenceLive(&caches), rows);
++        var caches: [ref_rows.max_caches]u64 = undefined;
++        return ref_rows.bytes(ref_rows.liveOf(e, &caches), rows);
+     }
+ 
+     pub fn allocReference(e: *Engine, bytes: usize) !Saved {
+@@ -469,37 +489,15 @@ pub const Engine = struct {
+         try e.moveReference(saved, rows, true);
+     }
+ 
+-    const ref_caches = 2 * (cfg.layers + cfg.tower_layers);
+-
+-    fn referenceLive(e: *const Engine, caches: *[ref_caches]u64) ref_rows.Live {
+-        var n: usize = 0;
+-        for (0..cfg.layers) |li| if (e.c.full_attention[li]) for (e.kv_bb[li]) |kv| {
+-            caches[n] = kv;
+-            n += 1;
+-        };
+-        for (e.kv_tw) |pair| for (pair) |kv| {
+-            caches[n] = kv;
+-            n += 1;
+-        };
+-        return .{ .state = e.state_bufs, .state_bytes = e.state_bytes, .caches = caches[0..n] };
+-    }
+-
+     fn moveReference(e: *Engine, saved: Saved, rows: usize, load: bool) !void {
+-        var caches: [ref_caches]u64 = undefined;
+-        const live = e.referenceLive(&caches);
++        var caches: [ref_rows.max_caches]u64 = undefined;
++        const live = ref_rows.liveOf(e, &caches);
+         if (rows == 0 or rows > e.o.max_ctx or saved.len < ref_rows.bytes(live, rows)) return error.BadReferenceRows;
+         errdefer e.stream.synchronize() catch {};
+-        _ = try ref_rows.move(DeviceCopy{ .e = e }, live, saved.ptr, rows, load);
++        _ = try ref_rows.move(e, live, saved.ptr, rows, load);
+         try e.stream.synchronize();
+     }
+ 
+-    const DeviceCopy = struct {
+-        e: *Engine,
+-        pub fn copy(d: DeviceCopy, src: u64, dst: u64, n: usize) !void {
+-            try d.e.copyRow(src, dst, n);
+-        }
+-    };
+-
+     /// Teacher forcing for parity: each pick goes to `picks`, then `frame`'s value (device int32 [11]) replaces it.
+     pub const Force = struct { frame: u64, picks: u64 };
+ 
+diff --git a/zig/src/families/drama3/cuda/forward.zig b/zig/src/families/drama3/cuda/forward.zig
+index 4db9d3c12..6a5550e30 100644
+--- a/zig/src/families/drama3/cuda/forward.zig
++++ b/zig/src/families/drama3/cuda/forward.zig
+@@ -134,8 +134,14 @@ fn spOf(s: Sampling) kern.Sampling {
+     return .{ .temperature = s.temperature, .top_k = s.top_k, .top_p = s.top_p, .seed = s.seed };
+ }
+ 
++pub const Guidance = struct { unconditioned: u64, gamma: f32 };
++
+ /// A frame step's launches, one graph: sample, the tower, record, then the backbone row at the next position.
+ pub fn enqueueFrame(e: *Engine, smp: Sampling, probe: ?Probe, force: ?Engine.Force) !void {
++    return enqueueFrameGuided(e, smp, probe, force, null);
++}
++
++pub fn enqueueFrameGuided(e: *Engine, smp: Sampling, probe: ?Probe, force: ?Engine.Force, guidance: ?Guidance) !void {
+     const k = &e.k;
+     const s = e.stream;
+     const sem_begin = e.c.ids.sem_begin;
+@@ -144,6 +150,7 @@ pub fn enqueueFrame(e: *Engine, smp: Sampling, probe: ?Probe, force: ?Engine.For
+     // the tail of the tower runs on the second stream, except under a probe whose reads would race
+     const split = e.o.split and probe == null;
+     try k.gemv(s, e.w.cand_head, e.hlast, H, e.w.n_cand, 0, e.cand_logits);
++    if (guidance) |guide| try k.cfgMix(s, e.cand_logits, guide.unconditioned, e.w.n_cand, guide.gamma);
+     if (probe) |p| try p.f(p.ctx, "tower_decode0.candidate_logits", e.cand_logits, 1, e.w.n_cand, true);
+     if (force) |fc| {
+         try k.argmax(s, e.cand_logits, e.w.n_cand, e.w.cand_ids, fc.picks, sem_begin, cfg.codebook_size);
+diff --git a/zig/src/families/drama3/cuda/guidance.zig b/zig/src/families/drama3/cuda/guidance.zig
+new file mode 100644
+index 000000000..cdf016852
+--- /dev/null
++++ b/zig/src/families/drama3/cuda/guidance.zig
+@@ -0,0 +1,69 @@
++//! Semantic-only CFG on CUDA: an independent backbone state over the conditional engine's weights.
++const std = @import("std");
++const cuda = @import("cuda");
++const cfg = @import("../config.zig");
++const Engine = @import("engine.zig").Engine;
++const fwd = @import("forward.zig");
++const H = cfg.hidden;
++const shared = @import("../guidance.zig");
++pub const Guide = shared.Guide(Engine);
++pub const promptRound = shared.promptRound;
++
++/// Paired: each stream waits on the other's event with no host round trip; separate: the host waits on each side.
++pub fn frame(g: *Guide, conditional: *Engine, sampling: @import("../common.zig").Sampling) !void {
++    if (!g.state.active) return conditional.frameStep(sampling, true, null);
++    const u = g.e;
++    const s = u.stream;
++    try u.k.gemv(s, u.w.cand_head, u.hlast, H, u.w.n_cand, 0, u.cand_logits);
++    try handoff(g, s, conditional.stream);
++    const guidance: ?fwd.Guidance = if (g.state.mixing()) |gamma| .{ .unconditioned = u.cand_logits, .gamma = gamma } else null;
++    try fwd.enqueueFrameGuided(conditional, sampling, null, null, guidance);
++    try handoff(g, conditional.stream, s);
++    // Feed the actual sampled conditional frame to the unconditional backbone, never its codec tower.
++    try u.k.nextInput(s, conditional.frame, u.bb_input, u.pos, u.pos_bb);
++    try u.k.embedBackbone(s, u.bb_input, u.w.embed, u.w.cb_emb, u.x, 1, H, u.c.ids.sem_begin, u.c.ids.sem_end, cfg.codebook_size);
++    for (0..cfg.layers) |li| try fwd.backboneLayer(u, fwd.laneBB(u, u.pos_bb), li, 1, 0);
++    try u.k.rmsnorm(s, u.x, H, u.w.final_norm, u.hlast, H, 1, H, cfg.eps, true);
++    try u.k.copyI32(s, u.pos_bb, u.pos, 1);
++}
++
++fn handoff(g: *Guide, from: cuda.Stream, to: cuda.Stream) !void {
++    if (!g.batched) return from.synchronize();
++    try g.e.ev_fork.record(from);
++    try to.wait(g.e.ev_fork);
++}
++
++/// A lane's drain: waits the codec and conditional streams, then the guide's stream; the first failure returns.
++pub fn complete(tts: anytype, guide: anytype) !void {
++    const conditional = tts.complete();
++    const unconditional = if (guide) |g| g.e.stream.synchronize() else {};
++    try conditional;
++    try unconditional;
++}
++
++test "drama guidance: a lane's drain fails when only the guide's stream failed, and waits it after a codec failure" {
++    const Wait = struct {
++        fail: bool = false,
++        waits: usize = 0,
++        fn complete(w: *@This()) !void {
++            w.waits += 1;
++            if (w.fail) return error.LaunchFailed;
++        }
++        fn synchronize(w: *@This()) !void {
++            return w.complete();
++        }
++    };
++    const Backbone = struct { stream: *Wait };
++    const FakeGuide = struct { e: *const Backbone };
++    var tts: Wait = .{};
++    var stream: Wait = .{ .fail = true };
++    const guide: ?FakeGuide = .{ .e = &.{ .stream = &stream } };
++    try std.testing.expectError(error.LaunchFailed, complete(&tts, guide));
++    tts.fail = true;
++    stream.fail = false;
++    try std.testing.expectError(error.LaunchFailed, complete(&tts, guide));
++    try std.testing.expectEqual(2, stream.waits);
++    tts.fail = false;
++    try complete(&tts, @as(?FakeGuide, null)); // a lane without guidance waits only its own streams
++    try std.testing.expectEqual(2, stream.waits);
++}
+diff --git a/zig/src/families/drama3/cuda/kernels.zig b/zig/src/families/drama3/cuda/kernels.zig
+index 4b6699e40..c1ed30588 100644
+--- a/zig/src/families/drama3/cuda/kernels.zig
++++ b/zig/src/families/drama3/cuda/kernels.zig
+@@ -17,7 +17,7 @@ const names = .{
+     "d3_causal_softmax", "d3_attn_gate",        "d3_router",           "d3_swiglu",         "d3_moe_combine",
+     "d3_tower_mix",      "d3_sample_main",      "d3_sample_code",      "d3_argmax_main",    "d3_finish_frame",
+     "d3_copy_i32",       "d3_act_quant",        "d3_bf16_f32",         "d3_next_input",     "d3_attn_partial",
+-    "d3_attn_merge",     "d3_sample_main_fast", "d3_sample_code_fast", "d3_router_compact",
++    "d3_attn_merge",     "d3_sample_main_fast", "d3_sample_code_fast", "d3_router_compact", "d3_cfg_mix",
+ };
+ 
+ pub const F = enum(u8) {
+@@ -50,6 +50,7 @@ pub const F = enum(u8) {
+     sample_main_fast,
+     sample_code_fast,
+     router_compact,
++    cfg_mix,
+ };
+ 
+ /// drama3_fp8.cu's instances: [decode, prompt][gate-up with the SwiGLU epilogue, down to fp32].
+@@ -500,4 +501,14 @@ pub const Kernels = struct {
+         a.add(i(n));
+         try k.go(.copy_i32, s, 1, 1, 64, 0, &a);
+     }
++
++    /// Semantic CFG over `n` conditional logits in place; the caller skips gamma 1, an exact identity.
++    pub fn cfgMix(k: *const Kernels, s: cuda.Stream, conditional: u64, unconditional: u64, n: usize, gamma: f32) !void {
++        var a: cuda.Args = .{};
++        a.add(conditional);
++        a.add(unconditional);
++        a.add(i(n));
++        a.add(gamma);
++        try k.go(.cfg_mix, s, (n + 255) / 256, 1, 256, 0, &a);
++    }
+ };
+diff --git a/zig/src/families/drama3/cuda/reference_rows.zig b/zig/src/families/drama3/cuda/reference_rows.zig
+index 24f25f719..35926a06c 100644
+--- a/zig/src/families/drama3/cuda/reference_rows.zig
++++ b/zig/src/families/drama3/cuda/reference_rows.zig
+@@ -13,12 +13,29 @@ pub fn kvOffset(pos: usize, g: usize, i: usize) usize {
+ /// The live buffers an entry copies, in entry order.
+ pub const Live = struct { state: [2]u64, state_bytes: [2]usize, caches: []const u64 };
+ 
++/// The most K and V caches an entry copies: every backbone and tower layer's.
++pub const max_caches = 2 * (cfg.layers + cfg.tower_layers);
++
++/// An engine's live buffers: its recurrent blocks, then each full-attention backbone layer's K and V, then the tower's.
++pub fn liveOf(e: anytype, caches: *[max_caches]u64) Live {
++    var n: usize = 0;
++    for (0..cfg.layers) |li| if (e.c.full_attention[li]) for (e.kv_bb[li]) |kv| {
++        caches[n] = kv;
++        n += 1;
++    };
++    for (e.kv_tw) |pair| for (pair) |kv| {
++        caches[n] = kv;
++        n += 1;
++    };
++    return .{ .state = e.state_bufs, .state_bytes = e.state_bytes, .caches = caches[0..n] };
++}
++
+ /// Entry bytes for the state after `rows` prompt rows.
+ pub fn bytes(live: Live, rows: usize) usize {
+     return live.state_bytes[0] + live.state_bytes[1] + live.caches.len * rows * kv_row;
+ }
+ 
+-/// Copies the state after `rows` rows between `live` and the entry at `saved` through `copier.copy(src, dst, n)`.
++/// Copies the state after `rows` rows between `live` and the entry at `saved` through `copier.copyRow(src, dst, n)`.
+ pub fn move(copier: anytype, live: Live, saved: u64, rows: usize, load: bool) !usize {
+     var at = saved;
+     for (live.state, live.state_bytes) |buf, n| at = try moveRun(copier, buf, at, n, load);
+@@ -27,12 +44,12 @@ pub fn move(copier: anytype, live: Live, saved: u64, rows: usize, load: bool) !u
+ }
+ 
+ fn moveRun(copier: anytype, live: u64, saved: u64, n: usize, load: bool) !u64 {
+-    if (load) try copier.copy(saved, live, n) else try copier.copy(live, saved, n);
++    if (load) try copier.copyRow(saved, live, n) else try copier.copyRow(live, saved, n);
+     return saved + n;
+ }
+ 
+ const HostCopy = struct {
+-    fn copy(_: HostCopy, src: u64, dst: u64, n: usize) !void {
++    fn copyRow(_: HostCopy, src: u64, dst: u64, n: usize) !void {
+         @memcpy(@as([*]u8, @ptrFromInt(dst))[0..n], @as([*]const u8, @ptrFromInt(src))[0..n]);
+     }
+ };
+diff --git a/zig/src/families/drama3/drama3.zig b/zig/src/families/drama3/drama3.zig
+index dc94302dd..e1ac4daf1 100644
+--- a/zig/src/families/drama3/drama3.zig
++++ b/zig/src/families/drama3/drama3.zig
+@@ -11,6 +11,7 @@ pub const config = @import("config.zig");
+ pub const weights = @import("cuda/weights.zig");
+ pub const kernels = @import("cuda/kernels.zig");
+ pub const engine = @import("cuda/engine.zig");
++pub const guidance = @import("cuda/guidance.zig");
+ pub const prompt = @import("prompt.zig");
+ pub const codec = @import("cuda/codec.zig");
+ pub const wav = @import("core").wav;
+@@ -37,6 +38,8 @@ test {
+     _ = @import("cuda/stager.zig");
+     _ = @import("cuda/reference_rows.zig");
+     _ = prompt;
++    _ = guidance;
++    _ = @import("guidance.zig");
+     _ = wav;
+ }
+ 
+diff --git a/zig/src/families/drama3/drama3_metal.zig b/zig/src/families/drama3/drama3_metal.zig
+index 489ad30e0..b0386dba3 100644
+--- a/zig/src/families/drama3/drama3_metal.zig
++++ b/zig/src/families/drama3/drama3_metal.zig
+@@ -41,6 +41,7 @@ test {
+     _ = kernels;
+     _ = load_limit;
+     _ = guidance;
++    _ = @import("guidance.zig");
+     _ = @import("metal/quant_format_test.zig");
+ }
+ 
+diff --git a/zig/src/families/drama3/guidance.zig b/zig/src/families/drama3/guidance.zig
+new file mode 100644
+index 000000000..495457229
+--- /dev/null
++++ b/zig/src/families/drama3/guidance.zig
+@@ -0,0 +1,191 @@
++//! Semantic CFG's host lifecycle, shared by the Metal and CUDA guides; each backend owns its frame step.
++const std = @import("std");
++const W = @import("config.zig").frame_width;
++
++pub fn validGamma(gamma: f32) bool {
++    return std.math.isFinite(gamma) and gamma >= 1 and gamma <= 5;
++}
++
++/// Host lifecycle is separate from GPU storage; no old reference may activate a later plain request.
++pub const State = struct {
++    active: bool = false,
++    gamma: f32 = 1,
++
++    pub fn begin(s: *State, rows: usize, gamma: f32) !void {
++        s.clear();
++        if (!validGamma(gamma)) return error.BadDramaGuidance;
++        if (rows == 0) return;
++        s.* = .{ .active = true, .gamma = gamma };
++    }
++
++    pub fn clear(s: *State) void {
++        s.* = .{};
++    }
++
++    /// The gamma a guided frame mixes with; none at gamma 1, so its logits stay exactly the conditional ones.
++    pub fn mixing(s: State) ?f32 {
++        return if (s.active and s.gamma != 1) s.gamma else null;
++    }
++};
++
++/// An unconditional backbone state over the conditional engine's weights, prefilled one row per scheduler round.
++pub fn Guide(comptime Engine: type) type {
++    return struct {
++        const Self = @This();
++        e: *Engine,
++        batched: bool,
++        state: State = .{},
++
++        pub fn create(base: *Engine, batched: bool) !Self {
++            return .{ .e = try base.forkBackbone(), .batched = batched };
++        }
++
++        pub fn destroy(g: *Self) void {
++            g.e.destroy();
++        }
++
++        pub fn begin(g: *Self, rows: []const [W]i32, gamma: f32) !void {
++            try g.state.begin(rows.len, gamma);
++            errdefer g.state.clear();
++            // A guide is never restored from the conditional reference cache.
++            if (g.state.active) try g.e.startPrompt(rows);
++        }
++
++        /// One prompt row per scheduler round keeps cancellation and other lanes responsive.
++        pub fn promptStep(g: *Self, rows: []const [W]i32) !bool {
++            if (g.whole(rows)) return false;
++            try g.e.backboneChunk(rows.len, g.e.rows_done, 1, null);
++            g.e.rows_done += 1;
++            if (g.e.rows_done == rows.len) try g.e.finishPrompt(rows);
++            return true;
++        }
++
++        /// Every row of this request's unconditional prompt has run (none for a plain request).
++        pub fn whole(g: *const Self, rows: []const [W]i32) bool {
++            return !g.state.active or g.e.rows_done == rows.len;
++        }
++
++        pub fn clear(g: *Self) void {
++            g.state.clear();
++        }
++    };
++}
++
++/// One prompt round: the guide runs a row before each conditional chunk; true once both prompts are whole.
++pub fn promptRound(guide: anytype, rows: []const [W]i32, gamma: f32, first: bool, conditional: anytype) !bool {
++    if (guide) |g| {
++        if (first) try g.begin(rows, gamma) else if (try g.promptStep(rows)) return false;
++    }
++    if (!conditional.whole()) try conditional.chunk();
++    return conditional.whole() and if (guide) |g| g.whole(rows) else true;
++}
++
++test "CFG rejects nonfinite and out-of-range gamma before state activation" {
++    for ([_]f32{ 0, 0.99, 5.01, std.math.nan(f32), std.math.inf(f32) }) |g|
++        try std.testing.expect(!validGamma(g));
++}
++
++test "CFG transitions clear old voice on plain request cancellation and invalid begin" {
++    var state: State = .{};
++    try state.begin(12, 1.5);
++    try std.testing.expect(state.active);
++    try state.begin(0, 1.5);
++    try std.testing.expect(!state.active and state.gamma == 1);
++    try state.begin(8, 2);
++    state.clear();
++    try std.testing.expect(!state.active);
++    try state.begin(9, 3);
++    try std.testing.expectError(error.BadDramaGuidance, state.begin(9, std.math.nan(f32)));
++    try std.testing.expect(!state.active and state.gamma == 1);
++    try state.begin(7, 1);
++    try std.testing.expect(state.active and state.gamma == 1);
++}
++
++test "CFG mixes only an active guide above gamma 1, so gamma 1 keeps the conditional logits exactly" {
++    var state: State = .{};
++    try std.testing.expectEqual(null, state.mixing());
++    try state.begin(4, 1);
++    try std.testing.expect(state.active);
++    try std.testing.expectEqual(null, state.mixing());
++    try state.begin(4, 2.5);
++    try std.testing.expectEqual(2.5, state.mixing().?);
++    state.clear();
++    try std.testing.expectEqual(null, state.mixing());
++}
++
++/// A backbone that checks each guide row arrives in order, one a chunk.
++const FakeBackbone = struct {
++    rows_done: usize = 0,
++    starts: usize = 0,
++    finished: usize = 0,
++    fn startPrompt(f: *@This(), _: []const [W]i32) !void {
++        f.starts += 1;
++        f.rows_done = 0;
++    }
++    fn backboneChunk(f: *@This(), n: usize, c0: usize, t: usize, _: ?*const anyopaque) !void {
++        if (c0 != f.rows_done or t != 1 or c0 >= n) return error.BadPromptChunk;
++    }
++    fn finishPrompt(f: *@This(), rows: []const [W]i32) !void {
++        f.finished += 1;
++        f.rows_done = rows.len;
++    }
++};
++
++test "CFG guide: a cancelled or changed reference clears the guide, which prefills its own rows again" {
++    var e: FakeBackbone = .{};
++    var g: Guide(FakeBackbone) = .{ .e = &e, .batched = false };
++    const voice_a: [3][W]i32 = @splat(@splat(0));
++    const voice_b: [2][W]i32 = @splat(@splat(0));
++    try g.begin(&voice_a, 2);
++    try std.testing.expect(try g.promptStep(&voice_a));
++    g.clear(); // cancelled mid-prompt
++    try std.testing.expectEqual(null, g.state.mixing());
++    try std.testing.expect(!try g.promptStep(&voice_a));
++    try g.begin(&voice_b, 1.5); // the next request names another reference
++    while (try g.promptStep(&voice_b)) {}
++    try std.testing.expectEqual(2, e.starts);
++    try std.testing.expectEqual(1, e.finished);
++    try std.testing.expectEqual(1.5, g.state.mixing().?);
++    try g.begin(&.{}, 1.5); // a plain request leaves no guidance behind
++    try std.testing.expectEqual(null, g.state.mixing());
++    try std.testing.expect(!try g.promptStep(&voice_b));
++}
++
++test "CFG prompt rounds: the guide's every row runs before the first frame, even when the conditional takes one chunk" {
++    // The conditional prompt resumes at `from` (a reference-cache hit) and takes `chunk` rows a round.
++    const Conditional = struct {
++        at: usize,
++        total: usize,
++        chunk_rows: usize,
++        chunks: usize = 0,
++        fn whole(c: *const @This()) bool {
++            return c.at == c.total;
++        }
++        fn chunk(c: *@This()) !void {
++            if (c.at >= c.total) return error.BadPromptChunk; // a zero-row chunk
++            c.at += @min(c.chunk_rows, c.total - c.at);
++            c.chunks += 1;
++        }
++    };
++    const voice: [5][W]i32 = @splat(@splat(0));
++    // (total, from, rows a chunk): cold whole prompt in one chunk, cached one-chunk suffix, single-row chunks
++    for ([_][3]usize{ .{ 40, 0, 1024 }, .{ 40, 28, 1024 }, .{ 40, 28, 4 }, .{ 3, 0, 1 } }) |case| {
++        for ([_]usize{ 1, voice.len }) |guide_rows| {
++            var e: FakeBackbone = .{};
++            var g: Guide(FakeBackbone) = .{ .e = &e, .batched = false };
++            var c: Conditional = .{ .total = case[0], .at = case[1], .chunk_rows = case[2] };
++            const rows = voice[0..guide_rows];
++            var round: usize = 0;
++            while (!try promptRound(@as(?*Guide(FakeBackbone), &g), rows, 2, round == 0, &c)) round += 1;
++            try std.testing.expectEqual(1, e.starts);
++            try std.testing.expectEqual(1, e.finished);
++            try std.testing.expect(g.whole(rows) and c.whole());
++            try std.testing.expectEqual((case[0] - case[1] + case[2] - 1) / case[2], c.chunks);
++            try std.testing.expectEqual(2, g.state.mixing().?);
++        }
++        var c: Conditional = .{ .total = case[0], .at = case[1], .chunk_rows = case[2] };
++        var round: usize = 0; // no guide: one conditional chunk a round, as before guidance
++        while (!try promptRound(@as(?*Guide(FakeBackbone), null), &voice, 2, round == 0, &c)) round += 1;
++        try std.testing.expectEqual(c.chunks, round + 1);
++    }
++}
+diff --git a/zig/src/families/drama3/metal/engine.zig b/zig/src/families/drama3/metal/engine.zig
+index 5ce06ebce..049801c90 100644
+--- a/zig/src/families/drama3/metal/engine.zig
++++ b/zig/src/families/drama3/metal/engine.zig
+@@ -272,9 +272,9 @@ pub const Engine = struct {
+         try e.put(e.pframes, std.mem.sliceAsBytes(rows));
+     }
+ 
+-    /// Backbone-only prompt chunk for the unconditional CFG sequence; no codec tower work.
+-    pub fn backboneChunk(e: *Engine, c0: usize, t: usize, probe: ?Probe) !void {
+-        if (t == 0 or t > e.o.max_rows) return error.BadPromptChunk;
++    /// The backbone over prompt rows c0..c0+t of n, keeping the last row's final norm; no codec tower work.
++    pub fn backboneChunk(e: *Engine, n: usize, c0: usize, t: usize, probe: ?Probe) !void {
++        if (t == 0 or t > e.o.max_rows or c0 >= n or t > n - c0) return error.BadPromptChunk;
+         const g = e.g;
+         var nb: [64]u8 = undefined;
+         try e.setPos(c0);
+@@ -286,16 +286,14 @@ pub const Engine = struct {
+         }
+         k.rmsnorm(g, e.x, H, e.w.final_norm, e.hfin, H, t, H, cfg.eps, true);
+         if (probe) |p| try p.f(p.ctx, "backbone_final_norm", e.hfin, t, H, false);
++        if (c0 + t == n) g.copy(e.hfin + (t - 1) * H * 2, e.hlast, H * 2);
+     }
+ 
+     pub fn promptChunk(e: *Engine, n: usize, c0: usize, t: usize, probe: ?Probe) !void {
+-        if (t == 0 or t > e.o.max_rows or c0 >= n or t > n - c0) return error.BadPromptChunk;
+-        try e.backboneChunk(c0, t, probe);
+-        const g = e.g;
++        try e.backboneChunk(n, c0, t, probe);
+         // the tower over this chunk's rows that have a next prompt row
+         const tt = @min(c0 + t, n - 1) - c0;
+         if (tt > 0) try e.tower(tt, c0, e.hfin, probe);
+-        if (c0 + t == n) g.copy(e.hfin + (t - 1) * H * 2, e.hlast, H * 2);
+     }
+ 
+     pub fn finishPrompt(e: *Engine, rows: []const [W]i32) !void {
+diff --git a/zig/src/families/drama3/metal/guidance.zig b/zig/src/families/drama3/metal/guidance.zig
+index 516ec30f0..6ec1d4c75 100644
+--- a/zig/src/families/drama3/metal/guidance.zig
++++ b/zig/src/families/drama3/metal/guidance.zig
+@@ -5,10 +5,10 @@ const Engine = @import("engine.zig").Engine;
+ const k = @import("kernels.zig");
+ const fwd = @import("forward.zig");
+ const H = cfg.hidden;
+-
+-pub fn validGamma(gamma: f32) bool {
+-    return std.math.isFinite(gamma) and gamma >= 1 and gamma <= 5;
+-}
++const shared = @import("../guidance.zig");
++pub const State = shared.State;
++pub const Guide = shared.Guide(Engine);
++pub const promptRound = shared.promptRound;
+ 
+ pub fn mix(e: *Engine, unconditional: u64, gamma: f32) void {
+     mixLogits(e.g, e.cand_logits, unconditional, e.w.n_cand, gamma);
+@@ -19,95 +19,22 @@ fn mixLogits(g: *@import("gpu.zig").Gpu, conditional: u64, unconditional: u64, c
+     g.go(.d3_cfg_mix, .{ (count + 255) / 256, 1, 1 }, 256, &.{ conditional, unconditional }, Args{ .count = @intCast(count), .gamma = gamma });
+ }
+ 
+-/// Host lifecycle is separate from GPU storage; no old reference may activate a later plain request.
+-pub const State = struct {
+-    active: bool = false,
+-    gamma: f32 = 1,
+-
+-    pub fn begin(s: *State, rows: usize, gamma: f32) !void {
+-        s.clear();
+-        if (!validGamma(gamma)) return error.BadDramaGuidance;
+-        if (rows == 0) return;
+-        s.* = .{ .active = true, .gamma = gamma };
+-    }
+-
+-    pub fn clear(s: *State) void {
+-        s.* = .{};
+-    }
+-};
+-
+-pub const Guide = struct {
+-    e: *Engine,
+-    batched: bool,
+-    state: State = .{},
+-
+-    pub fn create(base: *Engine, batched: bool) !Guide {
+-        return .{ .e = try base.forkBackbone(), .batched = batched };
+-    }
+-
+-    pub fn destroy(g: *Guide) void {
+-        g.e.destroy();
+-    }
+-
+-    pub fn begin(g: *Guide, rows: []const [cfg.frame_width]i32, gamma: f32) !void {
+-        try g.state.begin(rows.len, gamma);
+-        errdefer g.state.clear();
+-        // A guide is never restored from the conditional reference cache.
+-        if (g.state.active) try g.e.startPrompt(rows);
+-    }
+-
+-    /// One prompt row per scheduler round keeps cancellation and other lanes responsive.
+-    pub fn promptStep(g: *Guide, rows: []const [cfg.frame_width]i32) !bool {
+-        if (!g.state.active or g.e.rows_done == rows.len) return false;
+-        try g.e.backboneChunk(g.e.rows_done, 1, null);
+-        g.e.rows_done += 1;
+-        if (g.e.rows_done == rows.len) {
+-            g.e.g.copy(g.e.hfin, g.e.hlast, H * 2);
+-            try g.e.finishPrompt(rows);
+-        }
+-        return true;
+-    }
+-
+-    pub fn clear(g: *Guide) void {
+-        g.state.clear();
+-    }
+-    /// Paired means one command-buffer submission, not a two-row GEMM or simultaneous GPU execution.
+-    pub fn frame(g: *Guide, conditional: *Engine, sampling: @import("../common.zig").Sampling) !void {
+-        if (!g.state.active) return conditional.frameStep(sampling, true, null);
+-        const u = g.e;
+-        k.linear(u.g, u.w.cand_head, u.hlast, H, H, u.w.n_cand, u.cand_logits, u.w.n_cand, 1, true);
+-        if (!g.batched) try u.g.commit();
+-        try fwd.enqueueFrameGuided(conditional, sampling, null, null, .{ .unconditioned = u.cand_logits, .gamma = g.state.gamma });
+-        if (!g.batched) try u.g.commit();
+-        // Feed the actual sampled conditional frame to the unconditional backbone, never its codec tower.
+-        k.nextInput(u.g, conditional.frame, u.bb_input, u.pos, u.pos_bb);
+-        k.embedBackbone(u.g, u.bb_input, u.w.embed, u.w.cb_emb, u.x, 1, H, u.c.ids.sem_begin, u.c.ids.sem_end, cfg.codebook_size);
+-        for (0..cfg.layers) |li| fwd.backboneLayer(u, fwd.laneBB(u, u.pos_bb), li, 1);
+-        k.rmsnorm(u.g, u.x, H, u.w.final_norm, u.hlast, H, 1, H, cfg.eps, true);
+-        k.copyI32(u.g, u.pos_bb, u.pos, 1);
+-        try u.g.commit();
+-    }
+-};
+-
+-test "CFG rejects nonfinite and out-of-range gamma before state activation" {
+-    for ([_]f32{ 0, 0.99, 5.01, std.math.nan(f32), std.math.inf(f32) }) |g|
+-        try std.testing.expect(!validGamma(g));
+-}
+-
+-test "CFG transitions clear old voice on plain request cancellation and invalid begin" {
+-    var state: State = .{};
+-    try state.begin(12, 1.5);
+-    try std.testing.expect(state.active);
+-    try state.begin(0, 1.5);
+-    try std.testing.expect(!state.active and state.gamma == 1);
+-    try state.begin(8, 2);
+-    state.clear();
+-    try std.testing.expect(!state.active);
+-    try state.begin(9, 3);
+-    try std.testing.expectError(error.BadDramaGuidance, state.begin(9, std.math.nan(f32)));
+-    try std.testing.expect(!state.active and state.gamma == 1);
+-    try state.begin(7, 1);
+-    try std.testing.expect(state.active and state.gamma == 1);
++/// Paired means one command-buffer submission, not a two-row GEMM or simultaneous GPU execution.
++pub fn frame(g: *Guide, conditional: *Engine, sampling: @import("../common.zig").Sampling) !void {
++    if (!g.state.active) return conditional.frameStep(sampling, true, null);
++    const u = g.e;
++    k.linear(u.g, u.w.cand_head, u.hlast, H, H, u.w.n_cand, u.cand_logits, u.w.n_cand, 1, true);
++    if (!g.batched) try u.g.commit();
++    const guidance: ?fwd.Guidance = if (g.state.mixing()) |gamma| .{ .unconditioned = u.cand_logits, .gamma = gamma } else null;
++    try fwd.enqueueFrameGuided(conditional, sampling, null, null, guidance);
++    if (!g.batched) try u.g.commit();
++    // Feed the actual sampled conditional frame to the unconditional backbone, never its codec tower.
++    k.nextInput(u.g, conditional.frame, u.bb_input, u.pos, u.pos_bb);
++    k.embedBackbone(u.g, u.bb_input, u.w.embed, u.w.cb_emb, u.x, 1, H, u.c.ids.sem_begin, u.c.ids.sem_end, cfg.codebook_size);
++    for (0..cfg.layers) |li| fwd.backboneLayer(u, fwd.laneBB(u, u.pos_bb), li, 1);
++    k.rmsnorm(u.g, u.x, H, u.w.final_norm, u.hlast, H, 1, H, cfg.eps, true);
++    k.copyI32(u.g, u.pos_bb, u.pos, 1);
++    try u.g.commit();
+ }
+ 
+ /// Synthetic device qualification called only by the explicit Metal quant-check executable.
+diff --git a/zig/src/native/drama_compile.zig b/zig/src/native/drama_compile.zig
+index 067cbf63c..806b04a3e 100644
+--- a/zig/src/native/drama_compile.zig
++++ b/zig/src/native/drama_compile.zig
+@@ -14,4 +14,5 @@ fn event(_: *anyopaque, _: api.Id, _: *const api.Event) void {}
+ test {
+     _ = host;
+     _ = @import("drama_reference.zig");
++    if (!@hasDecl(@import("drama3"), "gpu")) _ = @import("drama_limit.zig");
+ }
+diff --git a/zig/src/native/drama_conditional.zig b/zig/src/native/drama_conditional.zig
+new file mode 100644
+index 000000000..2472a2246
+--- /dev/null
++++ b/zig/src/native/drama_conditional.zig
+@@ -0,0 +1,56 @@
++//! A Drama request's conditional prompt for its guidance round: one chunk, the first resuming after a cached reference.
++const std = @import("std");
++const d3 = @import("drama3");
++const reference = d3.reference_cache;
++const is_cuda = !@hasDecl(d3, "gpu");
++
++pub fn Conditional(comptime Host: type) type {
++    return struct {
++        const Self = @This();
++
++        h: *Host,
++        lane: usize,
++
++        pub fn whole(c: Self) bool {
++            const j = &c.h.jobs[c.lane].?;
++            return j.state.started and j.state.prompt == j.request.frames.len;
++        }
++
++        pub fn chunk(c: Self) !void {
++            const lane = &c.h.sessions[c.lane];
++            const s = lane.*;
++            const j = &c.h.jobs[c.lane].?;
++            const r = j.request;
++            const state = &j.state;
++            if (is_cuda) {
++                if (!state.started) try s.t.c.reset(s.t.cs);
++                return c.h.refs.prompt(s.e, r.frames, r.reference_rows, state);
++            }
++            const ref_rows = reference.prefillRows(r.frames.len, r.reference_rows, s.e.o.max_rows);
++            if (!state.started) {
++                // Invalidate before reset, GPU work or any fallible preparation for a miss.
++                if (try lane.prefix.begin(c.h.gpa, r.frames, ref_rows)) {
++                    try s.e.restore(&lane.cache);
++                    try s.e.beginPromptFrom(r.frames, ref_rows);
++                    state.prompt = ref_rows;
++                    std.log.info("drama3: reference cache hit ({d} rows restored)", .{ref_rows});
++                } else {
++                    try s.e.startPrompt(r.frames);
++                    state.prompt = 0;
++                }
++                try s.t.c.reset();
++                state.started = true;
++            }
++            var count = s.e.o.promptRows(r.frames.len - state.prompt);
++            const want_snapshot = ref_rows > 0 and !lane.prefix.valid;
++            if (want_snapshot and state.prompt < ref_rows) count = @min(count, ref_rows - state.prompt);
++            try s.e.promptChunk(r.frames.len, state.prompt, count, null);
++            state.prompt += count;
++            if (want_snapshot and state.prompt == ref_rows) {
++                try s.e.snapshot(&lane.cache);
++                lane.prefix.saved();
++                std.log.info("drama3: reference cache built ({d} rows)", .{ref_rows});
++            }
++        }
++    };
++}
+diff --git a/zig/src/native/drama_host.zig b/zig/src/native/drama_host.zig
+index 93362401c..adf59bbc4 100644
+--- a/zig/src/native/drama_host.zig
++++ b/zig/src/native/drama_host.zig
+@@ -25,7 +25,8 @@ const Session = struct {
+ /// Metal snapshot buffers belong to the shared GPU owner; CUDA's cache is the host's `refs`, shared by its lanes.
+ const Snap = if (is_cuda) struct {} else d3.Snapshot;
+ const Refs = if (is_cuda) @import("drama_reference.zig").Cache(d3.Engine) else struct {};
+-const Guide = if (is_cuda) struct {} else d3.guidance.Guide;
++const Guide = d3.guidance.Guide;
++const Conditional = @import("drama_conditional.zig").Conditional(Host);
+ const Job = struct {
+     id: api.Id,
+     request: *const api.SpeechRequest,
+@@ -103,7 +104,7 @@ const Host = struct {
+         if (r.top_k == 0 or r.top_k > (if (is_cuda) @as(u32, std.math.maxInt(i32)) else 64)) return false;
+         if (!std.math.isFinite(r.cfg_gamma) or r.cfg_gamma < 1 or r.cfg_gamma > 5) return false;
+         if (r.unconditioned.len > 0) {
+-            if (is_cuda or h.sessions[0].guide == null or r.unconditioned.len > sp.max_prompt_tokens) return false;
++            if (h.sessions[0].guide == null or r.unconditioned.len > sp.max_prompt_tokens) return false;
+             const ids_ = h.sessions[0].e.c.ids;
+             d3.model.validate(r.unconditioned, ids_, h.info_.context_window, r.max_frames) catch return false;
+             for (r.unconditioned) |row| {
+@@ -210,42 +211,8 @@ const Host = struct {
+         const j = &h.jobs[i].?;
+         const r = j.request;
+         if (work.stage == .prompt) {
+-            if (is_cuda) {
+-                if (!j.state.started) try s.t.c.reset(s.t.cs);
+-                try h.refs.prompt(s.e, r.frames, r.reference_rows, &j.state);
+-            } else {
+-                const ref_rows = reference.prefillRows(r.frames.len, r.reference_rows, s.e.o.max_rows);
+-                if (!j.state.started) {
+-                    if (lane.guide) |*guide| try guide.begin(r.unconditioned, r.cfg_gamma);
+-                    // Invalidate before reset, GPU work or any fallible preparation for a miss.
+-                    if (try lane.prefix.begin(h.gpa, r.frames, ref_rows)) {
+-                        try s.e.restore(&lane.cache);
+-                        try s.e.beginPromptFrom(r.frames, ref_rows);
+-                        j.state.prompt = ref_rows;
+-                        std.log.info("drama3: reference cache hit ({d} rows restored)", .{ref_rows});
+-                    } else {
+-                        try s.e.startPrompt(r.frames);
+-                        j.state.prompt = 0;
+-                    }
+-                    try s.t.c.reset();
+-                    j.state.started = true;
+-                }
+-                if (lane.guide) |*guide| if (try guide.promptStep(r.unconditioned)) {
+-                    try sync(s);
+-                    return;
+-                };
+-                var count = s.e.o.promptRows(r.frames.len - j.state.prompt);
+-                const want_snapshot = ref_rows > 0 and !lane.prefix.valid;
+-                if (want_snapshot and j.state.prompt < ref_rows) count = @min(count, ref_rows - j.state.prompt);
+-                try s.e.promptChunk(r.frames.len, j.state.prompt, count, null);
+-                j.state.prompt += count;
+-                if (want_snapshot and j.state.prompt == ref_rows) {
+-                    try s.e.snapshot(&lane.cache);
+-                    lane.prefix.saved();
+-                    std.log.info("drama3: reference cache built ({d} rows)", .{ref_rows});
+-                }
+-            }
+-            if (j.state.prompt == r.frames.len) {
++            const conditional: Conditional = .{ .h = h, .lane = i };
++            if (try d3.guidance.promptRound(if (lane.guide) |*g| g else null, r.unconditioned, r.cfg_gamma, !j.state.started, conditional)) {
+                 try s.e.finishPrompt(r.frames);
+                 h.lock();
+                 h.queue.stages[i] = .frame;
+@@ -256,10 +223,7 @@ const Host = struct {
+             return;
+         }
+         const smp: d3.Sampling = .{ .temperature = r.temperature, .top_k = @intCast(r.top_k), .top_p = r.top_p, .seed = r.seed };
+-        if (!is_cuda and lane.guide != null)
+-            try lane.guide.?.frame(s.e, smp)
+-        else
+-            try s.e.frameStep(smp, true, null);
++        if (lane.guide) |*guide| try d3.guidance.frame(guide, s.e, smp) else try s.e.frameStep(smp, true, null);
+         var frame: d3.model.Frame = undefined;
+         try s.e.download(s.e.frames_out + j.state.frames * 11 * 4, std.mem.asBytes(&frame));
+         try h.produced(i, s.t, frame[0] == s.e.c.ids.eos);
+@@ -293,10 +257,8 @@ const Host = struct {
+         const completed = state.settle(&.{.{ .ctx = &h.sessions[lane], .call = waitSession }});
+         const final_reason: api.Reason = if (completed) reason else .failed;
+         const final_message = if (completed) message else "speech drain failed: engine closed; storage retained";
+-        if (!is_cuda) {
+-            if (h.sessions[lane].guide) |*guide| guide.clear();
+-            if (final_reason == .cancelled or final_reason == .failed) h.sessions[lane].prefix.invalidate();
+-        }
++        if (h.sessions[lane].guide) |*guide| guide.clear();
++        if (!is_cuda and (final_reason == .cancelled or final_reason == .failed)) h.sessions[lane].prefix.invalidate();
+         h.lock();
+         if (!completed) h.failed.closed = true;
+         const j = h.jobs[lane].?;
+@@ -311,7 +273,7 @@ const Host = struct {
+     }
+     fn waitSession(ctx: *anyopaque) !void {
+         const s: *Session = @ptrCast(@alignCast(ctx));
+-        if (is_cuda) return s.t.complete();
++        if (is_cuda) return d3.guidance.complete(s.t, s.guide);
+         // Metal's command failure is reported after its wait completed, including the queued successor.
+         s.e.flush() catch |err| if (err != error.CommandBufferFailed) return err;
+     }
+@@ -343,7 +305,7 @@ const Host = struct {
+         while (i > 0) {
+             i -= 1;
+             h.sessions[i].t.destroy();
+-            if (!is_cuda) if (h.sessions[i].guide) |*guide| guide.destroy();
++            if (h.sessions[i].guide) |*guide| guide.destroy();
+             h.sessions[i].e.destroy();
+         }
+         h.limit.deinit();
+@@ -353,7 +315,6 @@ const Host = struct {
+ 
+ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8, o: Options) !api.Opened {
+     if (o.context < 1025 or o.context > 8192) return error.BadDramaContext;
+-    if (is_cuda and (o.cfg_enabled or o.cfg_batched)) return error.GuidanceRequiresMetal;
+     if (o.cfg_batched and !o.cfg_enabled) return error.BadDramaGuidance;
+     const budget = try @import("drama_budget.zig").budget(o.context, o.max_frames);
+     try (d3.Options{ .max_rows = @intCast(o.prefill_rows), .attn_chunk = @intCast(o.prefill_rows) }).validatePrefill();
+@@ -370,12 +331,13 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8,
+         made -= 1;
+         if (!is_cuda) h.sessions[made].prefix.deinit(gpa);
+         h.sessions[made].t.destroy();
+-        if (!is_cuda) if (h.sessions[made].guide) |*guide| guide.destroy();
++        if (h.sessions[made].guide) |*guide| guide.destroy();
+         h.sessions[made].e.destroy();
+     };
+     const codec = try std.fs.path.join(gpa, &.{ dir, "codec.pth" });
+     defer gpa.free(codec);
+     while (made < o.lanes) : (made += 1) {
++        if (is_cuda and made == 1) try h.limit.admit(o.lanes - 1, h.sessions[0].e.stateBytes(), if (h.sessions[0].guide) |g| g.e.stateBytes() else 0);
+         const e = if (made == 0) try d3.Engine.create(gpa, io, dir, .{
+             .max_ctx = o.context,
+             .max_rows = @intCast(o.prefill_rows),
+@@ -387,7 +349,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8,
+         errdefer e.destroy();
+         const t = if (made == 0) try d3.tts.Tts.create(gpa, io, e, codec, 1) else try h.sessions[0].t.fork(e);
+         h.sessions[made] = .{ .e = e, .t = t };
+-        if (!is_cuda and o.cfg_enabled) h.sessions[made].guide = d3.guidance.Guide.create(e, o.cfg_batched) catch |err| {
++        if (o.cfg_enabled) h.sessions[made].guide = Guide.create(e, o.cfg_batched) catch |err| {
+             t.destroy();
+             return err;
+         };
+@@ -407,7 +369,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, _: []const u8,
+     h.worker = try std.Thread.spawn(.{}, Host.run, .{h});
+     if (o.silence.enabled()) std.log.info("drama3: silence guard on: {f}", .{o.silence});
+     if (o.cfg_enabled) std.log.info("drama3: semantic CFG enabled; shared weights, independent states; {s}", .{
+-        if (o.cfg_batched) "paired command-buffer submission (not vectorized GEMM)" else "separate sequence submissions",
++        if (!o.cfg_batched) "separate sequence submissions" else if (is_cuda) "paired streams ordered by device events" else "paired command-buffer submission (not vectorized GEMM)",
+     });
+     return .{ .engine = .{ .ctx = h, .vtable = &Host.vtable }, .ctx = h, .close = Host.close };
+ }
+diff --git a/zig/src/native/drama_limit.zig b/zig/src/native/drama_limit.zig
+index 499c086c7..35e90b65e 100644
+--- a/zig/src/native/drama_limit.zig
++++ b/zig/src/native/drama_limit.zig
+@@ -6,6 +6,7 @@ pub const Limit = struct {
+     driver: cuda.Driver,
+     ctx: cuda.Context,
+     previous: ?u64,
++    cap: u64,
+     pub fn init(l: *Limit, gpa: std.mem.Allocator, io: std.Io, device: u32) !void {
+         l.driver = try cuda.Driver.open();
+         errdefer l.driver.close();
+@@ -17,7 +18,13 @@ pub const Limit = struct {
+         const plan = try budget.readPool(arena.allocator(), io, &l.ctx, &problem) orelse return error.DramaMemoryAdmission;
+         const used = cuda.usage(false);
+         const held = try std.math.add(u64, used.device, used.host);
+-        l.previous = try cuda.setAllocationLimit(try std.math.add(u64, held, plan.room(held)));
++        l.cap = try std.math.add(u64, held, plan.room(held));
++        l.previous = try cuda.setAllocationLimit(l.cap);
++    }
++    /// Before the remaining lanes fork: each needs a lane's state and, with CFG, a guide's, under the cap.
++    pub fn admit(l: *const Limit, more: usize, lane_bytes: u64, guide_bytes: u64) !void {
++        const used = cuda.usage(false);
++        if (!fits(l.cap -| (used.device +| used.host), more, lane_bytes, guide_bytes)) return error.DramaLanesOverMemory;
+     }
+     pub fn deinit(l: *Limit) void {
+         _ = cuda.setAllocationLimit(l.previous) catch unreachable;
+@@ -25,3 +32,16 @@ pub const Limit = struct {
+         l.driver.close();
+     }
+ };
++
++fn fits(room: u64, more: usize, lane_bytes: u64, guide_bytes: u64) bool {
++    const need = std.math.mul(u64, more, std.math.add(u64, lane_bytes, guide_bytes) catch return false) catch return false;
++    return need <= room;
++}
++
++test "drama admission: each further lane counts its guidance state with its own" {
++    try std.testing.expect(fits(30, 3, 10, 0));
++    try std.testing.expect(!fits(30, 3, 10, 1)); // the plain plan fits, the guided one does not
++    try std.testing.expect(fits(33, 3, 10, 1));
++    try std.testing.expect(fits(0, 0, 10, 1));
++    try std.testing.expect(!fits(std.math.maxInt(u64), 2, std.math.maxInt(u64), 1));
++}
+diff --git a/zig/src/native/drama_open.zig b/zig/src/native/drama_open.zig
+index 4c2489f76..ceb7a3d1f 100644
+--- a/zig/src/native/drama_open.zig
++++ b/zig/src/native/drama_open.zig
+@@ -15,10 +15,6 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
+         problem.* = why;
+         return null;
+     }
+-    if (o.cfg_enabled or o.cfg_batched) {
+-        problem.* = "this engine revision implements Drama CFG on Metal only; use the pinned CUDA quant engine on Linux";
+-        return null;
+-    }
+     if (o.tp != 1 or o.rank != 0 or (o.lanes_fixed and (o.lanes == 0 or o.lanes > 8))) {
+         problem.* = "Drama 3 serves 1 through 8 frame lanes on one CUDA device; tensor parallelism is unsupported";
+         return null;
+@@ -69,8 +65,13 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
+         .max_frames = o.max_frames,
+         .prefill_rows = prefill_rows,
+         .reference_entries = entries,
++        .cfg_enabled = o.cfg_enabled,
++        .cfg_batched = o.cfg_batched,
+     }) catch |e| {
+-        problem.* = try std.fmt.allocPrint(a, "the native Drama 3 CUDA engine could not load the checkpoint ({s})", .{@errorName(e)});
++        problem.* = if (e == error.DramaLanesOverMemory)
++            try std.fmt.allocPrint(a, "Drama 3 lanes and their CFG guidance states do not fit this CUDA device's memory; serve fewer --parallel lanes", .{})
++        else
++            try std.fmt.allocPrint(a, "the native Drama 3 CUDA engine could not load the checkpoint ({s})", .{@errorName(e)});
+         return null;
+     };
+ }
+diff --git a/zig/src/server/drama_cfg.zig b/zig/src/server/drama_cfg.zig
+index 0c98506fd..cad7b42ca 100644
+--- a/zig/src/server/drama_cfg.zig
++++ b/zig/src/server/drama_cfg.zig
+@@ -5,10 +5,10 @@ const model_text = @import("model_text.zig");
+ const drama_prompt = @import("drama_prompt.zig");
+ 
+ pub const flags = [_]@import("cli.zig").Flag{
+-    .{ .name = "--cfg-gamma", .native = @import("builtin").os.tag == .macos },
+-    .{ .name = "--cfg-allow-request-gamma", .kind = .store_true, .native = @import("builtin").os.tag == .macos },
+-    .{ .name = "--cfg-force-guided", .kind = .store_true, .native = @import("builtin").os.tag == .macos },
+-    .{ .name = "--cfg-batched", .kind = .store_true, .native = @import("builtin").os.tag == .macos },
++    .{ .name = "--cfg-gamma", .native = true },
++    .{ .name = "--cfg-allow-request-gamma", .kind = .store_true, .native = true },
++    .{ .name = "--cfg-force-guided", .kind = .store_true, .native = true },
++    .{ .name = "--cfg-batched", .kind = .store_true, .native = true },
+ };
+ 
+ pub const Options = struct { gamma: f32 = 1, request_gamma: bool = false, force_guided: bool = false };
+@@ -103,10 +103,6 @@ test "CFG native flags allocate guidance states only when enabled and refuse uns
+     defer arena.deinit();
+     const a = arena.allocator();
+     var usage: cli.Usage = .{};
+-    if (@import("builtin").os.tag != .macos) {
+-        try std.testing.expectError(error.Usage, cli.parse(a, &.{ "m", "--cfg-gamma", "1.5" }, &usage));
+-        return;
+-    }
+     const enabled = try cli.parse(a, &.{ "m", "--cfg-gamma", "1.5", "--cfg-batched" }, &usage);
+     const request = try cli.request(a, "checkpoint", "fish_omni", enabled);
+     try std.testing.expect(request.cfg_enabled and request.cfg_batched);
+diff --git a/zig/src/server/flag_deps_test.zig b/zig/src/server/flag_deps_test.zig
+index 0c4635a2d..42dd28a21 100644
+--- a/zig/src/server/flag_deps_test.zig
++++ b/zig/src/server/flag_deps_test.zig
+@@ -5,7 +5,6 @@ const Usage = cli.Usage;
+ const parse = cli.parse;
+ 
+ test "flag deps: --cfg-batched and --cfg-force-guided need a gamma switch" {
+-    if (@import("builtin").os.tag != .macos) return error.SkipZigTest; // CFG flags: macOS only
+     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+     defer arena.deinit();
+     const a = arena.allocator();
+diff --git a/zig/src/server/limit_pins_test.zig b/zig/src/server/limit_pins_test.zig
+index 156976a27..13503b19e 100644
+--- a/zig/src/server/limit_pins_test.zig
++++ b/zig/src/server/limit_pins_test.zig
+@@ -148,15 +148,13 @@ test "limit pins: serve flags at their documented bounds" {
+     defer arena.deinit();
+     const a = arena.allocator();
+     var u: cli.Usage = .{};
+-    if (@import("builtin").os.tag == .macos) { // CFG flags: macOS only (drama_cfg.zig)
+-        const off = try cli.parse(a, &.{ "m", "--cfg-gamma", "0" }, &u);
+-        try std.testing.expectEqual(@as(f32, 0), off.cfg.gamma);
+-        const top = try cli.parse(a, &.{ "m", "--cfg-gamma", "5" }, &u);
+-        try std.testing.expectEqual(@as(f32, 5), top.cfg.gamma);
+-        for ([_][]const u8{ "5.5", "-0.5" }) |v| {
+-            try std.testing.expectError(error.Usage, cli.parse(a, &.{ "m", "--cfg-gamma", v }, &u));
+-            try std.testing.expectEqualStrings("--cfg-gamma must be 0 (off) or 1 (unguided) through 5", u.message);
+-        }
++    const off = try cli.parse(a, &.{ "m", "--cfg-gamma", "0" }, &u);
++    try std.testing.expectEqual(@as(f32, 0), off.cfg.gamma);
++    const top = try cli.parse(a, &.{ "m", "--cfg-gamma", "5" }, &u);
++    try std.testing.expectEqual(@as(f32, 5), top.cfg.gamma);
++    for ([_][]const u8{ "5.5", "-0.5" }) |v| {
++        try std.testing.expectError(error.Usage, cli.parse(a, &.{ "m", "--cfg-gamma", v }, &u));
++        try std.testing.expectEqualStrings("--cfg-gamma must be 0 (off) or 1 (unguided) through 5", u.message);
+     }
+     const share = try cli.parse(a, &.{ "m", "--decode-share", "0" }, &u);
+     try std.testing.expectEqual(@as(?f64, 0), share.decode_share);
+diff --git a/zig/tests/cuda/contract_drama3.zig b/zig/tests/cuda/contract_drama3.zig
+index ba124d3a7..f70f03512 100644
+--- a/zig/tests/cuda/contract_drama3.zig
++++ b/zig/tests/cuda/contract_drama3.zig
+@@ -1,4 +1,4 @@
+-//! Drama 3's kernels under the contract on CUDA: RMS norm rows (d3_rmsnorm, plain gamma) and the compact router.
++//! Drama 3 under the CUDA contract: RMS norm rows (plain gamma and gated form), compact router and CFG mix.
+ const std = @import("std");
+ const cuda = @import("cuda");
+ const core = @import("core");
+@@ -88,12 +88,114 @@ pub const Norm = struct {
+     }
+ };
+ 
+-/// The drama3 image, its norm and its compact router with the unmasked control, appended to `kernels`.
++fn noSums(_: c.Shape) usize {
++    return 0;
++}
++
++const mix_gamma: f32 = 2.5;
++
++pub fn mixSpec() c.Spec {
++    // Drama 3's candidates: 4,096 semantic tokens and EOS
++    return .{ .name = "cuda drama3 d3_cfg_mix (semantic CFG, gamma 2.5)", .accum = .none, .depth = noSums, .out = .f32, .tiles = .{ .{}, .{ .size = 256 }, .{} }, .served = &.{.{ .rows = 1, .n = 4097, .k = 1 }} };
++}
++
++/// d3_cfg_mix mixes in place from a fresh copy each run; the control passes gamma - 1 (cond + gamma * (cond - uncond)).
++pub const Mix = struct {
++    rig: rig_.Rig,
++    f: cuda.Function,
++    control: bool = false,
++    cond: []f32 = &.{},
++    uncond: []f32 = &.{},
++    u: u64 = 0,
++    out: u64 = 0,
++
++    pub fn init(gpu: check.Gpu, s: cuda.Stream, mod: cuda.Module, control: bool) !Mix {
++        return .{ .rig = .{ .gpu = gpu, .s = s }, .f = try mod.function("d3_cfg_mix"), .control = control };
++    }
++
++    pub fn deinit(self: *Mix) void {
++        self.free();
++        self.rig.deinit();
++    }
++
++    fn free(self: *Mix) void {
++        self.rig.gpu.gpa.free(self.cond);
++        self.rig.gpu.gpa.free(self.uncond);
++        self.cond = &.{};
++        self.uncond = &.{};
++    }
++
++    pub fn kernel(self: *Mix) g.Kernel {
++        var k: g.Kernel = .{ .spec = mixSpec(), .ctx = self, .vt = &mix_vt, .control = if (self.control) .shapes else null };
++        if (self.control) k.spec.name = "cuda drama3 d3_cfg_mix control: launched with gamma - 1";
++        return k;
++    }
++
++    const mix_vt = g.hooks(Mix);
++
++    pub fn prepare(self: *Mix, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
++        self.free();
++        self.rig.reset();
++        const a = self.rig.gpu.gpa;
++        self.cond = try a.alloc(f32, shape.n);
++        self.uncond = try a.alloc(f32, shape.n);
++        var prng = std.Random.DefaultPrng.init(seed);
++        const rng = prng.random();
++        for (self.cond, self.uncond) |*x, *y| {
++            x.* = (rng.float(f32) - 0.5) * 64;
++            y.* = (rng.float(f32) - 0.5) * 64;
++        }
++        if (fill == .nonfinite) {
++            const planted = [_]f32{ std.math.nan(f32), std.math.inf(f32), -std.math.inf(f32) };
++            for (planted, 0..) |v, i| if (i < shape.n) {
++                (if (i == 1) self.uncond else self.cond)[i] = v;
++            };
++        }
++        // the inputs as the gates see them; each run copies the conditional logits into the output it mixes in place
++        _ = try self.rig.input(std.mem.sliceAsBytes(self.cond));
++        self.u = try self.rig.input(std.mem.sliceAsBytes(self.uncond));
++        self.out = try self.rig.output(shape.n * 4);
++        return true;
++    }
++
++    pub fn run(self: *Mix) !void {
++        const n = self.cond.len;
++        const out: cuda.DeviceBuffer = .{ .d = self.rig.gpu.d, .ptr = self.out, .len = n * 4 };
++        try out.upload(0, std.mem.sliceAsBytes(self.cond));
++        var a: cuda.Args = .{};
++        a.add(self.out);
++        a.add(self.u);
++        a.add(@as(c_int, @intCast(n)));
++        a.add(if (self.control) mix_gamma - 1 else mix_gamma);
++        try cuda.launch.launch(self.f, .{ .grid = .{ .x = @intCast((n + 255) / 256), .y = 1, .z = 1 }, .block = .{ .x = 256 } }, self.rig.s, &a);
++        try self.rig.s.synchronize();
++    }
++
++    pub fn count(self: *Mix) usize {
++        return self.cond.len;
++    }
++
++    pub fn reference(self: *Mix, want: []f64, mag: []f64) !void {
++        const gm = @as(f64, mix_gamma) - 1;
++        for (self.cond, self.uncond, want, mag) |x, y, *w, *m| {
++            w.* = @as(f64, x) + gm * (@as(f64, x) - @as(f64, y));
++            m.* = @abs(@as(f64, x)) + gm * (@abs(@as(f64, x)) + @abs(@as(f64, y)));
++        }
++    }
++
++    /// Three fp32 roundings, each at most 2^-24 of the terms they touch, so the bound follows `mag`, not the result.
++    pub fn bounds(_: *Mix, _: []const f64, mag: []const f64, allow: []f64) !void {
++        for (allow, mag) |*l, m| l.* = 0x1p-22 * m + 0x1p-149;
++    }
++};
++
++/// The drama3 image's registrations onto `kernels`: norm rows, then compact router and CFG mix each with its control.
+ pub const Group = struct {
+     a: std.mem.Allocator,
+     mod: cuda.Module,
+     norm: Norm,
+     routers: [2]router_k.Router,
++    mixes: [2]Mix,
+ 
+     pub fn create(a: std.mem.Allocator, gpu: check.Gpu, s: cuda.Stream, kernels: *std.ArrayList(g.Kernel)) !*Group {
+         const self = try a.create(Group);
+@@ -102,15 +204,18 @@ pub const Group = struct {
+         self.mod = try cuda.Module.load(gpu.d, cuda.kernels.drama3);
+         errdefer self.mod.unload();
+         self.norm = try Norm.init(gpu, s, self.mod);
++        self.mixes = .{ try .init(gpu, s, self.mod, false), try .init(gpu, s, self.mod, true) };
+         self.routers = .{ try .init(gpu, s, self.mod, false), try .init(gpu, s, self.mod, true) };
+         try kernels.append(a, self.norm.kernel());
+         for (&self.routers) |*r| try kernels.append(a, r.kernel());
++        for (&self.mixes) |*m| try kernels.append(a, m.kernel());
+         return self;
+     }
+ 
+     pub fn destroy(self: *Group) void {
+         self.norm.deinit();
+         for (&self.routers) |*r| r.deinit();
++        for (&self.mixes) |*m| m.deinit();
+         self.mod.unload();
+         self.a.destroy(self);
+     }
+diff --git a/zig/tests/cuda/drama_cfg_mix_shim.c b/zig/tests/cuda/drama_cfg_mix_shim.c
+new file mode 100644
+index 000000000..25c56cf0a
+--- /dev/null
++++ b/zig/tests/cuda/drama_cfg_mix_shim.c
+@@ -0,0 +1,6 @@
++// The host test runs the production d3_cfg_mix element body through this C ABI.
++#include "drama3_cfg.h"
++
++void d3_cfg_mix_test_at(float* conditional, const float* unconditional, int n, float gamma, int i) {
++    d3_cfg_mix_at(conditional, unconditional, n, gamma, i);
++}
+diff --git a/zig/tests/cuda/drama_cfg_mix_test.zig b/zig/tests/cuda/drama_cfg_mix_test.zig
+new file mode 100644
+index 000000000..e4db23e46
+--- /dev/null
++++ b/zig/tests/cuda/drama_cfg_mix_test.zig
+@@ -0,0 +1,70 @@
++//! d3_cfg_mix's element body on the host against float64: semantic and EOS logits mixed, codec tails untouched.
++const std = @import("std");
++
++extern fn d3_cfg_mix_test_at(conditional: [*]f32, unconditional: [*]const f32, n: c_int, gamma: f32, i: c_int) void;
++
++const candidates = 4097; // Drama 3's semantic tokens and EOS, the last candidate
++const tail = 300; // codec logits past the candidates, in the same buffer as a careless launch would see them
++const threads = (candidates + 255) / 256 * 256; // every thread of kernels.cfgMix's grid
++
++fn mixAll(c: []f32, u: []const f32, gamma: f32) void {
++    for (0..threads + tail) |i| d3_cfg_mix_test_at(c.ptr, u.ptr, candidates, gamma, @intCast(i));
++}
++
++fn fill(c: []f32, u: []f32, seed: u64) void {
++    var prng = std.Random.DefaultPrng.init(seed);
++    const rng = prng.random();
++    for (c, u) |*x, *y| {
++        x.* = (rng.float(f32) - 0.5) * 64;
++        y.* = (rng.float(f32) - 0.5) * 64;
++    }
++    c[0] = -0.0;
++    u[1] = c[1]; // equal logits: no guidance
++}
++
++test "drama cfg mix: semantic and EOS logits meet float64's c + (gamma - 1)(c - u); codec tails keep their bits" {
++    var c: [threads + tail]f32 = undefined;
++    var u: [threads + tail]f32 = undefined;
++    for ([_]f32{ 1.5, 3, 5 }, 0..) |gamma, seed| {
++        fill(&c, &u, seed);
++        const before = c;
++        mixAll(&c, &u, gamma);
++        const g = @as(f64, gamma) - 1;
++        for (c, before, u, 0..) |got, x, y, i| {
++            if (i >= candidates) {
++                try std.testing.expectEqual(@as(u32, @bitCast(x)), @as(u32, @bitCast(got)));
++                continue;
++            }
++            const want = @as(f64, x) + g * (@as(f64, x) - @as(f64, y));
++            // three fp32 roundings (difference, product, sum), each at most 2^-24 of the terms it touches
++            const allow = 0x1p-22 * (@abs(@as(f64, x)) + g * (@abs(@as(f64, x)) + @abs(@as(f64, y))));
++            try std.testing.expect(@abs(@as(f64, got) - want) <= allow);
++        }
++        try std.testing.expect(c[candidates - 1] != before[candidates - 1]); // EOS is mixed
++        try std.testing.expectEqual(before[1], c[1]);
++    }
++}
++
++test "drama cfg mix: gamma 1 keeps every conditional bit, whatever the unconditional logits hold" {
++    var c: [threads + tail]f32 = undefined;
++    var u: [threads + tail]f32 = undefined;
++    fill(&c, &u, 7);
++    c[2] = std.math.inf(f32);
++    u[3] = std.math.nan(f32);
++    u[4] = -std.math.inf(f32);
++    const before = c;
++    mixAll(&c, &u, 1);
++    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&before), std.mem.asBytes(&c));
++}
++
++test "drama cfg mix: a non-finite logit above gamma 1 propagates as float64's formula does" {
++    var c: [threads + tail]f32 = @splat(1);
++    var u: [threads + tail]f32 = @splat(0);
++    u[5] = std.math.nan(f32);
++    c[6] = std.math.inf(f32);
++    u[7] = std.math.inf(f32);
++    mixAll(&c, &u, 2);
++    try std.testing.expect(std.math.isNan(c[5]));
++    try std.testing.expect(std.math.isPositiveInf(c[6])); // inf + (inf - 0)
++    try std.testing.expect(std.math.isNegativeInf(c[7])); // 1 + (1 - inf)
++}
