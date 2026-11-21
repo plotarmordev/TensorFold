@@ -1,9 +1,5 @@
-# MiniMax-H3-Image on the Spark: own int8 TMA product on `qkvc`/`fc1`
+# MiniMax-H3-Image on the Spark: our own int8 TMA product on `qkvc` and `fc1`
 
-mmh3's TMA + persistent-grid int8 GEMM (mma.sync.m16n8k32.s8, two-stage mbarrier ring, one CTA per SM
-walking `group_m` bands) ported into the H3 CUDA path, replacing cuBLASLt int8 + h3_dequantize +
-h3_swiglu_int8 + h3_heads_i8. The product scales its exact int32 sums to bf16 in registers — the
-same products and roundings the deleted kernels computed — so latents stay bit-identical to the
-path it replaces; `h3_swiglu_rows` interleaves fc1's gate/up weight rows pairwise for the fused
-SwiGLU epilogue. `out`/`fc2` stay bf16 (per-row scales still fail the picture gates; receipts under
-cards 129/139 in `docs/recipes/minimax-h3-cuda.md`).
+- `h3_int8_tma.cuh` ports mmh3's TMA int8 GEMM: a two-stage mbarrier ring, one CTA per SM walking `group_m` bands, `mma.sync.m16n8k32.s8`, and the row and column scales applied in registers before the bf16 store. It runs at 177–187 TOPS against cuBLASLt's 150–156 on all four picture shapes at M = 4,120.
+- It replaces cuBLASLt int8 on `qkvc` (bf16 rows straight to `h3_heads`) and `fc1` (SwiGLU in its epilogue over gate and up rows interleaved by `h3_swiglu_rows`). `h3_dequantize`, `h3_heads_i8`, `h3_swiglu_int8` and their int8-only admission rules are gone. Latents are byte-identical to main.
+- In the same-job A/B (`bench-146-ab.sh`, three unseen prompts), a warm 2048² picture on the Spark takes 14.2–14.3 s against main's 15.7–15.9 s (transformer 10.9 against 12.3 s). `out` and `fc2` stay bf16. The receipts are in `docs/recipes/minimax-h3-cuda.md`, under card 146.

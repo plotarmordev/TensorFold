@@ -661,6 +661,63 @@ costs G n-sized round trips — only an own-mma product folding scales in regist
 Card 129's three tile geometries plateaued at 0.74–0.79× of cuBLASLt's int8 rate, so the round's open part stays a
 TMA + persistent-grid int8 product at mmh3's ~172 TOPS, not a library call.
 
+### Card 146: our own TMA + persistent-grid int8 product on `qkvc` and `fc1` — kept
+
+`h3_int8_tma.cuh` ports mmh3's int8 GEMM (`int8_gemm.cu` at
+[`9c0652f`](https://github.com/mmh3-org/mmh3/tree/9c0652f4c39fd67ed2330aeafd61e95a1fe7e375), MIT). Copied: TMA
+loads of 128-byte K slices of both int8 operands under a 128B swizzle into a two-stage mbarrier ring, one CTA per
+SM walking the output tiles in `group_m` bands, eight warps on `mma.sync.m16n8k32.s8` into int32, its 256×128
+(tall) and 128×256 (wide) tiles, and an epilogue that applies the row and column scales in registers and writes
+bf16 from the tile. Not copied: the cp.async fallback, the low-rank adapter, the bias and the column-maxima
+tracking, none of which an H3 picture projection uses. ConvRot (`convrot.cuh`) stays `h3_quantize`'s 128-wide
+rotation. The epilogue rounds as the replaced kernels did, so `qkvc` writes bf16 rows straight to plain
+`h3_heads` and `fc1`'s epilogue writes `silu(gate) * up` (`h3_swiglu_rows` interleaves its gate and up weight
+rows). `h3_dequantize`, `h3_heads_i8` and `h3_swiglu_int8` are deleted, and so are card 145's int8-only
+admission rules for `h3_heads_i8`.
+
+Stop rule (`bench-146-contract.sh` at `199ed172`, `tf-cuda-test h3-int8-bench`, cuBLASLt int8 in the same
+job, GB10, driver 580.173.02): the product beats cuBLASLt on all four picture shapes at M = 4,120.
+
+| shape (N × K) | tall tile | wide tile | cuBLASLt |
+|---|---:|---:|---:|
+| `qkvc` 21,504 × 5,376 | 5.08 ms, 187.4 TOPS (1.24×) | 5.38 ms, 176.9 TOPS | 6.30 ms, 151.2 TOPS |
+| `out` 5,376 × 7,168 | 1.71 ms, 186.2 TOPS (1.20×) | 1.87 ms, 169.4 TOPS | 2.04 ms, 155.8 TOPS |
+| `fc1` 28,672 × 5,376 | 6.94 ms, 182.9 TOPS (1.17×) | 7.12 ms, 178.5 TOPS | 8.12 ms, 156.4 TOPS |
+| `fc2` 5,376 × 14,336 | 3.58 ms, 177.6 TOPS (1.18×) | 3.81 ms, 166.8 TOPS | 4.22 ms, 150.5 TOPS |
+
+The kernel-contract entry is `cuda h3 int8 tma product h3_gemm_int8_tma` in `contract_h3_int8.zig`, run in the
+same job. It checks the outputs against the float64 formula at four served shapes, including `qkvc`'s real
+fan-out. Its planted control puts nonfinite row and column scales into the inputs; every output those scales
+multiply must come out nonfinite, and the check fails when no planted scale reaches a launched output.
+
+The picture A/B is `bench-146-ab.sh` at `1a354cc9`, after card 145 merged (job `top-0c0de4c93177`, 21 November,
+exit 0, `H3_PROFILE=1`). Main is re-measured in the same job by reverse-applying `bench-146-base.patch`. Each
+phase runs the pilot's fox cold, then three prompts never used before (`prompts/tram`, `greenhouse`, `trench`).
+Every selftest passed in both phases, and the decoder's same-latent bound held (relative error 3.33e-3 against a
+3e-2 bound). All four latents and PNGs are byte-identical between the phases, so the episode-1 gates are main's
+own figures: latent cosine 0.9952 (recomputed on the fetched fox against `h3-image-runs/34/t2i-2048.latent.f32`),
+28.69 dB and 4.01 mean difference. Six steps, no gate changed.
+
+| warm 2048² | wall s | transformer s | `q k v gate` s | `heads` s | `mlp in` s | `mlp out` s |
+|---|---:|---:|---:|---:|---:|---:|
+| this card, tram | 14.2 | 10.9 | 1.66 | 0.94 | 2.22 | 2.27 |
+| this card, greenhouse | 14.3 | 10.9 | 1.67 | 0.94 | 2.24 | 2.29 |
+| this card, trench | 14.3 | 10.9 | 1.66 | 0.96 | 2.22 | 2.27 |
+| main, tram | 15.7 | 12.3 | 1.86 | 1.11 | 3.31 | 2.29 |
+| main, greenhouse | 15.7 | 12.3 | 1.87 | 1.11 | 3.30 | 2.31 |
+| main, trench | 15.9 | 12.4 | 1.87 | 1.11 | 3.33 | 2.31 |
+
+A step takes 1.77 s against 2.08 s, and cold runs are 151.7 s against 147.3 s. The other stages (norms 0.62,
+attention 1.82, attention out 1.17 s) are unchanged within 0.03 s. An earlier run of the same A/B at
+`eaca2f60`, before card 145 merged (job `top-a257456502de`), measured 14.1 s against 16.1 s, also with
+byte-identical latents.
+
+`out` and `fc2` stay bf16. The product beats cuBLASLt on their shapes too, but card 139 measured per-256-of-K
+scales on them at 28.02 dB and 4.27, below the gates, and `160c5d8b`'s 256-wide rotation in mmh3's ConvRot
+style left the picture at 28.14 dB. Folding the same scales in registers changes only the fp32 order of a
+sum that is otherwise exact, so it should give the same picture (inferred, not run). This card ran no picture
+for them.
+
 ### Card 143: the prompt encoder resident in int8 per-row products — measured and reverted
 
 Qwen3-VL's 50 text layers went resident as int8 products through the cuBLASLt int8 path the transformer already
