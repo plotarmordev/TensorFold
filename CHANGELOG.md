@@ -4,6 +4,15 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Prompt cache salts preserve every bit of image words after the first key word; a high-bit first word is refused before it can alias text, while salted states remain RAM-only (#3222).
+- Server: `cache_salt` on chat, completions, Responses and Messages, and `serve --cache-salt-per-key`, keep kept prompt states apart by salt or API key; a request without a salt is keyed exactly as before and no reply's tokens change (#3222, fixes #3196).
+
+- Tests: the lane host explore test's replay check no longer depends on thread timing; the test thread's idle send waits until no engine yield point is mid-decision, so a seed replays its schedule the same on a loaded runner (#4414).
+
+- Kernel contract: the GLM Metal contract runs to the end on M1 to M4 Macs again (its KDA and index texts carry the pre-M5 define the loader adds), and gate 5 resolves GLM's routed-expert row launches on every Mac instead of stopping with `UnknownLaunch` (#4397).
+
+- Lanes: #3728's lone-stream copy pricing is taken out again: on an M3 Ultra it made Qwen3.8-27B with the DFlash2 drafter verify drafted rows that did not land, so drafted decode on long prompts is back to 1.2.10's speed, with the same tokens (#4078).
+
 - Docs: the first world-4 Flash Next receipt on HIP, oQ2-MTP at `--tp 4` on four Radeon AI PRO R9700s, with a same-binary world-2 control run that separates the world effect from engine changes (#4210, refs #2401). Thanks to @timmyit.
 
 - CUDA: GLM-5.3-Flash's latent cache and indexer accept full GLM-5.3's shapes (slice (a) of #3063) (#3949). Thanks to @bjornmonnens.
