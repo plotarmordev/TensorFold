@@ -323,7 +323,7 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, build_options: *st
     }
     @import("cuda_fault_host.zig").steps(b, cuda, flashnextModule(b, host, .debug, cuda, mods.core, mods.lanes, mods.qwen_vision, mods.api), native);
     @import("cuda_sm_host.zig").steps(b, native_modules.api, step);
-    @import("release_cuda_refusal.zig").tests(b, step, native_modules.api, mods.nemotron);
+    @import("release_cuda_refusal.zig").tests(b, step, native_modules.api, mods.nemotron, mods.qwen35);
     @import("qwen_cost_open.zig").tests(b, mods, native_modules, step);
     const windows_port = @import("windows_host.zig").steps(b, cuda, native_modules.api);
     @import("locate_host.zig").cudaTests(b, mods.nemotron, step);
@@ -406,6 +406,10 @@ pub fn hostTests(b: *std.Build, draft_ids: *std.Build.Module, build_options: *st
     b.step("test-glm-grants-host", "GLM CUDA head-cost policy without a GPU").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = glm, .filters = &.{"shared head costs:"} })).step);
     skip_drafts.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = glm, .filters = &.{"zero grant:"} })).step);
     @import("glm_family_host.zig").steps(b, cuda, glm, mods, step);
+    const q4_pdl = b.createModule(.{ .root_source_file = b.path("zig/glm_q4_pdl_host.zig"), .target = host, .optimize = .debug, .link_libc = true, .imports = &.{ .{ .name = "glm", .module = glm }, .{ .name = "cuda", .module = cuda } } });
+    const q4_pdl_run = b.addRunArtifact(b.addTest(.{ .root_module = q4_pdl }));
+    b.step("test-glm-q4-pdl-host", "GLM Q4 draft-head launch honors TF_GLM_PDL without a GPU").dependOn(&q4_pdl_run.step);
+    if (@import("builtin").os.tag != .windows) step.dependOn(&q4_pdl_run.step); // its test sets env through libc setenv, which Windows lacks
     @import("kolibri.zig").host(b, kolibri1Module(b, host, .debug, cuda, mods.core, mods.lanes), native_modules.api, step);
     const gemma = @import("gemma4_cuda.zig").module(b, host, .debug, cuda, mods.core, mods.lanes);
     b.step("test-gemma-grants-host", "Gemma assistant and DFlash head-cost grants without a GPU").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = gemma, .filters = &.{"shared head costs:"} })).step);

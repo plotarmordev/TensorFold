@@ -4,6 +4,25 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Flash Next on CUDA: `TF_FLASHNEXT_GATHER_EARLY=1` (default `0`) gathers a shared decode pass's n-gram rows for every lane in one pooled call instead of one call a stream, for passes of at most 64 lanes (wider passes keep the per-stream call); which rows are read and how a row is dequantized do not change, so replies stay main's, and the measured mean decode gain on one GB10 rises to +2.10% at eight streams (#4009). Thanks to @BadAd84.
+
+- Tests: the idle-unload host tests wait on the ticker's event and the manager's condition instead of a 2-second real-clock bound, so a loaded CI host no longer fails them (#4352).
+
+- Tests: three host tests (Qwen3.5 CUDA kept-state read-back, the grammar compile deadline, the chats resume store) wait on events instead of real-clock bounds, so a loaded CI host no longer fails them (#4358).
+
+- Core: exact runtime LoRA overlays (adapter config, target and identity checks); not yet wired to a flag (#4384).
+- Core: exact runtime LoRA overlays (adapter config, target and identity checks); not yet wired to a flag (#PR).
+- Hardening: cluster launch, session restore, the app's shell policy, Hub pulls, Web pairing and media downloads fail closed on malformed input (#4381).
+- Hardening: cluster launch, session restore, the app's shell policy, Hub pulls, Web pairing and media downloads fail closed on malformed input (#PR).
+- Idol's DINOv3 ViT-H+/16 image encoder runs natively on M5 Metal: one 1024 x 1024 image to the denoiser's feature1 in bf16, as idol-sdk's ImageEncoder makes it, from the ungated timm weights (DINOv3 License), which `tools/zig/idol_case.py dino` shows to be Meta's gated checkpoint byte for byte and feature for feature. On an M5 Ultra an encode takes 0.120 s against the SDK's 0.261 s on torch MPS, with a 2.28 GB peak footprint. feature1 and each of the 32 blocks on torch's own input sit as close to a float32 ruler as torch's bf16 run, within the 2x gate; `tf-idol-dino` runs those gates, and its eight kernels pass the kernel contract (#1775, after #1766, for #1757). Thanks to @jayleaton.
+
+- CUDA: Enable dense MTP drafting for Qwen3.5-family targets with compatible checkpoint tensors (#3582). Thanks to @tacosta.
+
+
+
+- CUDA on unified-memory Linux (GB10): the start-up memory budget is at most the free memory CUDA reports, less the same reserve, instead of `/proc/meminfo` alone, and the server first drops the checkpoint's own shards from the page cache, so a checkpoint that was just read is not refused for its own cached pages; discrete cards, Windows, Metal and HIP are unchanged (#3192, part of #1857).
+- Docs: the first gfx1201 receipt in the repository, Flash Next oQ2-MTP at `--tp 2` on two Radeon AI PRO R9700s against #2401's 1.2.3 numbers on the same card class, and `docs/recipes/flash-next-hip.md` as the home for Flash Next on HIP (#3608, refs #2401). Thanks to @timmyit.
+
 
 
 ## 1.3.3
@@ -118,7 +137,6 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 - Tests: the CUDA kernel contract's NVFP4_NZ5 stress fill holds +5s among its 4s and 6s, its float64 reference reads code 0b1000 as 5, and a second planted control goes red at the sums gate, so that gate covers the +5 code; no kernel changes (#3543, refs #2894). Thanks to @Bizuayeu.
 
-- CUDA on unified-memory Linux (GB10): the start-up memory budget is at most the free memory CUDA reports, less the same reserve, instead of `/proc/meminfo` alone, and the server first drops the checkpoint's own shards from the page cache, so a checkpoint that was just read is not refused for its own cached pages; discrete cards, Windows, Metal and HIP are unchanged (#3192, part of #1857).
 
 - Qwen 3.5/3.6/3.8 on CUDA: a prompt chunk before the last that nothing reads (no last-layer tap, learning, MLP or pocket reader, prompt int8 path or image) stops its last layer after its keys, values and RoPE, skipping that layer's query projection, attention, output projection, MLP and head, with the same reply tokens; the final chunk is unchanged (#3060, fixes #2941). Thanks to @javierbits.
 
