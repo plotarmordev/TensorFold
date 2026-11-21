@@ -75,6 +75,7 @@ test {
     _ = @import("weights_test.zig");
     _ = @import("geometry_test.zig");
     _ = @import("mtp_test.zig");
+    _ = @import("slot_pages_test.zig");
 }
 
 pub const residency = @import("residency.zig");
