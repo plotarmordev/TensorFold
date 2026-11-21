@@ -229,10 +229,15 @@ pub fn byte(decoded: f32, ch: usize) u8 {
 
 /// Decoded [3, height, width] float32 to RGB bytes [height, width, 3].
 pub fn pixels(decoded: []const f32, h: usize, w: usize, rgb: []u8) !void {
+    return pixelRows(decoded, h, w, 0, h, rgb);
+}
+
+/// Rows `from` to `to` of the decoded [3, height, width] float32 to their RGB bytes [to - from, width, 3].
+pub fn pixelRows(decoded: []const f32, h: usize, w: usize, from: usize, to: usize, rgb: []u8) !void {
     const plane = try geometry.product(&.{ h, w });
-    if (decoded.len != 3 * plane or rgb.len != 3 * plane) return error.H3BadLatentLength;
-    for (0..3) |ch| for (0..plane) |i| {
-        rgb[3 * i + ch] = byte(decoded[ch * plane + i], ch);
+    if (decoded.len != 3 * plane or from > to or to > h or rgb.len != 3 * (to - from) * w) return error.H3BadLatentLength;
+    for (0..3) |ch| for (from * w..to * w, 0..) |i, o| {
+        rgb[3 * o + ch] = byte(decoded[ch * plane + i], ch);
     };
 }
 
