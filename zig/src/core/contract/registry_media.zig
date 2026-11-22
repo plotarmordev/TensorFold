@@ -72,17 +72,17 @@ pub const cuda_pending = [_]CudaRecord{
     .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
 };
 
-/// The picture's TMA products (h3_int8_tma.cuh): sm_121's usage from GB10's live check; sm_120's
-/// pending the five-SM limits job.
+/// The picture's TMA products (h3_int8_tma.cuh): sm_120's and sm_121's usage from the five-SM limits job
+/// (card 199's TOP check); sm_80 to sm_89 sit below their min_sm.
 pub const cuda_tma_pending = [_]CudaRecord{
-    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(222) },
-    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(219) },
-    .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = sm121(22) },
+    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(222) },
+    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(219) },
+    .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = sm12x(22) },
 };
 
-/// A usage row measured on sm_121 alone; the other targets stay missing receipts.
-fn sm121(regs: u32) [5]@import("limits.zig").Usage {
+/// A usage row measured alike on sm_120 and sm_121, the targets at or above the TMA launches' min_sm.
+fn sm12x(regs: u32) [5]@import("limits.zig").Usage {
     var u = @import("registry.zig").none;
-    u[4] = .{ .regs = regs, .static = 0, .bound = 256 };
+    for (u[3..]) |*v| v.* = .{ .regs = regs, .static = 0, .bound = 256 };
     return u;
 }
