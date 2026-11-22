@@ -5,6 +5,7 @@
 # attention and routing stages). Each routed picture is gated against the dense one of the same prompt with gate.py
 # (TOP has no numpy or PIL). Results: /work/out/h3-186-* and the stage lines on stdout.
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-186-ab.sh
+# Run at d5968c7e (job top-e1cd6974b1da): routed 2 kept opt-in, the gates hold; numbers in minimax-h3-cuda.md.
 set -eu
 here=docs/recipes/minimax-h3-cuda
 pilot=/assets/drama3-pilot/h3-image-pilot
