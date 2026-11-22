@@ -8,8 +8,9 @@ using namespace metal;
 #endif
 
 #define H3D_UNROLL _Pragma("clang loop unroll(full)")
-// Keys a lane holds in the attention: 9 a lane, 288 a simdgroup, past a 16 x 16 tile's 261 tokens.
-#define H3D_SLOTS 9
+// The attention's key blocks: 9 of 32 keys, 288 past a 16 x 16 tile's 261 tokens, staged in fp32 rows of 68.
+#define H3D_BLOCKS 9
+#define H3D_LD 68
 
 // One parameter block for every kernel: the pass's tiles and their geometry, a product's size, the norms' epsilon.
 struct H3dShape {
@@ -291,82 +292,106 @@ inline float h3d_total(float v, threadgroup float* part, uint lane, uint sg) {
   v[to + 32 + lane] = src[160 + lane];
 }
 
-// softmax(q k^T / 8) v, a simdgroup a query over its tile's keys; fp32 scores, softmax and sums. [T / 8, 16, tiles].
-[[max_total_threads_per_threadgroup(256)]] [[kernel]] void h3d_attention(
+// Keys or values [key0, key0 + 32) of one (tile, head) into `kv` in fp32, zero past T. 128 threads.
+inline void h3d_stage(threadgroup float* kv, const device bfloat* src, uint key0, uint T, uint tid) {
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint i = tid; i < 32 * 16; i += 128) {
+    const uint key = key0 + i / 16;
+    const float4 x = key < T ? float4(((const device bfloat4*)(src + ulong(key) * 64))[i % 16]) : float4(0.0f);
+    *(threadgroup float4*)(kv + (i / 16) * H3D_LD + (i % 16) * 4) = x;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+}
+
+// softmax(q k^T / 8) v on 8 x 8 simdgroup matrices; fp32 scores, softmax and sums. Each simdgroup holds 8 queries'
+// scores, then their weights, in registers; only k and v pass through threadgroup memory. [T / 32, 16, tiles].
+[[max_total_threads_per_threadgroup(128)]] [[kernel]] void h3d_attention(
     const device bfloat* q [[buffer(0)]], const device bfloat* k [[buffer(1)]], const device bfloat* v [[buffer(2)]],
     device bfloat* o [[buffer(3)]], constant H3dShape& p [[buffer(4)]], uint3 tg [[threadgroup_position_in_grid]],
-    uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
-  threadgroup float qs[8 * 64];
-  threadgroup float ps[8 * 32 * H3D_SLOTS];
+    uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+    uint sg [[simdgroup_index_in_threadgroup]]) {
+  threadgroup float kv[32 * H3D_LD];
   const uint T = p.tokens;
-  const uint query = tg.x * 8 + sg;
-  if (query >= T) return;
-  const uint head = tg.y;
-  const uint tile = tg.z;
-  const ulong base = (ulong(tile) * 16 + head) * T * 64;
-  threadgroup float* qr = qs + sg * 64;
-  threadgroup float* pr = ps + sg * 32 * H3D_SLOTS;
-  qr[lane] = float(q[base + ulong(query) * 64 + lane]);
-  qr[lane + 32] = float(q[base + ulong(query) * 64 + 32 + lane]);
-  simdgroup_barrier(mem_flags::mem_threadgroup);
-  float sc[H3D_SLOTS];
+  const ulong base = (ulong(tg.z) * 16 + tg.y) * T * 64;
+  // This lane's place in an 8 x 8 fragment: row `r`, columns `c` and `c + 1`; a row's lanes differ by ^1 and ^8.
+  const uint r = (lane / 16) * 4 + (lane / 2) % 4;
+  const uint c = (lane / 8) % 2 * 4 + (lane % 2) * 2;
+  const uint query = tg.x * 32 + sg * 8 + r;
+  simdgroup_float8x8 qf[8];
+  const device bfloat* qr = q + base + ulong(min(query, T - 1)) * 64 + c;
+  H3D_UNROLL
+  for (uint d = 0; d < 8; d++) {
+    qf[d].thread_elements()[0] = float(qr[d * 8]);
+    qf[d].thread_elements()[1] = float(qr[d * 8 + 1]);
+  }
+  simdgroup_float8x8 s[H3D_BLOCKS][4];
+  H3D_UNROLL
+  for (uint b = 0; b < H3D_BLOCKS; b++) {
+    h3d_stage(kv, k + base, b * 32, T, tid);
+    H3D_UNROLL
+    for (uint j = 0; j < 4; j++) {
+      s[b][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+      H3D_UNROLL
+      for (uint d = 0; d < 8; d++) {
+        simdgroup_float8x8 kt;
+        simdgroup_load(kt, kv + j * 8 * H3D_LD + d * 8, H3D_LD, ulong2(0, 0), true);
+        simdgroup_multiply_accumulate(s[b][j], qf[d], kt, s[b][j]);
+      }
+    }
+  }
   float top = -INFINITY;
   H3D_UNROLL
-  for (uint i = 0; i < H3D_SLOTS; i++) {
-    const uint key = lane + 32 * i;
-    sc[i] = -INFINITY;
-    if (key < T) {
-#if H3D_TENSOR
-      const device bfloat4* kr = (const device bfloat4*)(k + base + ulong(key) * 64);
-      const threadgroup float4* q4 = (const threadgroup float4*)qr;
-      float4 dot = float4(0.0f);
+  for (uint b = 0; b < H3D_BLOCKS; b++) {
+    H3D_UNROLL
+    for (uint j = 0; j < 4; j++) {
       H3D_UNROLL
-      for (uint d = 0; d < 16; d++) dot += float4(kr[d]) * q4[d];
-      sc[i] = (dot.x + dot.y + dot.z + dot.w) * p.scale;
-#else
-      const device bfloat* kr = k + base + ulong(key) * 64;
-      float dot = 0.0f;
-      for (uint d = 0; d < 64; d++) dot += qr[d] * float(kr[d]);
-      sc[i] = dot * p.scale;
-#endif
-      top = max(top, sc[i]);
+      for (uint e = 0; e < 2; e++) {
+        const float x = b * 32 + j * 8 + c + e < T ? s[b][j].thread_elements()[e] * p.scale : -INFINITY;
+        s[b][j].thread_elements()[e] = x;
+        top = max(top, x);
+      }
     }
   }
-  top = simd_max(top);
+  top = max(top, simd_shuffle_xor(top, 1));
+  top = max(top, simd_shuffle_xor(top, 8));
   float total = 0.0f;
   H3D_UNROLL
-  for (uint i = 0; i < H3D_SLOTS; i++) {
-    const uint key = lane + 32 * i;
-    if (key < T) {
-      const float e = precise::exp(sc[i] - top);
-      pr[key] = e;
-      total += e;
+  for (uint b = 0; b < H3D_BLOCKS; b++) {
+    H3D_UNROLL
+    for (uint j = 0; j < 4; j++) {
+      H3D_UNROLL
+      for (uint e = 0; e < 2; e++) {
+        const float w = precise::exp(s[b][j].thread_elements()[e] - top);
+        s[b][j].thread_elements()[e] = w;
+        total += w;
+      }
     }
   }
-  total = simd_sum(total);
-  simdgroup_barrier(mem_flags::mem_threadgroup);
-#if H3D_TENSOR
-  float2 a = float2(0.0f);
-  for (uint key = 0; key < T; key++) {
-    const device bfloat2* vr = (const device bfloat2*)(v + base + ulong(key) * 64 + 2 * lane);
-    a += float2(vr[0]) * pr[key];
+  total += simd_shuffle_xor(total, 1);
+  total += simd_shuffle_xor(total, 8);
+  simdgroup_float8x8 acc[8];
+  H3D_UNROLL
+  for (uint d = 0; d < 8; d++) acc[d] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+  H3D_UNROLL
+  for (uint b = 0; b < H3D_BLOCKS; b++) {
+    h3d_stage(kv, v + base, b * 32, T, tid);
+    H3D_UNROLL
+    for (uint j = 0; j < 4; j++) {
+      H3D_UNROLL
+      for (uint d = 0; d < 8; d++) {
+        simdgroup_float8x8 vf;
+        simdgroup_load(vf, kv + j * 8 * H3D_LD + d * 8, H3D_LD);
+        simdgroup_multiply_accumulate(acc[d], s[b][j], vf, acc[d]);
+      }
+    }
   }
-  const ulong at = (ulong(tile) * T + query) * 1024 + head * 64 + 2 * lane;
-  o[at] = bfloat(a.x / total);
-  o[at + 1] = bfloat(a.y / total);
-#else
-  float a0 = 0.0f;
-  float a1 = 0.0f;
-  for (uint key = 0; key < T; key++) {
-    const float pk = pr[key];
-    const device bfloat* vr = v + base + ulong(key) * 64 + 2 * lane;
-    a0 += pk * float(vr[0]);
-    a1 += pk * float(vr[1]);
+  if (query >= T) return;
+  device bfloat* out = o + (ulong(tg.z) * T + query) * 1024 + tg.y * 64 + c;
+  H3D_UNROLL
+  for (uint d = 0; d < 8; d++) {
+    out[d * 8] = bfloat(acc[d].thread_elements()[0] / total);
+    out[d * 8 + 1] = bfloat(acc[d].thread_elements()[1] / total);
   }
-  const ulong at = (ulong(tile) * T + query) * 1024 + head * 64 + 2 * lane;
-  o[at] = bfloat(a0 / total);
-  o[at + 1] = bfloat(a1 / total);
-#endif
 }
 
 // act = bf16(bf16(SiLU(gate)) * value), w1's rows read as [gate 4,096 | value 4,096]. Threads [4,096, m].
