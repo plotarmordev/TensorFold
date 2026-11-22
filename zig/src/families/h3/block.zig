@@ -111,6 +111,19 @@ fn attend(m: *const Model, enc: mtl.ComputeEncoder, list: mtl.Buffer, queries: u
     enc.dispatchGroups(mtl.Size.of(queries, m.heads, 1), mtl.Size.of(256, 1, 1));
 }
 
+/// --far-pool: the target's pooled tiles, then the prefix's query tiles over every tile and each target tile over its
+/// far-field list (shared by every head).
+fn attendFar(m: *const Model, enc: mtl.ComputeEncoder) void {
+    enc.setPipeline(m.pipeline("h3_far_pool"));
+    enc.setBuffer(m.tk, 0, 0);
+    enc.setBuffer(m.tv, 0, 1);
+    enc.setValue([1]i32{@intCast(m.prefix_tiles)}, 2);
+    enc.dispatchGroups(mtl.Size.of(m.far_pooled, m.heads, 1), mtl.Size.of(64, 1, 1));
+    enc.barrier();
+    attend(m, enc, m.all_tiles, m.prefix_tiles, m.tiles, 0, false);
+    attend(m, enc, m.far_list, m.tiles - m.prefix_tiles, m.far_per_query, m.prefix_tiles, true);
+}
+
 /// Block `index` of a forward; the block before left its MLP's rows in y, added here with this block's first norm.
 pub fn run(m: *Model, pass: *h3.Pass, index: usize) !void {
     const b = &m.blocks[index];
@@ -144,7 +157,7 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) !void {
     enc.dispatchGroups(mtl.Size.of(m.rows, heads, 1), mtl.Size.of(32, 1, 1));
     try m.lap(pass, "heads");
     if (m.dense) {
-        attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, false);
+        if (m.far_pooled > 0) attendFar(m, enc.*) else attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, false);
         try m.lap(pass, "attention");
     } else {
         enc.setPipeline(m.pipeline("h3_pool"));
@@ -513,4 +526,109 @@ test "h3 gemm: a clip's linears stay bf16, bit for bit main's MLX product, whole
         try std.testing.expect(pass.cb.failure() == null);
         try std.testing.expectEqualSlices(u16, old.slice(u16, rows * n), m.wide.slice(u16, rows * n));
     }
+}
+
+/// One head's attention over `tiles` tiles (and `pooled` far-field tiles past them) with the case's buffers in `m`.
+fn attendOnce(device: mtl.Device, queue: mtl.Queue, m: *Model, tiles: usize, pooled: usize) !void {
+    const a = std.testing.allocator;
+    const text = try @import("source.zig").library(a, 1, (tiles + pooled) * 64, tiles, if (pooled > 0) "#define H3_HIDDEN 128\n#define H3_FAR 1\n" else "#define H3_HIDDEN 128\n");
+    defer a.free(text);
+    const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
+    defer lib.deinit();
+    inline for (kernels.names, 0..) |name, i| m.pipelines[i] = try mtl.Pipeline.init(device, lib, name, false);
+    defer for (m.pipelines) |p| p.deinit();
+    m.tiles = tiles;
+    m.far_pooled = pooled;
+    m.dense = true;
+    const cb = queue.commandBuffer();
+    const enc = cb.compute(.concurrent);
+    if (pooled > 0) attendFar(m, enc) else attend(m, enc, m.all_tiles, tiles, tiles, 0, false);
+    enc.end();
+    cb.commit();
+    cb.wait();
+    try std.testing.expect(cb.failure() == null);
+}
+
+test "h3 far field: where each 2 x 2 block's keys and values are equal, pooled far keys give dense attention" {
+    const device = mtl.Device.init() catch return error.SkipZigTest;
+    defer device.deinit();
+    if (!device.tensorUnits()) return error.SkipZigTest;
+    const pool = mtl.objc.Pool.push();
+    defer pool.pop();
+    const queue = try device.queue();
+    defer queue.deinit();
+    // one head; a prefix tile of 24 text rows, then a 4 x 128 target: 8 tiles, 2 pooled rows of one tile each
+    const prefix = 24;
+    const tiles = 9;
+    const slots = (tiles + 2) * 64;
+    const rows = prefix + 4 * 128;
+    const shared = mtl.ResourceOptions.shared;
+    var m: Model = undefined;
+    m.heads = 1;
+    m.prefix_tiles = 1;
+    inline for (.{ "tq", "tk", "tv" }) |f| @field(m, f) = try device.buffer(slots * 128 * 2, shared);
+    defer inline for (.{ "tq", "tk", "tv" }) |f| @field(m, f).deinit();
+    m.row_of = try device.buffer(slots * 4, shared);
+    defer m.row_of.deinit();
+    m.all_tiles = try device.buffer(tiles * 4, shared);
+    defer m.all_tiles.deinit();
+    const sizes = try device.buffer(tiles * 4, shared);
+    defer sizes.deinit();
+    m.sizes = .{ .buffer = sizes };
+    m.far_list = try device.buffer(8 * 6 * 4, shared);
+    defer m.far_list.deinit();
+    m.far_per_query = 6;
+    const dense = try device.buffer(rows * 128 * 2, shared);
+    defer dense.deinit();
+    const far = try device.buffer(rows * 128 * 2, shared);
+    defer far.deinit();
+    var prng = std.Random.DefaultPrng.init(88);
+    const r = prng.random();
+    for ([_]mtl.Buffer{ m.tq, m.tk, m.tv }) |b| @memset(b.slice(u16, slots * 128), 0);
+    @memset(m.row_of.slice(i32, slots), -1);
+    for (0..prefix) |row| m.row_of.slice(i32, slots)[row] = @intCast(row);
+    for (0..rows - prefix) |row| m.row_of.slice(i32, slots)[64 + row] = @intCast(prefix + row);
+    for (m.all_tiles.slice(i32, tiles), 0..) |*t, i| t.* = @intCast(i);
+    for (sizes.slice(i32, tiles), 0..) |*s, i| s.* = if (i == 0) prefix else 64;
+    // the prefix's and target's rows; a target slot's key and value are its 2 x 2 block's top-left one's
+    const q = m.tq.slice(u16, slots * 128);
+    const k = m.tk.slice(u16, slots * 128);
+    const v = m.tv.slice(u16, slots * 128);
+    for (0..64 * tiles) |s| if (s < prefix or s >= 64) {
+        for (0..128) |d| q[s * 128 + d] = 0x3e00 | (r.int(u16) & 0x807f); // magnitude [0.125, 0.25)
+    };
+    for (0..64 * tiles) |s| if (s < prefix or s >= 64) {
+        const t = s -| 64;
+        const top = if (s < 64) s else 64 + (t / 128 / 2 * 2) * 128 + t % 128 / 2 * 2;
+        for (0..128) |d| {
+            if (top == s) {
+                k[s * 128 + d] = 0x3f80 | (r.int(u16) & 0x807f);
+                v[s * 128 + d] = 0x3f80 | (r.int(u16) & 0x807f);
+            } else {
+                k[s * 128 + d] = k[top * 128 + d];
+                v[s * 128 + d] = v[top * 128 + d];
+            }
+        }
+    };
+    // a query tile in pooled row p: the prefix, its own row's four tiles, the other row's pooled tile
+    for (0..8) |t| {
+        const p = t / 4;
+        const base: i32 = @intCast(1 + 4 * p);
+        @memcpy(m.far_list.slice(i32, 48)[t * 6 ..][0..6], &[_]i32{ 0, base, base + 1, base + 2, base + 3, @intCast(tiles + 1 - p) });
+    }
+    m.qr = dense;
+    try attendOnce(device, queue, &m, tiles, 0);
+    m.qr = far;
+    try attendOnce(device, queue, &m, tiles, 2);
+    // relative to the largest output: one bf16 step, the sums in another order
+    var worst: f32 = 0;
+    var largest: f32 = 0;
+    for (dense.slice(u16, rows * 128), far.slice(u16, rows * 128)) |want, got| {
+        const x: f32 = @bitCast(@as(u32, want) << 16);
+        const y: f32 = @bitCast(@as(u32, got) << 16);
+        worst = @max(worst, @abs(x - y));
+        largest = @max(largest, @abs(x));
+    }
+    errdefer std.debug.print("worst difference {e} of largest {e}\n", .{ worst, largest });
+    try std.testing.expect(largest > 0 and worst <= largest / 128.0);
 }

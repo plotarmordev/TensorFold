@@ -20,7 +20,12 @@
   const int NQ = P[0], KSEL = P[1];
   const int head = int(tg.y), r0 = (P[2] + int(tg.x)) * TQ;
   const long hb = long(head) * TS;
+#ifdef H3_FAR
+  // a far-field binding's routed lists are its own: one a query tile, shared by every head
+  const device int32_t* list = IDX + (P[3] ? long(tg.x) * KSEL : 0);
+#else
   const device int32_t* list = IDX + (P[3] ? (long(head) * NQ + tg.x) * KSEL : 0);
+#endif
   tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> q((device bfloat*)Q + hb * D, dextents<int32_t, 2>(D, TS));
   tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> k((device bfloat*)K + hb * D, dextents<int32_t, 2>(D, TS));
   tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> v((device bfloat*)V + hb * D, dextents<int32_t, 2>(D, TS));
@@ -59,13 +64,25 @@
   float s[C1];
   for (int sel = 0; sel < KSEL; sel++) {
     const int tile = list[sel];
+#ifdef H3_FAR
+    // a pooled tile (past H3_TILES) is 64 whole keys, each standing for four: ln 4 on its logits
+    const bool pooled = tile >= H3_TILES;
+    const int k0 = tile * KEYS, size = pooled ? KEYS : SIZES[tile];
+    const float lift = pooled ? 2.0f * M_LN2_F : 0.0f;
+#else
     const int k0 = tile * KEYS, size = SIZES[tile];
+#endif
     H3_UNROLL
     for (ushort i = 0; i < C1; i++) acc[i] = 0.0f;
     auto b = k.slice<D, KEYS>(0, k0);
     op1.run(a, b, acc);
+#ifdef H3_FAR
+    H3_UNROLL
+    for (ushort i = 0; i < C1; i++) st[srow[i] * KEYS + scol[i]] = scol[i] < size ? acc[i] * scale + lift : -INFINITY;
+#else
     H3_UNROLL
     for (ushort i = 0; i < C1; i++) st[srow[i] * KEYS + scol[i]] = scol[i] < size ? acc[i] * scale : -INFINITY;
+#endif
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float local = -INFINITY;
     H3_UNROLL
@@ -109,5 +126,23 @@
   for (ushort i = 0; i < C2; i++) {
     const int to = ROWOF[r0 + orow[i]];
     if (to >= 0) Y[(long(to) * H + head) * D + ocol[i]] = bfloat(out[i] * fac[orow[i]]);
+  }
+}
+
+// --far-pool: the target's keys and values 2 x 2 mean-pooled (fp32 sums) into the tiles after H3_TILES, one
+// pooled row of 64 a tile. FIRST: the first target tile; picture rows are 128 wide. [pooled rows, H] of 64.
+[[kernel]] void h3_far_pool(
+  device bfloat* K [[buffer(0)]],
+  device bfloat* V [[buffer(1)]],
+  const constant int32_t* FIRST [[buffer(2)]],
+  uint tid [[thread_index_in_threadgroup]],
+  uint3 tg [[threadgroup_position_in_grid]]) {
+  const long hb = long(tg.y) * H3_SLOTS;
+  const long top = hb + (FIRST[0] + 4 * long(tg.x)) * 64 + 2 * tid;
+  const long to = (hb + (H3_TILES + long(tg.x)) * 64 + tid) * 128;
+  for (int d = 0; d < 128; d++) {
+    const long at = top * 128 + d;
+    K[to + d] = bfloat((float(K[at]) + float(K[at + 128]) + float(K[at + 128 * 128]) + float(K[at + 129 * 128])) * 0.25f);
+    V[to + d] = bfloat((float(V[at]) + float(V[at + 128]) + float(V[at + 128 * 128]) + float(V[at + 129 * 128])) * 0.25f);
   }
 }
