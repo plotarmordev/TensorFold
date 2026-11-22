@@ -101,7 +101,11 @@ other runner leaves the CPU idle.
 ### Considered, not ranked
 
 - **FastH3's routed attention in the last steps.** The video engines already ship it, and it drops tiles where
-  pooled far-field keys keep them.
+  pooled far-field keys keep them. Card 187 measured it on the Mac behind `--routed-steps N` (FastH3's top fifth of
+  picture tiles, no pooled branch, since the release weights were trained dense): at 2048, routing steps 5 and 6
+  saves about 0.2 s a step, but canal's picture misses the 28.2 dB floor by 1.6 dB (fast mode 3.3 dB), with pilot
+  and foundry passing. It stays opt-in and off by default
+  ([minimax-h3-image-metal.md](minimax-h3-image-metal.md#card-187-fasth3s-routed-attention-in-the-last-steps-measured-and-rejected-as-a-default)).
 - **The decoder in larger tiles on the tensor units.** About 1.7% of a 4096 run.
 - **Caching the prompt's rows, or keeping its encoder apart from the transformer.** SGLang and vLLM-Omni cache
   conditioning; h3-image-mlx and the maintainer's tools run the encoder and the transformer as separate processes.
