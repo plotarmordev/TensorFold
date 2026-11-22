@@ -15,8 +15,8 @@ const tiles = t.tiles;
 /// h3_attention's dynamic shared bytes: a query, a key and a value tile.
 pub const attention_shared = 3 * 64 * 128 * 2;
 
-/// h3_attention_i8's dynamic shared bytes: the three tiles in int8.
-pub const attention_i8_shared = 3 * 64 * 128;
+/// h3_attention_i8's dynamic shared bytes: the three int8 tiles and the u8 probability rows at their 80-byte stride.
+pub const attention_i8_shared = 3 * 64 * 128 + 64 * 80;
 
 /// Gate 4's dot rows: integer terms whose second half cancels the first, so fp32 sums are exact and the result small.
 fn mirror(x: []f64, w: []f64, k: usize, rows: usize, n: usize) void {

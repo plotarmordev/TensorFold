@@ -35,8 +35,9 @@ pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "at
 /// h3_attention's dynamic shared bytes: a query, a key and a value tile in bf16.
 const attention_shared = 3 * slot_tile * head_dim * 2;
 
-/// h3_attention_i8's dynamic shared bytes: a query, a key and a value tile in int8.
-const attention_i8_shared = 3 * slot_tile * head_dim;
+/// h3_attention_i8's dynamic shared bytes: a query, a key and a value tile in int8, and the u8 probability
+/// rows at the kernel's 80-byte stride (h3_attention_int8.cuh's i8_probability_row).
+const attention_i8_shared = 3 * slot_tile * head_dim + slot_tile * 80;
 
 pub const seconds = @import("clock.zig").seconds;
 
@@ -402,7 +403,7 @@ pub const Model = struct {
                 const at = own0 * slot_tile * head_dim * 2;
                 const atq = own0 * slot_tile * head_dim;
                 var args: cuda.Args = .{};
-                for ([_]u64{ g.tq + at, g.tk[par] + at, g.tv[par] + at, in.sizes + own0 * 4, g.q8 + atq, g.k8[par] + atq, g.v8[par] + atq, g.qs + own0 * slot_tile * 4, g.ks[par] + own0 * slot_tile * 4, g.vs[par] + own0 * 4 }) |p| args.add(p);
+                for ([_]u64{ g.tq + at, g.tk[par] + at, g.tv[par] + at, in.sizes + own0 * 4, g.q8 + atq, g.k8[par] + atq, g.v8[par] + atq, g.qs + own0 * slot_tile * 4, g.ks[par] + own0 * slot_tile * 4, g.vs[par] + own0 * head_dim * 4 }) |p| args.add(p);
                 args.add(@as(c_int, @intCast(tiles * slot_tile)));
                 try self.launch("h3_heads_quant", .{ .x = @intCast(owned), .y = @intCast(heads) }, 128, 0, &args);
                 try self.attend_i8(par, g.all, in.sizes, owned, owned, tiles, own0, false);
