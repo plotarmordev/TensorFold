@@ -6,6 +6,8 @@
 // With SWIGLU the epilogue writes silu(gate) * up, [m, n / 2], for weights whose rows interleave a
 // feature's gate and up rows pairwise (h3_swiglu_rows); h3_swiglu_int8's rounding: the scaled sums
 // round to bf16 first, silu's value rounds to bf16, then the product rounds to bf16.
+// With BLOCKS both operands carry a scale per 128-deep K block (h3_quantize_blocks, block-major):
+// each block's int32 sums fold into fp32 at that block's two scales before the next block's MMAs.
 //
 // Dropped from the port: the cp.async fallback (the picture tools run only where TMA exists), the
 // low-rank adapter, the bias and the column-maxima tracking — no H3 picture projection uses them.
@@ -28,6 +30,8 @@ constexpr int tma_block_k = 128;
 constexpr int tma_stages = 2;
 constexpr int tma_warps = 8;
 constexpr int tma_group_m = 8; // tile rows a band walks before moving right (mmh3's default)
+
+enum class Epilogue { rows, swiglu, blocks };
 
 __device__ __forceinline__ uint32_t h3_shared_address(const void *pointer) {
     return static_cast<uint32_t>(__cvta_generic_to_shared(pointer));
@@ -237,13 +241,14 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
 }
 
 // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
-// silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
-// produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
-// the tiles; the warp that releases a ring stage last issues the TMA copies that refill it, so no
-// producer warp costs every warp its registers. The tensor maps bind by reference so their
-// addresses stay in parameter space — a by-value copy would land in local space, which
-// cp.async.bulk.tensor refuses.
-template <typename Config, bool SWIGLU>
+// silu(gate) * up at [m, n / 2] for Epilogue::swiglu — the same products h3_dequantize and
+// h3_swiglu_int8 produce from the int32 sums, without the sums' round trip through memory — or for
+// Epilogue::blocks the fp32 sum over K blocks b of acc_b[m, n] * xs[b * m + m'] * ws[b * n + n'].
+// One CTA per SM walks the tiles; the warp that releases a ring stage last issues the TMA copies
+// that refill it, so no producer warp costs every warp its registers. The tensor maps bind by
+// reference so their addresses stay in parameter space — a by-value copy would land in local space,
+// which cp.async.bulk.tensor refuses.
+template <typename Config, Epilogue E>
 __device__ __forceinline__ void
     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
                 const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
@@ -299,34 +304,15 @@ __device__ __forceinline__ void
         ring.advance();
     };
 
-    for (int tile = blockIdx.x; tile < grid.tiles; tile += gridDim.x) {
-        int tile_m, tile_n;
-        grid.coordinates(tile, tile_m, tile_n);
-        int32_t accumulators[Config::m_tiles][Config::n_tiles][4];
-        #pragma unroll
-        for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
-            #pragma unroll
-            for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
-                #pragma unroll
-                for (int index = 0; index < 4; index++) {
-                    accumulators[m_tile][n_tile][index] = 0;
-                }
-            }
-        }
-        for (int k_block = 0; k_block < grid.k_blocks; k_block++) {
-            consume(accumulators);
-        }
-
-        // Scale the int32 products. Slot j of each quad of n-tiles holds output columns 2((j + t) %
-        // 4) and the one after among the lane's eight.
-        float values[Config::m_tiles][Config::n_tiles][4];
-        float row_scales[Config::m_tiles][2];
+    // The lane's scales: two rows an m-tile, and per n-tile slot j of each quad the column pair
+    // 2((j + t) % 4) among the lane's eight.
+    auto load_scales = [&](int tile_m, int tile_n, const float *xs, const float *ws, float (&rows)[Config::m_tiles][2], float2 (&columns)[Config::n_tiles]) {
         #pragma unroll
         for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
             #pragma unroll
             for (int half = 0; half < 2; half++) {
                 const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
-                row_scales[m_tile][half] = row < m ? activation_scales[row] : 0.0f;
+                rows[m_tile][half] = row < m ? xs[row] : 0.0f;
             }
         }
         #pragma unroll
@@ -334,18 +320,59 @@ __device__ __forceinline__ void
             const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
             #pragma unroll
             for (int slot = 0; slot < 4; slot++) {
-                const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
+                columns[quad * 4 + slot] = *reinterpret_cast<const float2 *>(ws + column + ((slot + quad_lane) & 3) * 2);
+            }
+        }
+    };
+
+    // Scales the int32 products into `values` (added to them for Epilogue::blocks) and restarts the
+    // sums at zero.
+    auto fold = [&](int32_t (&accumulators)[Config::m_tiles][Config::n_tiles][4], float (&values)[Config::m_tiles][Config::n_tiles][4],
+                    const float (&rows)[Config::m_tiles][2], const float2 (&columns)[Config::n_tiles]) {
+        #pragma unroll
+        for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+            #pragma unroll
+            for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
                 #pragma unroll
-                for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
-                    #pragma unroll
-                    for (int half = 0; half < 2; half++) {
-                        const int32_t *products = accumulators[m_tile][quad * 4 + slot] + half * 2;
-                        float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
-                        scaled[0] = static_cast<float>(products[0]) * row_scales[m_tile][half] * column_scale.x;
-                        scaled[1] = static_cast<float>(products[1]) * row_scales[m_tile][half] * column_scale.y;
+                for (int half = 0; half < 2; half++) {
+                    int32_t *products = accumulators[m_tile][n_tile] + half * 2;
+                    float *scaled = values[m_tile][n_tile] + half * 2;
+                    const float low = static_cast<float>(products[0]) * rows[m_tile][half] * columns[n_tile].x;
+                    const float high = static_cast<float>(products[1]) * rows[m_tile][half] * columns[n_tile].y;
+                    if constexpr (E == Epilogue::blocks) {
+                        scaled[0] += low;
+                        scaled[1] += high;
+                    } else {
+                        scaled[0] = low;
+                        scaled[1] = high;
                     }
+                    products[0] = 0;
+                    products[1] = 0;
                 }
             }
+        }
+    };
+
+    int32_t accumulators[Config::m_tiles][Config::n_tiles][4] = {};
+    for (int tile = blockIdx.x; tile < grid.tiles; tile += gridDim.x) {
+        int tile_m, tile_n;
+        grid.coordinates(tile, tile_m, tile_n);
+        float values[Config::m_tiles][Config::n_tiles][4] = {};
+        float row_scales[Config::m_tiles][2];
+        float2 column_scales[Config::n_tiles];
+        if constexpr (E == Epilogue::blocks) {
+            for (int k_block = 0; k_block < grid.k_blocks; k_block++) {
+                // the block's scales load before its MMAs, so their latency hides behind them
+                load_scales(tile_m, tile_n, activation_scales + static_cast<size_t>(k_block) * m, weight_scales + static_cast<size_t>(k_block) * n, row_scales, column_scales);
+                consume(accumulators);
+                fold(accumulators, values, row_scales, column_scales);
+            }
+        } else {
+            for (int k_block = 0; k_block < grid.k_blocks; k_block++) {
+                consume(accumulators);
+            }
+            load_scales(tile_m, tile_n, activation_scales, weight_scales, row_scales, column_scales);
+            fold(accumulators, values, row_scales, column_scales);
         }
 
         #pragma unroll
@@ -379,7 +406,7 @@ __device__ __forceinline__ void
                     }
                     const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
                     if (row < m) {
-                        if constexpr (SWIGLU) {
+                        if constexpr (E == Epilogue::swiglu) {
                             // The lane's eight columns hold the (gate, up) pairs of features
                             // column / 2 to column / 2 + 3 (the weights' rows interleave pairwise).
                             *reinterpret_cast<uint2 *>(output + static_cast<size_t>(row) * (n / 2) + column / 2) =
@@ -397,5 +424,7 @@ __device__ __forceinline__ void
 }
 
 using TallTile = GemmConfig<256, 128, 4>;
+// Epilogue::blocks keeps an fp32 sum beside every int32 one: 128 x 128 halves both against TallTile.
+using SquareTile = GemmConfig<128, 128, 2>;
 
 } // namespace h3_int8

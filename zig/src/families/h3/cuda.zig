@@ -28,7 +28,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_blocks", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_gemm_int8_tma_blocks", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -148,6 +148,7 @@ pub const Model = struct {
         // no launch needs the attribute raced against the stream
         try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
         try self.function("h3_swiglu_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
+        try self.function("h3_gemm_int8_tma_blocks").allowDynamicShared(@import("cuda_int8.zig").blocks_shared);
         // the legacy default stream: work queued by the caller's framework comes first
         self.stream = .{ .d = d, .handle = null };
         self.gemms = try Gemms.init(gpa, d);
@@ -312,13 +313,9 @@ pub const Model = struct {
     pub fn warm(self: *Model, rows: usize) !void {
         const inner = self.inner;
         if (self.fp4) |t| return t.warm(self, rows);
-        if (self.int8) |t| {
-            try t.warm(self, rows);
-        } else {
-            _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
-            _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
-        }
-        // `out` and `fc2` keep their bf16 weights in both modes
+        if (self.int8) |t| return t.warm(self, rows);
+        _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
+        _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
         _ = try self.gemms.plan(rows, self.hidden, inner);
         _ = try self.gemms.plan(rows, self.hidden, self.mlp);
     }
@@ -407,7 +404,7 @@ pub const Model = struct {
                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
                 try self.lap("gate mix", &mark);
             }
-            if (self.fp4) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
+            if (self.int8) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else if (self.fp4) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
             try self.lap("attention out", &mark);
             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m, iq, is);
             try self.lap("norms", &mark);
@@ -421,7 +418,7 @@ pub const Model = struct {
                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
             }
             try self.lap("mlp in", &mark);
-            if (self.fp4) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
+            if (self.int8) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else if (self.fp4) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
             try self.lap("mlp out", &mark);
         }
         {
