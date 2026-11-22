@@ -6,6 +6,9 @@ const h3 = @import("h3");
 const prompt_tool = @import("h3_image_prompt.zig");
 const image_tool = @import("h3_image.zig");
 const decoder_tool = @import("h3_image_decoder.zig");
+const keepalive = @import("keepalive");
+
+const keep_warm_ns: i64 = std.math.maxInt(i64);
 
 const usage =
     \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile] [--draft-steps N] [--renoise-sigma X] [--far-pool] [--routed-steps N]
@@ -82,25 +85,18 @@ fn rebind(gpa: std.mem.Allocator, folder: *const image_tool.Folder, binding: *?B
     return false;
 }
 
-/// Every weight file in one residency set on the three stages' queues. macOS unwires GPU memory idle for a second or
-/// two, so without it each stage's first commit of a request re-wires its weights: 0.3-0.7 s of step 1, up to 1.8 s
-/// of the prompt. With no keepalive, a request after a longer pause still re-wires once, in its prompt. Null, and the
-/// server runs as before, when the weights pass 70% of RAM or the set is unsupported.
-fn holdWeights(init: std.process.Init, a: std.mem.Allocator, encoder: *const prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae) !?mtl.resident.Resident {
-    var buffers: std.ArrayList(mtl.Buffer) = .empty;
-    for ([_][]const h3.Tensors{ encoder.text_w.shards.files, encoder.front_w.shards.files, folder.ck.shards, (&folder.heads)[0..1] }) |mapped|
-        for (mapped) |f| try buffers.append(a, f.buffer);
-    try buffers.append(a, vae.d.weights);
-    const held = mtl.resident.Resident.hold(init.gpa, init.io, encoder.device, encoder.runner.queue, buffers.items, "h3 image weights") catch |err| {
-        std.debug.print("weights not held resident: {s}\n", .{@errorName(err)});
-        return null;
-    } orelse {
-        std.debug.print("weights not held resident: past 70% of RAM\n", .{});
-        return null;
-    };
-    vae.d.queue.addResidencySet(held.held.set);
-    std.debug.print("{d:.1} GiB of weights held resident\n", .{mtl.ResidencySet.gibs(held.held.bytes)});
-    return held;
+/// Every weight file in one residency set. macOS unwires GPU memory idle for a second or two, so without it each
+/// stage's first commit of a request re-wires its weights: 0.3-0.7 s of step 1, up to 1.8 s of the prompt. A refusal
+/// past `limit` stops startup rather than serve unwarmed.
+fn holdWeights(init: std.process.Init, buffers: []const mtl.Buffer, device: mtl.Device, queue: mtl.Queue, limit: ?u64) !mtl.resident.Resident {
+    const held = try mtl.resident.Resident.holdUnder(init.gpa, init.io, device, queue, buffers, "h3 image weights", limit);
+    return held orelse error.WeightsNotResident;
+}
+
+/// The idle ticker over a held set; a failure stops startup, since unwarmed stages re-wire every request.
+fn warmStart(init: std.process.Init, gpa: std.mem.Allocator, resident: *mtl.resident.Resident, target: *mtl.keepalive.Target) !*keepalive.Keepalive {
+    target.* = resident.target();
+    return keepalive.Keepalive.start(gpa, init.io, .{ .ctx = target, .tick = mtl.keepalive.Target.tick }, keep_warm_ns);
 }
 
 pub fn main(init: std.process.Init) !u8 {
@@ -151,9 +147,17 @@ pub fn main(init: std.process.Init) !u8 {
     const vae = try decoder_tool.Vae.load(init, a, args[1]);
     defer vae.d.deinit();
     std.debug.print("loaded the prompt encoder, transformer weights and decoder in {d:.1} s; ready\n", .{mtl.clock.seconds() - loading});
-    var resident = try holdWeights(init, a, &encoder, &folder, &vae);
-    defer if (resident) |*r| r.deinit();
-    const weights: ?mtl.ResidencySet = if (resident) |r| r.held.set else null;
+    var buffers: std.ArrayList(mtl.Buffer) = .empty;
+    for ([_][]const h3.Tensors{ encoder.text_w.shards.files, encoder.front_w.shards.files, folder.ck.shards, (&folder.heads)[0..1] }) |mapped|
+        for (mapped) |f| try buffers.append(a, f.buffer);
+    try buffers.append(a, vae.d.weights);
+    var resident = try holdWeights(init, buffers.items, encoder.device, encoder.runner.queue, null);
+    defer resident.deinit();
+    vae.d.queue.addResidencySet(resident.held.set);
+    std.debug.print("{d:.1} GiB of weights held resident\n", .{mtl.ResidencySet.gibs(resident.held.bytes)});
+    var warm: mtl.keepalive.Target = undefined;
+    const ticker = try warmStart(init, init.gpa, &resident, &warm);
+    defer ticker.stop();
 
     var binding: ?Binding = null;
     defer if (binding) |*b| b.release();
@@ -173,7 +177,9 @@ pub fn main(init: std.process.Init) !u8 {
         if (fields.len == 0) continue;
         var request = std.heap.ArenaAllocator.init(init.gpa);
         defer request.deinit();
-        serve(init, request.allocator(), &encoder, &folder, &vae, &binding, &draft_binding, weights, fields, profile, draft_steps, renoise) catch |err| {
+        ticker.begin();
+        defer ticker.end();
+        serve(init, request.allocator(), &encoder, &folder, &vae, &binding, &draft_binding, resident.held.set, fields, profile, draft_steps, renoise) catch |err| {
             std.debug.print("request failed: {s}\n", .{@errorName(err)});
         };
     }
@@ -201,7 +207,7 @@ fn nextLine(in: *std.Io.Reader) !?[]const u8 {
 }
 
 /// One request line: its prompt's case, the six steps on the bound (or a new) transformer, its PNG, a timing line.
-fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae, binding: *?Binding, draft_binding: *?Binding, weights: ?mtl.ResidencySet, line: []const u8, profile: bool, draft_steps: usize, renoise: ?f32) !void {
+fn serve(init: std.process.Init, a: std.mem.Allocator, encoder: *prompt_tool.Encoder, folder: *const image_tool.Folder, vae: *const decoder_tool.Vae, binding: *?Binding, draft_binding: *?Binding, weights: mtl.ResidencySet, line: []const u8, profile: bool, draft_steps: usize, renoise: ?f32) !void {
     var it = std.mem.tokenizeAny(u8, line, " \t");
     const size = try prompt_tool.size(it.next() orelse return error.BadRequest);
     const seed = try std.fmt.parseInt(u64, it.next() orelse return error.BadRequest, 10);
@@ -364,6 +370,14 @@ fn pictureCase(a: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const 
     try dir.writeFile(io, .{ .sub_path = name, .data = try files.image(a, entries.items) });
 }
 
+var idle_ticks = std.atomic.Value(u32).init(0);
+
+/// The keepalive's tick, counted so the idle gate sees it ran.
+fn countedTick(ctx: *anyopaque) void {
+    _ = idle_ticks.fetchAdd(1, .monotonic);
+    mtl.keepalive.Target.tick(ctx);
+}
+
 const Spec = struct { name: []const u8, canvas: [2]i32, text: usize, seed: u32 };
 const Built = struct { case: image_tool.Case, tags: []const i32 };
 
@@ -417,6 +431,18 @@ fn residentFixture(init: std.process.Init, a: std.mem.Allocator, dir: std.Io.Dir
     return .{ .folder = folder, .cases = cases };
 }
 
+/// The process init a tool function reads: no arguments, the test's arena and allocator.
+fn testInit(arena: *std.heap.ArenaAllocator, environ_map: *std.process.Environ.Map) std.process.Init {
+    return .{
+        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
+        .arena = arena,
+        .gpa = testing.allocator,
+        .io = std.testing.io,
+        .environ_map = environ_map,
+        .preopens = .empty,
+    };
+}
+
 test "resident binding, its weights held resident, matches fresh bindings across prompts, rows and canvas" {
     const device = try mtl.Device.init();
     if (!device.tensorUnits()) return error.SkipZigTest;
@@ -428,14 +454,7 @@ test "resident binding, its weights held resident, matches fresh bindings across
     const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     var environ_map: std.process.Environ.Map = .init(testing.allocator);
     defer environ_map.deinit();
-    const init = std.process.Init{
-        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
-        .arena = &arena,
-        .gpa = testing.allocator,
-        .io = std.testing.io,
-        .environ_map = &environ_map,
-        .preopens = .empty,
-    };
+    const init = testInit(&arena, &environ_map);
     var f = try residentFixture(init, a, tmp.dir, dir_path, device);
     defer {
         for (&f.cases) |*c| c.case.file.deinit();
@@ -443,10 +462,15 @@ test "resident binding, its weights held resident, matches fresh bindings across
         for (f.folder.ck.shards) |*shard| shard.deinit();
         testing.allocator.free(f.folder.ck.shards);
     }
-    const weights = try device.residencySet(f.folder.ck.shards.len);
-    defer weights.deinit();
-    for (f.folder.ck.shards) |shard| weights.add(shard.buffer);
-    weights.commit();
+    var buffers: std.ArrayList(mtl.Buffer) = .empty;
+    for (f.folder.ck.shards) |shard| try buffers.append(a, shard.buffer);
+    var held = (try mtl.resident.Resident.hold(testing.allocator, init.io, device, try device.queue(), buffers.items, "h3 image test")) orelse return error.SkipZigTest;
+    defer held.deinit();
+    const weights = held.held.set;
+    var warm = held.target();
+    idle_ticks.store(0, .release);
+    var ticker = try keepalive.Keepalive.startEvery(testing.allocator, std.testing.io, .{ .ctx = &warm, .tick = countedTick }, std.time.ns_per_s, 10 * std.time.ns_per_ms);
+    defer ticker.stop();
     var binding: ?Binding = null;
     defer if (binding) |*b| b.release();
 
@@ -474,6 +498,12 @@ test "resident binding, its weights held resident, matches fresh bindings across
     // back to the first request: a fresh binding again, the same latent
     const resident_a2 = try residentLatent(a, &f.folder, &binding, &f.cases[0].case, f.cases[0].tags, weights, try std.fmt.allocPrint(a, "{s}/resident-a2", .{dir_path}));
     try expectSameLatent(fresh_a, resident_a2);
+
+    // macOS unwires idle GPU memory after 1-2 s: the ticker keeps the binding's weights held across that
+    std.Io.sleep(init.io, .fromMilliseconds(1500), .awake) catch {};
+    try testing.expect(idle_ticks.load(.acquire) > 0);
+    const resident_idle = try residentLatent(a, &f.folder, &binding, &f.cases[0].case, f.cases[0].tags, weights, try std.fmt.allocPrint(a, "{s}/resident-idle", .{dir_path}));
+    try expectSameLatent(fresh_a, resident_idle);
 }
 
 test "the steps' Euler on the GPU leaves main's host-Euler latent bit for bit" {
@@ -487,14 +517,7 @@ test "the steps' Euler on the GPU leaves main's host-Euler latent bit for bit" {
     const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     var environ_map: std.process.Environ.Map = .init(testing.allocator);
     defer environ_map.deinit();
-    const init = std.process.Init{
-        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
-        .arena = &arena,
-        .gpa = testing.allocator,
-        .io = std.testing.io,
-        .environ_map = &environ_map,
-        .preopens = .empty,
-    };
+    const init = testInit(&arena, &environ_map);
     var f = try residentFixture(init, a, tmp.dir, dir_path, device);
     defer {
         for (&f.cases) |*c| c.case.file.deinit();
@@ -528,14 +551,7 @@ test "routed steps that keep every picture tile leave the dense latent bit for b
     const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     var environ_map: std.process.Environ.Map = .init(testing.allocator);
     defer environ_map.deinit();
-    const init = std.process.Init{
-        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
-        .arena = &arena,
-        .gpa = testing.allocator,
-        .io = std.testing.io,
-        .environ_map = &environ_map,
-        .preopens = .empty,
-    };
+    const init = testInit(&arena, &environ_map);
     var f = try residentFixture(init, a, tmp.dir, dir_path, device);
     defer {
         for (&f.cases) |*c| c.case.file.deinit();
@@ -568,14 +584,7 @@ test "profile times each picture kernel on the GPU's counters and leaves the lat
     const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     var environ_map: std.process.Environ.Map = .init(testing.allocator);
     defer environ_map.deinit();
-    const init = std.process.Init{
-        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
-        .arena = &arena,
-        .gpa = testing.allocator,
-        .io = std.testing.io,
-        .environ_map = &environ_map,
-        .preopens = .empty,
-    };
+    const init = testInit(&arena, &environ_map);
     var f = try residentFixture(init, a, tmp.dir, dir_path, device);
     defer {
         for (&f.cases) |*c| c.case.file.deinit();
@@ -616,14 +625,7 @@ test "a failed bind releases every Metal object it made" {
     const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     var environ_map: std.process.Environ.Map = .init(testing.allocator);
     defer environ_map.deinit();
-    const init = std.process.Init{
-        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
-        .arena = &arena,
-        .gpa = testing.allocator,
-        .io = std.testing.io,
-        .environ_map = &environ_map,
-        .preopens = .empty,
-    };
+    const init = testInit(&arena, &environ_map);
     var f = try residentFixture(init, a, tmp.dir, dir_path, device);
     defer {
         for (&f.cases) |*c| c.case.file.deinit();
@@ -819,6 +821,36 @@ test "an over-long request line is drained and the next one read" {
     try testing.expectEqual(@as(?[]const u8, null), try nextLine(&limited.interface));
 }
 
+test "startup stops when the weights cannot be held resident" {
+    const device = try mtl.Device.init();
+    if (!device.tensorUnits()) return error.SkipZigTest;
+    const buffer = try device.buffer(64, mtl.ResourceOptions.shared);
+    defer buffer.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var environ_map: std.process.Environ.Map = .init(testing.allocator);
+    defer environ_map.deinit();
+    // a limit no weight set passes: the server refuses to start rather than serve unwarmed
+    try testing.expectError(error.WeightsNotResident, holdWeights(testInit(&arena, &environ_map), &.{buffer}, device, try device.queue(), 0));
+}
+
+test "startup stops when the idle ticker cannot start" {
+    const device = try mtl.Device.init();
+    if (!device.tensorUnits()) return error.SkipZigTest;
+    const buffer = try device.buffer(64, mtl.ResourceOptions.shared);
+    defer buffer.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var environ_map: std.process.Environ.Map = .init(testing.allocator);
+    defer environ_map.deinit();
+    const init = testInit(&arena, &environ_map);
+    var held = (try mtl.resident.Resident.hold(testing.allocator, init.io, device, try device.queue(), &.{buffer}, "h3 image test")) orelse return error.SkipZigTest;
+    defer held.deinit();
+    var target: mtl.keepalive.Target = undefined;
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    try testing.expectError(error.OutOfMemory, warmStart(init, failing.allocator(), &held, &target));
+}
+
 // A --draft-steps request on the synthetic model: the draft plan's pooled noise and the full run's
 // determinism; bad draft counts and a bad half-grid refuse.
 test "draft plan pools the seed's noise and the draft run is deterministic" {
@@ -832,14 +864,7 @@ test "draft plan pools the seed's noise and the draft run is deterministic" {
     const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     var environ_map: std.process.Environ.Map = .init(testing.allocator);
     defer environ_map.deinit();
-    const init = std.process.Init{
-        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
-        .arena = &arena,
-        .gpa = testing.allocator,
-        .io = std.testing.io,
-        .environ_map = &environ_map,
-        .preopens = .empty,
-    };
+    const init = testInit(&arena, &environ_map);
     var f = try residentFixture(init, a, tmp.dir, dir_path, device);
     defer {
         for (&f.cases) |*c| c.case.file.deinit();
