@@ -145,9 +145,11 @@ __global__ void __launch_bounds__(128) h3_heads_quant(
         if ((threadIdx.x & 1) == 0) (field == 0 ? QS : KS)[static_cast<size_t>(blockIdx.y) * slots + slot0 + r] = factor;
         const float iscale = amax > 0.0f ? 127.0f / amax : 0.0f;
 #pragma unroll
-        for (int j = 0; j < 64; j += 4) {
-            const char4 q = make_char4(__float2int_rn(v[j] * iscale), __float2int_rn(v[j + 1] * iscale), __float2int_rn(v[j + 2] * iscale), __float2int_rn(v[j + 3] * iscale));
-            *reinterpret_cast<char4*>(dst + j) = q;
+        for (int j = 0; j < 64; j += 16) {
+            union { int8_t b[16]; int4 v; } q;
+#pragma unroll
+            for (int e = 0; e < 16; ++e) q.b[e] = static_cast<int8_t>(__float2int_rn(v[j + e] * iscale));
+            *reinterpret_cast<int4*>(dst + j) = q.v;
         }
     }
     // v's tile absmax over its live slots, then each thread one output dim's 64 key bytes
@@ -168,7 +170,12 @@ __global__ void __launch_bounds__(128) h3_heads_quant(
     const float viscale = most > 0.0f ? 127.0f / most : 0.0f;
     const int d = threadIdx.x;
     int8_t* dst = V8 + at + d * 64;
-    for (int t = 0; t < 64; ++t) dst[t] = static_cast<int8_t>(__float2int_rn(t < live ? f(TV[at + t * 128 + d]) * viscale : 0.0f));
+    for (int t = 0; t < 64; t += 16) {
+        union { int8_t b[16]; int4 v; } q;
+#pragma unroll
+        for (int j = 0; j < 16; ++j) q.b[j] = static_cast<int8_t>(__float2int_rn(t + j < live ? f(TV[at + (t + j) * 128 + d]) * viscale : 0.0f));
+        *reinterpret_cast<int4*>(dst + t) = q.v;
+    }
 }
 
 

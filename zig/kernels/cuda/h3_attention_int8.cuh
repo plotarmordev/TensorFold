@@ -42,8 +42,8 @@ __device__ __forceinline__ void attention_body_i8(
 
     // a row is 128 bytes in eight 16-byte chunks; the same (row & 7) xor swizzle as h3_attention's
     auto at = [](int r, int c) { return r * 128 + ((c ^ (r & 7)) << 4); };
-    // vsm's dim-major rows: 64 key bytes in four chunks swizzled by (dim & 3)
-    auto vat = [](int r, int c) { return r * 64 + ((c ^ (r & 3)) << 4); };
+    // V's 64-byte rows use (dim >> 1) & 3 so an eight-row fragment never repeats a bank phase.
+    auto vat = [](int r, int c) { return r * 64 + ((c ^ ((r >> 1) & 3)) << 4); };
     auto load_qk = [&](unsigned char* to, const int8_t* from, int tile) {
         const int8_t* src = from + (hs + static_cast<size_t>(tile) * T) * D;
         for (int c = tid; c < T * 8; c += THREADS) cp16(to + at(c >> 3, c & 7), src + c * 16);
