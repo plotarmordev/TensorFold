@@ -11,7 +11,7 @@ extern "c" fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
 extern "c" fn fwrite(ptr: *const anyopaque, size: usize, count: usize, file: *anyopaque) usize;
 extern "c" fn fclose(file: *anyopaque) c_int;
 const usage =
-    \\usage: tf-h3-image MODEL_DIR picture.safetensors OUT_PREFIX [once | free] [--draft-steps N] [--renoise-sigma X]
+    \\usage: tf-h3-image MODEL_DIR picture.safetensors OUT_PREFIX [once | free] [--draft-steps N] [--renoise-sigma X] [--far-pool]
     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
     \\  picture      the case: canvas, text (the token refiner's rows), noise, and optionally text_tags,
     \\               references and anchors, the reference's step_in, velocity and latent, and its positions,
@@ -22,6 +22,8 @@ const usage =
     \\               the next step's sigma (or to --renoise-sigma X) and redrawn at full size for the rest.
     \\               It draws a different picture, not a faster copy of the six-step one; an off-grid
     \\               renoise writes OUT_PREFIX.renoise.h3case.safetensors, the run schedule's case.
+    \\  --far-pool   pools the target's distant keys and values 2 x 2 at 4096-wide canvases of 8,192 rows and
+    \\               more (picture.far): a faster, close but not identical picture; off by default.
     \\Exit 0: every gate passed (or a free run had none); 1: a gate failed; 2: no reference to gate (inconclusive).
     \\Between transformer blocks it waits while the speech server speaks. Exclude timing_valid=false steps
     \\from benchmarks, even when their wait is 0: speech can start and finish between polls.
@@ -96,6 +98,8 @@ pub const Folder = struct {
     layers: usize,
     /// Every model bound from the folder gives way to live speech between blocks.
     turn: h3.gpu_turn.Turn,
+    /// --far-pool: bind pictures of 8,192 rows and more with pooled far-field keys (picture.far).
+    far_pool: bool = false,
 
     pub fn open(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !Folder {
         // the folder: the image pipeline, an audio-free transformer, the distilled schedule and its heads
@@ -117,7 +121,8 @@ pub const Folder = struct {
     /// schedule by default; the draft run's when --draft-steps renoises a step).
     pub fn bind(f: *const Folder, gpa: std.mem.Allocator, a: std.mem.Allocator, case: *const Case, run: ?picture.Pdd) !*h3.Model {
         const sched = run orelse f.pdd;
-        const model = try h3.Model.bind(gpa, f.ck, case.file, .{ .give_way = f.turn });
+        const far = if (f.far_pool) try picture.far(a, case.layout) else null;
+        const model = try h3.Model.bind(gpa, f.ck, case.file, .{ .give_way = f.turn, .far = far });
         errdefer model.release();
         if (!model.base or model.step_heads != sched.steps() or model.audio != 0) return error.H3NotPictureModel;
         model.dense = true;
@@ -384,6 +389,7 @@ pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const gpa = init.gpa;
     var draft_steps: usize = 0;
+    var far_pool = false;
     var renoise: ?f32 = null;
     var positional: std.ArrayList([:0]const u8) = .empty;
     var arg_i: usize = 1;
@@ -397,6 +403,8 @@ pub fn main(init: std.process.Init) !void {
             arg_i += 1;
             if (arg_i >= all.len) return error.BadArguments;
             renoise = std.fmt.parseFloat(f32, all[arg_i]) catch return error.BadArguments;
+        } else if (std.mem.eql(u8, arg, "--far-pool")) {
+            far_pool = true;
         } else try positional.append(a, arg);
     }
     const args = positional.items;
@@ -414,6 +422,7 @@ pub fn main(init: std.process.Init) !void {
 
     const loading = mtl.clock.seconds();
     var folder = try Folder.open(init, a, args[0]);
+    folder.far_pool = far_pool;
     defer folder.heads.deinit();
     const pdd = folder.pdd;
     const steps = pdd.steps();
