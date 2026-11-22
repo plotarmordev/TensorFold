@@ -146,5 +146,8 @@ The bar is h3-image-mlx's 356.84 s at 4096 x 4096 on an M5 Pro, at int8; these c
 variance, the bilinear taps on a ramp, the exact flow identity on two planes, the shifted noise's pools and kept
 detail, and refusals of odd grids, wrong lengths and out-of-range or NaN sigmas.
 
-Not done: the cascade is not wired into `tf-h3-image`, which is on the maintainer's unmerged branches, and no picture
-has been made with it (card 2).
+Wired as `--draft-steps M` (no `--renoise-sigma`) in `tf-h3-image` and `tf-h3-image-server`. Card 177
+measured M = 2 and 4 at warm 2048 on an M5 Ultra: steps 0.76x and 0.53x of six full ones, and **idea 1's gates fail**:
+top-octave energy 1.07-6.27 of the base (passes), LPIPS 0.41-0.73 (fails, every pair). The lift draws another picture,
+not a faster copy; it stays opt-in. Table and receipts in
+[minimax-h3-image-metal.md](minimax-h3-image-metal.md#card-177-the-resolution-cascade-cascadem-measured-against-six-full-steps).

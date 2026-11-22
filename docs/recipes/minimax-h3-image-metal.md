@@ -246,6 +246,8 @@ distilled heads their sigma span covers, as ComfyUI's step_heads does) and redra
 It draws a different picture, not a faster copy of the six-step one, so the teacher-forced and latent gates don't
 apply: drafts only run the free pass (`once` with `--draft-steps` is an error), and cases with reference rows
 refuse. It also writes `out/case.draft.h3case.safetensors`, the half-size draft's case.
+With no `--renoise-sigma`, `--draft-steps M` is the resolution cascade `cascade=M` of the ideas recipe; card 177
+below measures M = 2 and 4 and finds it fails idea 1's picture gates, so it stays opt-in.
 
 Warm on this Mac (M5 Ultra, 2048x2048, the seed-42 fox prompt): six timing-valid steps take 10.4 s; the same six
 steps with `--draft-steps 3` take 6.3 s — three half-size steps at 0.5 s each plus three full-size ones. The draft
@@ -1771,6 +1773,59 @@ and over all six 13.59 and 12.77 s. This card is faster in four rounds of six. U
 stretches to 0.87-3.82 s, its single-threaded deflate after the pass, while the band thread hides most of it behind the
 GPU (round 9 loaded both). Rounds 4 (this card only), 5 and 7 (main only, load 57-99) lost their partner session to the
 load and are left out.
+
+### Card 177: the resolution cascade, `cascade=M`, measured against six full steps
+
+Idea 1 of [minimax-h3-image-ideas.md](minimax-h3-image-ideas.md) is `--draft-steps M` with no `--renoise-sigma`,
+on `tf-h3-image ... free` and `tf-h3-image-server`. The first M steps run on the half grid from `cascade.pool` of the
+seed's draw, the last of them keeps its velocity, then `cascade.lift` from sigma[M-1] to sigma[M], then the rest at
+full size. `draftSchedule` with no renoise keeps the checkpoint's sigmas, timesteps and deltas for every M
+(`picture_test.zig`), so every step keeps its own head. Without the flag no cascade code runs: the output is today's.
+**It stays opt-in.**
+
+**Run.** 22 Nov, M5 Ultra, this card's ReleaseFast `tf-h3-image-server` (SHA-256 `e57755c5…`). One resident session
+a schedule, each holding `/tmp/tensorfold-model.lock` for its 56-69 s: a cold warm-up, then four fixed prompts warm at
+2048x2048, seed 7. The prompts cover small text (a chalkboard menu), faces and hands, texture (knitted wool on oak) and
+architecture (a Gothic facade). Every step was `timing_valid=true`; speech was quiet. Other workers' builds held the
+one-minute load at 30-34, so wall totals carry CPU noise. Compare the steps' GPU seconds instead.
+Receipts: [`docs/receipts/h3-image-cascade-177`](../receipts/h3-image-cascade-177/): the session and gate scripts,
+prompts, server logs, loads, gate lines and PNG and latent SHA-256s.
+
+Every run, the six steps' GPU seconds / wall total, seconds:
+
+| Request | uncascaded | `cascade=2` | `cascade=4` |
+|---|---|---|---|
+| warm-up (cold bind, text prompt) | 9.35 / 11.23 | 7.26 / 10.74 | 5.17 / 11.45 |
+| text (same layout, reused) | 9.33 / 9.98 | 7.22 / 7.89 | 5.11 / 5.94 |
+| faces | 9.48 / 11.04 | 7.25 / 10.54 | 5.15 / 10.17 |
+| texture | 9.53 / 11.16 | 7.26 / 11.34 | 5.13 / 10.63 |
+| architecture | 9.45 / 11.09 | 6.89 / 10.91 | 4.82 / 9.34 |
+| steps, mean of the four warm | 9.45 | 7.16 (0.76x, 1.32x faster) | 5.05 (0.53x, 1.87x faster) |
+
+A half step takes 0.45-0.56 s of GPU against 1.48-1.75 s for a full one, a third, where the ideas recipe's 2.07x for
+m = 4 at 2048 implies 1/4.4. The steps come out 1.32x and 1.87x faster against the predicted 1.35x and 2.07x, and m = 4's 0.53x
+misses the 0.50x transformer gate. The warm text request is the clean wall-time A/B: 9.98 → 7.89 → 5.94 s. Each other
+prompt changes the layout's text rows, so it rebinds and its first step pays a cold start.
+
+**Gates: fail.** Each cascaded PNG was checked against the uncascaded PNG of the same prompt with
+[`gates.py`](../receipts/h3-image-cascade-177/gates.py): luma power with radial frequency between a quarter and half
+a cycle a pixel, over the base's (at least 0.90), and LPIPS (AlexNet; at most 0.08).
+
+| Prompt | `cascade=2` top-octave / LPIPS | `cascade=4` top-octave / LPIPS |
+|---|---|---|
+| text | 6.266 / 0.583 | 5.205 / 0.619 |
+| faces | 1.764 / 0.727 | 1.069 / 0.720 |
+| texture | 1.079 / 0.407 | 1.094 / 0.507 |
+| architecture | 2.165 / 0.557 | 2.000 / 0.604 |
+
+The energy gate passes everywhere; LPIPS fails all eight pairs by 5-9x. The cascade draws another picture from the
+same seed, as fast mode always has (latent cosine 0.70 above): a different layout, the menu's prices moved and its
+words misspelled differently, the faces' people rearranged. Top-octave energy rises because `cascade=4` leaves
+visible high-frequency hatching on faces and cloth, so that gate passing is no sign of kept detail. Idea 1's
+criteria (same picture, finer detail kept) do not hold on this lift: keep it opt-in as a speed mode and judge it on
+its own pictures, not as a copy of the six-step one. These are four prompts at one seed, against the ideas recipe's
+32 at two seeds; the GPU limit on this Mac allows only short sessions, and a 5-9x LPIPS miss on every pair would not
+turn into a pass with more prompts.
 
 ### Next, ranked
 
