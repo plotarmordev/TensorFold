@@ -30,8 +30,8 @@ pub fn tests(b: *std.Build, target: std.Build.ResolvedTarget, test_step: *std.Bu
     b.step("test-h3-modulation-bf16", "H3's host bf16 rounding against the copy it replaced, no GPU").dependOn(&rounding.step);
     test_step.dependOn(&rounding.step);
     const block = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/block.zig"), .target = target, .optimize = .Debug, .link_libc = true, .imports = imports });
-    const bands = b.addRunArtifact(b.addTest(.{ .root_module = block, .filters = &.{ "h3 gemm:", "h3 fused:" } }));
-    b.step("test-h3-gemm", "H3's transformer products in 64-tile bands against MLX's band of 4, and the fused passes, on the GPU").dependOn(&bands.step);
+    const bands = b.addRunArtifact(b.addTest(.{ .root_module = block, .filters = &.{ "h3 gemm:", "h3 fused:", "h3 far field:" } }));
+    b.step("test-h3-gemm", "H3's transformer products in 64-tile bands against MLX's band of 4, the fused passes and the pooled far field, on the GPU").dependOn(&bands.step);
     test_step.dependOn(&bands.step);
     const ahead = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/read_ahead.zig"), .target = target, .optimize = .Debug, .link_libc = true, .imports = &.{.{ .name = "core", .module = core }} });
     const read_test = b.addTest(.{ .root_module = ahead });

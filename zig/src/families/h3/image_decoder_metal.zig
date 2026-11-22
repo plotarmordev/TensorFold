@@ -257,7 +257,7 @@ pub const Decoder = struct {
         d.run(e, .rms_norm, &.{ v.x, d.param(p.block(i, .norm1)), v.xn }, s, rows, row_group, true);
         d.gemm(e, s, v.xn, p.block(i, .qkv_w), p.block(i, .qkv_b), .plain, v.wide, 3 * W, W);
         d.run(e, .heads, &.{ v.wide, v.cos, v.sin, v.q, v.k, v.v }, s, mtl.Size.of(s.m, host.heads, 1), mtl.Size.of(32, 1, 1), true);
-        d.run(e, .attention, &.{ v.q, v.k, v.v, v.o }, s, mtl.Size.of((s.tokens + 7) / 8, host.heads, s.tiles), mtl.Size.of(256, 1, 1), true);
+        d.run(e, .attention, &.{ v.q, v.k, v.v, v.o }, s, mtl.Size.of((s.tokens + 31) / 32, host.heads, s.tiles), mtl.Size.of(128, 1, 1), true);
         d.gemm(e, s, v.o, p.block(i, .out_w), p.block(i, .out_b), .{ .layer_scale = p.block(i, .scale1) }, v.x, W, W);
         d.run(e, .rms_norm, &.{ v.x, d.param(p.block(i, .norm2)), v.xn }, s, rows, row_group, true);
         if (d.tensor) {
