@@ -51,7 +51,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             const x = try self.values(s.rows * C, 0, 2, fill, rng, true, true);
             const y = try self.values(s.rows * C, 0, 2, .random, rng, true, false);
             const w = try self.values(C, 0.5, 1.5, .random, rng, true, false);
-            // the six modulation tables of one line, bf16 values held in fp32 as the engine's are
+            // the six modulation tables of one line, stored bf16 as the engine's are
             const tab = try self.values(6 * C, 0, 0.5, .random, rng, true, false);
             self.in.a = x;
             self.in.b = y;
@@ -65,7 +65,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             self.fresh = try self.encode(x, true);
             try self.upload(y, true);
             if (self.which == .norm) try self.upload(w, true);
-            try self.upload(tab, false);
+            try self.upload(tab, true);
             try self.ints(line);
             if (self.which == .norm) try self.output(x.len * 2);
             self.outs = (if (self.which == .norm) @as(usize, 2) else 1) * s.rows * C;

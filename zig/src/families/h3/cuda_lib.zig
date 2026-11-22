@@ -166,6 +166,9 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
     try std.testing.expectError(error.BadH3Address, m.plan(&in));
     try std.testing.expectEqual(@as(f64, -1), tf_h3_forward_host(&m, &in));
     try report.expect("tf_h3_forward_host", error.BadH3Address);
+    in = valid;
+    in.tables = 0x1002;
+    try std.testing.expectError(error.BadH3Address, m.plan(&in));
     _ = try m.plan(&valid);
     in = valid;
     in.rot = 64;
