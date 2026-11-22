@@ -2,7 +2,6 @@
 const std = @import("std");
 const mtl = @import("metal");
 const tensors = @import("tensors.zig");
-const read_ahead = @import("read_ahead.zig");
 const rules = @import("picture_prompt.zig");
 
 const Ref = tensors.Ref;
@@ -43,7 +42,7 @@ pub const Shards = struct {
     }
 };
 
-/// Map indexed shards containing accepted names and read those tensors ahead.
+/// `dir`'s shards (from its `model.safetensors.index.json`) that hold a name `wanted` accepts.
 pub fn open(gpa: std.mem.Allocator, io: std.Io, device: mtl.Device, dir: []const u8, wanted: anytype) !Shards {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -66,14 +65,10 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, device: mtl.Device, dir: []const
         for (out[0..made]) |*f| f.deinit();
         gpa.free(out);
     }
-    var spans: std.ArrayList(read_ahead.Span) = .empty;
     for (files.keys()) |file| {
         out[made] = try tensors.Tensors.open(gpa, device, try std.fmt.allocPrintSentinel(arena, "{s}/{s}", .{ dir, file }, 0));
         made += 1;
-        var it = out[made - 1].names.iterator();
-        while (it.next()) |e| if (wanted.accepts(e.key_ptr.*)) try spans.append(arena, out[made - 1].span(e.value_ptr.*));
     }
-    _ = try read_ahead.read(arena, io, spans.items);
     return .{ .files = out };
 }
 

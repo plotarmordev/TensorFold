@@ -18,14 +18,12 @@ fn bf(v: anytype) f32 {
 }
 
 /// y [M, N] = bf16(x [M, K] w [N, K]^T (+ b)), each element's sum in order: the oracle the GPU is gated against.
-pub fn gemm(comptime S: type, x: []const f32, w: []const f32, b: ?[]const f32, y: []f32, M: usize, N: usize, K: usize) !void {
-    for (0..M) |m| {
-        for (0..N) |n| {
-            var s: S = 0;
-            for (x[m * K ..][0..K], w[n * K ..][0..K]) |p, q| s += @as(S, p) * q;
-            y[m * N + n] = bf(if (b) |v| s + v[n] else s);
-        }
-    }
+pub fn gemm(comptime S: type, x: []const f32, w: []const f32, b: ?[]const f32, y: []f32, M: usize, N: usize, K: usize) void {
+    for (0..M) |m| for (0..N) |n| {
+        var s: S = 0;
+        for (x[m * K ..][0..K], w[n * K ..][0..K]) |p, q| s += @as(S, p) * q;
+        y[m * N + n] = bf(if (b) |v| s + v[n] else s);
+    };
 }
 
 fn normed(comptime S: type, x: f32, r: S, w: f32, mode: Mode) f32 {
@@ -145,19 +143,19 @@ pub fn encodeLayer(comptime S: type, a: std.mem.Allocator, g: rules.Text, l: Lay
     const qn = g.heads * D;
     const kvn = g.kv_heads * D;
     norm(S, x, l.norm1, s.xn, H, g.eps, .qwen);
-    try gemm(S, s.xn, l.q, null, s.q, T, qn, H);
-    try gemm(S, s.xn, l.k, null, s.k, T, kvn, H);
-    try gemm(S, s.xn, l.v, null, s.v, T, kvn, H);
+    gemm(S, s.xn, l.q, null, s.q, T, qn, H);
+    gemm(S, s.xn, l.k, null, s.k, T, kvn, H);
+    gemm(S, s.xn, l.v, null, s.v, T, kvn, H);
     heads(S, s.q, g.heads, qn, D, l.q_norm, .{ cos, sin }, T, g.eps, .qwen);
     heads(S, s.k, g.kv_heads, kvn, D, l.k_norm, .{ cos, sin }, T, g.eps, .qwen);
     try attention(S, a, s.q, .{ .count = g.heads, .row = qn, .head = D }, s.k, s.v, .{ .count = g.kv_heads, .row = kvn, .head = D }, s.att, T, true);
-    try gemm(S, s.att, l.o, null, s.y, T, H, qn);
+    gemm(S, s.att, l.o, null, s.y, T, H, qn);
     add(x, s.y);
     norm(S, x, l.norm2, s.xn, H, g.eps, .qwen);
-    try gemm(S, s.xn, l.gate, null, s.gate, T, g.ffn, H);
-    try gemm(S, s.xn, l.up, null, s.up, T, g.ffn, H);
+    gemm(S, s.xn, l.gate, null, s.gate, T, g.ffn, H);
+    gemm(S, s.xn, l.up, null, s.up, T, g.ffn, H);
     glu(S, s.gate, s.up, s.act, T, g.ffn, g.ffn, g.ffn, .qwen);
-    try gemm(S, s.act, l.down, null, s.y, T, H, g.ffn);
+    gemm(S, s.act, l.down, null, s.y, T, H, g.ffn);
     add(x, s.y);
     const seen = vision orelse return;
     if (li < 3) for (seen.pads, 0..) |at, i| add(x[at * H ..][0..H], seen.deepstack[li][i * H ..][0..H]);
@@ -192,20 +190,20 @@ pub fn refine(comptime S: type, a: std.mem.Allocator, g: rules.Refiner, w: Refin
     const att = try ar.alloc(f32, T * inner);
     const wide = try ar.alloc(f32, T * 2 * g.mlp);
     const act = try ar.alloc(f32, T * g.mlp);
-    try gemm(S, rows, w.cond_w, w.cond_b, x, T, H, g.text);
+    gemm(S, rows, w.cond_w, w.cond_b, x, T, H, g.text);
     const fused: Heads = .{ .count = g.heads, .row = 3 * inner, .head = 3 * D };
     for (w.blocks[0..g.blocks]) |b| {
         norm(S, x, b.norm1, xn, H, g.eps, .h3);
-        try gemm(S, xn, b.qkv, null, qkv, T, 3 * inner, H);
+        gemm(S, xn, b.qkv, null, qkv, T, 3 * inner, H);
         heads(S, qkv, g.heads, 3 * inner, 3 * D, b.q_norm, null, T, g.qk_eps, .h3);
         heads(S, qkv[D..], g.heads, 3 * inner, 3 * D, b.k_norm, null, T, g.qk_eps, .h3);
         try attention(S, ar, qkv, fused, qkv[D..], qkv[2 * D ..], fused, att, T, false);
-        try gemm(S, att, b.out, null, y, T, H, inner);
+        gemm(S, att, b.out, null, y, T, H, inner);
         add(x, y);
         norm(S, x, b.norm2, xn, H, g.eps, .h3);
-        try gemm(S, xn, b.fc1, null, wide, T, 2 * g.mlp, H);
+        gemm(S, xn, b.fc1, null, wide, T, 2 * g.mlp, H);
         glu(S, wide, wide[g.mlp..], act, T, g.mlp, 2 * g.mlp, 2 * g.mlp, .h3);
-        try gemm(S, act, b.fc2, null, y, T, H, g.mlp);
+        gemm(S, act, b.fc2, null, y, T, H, g.mlp);
         add(x, y);
     }
     norm(S, x, w.final_norm, out, H, g.final_eps, .h3);

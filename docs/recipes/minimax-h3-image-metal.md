@@ -28,6 +28,31 @@ zig-out/bin/tf-h3-image-decoder MODEL_DIR out/case.latent.f32 128 128 out/case.p
 2. `tf-h3-image ... free` runs the six steps from those rows. It writes the latent, and exits 0 with nothing to gate.
 3. `tf-h3-image-decoder` decodes the latent. Its rows and columns are the canvas over 16. It resizes the picture back
    to the requested size when that differs from the canvas.
+
+### Resident: one process, every picture warm
+
+`tf-h3-image-server` loads the prompt encoder, the transformer's weights and the decoder once, then makes one picture
+per stdin line, writing the same files as the three tools above:
+
+```sh
+zig build tf-h3-image-server -Dcpu=apple_m1 -Doptimize=ReleaseFast
+printf '2048x2048 42 out/a prompt.txt\n2048x2048 7 out/b prompt.txt\n' |
+  zig-out/bin/tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR
+```
+
+A request line is `WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt`. This server accepts text-to-image requests only, not
+reference images or editing cases. The transformer's kernels and buffers depend on the picture's layout (canvas,
+rows and text tags), so a request with the last one's layout keeps them and only replaces the prompt's text rows
+(`Model.retext`); another layout releases them and binds anew over the same mapped weights. `Binding.fits` compares
+the canvas, row count, reference count and tags; it assumes there are no reference rows, so those determine all
+rotary positions. Supporting edits would also require checking reference geometry and refreshing reference
+conditioning, not just comparing row counts.
+Each request prints one line of stage seconds: prompt, case, transformer (`reused` or `bound`), 6 steps, decoder, total.
+A bad request prints its error and the server reads the next line.
+If the weights cannot be held resident or the idle ticker cannot start, it exits instead of serving unwarmed.
+
+`zig build test-h3-image-server` runs the resident gates on a synthetic checkpoint.
+
 ## What runs here, and what the case brings
 
 Made natively, from the request and the model folder:
@@ -139,6 +164,7 @@ float64 as the float32-sum run.
 - the encoder's and refiner's configs, and the text model's tensor prefix.
 
 `zig build compile-h3-image-prompt` compiles the tool without running a shader.
+
 ## Run a case
 
 ```sh
@@ -168,13 +194,6 @@ reference to gate against.
 - The free run's final latent: cosine at least 0.99 against the reference's.
 
 Attention here is dense, so no routing floor applies. FastH3's 0.990 at step 1 came from its top-k tiles.
-
-## Checkpoint
-
-`MiniMaxAI/MiniMax-H3-Image`. `transformer/` is bf16, with the patch projection, time embedder and step heads in
-float32. The text encoder is MiniMax-H3's Qwen3-VL; its 50th layer's rows are the prompt's. The weights are under the
-MiniMax-H3-Image Community License, which excludes the European Union, the United Kingdom, the Republic of Korea and
-the United States of America. Read it before use.
 
 ## Decoder
 
@@ -303,10 +322,18 @@ Its gates, measured on an M3 Ultra:
 
 A 1024 x 1024 reference at the released widths encodes in 0.6 s.
 
+## Checkpoint
+
+`MiniMaxAI/MiniMax-H3-Image`. `transformer/` is bf16, with the patch projection, time embedder and step heads in
+float32. The text encoder is MiniMax-H3's Qwen3-VL; its 50th layer's rows are the prompt's. The weights are under the
+MiniMax-H3-Image Community License, which excludes the European Union, the United Kingdom, the Republic of Korea and
+the United States of America. Read it before use.
+
 ## Not done
 
 - **Checked against the release:** nothing yet. The reference cases and the gates above wait for the weights.
-- **Edits end to end:** the encoder makes a reference's rows and the prompt path places its vision rows, but Qwen3-VL's vision tower is not here, so an edit's prompt rows still come from a case. No one tool runs an edit.
+- **Edits end to end:** the encoder makes a reference's rows and the prompt path places its vision rows, but
+  Qwen3-VL's vision tower is not here, so an edit's prompt rows still come from a case. No one tool runs an edit.
 - **Serving:** no `/v1/images/generations` or `/v1/images/edits` route for it, and no CUDA path.
 - **Kernel contract:** the new kernels are gated by each tool's `selftest`, not registered with `tf-kernel-contract`.
 - **Machines:** the transformer runs on an M5 only; chips without tensor units are refused.
