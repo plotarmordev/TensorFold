@@ -7,7 +7,7 @@ pub const Plan = struct {
     own0: usize,
     own1: usize,
     input: [8]usize,
-    buffers: [23]usize,
+    buffers: [17]usize,
 };
 pub fn product(ns: []const usize) !usize {
     var n: usize = 1;
@@ -51,13 +51,8 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
     for (pointers, input, [_]usize{ 2, 4, 4, 4, 4, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
     const padded = try product(&.{ heads, tiles, 64, 128, 2 });
     const means = try product(&.{ heads, tiles, 128, 4 });
-    // dense attention's int8 tiles (cuda_geometry's q8/k8/v8/qs/ks/vs): routed forwards skip them
-    const codes: usize = if (keep == 0) try product(&.{ heads, tiles, 64, 128 }) else 0;
-    const rowscales: usize = if (keep == 0) try product(&.{ heads, tiles, 64, 4 }) else 0;
-    const tilescales: usize = if (keep == 0) try product(&.{ heads, tiles, 128, 4 }) else 0;
     return .{ .count = count, .prefix = prefix, .keep = keep, .own0 = own0, .own1 = own1, .input = input, .buffers = .{
         input[0],                                  input[0],                                                            try product(&.{ rows, 4, i, 2 }), padded,                        padded,                             padded,                          means,                           means,    means,
         try product(&.{ heads, tiles, tiles, 4 }), try product(&.{ heads, @max(tiles - prefix, 1), prefix + keep, 4 }), means,                            try product(&.{ rows, i, 2 }), try product(&.{ rows, 2, mlp, 2 }), try product(&.{ rows, mlp, 2 }), try product(&.{ tiles, 64, 4 }), input[6],
-        codes,                                     codes,                                                               codes,                            rowscales,                        rowscales,                       tilescales,
     } };
 }

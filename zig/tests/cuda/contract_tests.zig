@@ -316,9 +316,7 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     for (h3_which, &h3_list) |w, *m| {
         const f = try h3_mod.function(h3_k.symbol(w));
         if (w == .attention) try f.allowDynamicShared(h3_prep.attention_shared);
-        // attention_i8 launches h3_heads_quant first, so its harness keeps a second function
-        const f2 = if (w == .attention_i8) try h3_mod.function("h3_heads_quant") else f;
-        m.* = .{ .rig = .{ .gpu = gpu, .s = s }, .which = w, .f = f, .f2 = f2, .arena = std.heap.ArenaAllocator.init(a) };
+        m.* = .{ .rig = .{ .gpu = gpu, .s = s }, .which = w, .f = f, .arena = std.heap.ArenaAllocator.init(a) };
     }
     defer for (&h3_list) |*m| m.deinit();
     for (&h3_list) |*m| try kernels.append(a, m.kernel());

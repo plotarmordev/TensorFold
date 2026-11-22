@@ -32,14 +32,6 @@ pub const Geometry = struct {
     act: u64 = 0,
     row_of: u64 = 0,
     all: u64 = 0,
-    /// Dense-only int8 attention tiles (h3_attention_int8.cuh): q/k codes a slot, v codes dim-major
-    /// a tile, their dequant factors; both parities share q8/qs and keep their own k8/v8/ks/vs.
-    q8: u64 = 0,
-    k8: [2]u64 = .{ 0, 0 },
-    v8: [2]u64 = .{ 0, 0 },
-    qs: u64 = 0,
-    ks: [2]u64 = .{ 0, 0 },
-    vs: [2]u64 = .{ 0, 0 },
 };
 
 pub fn release(self: *Model) void {
@@ -99,19 +91,11 @@ pub fn prepare(self: *Model, in: *const Model.Inputs, p: @import("cuda_validatio
     g.act = try buffer(self, p.buffers[14], false);
     g.row_of = try buffer(self, p.buffers[15], false);
     g.all = try buffer(self, p.buffers[16], false);
-    const row_of_map: cuda.DeviceBuffer = .{ .d = &self.driver, .ptr = g.row_of, .len = row_of.len * 4, .borrowed = true };
-    try row_of_map.upload(0, std.mem.sliceAsBytes(row_of));
+    try g.buffers[g.used - 2].upload(0, std.mem.sliceAsBytes(row_of));
     const all = try self.gpa.alloc(i32, in.tiles);
     defer self.gpa.free(all);
     for (all, 0..) |*t, i| t.* = @intCast(i);
-    const all_map: cuda.DeviceBuffer = .{ .d = &self.driver, .ptr = g.all, .len = all.len * 4, .borrowed = true };
-    try all_map.upload(0, std.mem.sliceAsBytes(all));
-    if (p.buffers[17] != 0) g.q8 = try buffer(self, p.buffers[17], true);
-    if (p.buffers[18] != 0) g.k8 = try pair(self, p.buffers[18], true);
-    if (p.buffers[19] != 0) g.v8 = try pair(self, p.buffers[19], true);
-    if (p.buffers[20] != 0) g.qs = try buffer(self, p.buffers[20], true);
-    if (p.buffers[21] != 0) g.ks = try pair(self, p.buffers[21], true);
-    if (p.buffers[22] != 0) g.vs = try pair(self, p.buffers[22], true);
+    try g.buffers[g.used - 1].upload(0, std.mem.sliceAsBytes(all));
     g.rows = in.rows;
     g.tiles = in.tiles;
     g.prefix = p.prefix;

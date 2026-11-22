@@ -10,13 +10,9 @@ const g = contract.gates;
 const H3 = t.H3;
 const heads = t.heads;
 const slots = t.slots;
-const tiles = t.tiles;
 
 /// h3_attention's dynamic shared bytes: a query, a key and a value tile.
 pub const attention_shared = 3 * 64 * 128 * 2;
-
-/// h3_attention_i8's dynamic shared bytes: the three int8 tiles and the u8 probability rows at their 80-byte stride.
-pub const attention_i8_shared = 3 * 64 * 128 + 64 * 80;
 
 /// Gate 4's dot rows: integer terms whose second half cancels the first, so fp32 sums are exact and the result small.
 fn mirror(x: []f64, w: []f64, k: usize, rows: usize, n: usize) void {
@@ -171,7 +167,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             try self.output(heads * s.rows * 128 * 4);
             self.outs = heads * s.rows * 128;
         },
-        .attention, .attention_i8 => {
+        .attention => {
             // `rows` query tiles over all 16 tiles of keys; each query tile attends `k` / 64 of them
             const T = s.rows;
             const ksel = s.k / 64;
@@ -205,13 +201,6 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             try self.ints(row_of);
             try self.output(rows * heads * 128 * 2);
             self.outs = rows * heads * 128;
-            if (self.which == .attention_i8) {
-                // Quantized q/k/v and their row/tile scales occupy bufs 7..12.
-                for ([_]usize{ n, n, n, heads * slots * 4, heads * slots * 4, heads * 16 * 128 * 4 }) |bytes| {
-                    self.bufs[self.nbufs] = try self.rig.scratch(bytes);
-                    self.nbufs += 1;
-                }
-            }
         },
     }
     return true;
@@ -282,18 +271,6 @@ pub fn launch(self: *H3) !void {
             for ([_]usize{ slots, heads, s.rows, s.k / 64, 0, 1 }) |n| a.add(int(n));
             a.add(@as(f32, @floatCast(self.in.scale)));
             try go(self, .{ .x = @intCast(s.rows), .y = heads }, 128, attention_shared, &a);
-        },
-        .attention_i8 => {
-            // h3_heads_quant (grid [16 key tiles, heads]) codes q/k/v into bufs 7..12, then
-            // h3_attention_i8's tile loop like .attention's
-            for ([_]u64{ b[0], b[1], b[2], b[4], b[7], b[8], b[9], b[10], b[11], b[12] }) |p| a.add(p);
-            a.add(int(slots));
-            try cuda.launch.launch(self.f2, .{ .grid = .{ .x = @intCast(tiles), .y = heads }, .block = .{ .x = 128 } }, self.rig.s, &a);
-            var a2: cuda.Args = .{};
-            for ([_]u64{ b[7], b[8], b[9], b[10], b[11], b[12], b[3], b[4], b[5], b[6] }) |p| a2.add(p);
-            for ([_]usize{ slots, heads, s.rows, s.k / 64, 0, 1 }) |n| a2.add(int(n));
-            a2.add(@as(f32, @floatCast(self.in.scale)));
-            try go(self, .{ .x = @intCast(s.rows), .y = heads }, 128, attention_i8_shared, &a2);
         },
     }
 }

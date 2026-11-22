@@ -28,16 +28,12 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_heads_quant", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_attention_i8", "h3_quantize", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
 /// h3_attention's dynamic shared bytes: a query, a key and a value tile in bf16.
 const attention_shared = 3 * slot_tile * head_dim * 2;
-
-/// h3_attention_i8's dynamic shared bytes: a query, a key and a value tile in int8, and the u8 probability
-/// rows at the kernel's 80-byte stride (h3_attention_int8.cuh's i8_probability_row).
-const attention_i8_shared = 3 * slot_tile * head_dim + slot_tile * 80;
 
 pub const seconds = @import("clock.zig").seconds;
 
@@ -148,7 +144,6 @@ pub const Model = struct {
         errdefer if (ordinary_cleanup) self.module.unload();
         inline for (kernel_names, 0..) |name, i| self.functions[i] = try self.module.function(name);
         try self.function("h3_attention").allowDynamicShared(attention_shared);
-        try self.function("h3_attention_i8").allowDynamicShared(attention_i8_shared);
         // the TMA products' two-stage rings (h3_int8_tma.cuh Config::shared_bytes), once at setup so
         // no launch needs the attribute raced against the stream
         try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
@@ -237,18 +232,6 @@ pub const Model = struct {
         for ([_]usize{ g.tiles * slot_tile, self.heads, queries, keys, first, @intFromBool(per_query) }) |n| args.add(@as(c_int, @intCast(n)));
         args.add(@as(f32, 1.0 / @sqrt(@as(f32, head_dim))));
         try self.launch("h3_attention", .{ .x = @intCast(count), .y = @intCast(self.heads) }, 128, attention_shared, &args);
-    }
-
-    /// The dense path's int8 attention: h3_heads_quant's codes and dequant factors into
-    /// h3_attention_i8 (h3_attention_int8.cuh). Same tile lists and output as `attend`.
-    fn attend_i8(self: *Model, par: usize, list: u64, sizes: u64, count: usize, queries: usize, keys: usize, first: usize, per_query: bool) !void {
-        const g = &self.geometry;
-        if (count == 0) return;
-        var args: cuda.Args = .{};
-        for ([_]u64{ g.q8, g.k8[par], g.v8[par], g.qs, g.ks[par], g.vs[par], list, sizes, g.row_of, g.ya }) |p| args.add(p);
-        for ([_]usize{ g.tiles * slot_tile, self.heads, queries, keys, first, @intFromBool(per_query) }) |n| args.add(@as(c_int, @intCast(n)));
-        args.add(@as(f32, 1.0 / @sqrt(@as(f32, head_dim))));
-        try self.launch("h3_attention_i8", .{ .x = @intCast(count), .y = @intCast(self.heads) }, 128, attention_i8_shared, &args);
     }
 
     /// FastH3's routing for all tiles: tile scores, each video tile's key tiles, and the pooled branch the gate mixes in.
@@ -398,15 +381,7 @@ pub const Model = struct {
             }
             try self.lap("heads", &mark);
             if (dense) {
-                // the image's dense attention runs int8: h3_heads' tile buffers quantized once a
-                // parity (the codes' byte offset is half the bf16 one), then the m16n8k32 kernel
-                const at = own0 * slot_tile * head_dim * 2;
-                const atq = own0 * slot_tile * head_dim;
-                var args: cuda.Args = .{};
-                for ([_]u64{ g.tq + at, g.tk[par] + at, g.tv[par] + at, in.sizes + own0 * 4, g.q8 + atq, g.k8[par] + atq, g.v8[par] + atq, g.qs + own0 * slot_tile * 4, g.ks[par] + own0 * slot_tile * 4, g.vs[par] + own0 * head_dim * 4 }) |p| args.add(p);
-                args.add(@as(c_int, @intCast(tiles * slot_tile)));
-                try self.launch("h3_heads_quant", .{ .x = @intCast(owned), .y = @intCast(heads) }, 128, 0, &args);
-                try self.attend_i8(par, g.all, in.sizes, owned, owned, tiles, own0, false);
+                try self.attend(par, g.all, in.sizes, owned, owned, tiles, own0, false);
                 try self.lap("attention", &mark);
             } else {
                 var args: cuda.Args = .{};
