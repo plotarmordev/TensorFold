@@ -8,3 +8,4 @@
 - Mini prompt snapshots save and restore each key head's ring rows: the CUDA caches are head-major, and the
   row-major copy left restored prompts' logits off from a fresh prefill.
 - Mini loop messages now store `[core][role][row][c]` planes, matching each controller's role offset across multi-row prompt chunks; the CUDA reference checks the same served layout.
+- The sampled CUDA serving reference widens the same BF16 logits the device sampler consumes, while retaining exact comparisons of the original FP32 logits.

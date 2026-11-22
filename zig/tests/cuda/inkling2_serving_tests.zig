@@ -3,6 +3,7 @@ const std = @import("std");
 const lanes = @import("lanes");
 const mini = @import("inkling2");
 const cuda = @import("cuda");
+const core = @import("core");
 const check = @import("check.zig");
 
 const native = mini.native;
@@ -43,11 +44,20 @@ fn trace(gpu: Gpu, loaded: *native.Loaded, prompt: []const u32, sampling: ?lanes
     errdefer gpu.gpa.free(ids);
     const logits = try gpu.gpa.alloc(f32, n * v);
     errdefer gpu.gpa.free(logits);
+    const draw_row: ?[]f32 = if (host and cuda.sample.ruleFor(sampling) != null) try gpu.gpa.alloc(f32, v) else null;
+    defer if (draw_row) |rounded| gpu.gpa.free(rounded);
     try b.prefill(&s);
     try download(t, t.slot[0].ptr, logits[0..v]);
     var handle: ?u64 = try b.first(&s, prompt.len);
     for (0..n) |i| {
-        ids[i] = if (host) try lanes.gpu_full.draw(gpu.gpa, logits[i * v ..][0..v], sampling, @intCast(prompt.len + i), null) else try b.read(handle.?);
+        ids[i] = if (host) blk: {
+            const row = logits[i * v ..][0..v];
+            if (draw_row) |rounded| {
+                for (rounded, row) |*dst, value| dst.* = core.bf16_round.round32(value);
+                break :blk try lanes.gpu_full.draw(gpu.gpa, rounded, sampling, @intCast(prompt.len + i), null);
+            }
+            break :blk try lanes.gpu_full.draw(gpu.gpa, row, null, @intCast(prompt.len + i), null);
+        } else try b.read(handle.?);
         if (i + 1 < n) {
             handle = try b.queue(&s, .{ .value = ids[i] }, prompt.len + i + 1);
             try download(t, t.m.s.logits, logits[(i + 1) * v ..][0..v]);
