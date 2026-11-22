@@ -1817,20 +1817,21 @@ keep their layout (`P[3]` picks one list for all, one per head and query tile fo
 for the far field); the only new kernel, `h3_far_pool`, is never dispatched. Measured: the branch's default pictures
 are byte-identical to main's at 2048 and 4096, seeds 42 and 7.
 
-With the flag, a text-to-image target 128 rows wide (a 4096-pixel canvas width) of 8,192 rows or more binds
-`picture.far`. After `h3_heads`, `h3_far_pool` averages each 2 x 2 block of the target's keys and values (fp32 sums,
-rounded to bf16) into tiles past the case's own, one pooled row of 64 a tile. The prefix's query tile attends every
-tile as before. A target query tile attends the prefix, a band of `far_band` = 8 pooled rows (16 picture rows) at full
-resolution around its own, and the other pooled rows as one tile each, with ln 4 added to a pooled logit: 89 key tiles
-in place of 257 at 4096 x 4096 with 24 text rows. Other sizes, and pictures with references, stay dense. With
-`tf-h3-image-server --routed-steps N`, the far field wins on the steps it pools; earlier steps still route.
+With the flag, a text-to-image 4096 x 4096 target (128 x 128 rows, `picture.far_grid`), the one size the gates below
+passed at, binds `picture.far`. After `h3_heads`, `h3_far_pool` averages each 2 x 2 block of the target's keys and
+values (fp32 sums, rounded to bf16) into tiles past the case's own, one pooled row of 64 a tile. The prefix's query
+tile attends every tile as before. A target query tile attends the prefix, a band of `far_band` = 8 pooled rows (16
+picture rows) at full resolution around its own, and the other pooled rows as one tile each, with ln 4 added to a
+pooled logit: 89 key tiles in place of 257 at 4096 x 4096 with 24 text rows. Every other size, and pictures with
+references, stay dense. With `tf-h3-image-server --routed-steps N`, the far field wins on the steps it pools; earlier
+steps still route.
 
 Pooled from the first step, the picture is clean but laid out differently (another fox in another pose): latent
 cosine 0.70, PSNR 12.0 dB. The early steps fix the layout from long-range attention, so `far_from_step` = 4 pools only
 the last two steps. From step 3 the cosine held (0.996) but PSNR (27.9 dB) and the mean difference (5.8) missed.
 
 Three tests, no weights: `test-h3-geometry` checks that every target key is read once, full inside the query's band
-and pooled outside it, that 4096 x 2048 (exactly 8,192 rows) pools, and that 4096 x 1984, 2048, 2048 x 8192 and a
+and pooled outside it, that 4096 x 4096 pools, and that 4096 x 2048, 4096 x 4608, 2048, 2048 x 8192 and a
 picture with references stay dense. `test-h3-gemm` checks that attention with pooled far keys matches dense attention
 when each 2 x 2 block's keys and values are equal: 1.95e-3 worst against outputs up to 0.4375, one bf16 step. Without
 the ln 4 the same check misses by 0.26. It also checks that a far-field library's routed steps read each head's own
@@ -1853,10 +1854,10 @@ builds), so the decoder times swing; 6-step seconds, every run:
 
 Warm (seed 7) 4096 steps: 55.4-59.0 s dense, 49.0-50.0 s with the flag (one 70.8 s under a load of 72), about 0.88x
 or -6 s.
-2048 is under 8,192 rows and stays dense: its pictures with the flag are byte-identical. Gates, `--far-pool` (from
-step 4) against the same seed without it, card 80's rule (latent cosine at least 0.99, PSNR at least 28.2 dB, mean
-pixel difference at most 4.1), on the 4096 x 4096 square only: 4096 x 2048 (exactly 8,192 rows) also pools and is
-not yet gated:
+Only 4096 x 4096 pools. 2048 and 4096 x 2048 stay dense: with the flag `tf-h3-image` and `tf-h3-image-server` print
+`far-pool: off at 4096x2048, not gated` and bind normal mode, so the picture is normal mode's bytes. Gates,
+`--far-pool` (from step 4) against the same seed without it, card 80's rule (latent cosine at least 0.99, PSNR at
+least 28.2 dB, mean pixel difference at most 4.1), on the 4096 x 4096 square:
 
 | Seed | Cosine | PSNR | Mean | |
 |---|---|---|---|---|
