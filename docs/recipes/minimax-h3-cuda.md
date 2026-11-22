@@ -961,11 +961,16 @@ already rounded every value to bf16 before storing it in f32), so `Inputs.tables
 (`load4`, `normed4`). The fp32 sums and their order are unchanged. `Inputs.tables` must now be 8-byte aligned
 (`cuda_validation`). `fused_test` still checks both fused launches against `h3_norm` then the quantizers byte for byte.
 
-[`bench-181-ab.sh`](minimax-h3-cuda/bench-181-ab.sh) at `d9f9f4fa` ran in two jobs on GB10 (driver 580.173.02,
-`H3_PROFILE=1`). Each job ran this commit, then `bench-181-base.patch` reverse-applied (main's `zig/` tree
-`e9864453`), each side rendering the pilot fox cold and then three prompts warm that neither server had seen
-(`greenhouse`, `tram`, `trench`). Every selftest passed on both sides. In both jobs all four latents and PNGs were
-byte for byte main's, so every picture gate main passes holds unchanged.
+[`bench-181-ab.sh`](minimax-h3-cuda/bench-181-ab.sh) ran in four jobs on GB10 (driver 580.173.02, `H3_PROFILE=1`):
+two at `d9f9f4fa`, `top-b16f3abdffbd` at `66fb51ee` and `top-563acf5a3365` at `bba8b760`, whose patch also carries
+the contract tests' bf16 tables. Each job ran this commit, then `bench-181-base.patch` reverse-applied (main's `zig/`
+tree `e9864453`), each side rendering the pilot fox cold and then three prompts warm that neither server had seen
+(`greenhouse`, `tram`, `trench`). Every selftest passed on both sides. In all four jobs all four latents and PNGs
+were byte for byte main's, so every picture gate main passes holds unchanged. The last job ran the contract gates
+of the `h3_` and `h3m_` kernels first: `h3_norm`, `h3_gate_add` and `h3m_project` pass all four on the bf16 tables.
+The job still exits 1. `h3m_sinusoid`, which this card does not touch, misses its shapes bound by one f32 ulp
+(1.25 of it). The limits audit also flags stale usage records: `h3_norm_quant` now takes 77 registers on sm_121
+(74 recorded) and `h3_norm_quant_fp4` 38 (37); main's 128-byte static shared records are stale too.
 
 | job | side | cold s | warm 1 / 2 / 3 s | transformer warm s | norms warm s |
 |---|---|---:|---:|---:|---:|
@@ -973,13 +978,20 @@ byte for byte main's, so every picture gate main passes holds unchanged.
 | first | main | 151.2 | 14.05 / 14.07 / 14.18 | 10.75 / 10.74 / 10.80 | 0.63 / 0.62 / 0.62 |
 | `top-d7a9943165b5` | this commit | 145.0 | 14.10 / 14.17 / 14.20 | 10.79 / 10.85 / 10.80 | 0.60 / 0.61 / 0.60 |
 | `top-d7a9943165b5` | main | 150.6 | 14.94 / 14.40 / 14.43 | 10.93 / 10.78 / 10.82 | 0.62 / 0.62 / 0.62 |
+| `top-b16f3abdffbd` | this commit | 148.9 | 14.10 / 14.10 / 14.27 | 10.79 / 10.76 / 10.84 | 0.61 / 0.61 / 0.61 |
+| `top-b16f3abdffbd` | main | 150.8 | 14.16 / 14.15 / 14.24 | 10.84 / 10.81 / 10.82 | 0.62 / 0.62 / 0.62 |
+| `top-563acf5a3365` | this commit | 149.5 | 14.09 / 14.41 / 15.47 | 10.78 / 10.78 / 10.80 | 0.60 / 0.60 / 0.60 |
+| `top-563acf5a3365` | main | 148.3 | 14.04 / 14.07 / 14.21 | 10.74 / 10.74 / 10.79 | 0.62 / 0.62 / 0.62 |
 
 In the first job the card side's cold run was cut off the log I fetched. The other stages match main's to within
 0.03 s. The narrower reads save **0.01–0.03 s** of `norms`' 0.61 s: the kernel is bound by its reads and writes of
-the bf16 row, not by the tables. The warm walls overlap main's except for main's first warm run in the second job
-(14.94 s), which is a 2.82 s prompt, not the transformer. The warm picture is faster than main's by noise only. It
-stays because it is bit-identical, has fewer table bytes and needs no extra code path. A real gain in `norms` needs
-the fold into the products' epilogues that the rescope ruled out.
+the bf16 row, not by the tables. Over the twelve warm runs this commit's median is **14.14 s (14.00–15.47)** and
+main's **14.17 s (14.04–14.94)**. Run against run, this commit is faster in six, ties in two and is slower in four:
+**not faster than main on every run**, a difference inside the noise. The outliers are outside the transformer:
+main's 14.94 s (second job) is a 2.82 s prompt, and this commit's 15.47 s and 14.41 s (last job) are a 3.45 s prompt
+and a 1.05 s decode, against transformers of 10.80 s and 10.78 s.
+It stays because it is bit-identical, has fewer table bytes and needs no extra code path. A real gain in `norms`
+needs the fold into the products' epilogues that the rescope ruled out.
 
 ### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
 
