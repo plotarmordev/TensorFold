@@ -3,19 +3,28 @@ const std = @import("std");
 const mtl = @import("metal");
 const contract = @import("contract");
 const h3k = @import("h3_kernels");
+const sources = @import("kernel_sources");
 const rig_ = @import("rig.zig");
 const ref = @import("metal_h3_ref.zig");
 
 const c = contract.spec;
 const g = contract.gates;
 
-pub const Which = enum { rows_in, head_norm, euler, norm, norm_quant, gate_add, gate_mix, swiglu, swiglu_gate_first, heads, pool, tile_scores, coarse, attention, modulation };
+pub const Which = enum { rows_in, head_norm, euler, norm, norm_quant, gate_add, gate_mix, swiglu, swiglu_gate_first, heads, pool, tile_scores, coarse, attention, modulation, far_pool };
 
 /// The geometry the test kernels are compiled for: two heads, up to 16 tiles of 64 slots.
 const heads = 2;
 const tiles = 16;
 const slots = tiles * 64;
 const defines = std.fmt.comptimePrint("#define H3_HEADS {d}\n#define H3_SLOTS {d}\n#define H3_TILES {d}\n#define H3_HIDDEN 8192\n", .{ heads, slots, tiles });
+
+/// h3_far_pool's own library: up to `far_rows` pooled rows read from tile `far_first` on (two prefix tiles) and
+/// written past the case's `far_tiles`.
+pub const far_first = 2;
+pub const far_rows = 8;
+pub const far_tiles = far_first + 4 * far_rows;
+pub const far_slots = (far_tiles + far_rows) * 64;
+const far_defines = std.fmt.comptimePrint("#define H3_HEADS {d}\n#define H3_SLOTS {d}\n#define H3_TILES {d}\n#define H3_HIDDEN 8192\n", .{ heads, far_slots, far_tiles });
 
 fn kChain(s: c.Shape) usize {
     return s.k + 2;
@@ -36,6 +45,10 @@ fn poolChain(_: c.Shape) usize {
 }
 fn tileChain(s: c.Shape) usize {
     return s.rows + 2;
+}
+/// A 2 x 2 block's four values, summed in order.
+fn blockChain(_: c.Shape) usize {
+    return 4;
 }
 /// The tensor op's dot over 128 channels, then the value product's sum over every selected key.
 fn attnChain(s: c.Shape) usize {
@@ -66,6 +79,8 @@ pub fn spec(w: Which) c.Spec {
         .coarse => .{ .name = "metal h3 pooled branch h3_coarse", .accum = .f32, .depth = tileChain, .ops = 6, .out = .f32, .tiles = .{ .{ .size = 4 }, .{}, .{} }, .served = &.{.{ .rows = tiles, .n = 128, .k = tiles }}, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = soft_why } },
         .modulation => .{ .name = "metal h3 AdaLN tables h3_modulation", .accum = .f32, .depth = laneChain, .ops = 1, .out = .bf16, .tiles = .{ .{}, .{ .size = 18 * 32, .step = 18, .min = 18 }, .{ .size = 32 } }, .served = &.{ .{ .rows = 16, .n = 18 * 64, .k = 2688 }, .{ .rows = 3, .n = 18 * 16, .k = 2688 } } },
         .attention => .{ .name = "metal h3 routed attention h3_attention", .accum = .f32, .depth = attnChain, .ops = 8, .mids = 1, .out = .bf16, .tiles = .{ .{}, .{}, .{ .size = 256, .step = 64, .min = 64 } }, .served = &.{ .{ .rows = tiles, .n = 128, .k = tiles * 64 }, .{ .rows = tiles, .n = 128, .k = 6 * 64 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = soft_why } },
+        // rows: pooled rows (64 at 4096 x 4096, 32 at 4096 x 2048; each the same 64-thread group, so 8 and 4 here)
+        .far_pool => .{ .name = "metal h3 pooled far field h3_far_pool", .accum = .f32, .depth = blockChain, .ops = 1, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = far_rows, .n = 128, .k = 4 }, .{ .rows = far_rows / 2, .n = 128, .k = 4 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "a mean of four bf16 values: no sum reaches past fp16's range" } },
     };
 }
 
@@ -86,6 +101,7 @@ fn function(w: Which) []const u8 {
         .coarse => "h3_coarse",
         .attention => "h3_attention",
         .modulation => "h3_modulation",
+        .far_pool => "h3_far_pool",
     };
 }
 
@@ -109,7 +125,13 @@ pub const H3 = struct {
     quant_pipe: ?mtl.Pipeline = null,
 
     pub fn init(a: std.mem.Allocator, device: mtl.Device, queue: mtl.Queue, which: Which) !H3 {
-        const src = try std.mem.concat(a, u8, &.{ defines, h3k.source });
+        // H3's library as source.zig builds it: h3_gemm.metal needs gemm_nax and its fragments ahead of it
+        const nax = for (sources.prefill) |f| {
+            if (std.mem.eql(u8, f.name, "gemm_nax")) break f.text;
+        } else return error.NoGemmNax;
+        const gemm = try std.mem.replaceOwned(u8, a, nax, "#include \"../nax.h\"", sources.nax);
+        defer a.free(gemm);
+        const src = try std.mem.concat(a, u8, &.{ gemm, if (which == .far_pool) far_defines else defines, h3k.source });
         defer a.free(src);
         var h: H3 = .{ .a = a, .rig = .{ .a = a, .device = device, .queue = queue }, .which = which, .pipe = try rig_.pipeline(device, src, function(which)), .arena = std.heap.ArenaAllocator.init(a) };
         if (which == .norm_quant) {
@@ -223,6 +245,7 @@ pub const H3 = struct {
             .coarse => ref.coarse(self.in, s, scratch, want, mag),
             .attention => ref.attention(self.in, s, scratch, want, mag),
             .modulation => ref.modulation(self.in, s, scratch, want, mag),
+            .far_pool => ref.farPool(self.in, s, scratch, want, mag),
         }
     }
 

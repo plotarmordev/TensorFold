@@ -18,10 +18,10 @@ const Model = h3.Model;
 
 /// The driver encodes a [rows, columns] matrix with 128-byte rows into a CUtensorMap whose TMA box
 /// is `box_rows` by 128 bytes: one K block of one operand tile.
-const TensorMap = extern struct { bytes: [128]u8 align(64) };
-const Encode = *const fn (*TensorMap, c_uint, c_uint, ?*anyopaque, *const [2]u64, *const u64, *const [2]u32, *const [2]u32, c_uint, c_uint, c_uint, c_uint) callconv(.c) cuda.abi.Result;
+pub const TensorMap = extern struct { bytes: [128]u8 align(64) };
+pub const Encode = *const fn (*TensorMap, c_uint, c_uint, ?*anyopaque, *const [2]u64, *const u64, *const [2]u32, *const [2]u32, c_uint, c_uint, c_uint, c_uint) callconv(.c) cuda.abi.Result;
 
-fn encoder(d: *cuda.Driver) !Encode {
+pub fn encoder(d: *cuda.Driver) !Encode {
     return d.lib.lookup(Encode, "cuTensorMapEncodeTiled") orelse error.MissingSymbol;
 }
 
@@ -169,7 +169,7 @@ pub const Int8 = struct {
 
 /// TMA's UINT8 map of a [rows, k] int8 matrix: boxes of `box_rows` by 128 bytes, the K block, L2
 /// 256B promotion and zero fill past the end.
-fn encode(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, box_rows: u32) !void {
+pub fn encode(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, box_rows: u32) !void {
     const dims: [2]u64 = .{ k, rows };
     const strides: u64 = k; // bytes between rows; dimension 0's stride is the contiguous row
     const box: [2]u32 = .{ 128, box_rows };
@@ -185,3 +185,70 @@ fn launchQuantize(self: *Model, x: u64, q: u64, s: u64, rows: usize, k: usize) !
     args.add(@as(c_int, @intCast(k)));
     try self.launch("h3_quantize", .{ .x = @intCast(rows) }, 256, 0, &args);
 }
+
+/// An int8 product resident: its (n, k) rows at `q`, then the k / 128 group-major scales at `s`.
+pub const Product = struct { q: u64, s: u64 };
+
+/// The prompt encoder's int8 products at a scale per 128 of K on both operands (h3p_quantize_groups,
+/// h3p_gemm_int8_groups): per-row scales moved its picture past the episode-1 gates (card 143), and
+/// a scale a K block is folded in registers, so only an own product carries it.
+pub const Groups = struct {
+    enc: Encode,
+    sms: u32,
+
+    /// PromptTile's whole N tiles; K whole groups.
+    pub fn checkGeometry(n: usize, k: usize) !void {
+        if (k % 128 != 0 or n % prompt_block != 0) return error.BadGeometry;
+    }
+
+    /// The bf16 `parts`, stacked row-wise into one (n, k) product, each staged through `staging` by
+    /// `r.copy` and quantized by `f` into the next 256-aligned slot of `arena` at `at`.
+    pub fn load(f: cuda.Function, r: anytype, staging: u64, arena: u64, at: *usize, nk: [2]usize, parts: anytype) !Product {
+        const p: Product = .{ .q = arena + at.*, .s = arena + at.* + nk[0] * nk[1] };
+        at.* += std.mem.alignForward(usize, bytes(nk[0], nk[1]), 256);
+        var row: usize = 0;
+        inline for (parts) |t| {
+            const rows = t.len / (2 * nk[1]);
+            if (t.len != rows * nk[1] * 2 or row + rows > nk[0]) return error.H3UnexpectedTensor;
+            try r.copy(t, staging);
+            try quantize(f, r.stream, staging, p.q + row * nk[1], p.s + row * 4, rows, nk[1], nk[0]);
+            row += rows;
+        }
+        return if (row == nk[0]) p else error.H3UnexpectedTensor;
+    }
+
+    /// Bytes of an (n, k) int8 operand and its k / 128 scales a row.
+    pub fn bytes(n: usize, k: usize) usize {
+        return n * k + n * (k / 128) * 4;
+    }
+
+    /// x's bf16 (rows, k) rows to int8 at `q`, the scales group-major at `s` with `ld` rows a group;
+    /// a weight quantized in parts passes its first row's scale address and the whole matrix's rows.
+    pub fn quantize(f: cuda.Function, stream: cuda.Stream, x: u64, q: u64, s: u64, rows: usize, k: usize, ld: usize) !void {
+        var args: cuda.Args = .{};
+        for ([_]u64{ x, q, s }) |a| args.add(a);
+        for ([_]usize{ k, ld }) |v| args.add(@as(c_int, @intCast(v)));
+        try cuda.launch.launch(f, .{ .grid = .{ .x = @intCast(rows) }, .block = .{ .x = 256 } }, stream, &args);
+    }
+
+    /// y (rows, n) fp32 = x (rows, k) int8 · w (n, k) int8ᵀ, each K group at xs[g · rows + row] ·
+    /// ws[g · n + column].
+    pub fn gemm(t: Groups, f: cuda.Function, stream: cuda.Stream, xq: u64, xs: u64, wq: u64, ws: u64, y: u64, rows: usize, n: usize, k: usize) !void {
+        var maps: [2]TensorMap = undefined;
+        try encode(t.enc, &maps[0], xq, rows, k, prompt_block);
+        try encode(t.enc, &maps[1], wq, n, k, prompt_block);
+        var args: cuda.Args = .{};
+        args.add(maps[0]);
+        args.add(maps[1]);
+        for ([_]u64{ xs, ws, y }) |a| args.add(a);
+        for ([_]usize{ rows, n, k }) |v| args.add(@as(c_int, @intCast(v)));
+        const tiles = (rows + prompt_block - 1) / prompt_block * (n / prompt_block);
+        const blocks: u32 = @intCast(@min(2 * t.sms, tiles));
+        try cuda.launch.launch(f, .{ .grid = .{ .x = blocks }, .block = .{ .x = 256 }, .shared = prompt_shared }, stream, &args);
+    }
+};
+
+/// PromptTile's square tile and its Config::shared_bytes: 2 stages of (64 + 64) * 128 bytes, the
+/// slack and barriers — under the 48 KiB default, so two CTAs share an SM without an opt-in.
+const prompt_block = 64;
+const prompt_shared = 2 * (64 + 64) * 128 + 1024 + 2 * 16;

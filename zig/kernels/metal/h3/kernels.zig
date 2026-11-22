@@ -17,4 +17,4 @@ pub fn packedAt(r: usize, c: usize, k: usize) usize {
     return (r >> 5) * 32 * k + (c >> 4) * 512 + lane * 16 + (r & 16) / 2 + (y & 8) / 2 + (x & 3);
 }
 
-pub const names = [_][:0]const u8{ "h3_rows_in", "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_gate_mix", "h3_swiglu", "h3_head_norm", "h3_euler", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_attention", "h3_modulation", gemm_32x64, gemm_32x64_ragged, gemm_32x64_i8, "h3_quantize_rows" };
+pub const names = [_][:0]const u8{ "h3_rows_in", "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_gate_mix", "h3_swiglu", "h3_head_norm", "h3_euler", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_attention", "h3_far_pool", "h3_modulation", gemm_32x64, gemm_32x64_ragged, gemm_32x64_i8, "h3_quantize_rows" };

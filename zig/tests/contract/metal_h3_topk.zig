@@ -2,6 +2,7 @@
 const std = @import("std");
 const mtl = @import("metal");
 const contract = @import("contract");
+const sources = @import("kernel_sources");
 const h3k = @import("h3_kernels");
 const rig_ = @import("rig.zig");
 
@@ -14,7 +15,8 @@ fn noSums(_: c.Shape) usize {
 
 const rule = "a NaN score ranks as -inf, ties go to the lower tile, so every row keeps exactly n tiles";
 
-/// Rows: query video tiles; n: tiles kept a row; k: video tiles. Compiled for 288 tiles, FastH3's at 864x480.
+/// Rows: query video tiles; n: tiles kept a row; k: video tiles. Compiled for 288 tiles, FastH3's at 864x480;
+/// 64 keeping 13 is a 2048 picture's routed steps (tf-h3-image-server --routed-steps).
 pub fn spec() c.Spec {
     return .{
         .name = "metal h3 tile top-k h3_topk",
@@ -23,7 +25,7 @@ pub fn spec() c.Spec {
         .out = .raw,
         .nan = .{ .stated = rule },
         .tiles = .{ .{}, .{}, .{ .size = 32 } },
-        .served = &.{ .{ .rows = 280, .n = 56, .k = 280 }, .{ .rows = 8, .n = 3, .k = 12 } },
+        .served = &.{ .{ .rows = 280, .n = 56, .k = 280 }, .{ .rows = 64, .n = 13, .k = 64 }, .{ .rows = 8, .n = 3, .k = 12 } },
     };
 }
 
@@ -45,7 +47,13 @@ pub const TopK = struct {
     msg: [200]u8 = undefined,
 
     pub fn init(a: std.mem.Allocator, device: mtl.Device, queue: mtl.Queue) !TopK {
-        const src = try std.mem.concat(a, u8, &.{ "#define H3_HEADS 2\n#define H3_SLOTS 18432\n#define H3_TILES 288\n", h3k.source });
+        // H3's library as source.zig builds it: h3_gemm.metal needs gemm_nax and its fragments ahead of it
+        const nax = for (sources.prefill) |f| {
+            if (std.mem.eql(u8, f.name, "gemm_nax")) break f.text;
+        } else return error.NoGemmNax;
+        const gemm = try std.mem.replaceOwned(u8, a, nax, "#include \"../nax.h\"", sources.nax);
+        defer a.free(gemm);
+        const src = try std.mem.concat(a, u8, &.{ gemm, "#define H3_HEADS 2\n#define H3_SLOTS 18432\n#define H3_TILES 288\n", h3k.source });
         defer a.free(src);
         return .{ .a = a, .rig = .{ .a = a, .device = device, .queue = queue }, .pipe = try rig_.pipeline(device, src, "h3_topk") };
     }

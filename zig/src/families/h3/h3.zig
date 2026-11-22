@@ -34,8 +34,8 @@ pub const Block = struct { q: Ref, k: Ref, v: Ref, compress: Ref, out: Ref, fc1:
 pub const Int8 = struct { w: Ref, s: Ref };
 pub const Int8s = struct { q: Int8, out: Int8, fc1: Int8, fc2: Int8 };
 
-/// Shader overrides and optional per-block yielding to live speech.
-pub const Options = struct { defines: []const u8 = "", give_way: ?gpu_turn.Turn = null };
+/// Shader overrides, optional per-block yielding to live speech, and a picture's pooled far-field key tiles.
+pub const Options = struct { defines: []const u8 = "", give_way: ?gpu_turn.Turn = null, far: ?picture.Far = null };
 
 /// A timing is valid only with a working speech signal and no speech or waiting anywhere in the forward.
 pub const Timing = struct { wall: f64, gpu: f64, paused: f64, timing_valid: bool };
@@ -97,6 +97,12 @@ pub const Model = struct {
     sizes: Ref,
     row_of: mtl.Buffer,
     all_tiles: mtl.Buffer,
+    /// --far-pool: each target query tile's key tiles (picture.Far's list) and its pooled rows; 0 rows when off.
+    /// `far_on`: this step pools (from picture.far_from_step on).
+    far_list: mtl.Buffer,
+    far_per_query: usize,
+    far_pooled: usize,
+    far_on: bool,
     line: mtl.Buffer,
     time: mtl.Buffer,
     // the stream and a branch's rows, the normed rows, the projections at the attention width, the MLP's rows
@@ -132,6 +138,9 @@ pub const Model = struct {
     audio_velocity: mtl.Buffer,
     /// Every query tile attends to every tile and the pooled branch is left out (not how the checkpoint was trained).
     dense: bool = false,
+    /// With `dense`, the last `routed_steps` steps route each target query tile to its `keep` best-scoring target
+    /// tiles (FastH3's top-k) beside the whole prefix, with no pooled branch; 0 keeps every step dense.
+    routed_steps: usize = 0,
     /// The released MiniMax-H3 layout: dense attention without routing gates, the fused q/k/v rows in `qkv`.
     base: bool = false,
     qkv: mtl.Buffer,
@@ -146,8 +155,9 @@ pub const Model = struct {
         @compileError("no kernel " ++ name);
     }
 
+    /// Key and value slots: the case's tiles, then a far-field binding's pooled tiles.
     fn slots(self: *const Model) usize {
-        return self.tiles * slot_tile;
+        return (self.tiles + self.far_pooled) * slot_tile;
     }
 
     /// `checkpoint_dir`: the FastH3 transformer folder of `shards` files. `case`: tools/zig/h3_case.py's output.
@@ -198,7 +208,11 @@ pub const Model = struct {
         const heads = self.heads;
         const times = admitted.times;
 
-        const defines = try std.fmt.allocPrint(gpa, "#define H3_HIDDEN {d}\n{s}", .{ hidden, options.defines });
+        if (options.far) |f| {
+            self.far_per_query = f.per_query;
+            self.far_pooled = f.pooled;
+        }
+        const defines = try std.fmt.allocPrint(gpa, "#define H3_HIDDEN {d}\n{s}{s}", .{ hidden, if (options.far != null) "#define H3_FAR 1\n" else "", options.defines });
         defer gpa.free(defines);
         const all = try @import("source.zig").library(gpa, heads, self.slots(), self.tiles, defines);
         defer gpa.free(all);
@@ -237,6 +251,8 @@ pub const Model = struct {
         for (self.slot.buffer.slice(i32, rows), 0..) |at, row| self.row_of.slice(i32, total)[@intCast(at)] = @intCast(row);
         self.all_tiles = try device.buffer(self.tiles * 4, shared);
         for (self.all_tiles.slice(i32, self.tiles), 0..) |*t, i| t.* = @intCast(i);
+        self.far_list = try device.buffer(if (options.far) |f| f.list.len * 4 else 4, shared);
+        if (options.far) |f| @memcpy(self.far_list.slice(i32, f.list.len), f.list);
         self.line = try device.buffer(rows * 4, shared);
         self.time = try device.buffer(rows * 4, shared);
         inline for (.{ "x", "y", "xn" }) |f| @field(self, f) = try device.buffer(rows * hidden * 2, shared);
@@ -297,7 +313,7 @@ pub const Model = struct {
         for (self.blocks) |b| b.tables.buffer.deinit();
         inline for (.{ "final_table", "final_norm", "w_video_in", "b_video_in", "w_video_out", "b_video_out", "cos", "sin", "slot", "sizes" }) |f| @field(self, f).buffer.deinit();
         if (self.audio > 0) inline for (.{ "w_audio_in", "b_audio_in", "w_audio_out", "b_audio_out" }) |f| @field(self, f).buffer.deinit();
-        inline for (.{ "row_of", "all_tiles", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
+        inline for (.{ "row_of", "all_tiles", "far_list", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
         if (self.base) inline for (.{ "wq", "ws", "xq", "xs" }) |f| @field(self, f).deinit();
         if (self.stamps) |s| {
             s.pass.deinit();
@@ -404,8 +420,8 @@ pub const Model = struct {
         try self.next(pass);
     }
 
-    /// After the tiles' means: tile scores, each video tile's chosen key tiles and the pooled branch.
-    pub fn route(self: *const Model, enc: mtl.ComputeEncoder) void {
+    /// After the tiles' means: tile scores and each video tile's chosen key tiles.
+    pub fn choose(self: *const Model, enc: mtl.ComputeEncoder) void {
         const heads = self.heads;
         enc.barrier();
         enc.setPipeline(self.pipeline("h3_tile_scores"));
@@ -420,12 +436,17 @@ pub const Model = struct {
         enc.setValue([3]i32{ @intCast(self.tiles), @intCast(self.prefix_tiles), @intCast(self.keep) }, 1);
         enc.setBuffer(self.chosen, 0, 2);
         enc.dispatchGroups(mtl.Size.of(self.tiles - self.prefix_tiles, heads, 1), mtl.Size.of(32, 1, 1));
+    }
+
+    /// `choose`, then the pooled branch.
+    pub fn route(self: *const Model, enc: mtl.ComputeEncoder) void {
+        self.choose(enc);
         enc.setPipeline(self.pipeline("h3_coarse"));
         enc.setBuffer(self.tile_scores, 0, 0);
         enc.setBuffer(self.vp, 0, 1);
         enc.setValue([1]i32{@intCast(self.tiles)}, 2);
         enc.setBuffer(self.coarse, 0, 3);
-        enc.dispatchGroups(mtl.Size.of(self.tiles, heads, 1), mtl.Size.of(32, 1, 1));
+        enc.dispatchGroups(mtl.Size.of(self.tiles, self.heads, 1), mtl.Size.of(32, 1, 1));
     }
 
     fn rowsIn(self: *const Model, enc: mtl.ComputeEncoder, from: mtl.Buffer, w: Ref, b: Ref, count: usize, width: usize, first: usize) void {
@@ -483,6 +504,7 @@ pub const Model = struct {
         const hidden = self.hidden;
         // each row's line in the blocks' tables and in the final layer's, for this step
         @memcpy(self.line.slice(i32, rows), self.adaln[step * rows ..][0..rows]);
+        self.far_on = self.far_pooled > 0 and step >= picture.far_from_step;
         @memcpy(self.time.slice(i32, rows), self.times[step * rows ..][0..rows]);
         @memcpy(self.x.slice(u16, self.prompt.len), self.prompt);
         if (video.len > 0) @memcpy(self.video_latents.slice(f32, video.len), video);
@@ -509,8 +531,9 @@ pub const Model = struct {
         // Keep blocks queued to hide host wake-up latency without submitting the entire forward ahead of speech.
         var queued: [3]mtl.CommandBuffer = undefined;
         var n: usize = 0;
+        const routed = step + self.routed_steps >= self.adaln.len / self.rows;
         for (0..self.blocks.len) |index| {
-            try block.run(self, &pass, index);
+            try block.run(self, &pass, index, routed);
             const t = self.give_way orelse continue;
             pass.enc.end();
             pass.cb.commit();

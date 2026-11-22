@@ -282,17 +282,14 @@ fn resolve(a: std.mem.Allocator, device: mtl.Device, d: limits.MetalLaunch, comp
     } else if (std.mem.startsWith(u8, d.name, "minimax image ")) {
         if (!assemble) return undefined;
         text = if (has(d.name, " encoder ")) @import("h3_image_encoder_kernels").source else @import("h3_prompt_kernels").source;
-    } else if (std.mem.startsWith(u8, d.name, "h3 product ")) {
+    } else if (std.mem.startsWith(u8, d.name, "h3 ")) {
         if (!assemble) return undefined;
-        // h3_gemm.metal's products use gemm_nax's fragments, joined ahead of it as source.zig joins them at load
+        // every H3 launch is one library: h3_gemm.metal uses gemm_nax's fragments, joined ahead as source.zig joins them
         const nax = for (sources.prefill) |f| {
             if (std.mem.eql(u8, f.name, "gemm_nax")) break f.text;
         } else return error.UnknownLaunch;
         text = try std.mem.concat(a, u8, &.{ nax, @import("h3_kernels").source });
         frags = true;
-    } else if (std.mem.startsWith(u8, d.name, "h3 ")) {
-        if (!assemble) return undefined;
-        text = @import("h3_kernels").source;
     } else if (std.mem.startsWith(u8, d.name, "glm gather ") or std.mem.startsWith(u8, d.name, "glm rows ") or std.mem.startsWith(u8, d.name, "glm moe rows ")) {
         if (!assemble) return undefined;
         text = tf.glm.wide.gather_source;

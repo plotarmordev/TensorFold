@@ -8,7 +8,7 @@ const image_tool = @import("h3_image.zig");
 const decoder_tool = @import("h3_image_decoder.zig");
 
 const usage =
-    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile] [--draft-steps N] [--renoise-sigma X]
+    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile] [--draft-steps N] [--renoise-sigma X] [--far-pool] [--routed-steps N]
     \\  then one request a line on stdin: WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt
     \\  each writes OUT_PREFIX.safetensors, .h3case.safetensors, .rows.f32, .latent.f32 and .png as
     \\  tf-h3-image-prompt, tf-h3-image (free) and tf-h3-image-decoder do, and prints a timing line;
@@ -17,6 +17,10 @@ const usage =
     \\  profile: each request's six steps by kernel, each launch timed by the GPU's timestamp counters (slower; diagnostic)
     \\  --draft-steps N runs every request's first N steps on the half-size canvas, as mmh3's does:
     \\  a different picture, faster (the free run only; no reference edits)
+    \\  --far-pool pools distant keys and values 2 x 2 at 4096 x 4096 only (tf-h3-image's --far-pool); on the
+    \\  steps it pools it wins over --routed-steps
+    \\  --routed-steps N routes the last N steps' attention, each picture tile to its best fifth of picture
+    \\  tiles (FastH3's top-k): a different picture, measured in the Metal recipe
     \\
 ;
 
@@ -104,7 +108,9 @@ pub fn main(init: std.process.Init) !u8 {
     const a0 = init.arena.allocator();
     var profile = false;
     var draft_steps: usize = 0;
+    var routed_steps: usize = 0;
     var renoise: ?f32 = null;
+    var far_pool = false;
     var positional: std.ArrayList([]const u8) = .empty;
     var i: usize = 1;
     while (i < all.len) : (i += 1) {
@@ -119,6 +125,12 @@ pub fn main(init: std.process.Init) !u8 {
             i += 1;
             if (i >= all.len) return 2;
             renoise = std.fmt.parseFloat(f32, all[i]) catch return 2;
+        } else if (std.mem.eql(u8, arg, "--far-pool")) {
+            far_pool = true;
+        } else if (std.mem.eql(u8, arg, "--routed-steps")) {
+            i += 1;
+            if (i >= all.len) return 2;
+            routed_steps = std.fmt.parseInt(usize, all[i], 10) catch return 2;
         } else try positional.append(a0, arg);
     }
     const args = positional.items;
@@ -133,7 +145,9 @@ pub fn main(init: std.process.Init) !u8 {
     var encoder = try prompt_tool.Encoder.load(init, a, args[0], args[1]);
     defer encoder.deinit(init.gpa);
     var folder = try image_tool.Folder.open(init, a, args[1]);
+    folder.far_pool = far_pool;
     defer folder.heads.deinit();
+    folder.routed_steps = routed_steps;
     const vae = try decoder_tool.Vae.load(init, a, args[1]);
     defer vae.d.deinit();
     std.debug.print("loaded the prompt encoder, transformer weights and decoder in {d:.1} s; ready\n", .{mtl.clock.seconds() - loading});
@@ -501,6 +515,46 @@ test "the steps' Euler on the GPU leaves main's host-Euler latent bit for bit" {
         h3.picture.euler(x, velocity, f.folder.pdd.deltas[k]);
     }
     try expectSameLatent(x, resident);
+}
+
+test "routed steps that keep every picture tile leave the dense latent bit for bit" {
+    const device = try mtl.Device.init();
+    if (!device.tensorUnits()) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var environ_map: std.process.Environ.Map = .init(testing.allocator);
+    defer environ_map.deinit();
+    const init = std.process.Init{
+        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
+        .arena = &arena,
+        .gpa = testing.allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .preopens = .empty,
+    };
+    var f = try residentFixture(init, a, tmp.dir, dir_path, device);
+    defer {
+        for (&f.cases) |*c| c.case.file.deinit();
+        f.folder.heads.deinit();
+        for (f.folder.ck.shards) |*shard| shard.deinit();
+        testing.allocator.free(f.folder.ck.shards);
+    }
+    const case = &f.cases[0].case;
+    var dense = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
+    defer dense.release();
+    const want = (try image_tool.free(a, dense.model, &f.folder, case, try std.fmt.allocPrint(a, "{s}/dense", .{dir_path}))).rows;
+
+    // every step routed: the prefix tile attends densely, each picture tile to the prefix and its chosen tiles
+    f.folder.routed_steps = f.folder.pdd.steps();
+    var routed = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
+    defer routed.release();
+    try testing.expectEqual(routed.model.tiles - routed.model.prefix_tiles, routed.model.keep);
+    const got = (try image_tool.free(a, routed.model, &f.folder, case, try std.fmt.allocPrint(a, "{s}/routed", .{dir_path}))).rows;
+    try expectSameLatent(got, want);
 }
 
 test "profile times each picture kernel on the GPU's counters and leaves the latent bit for bit" {
