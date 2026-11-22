@@ -18,14 +18,24 @@ phase() {
     H3_LINEAR=int8 H3_PROFILE=1 H3_BENCH_OUT=/work/out/h3-178-$1 H3_BENCH_SKIP_COMPARE=1 H3_BENCH_PROMPTS="$prompts" \
         sh "$here/bench-script.sh" || status=$?
 }
+stages() { # every run's wall split and H3_PROFILE block stages
+    for run in $(seq 1 13); do
+        echo "--- $1 2048-$run"
+        cat "$1/2048-$run.time" | tr '\n' ' ' | awk '{printf "wall %.2f s\n", $2 - $1}'
+        grep -hE "^prompt: |^transformer: |s in all;" "$1/2048-$run.prompt.log" "$1/2048-$run.image.log" "$1/2048-$run.decoder.log" 2>/dev/null || true
+        grep -E '^  [a-z ]+: [0-9.]+ s$' "$1/2048-$run.image.log" || true
+    done
+}
 sh "$here/check-178.sh"
 echo "=== heads: this commit $(git -c safe.directory='*' rev-parse --short HEAD), int8 qkv + fused heads ==="
 phase heads
+stages /work/out/h3-178-heads
 echo "=== base: main at a03e5c459, int8 qkv + h3_heads ==="
 git -c safe.directory='*' apply -R "$patch_file"
 tree=$(git -c safe.directory='*' add -A zig && git -c safe.directory='*' write-tree --prefix=zig/)
 [ "$tree" = 9fa1f41ca6c1029251ad09b47f36424f3cc5875d ] || { echo "patch -R rebuilt zig/ $tree, not main's" >&2; exit 1; }
 phase base
+stages /work/out/h3-178-base
 git -c safe.directory='*' apply "$patch_file"
 echo "=== fused int8 against main, byte for byte ==="
 for run in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
