@@ -490,39 +490,13 @@ __global__ void __launch_bounds__(256) h3_euler(float* X, const float* V, float 
 __global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma(
         const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
         const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
-    h3_int8::gemm_kernel<h3_int8::TallTile, h3_int8::Epilogue::rows>(map_a, map_b, XS, WS, C, M, N, K);
+    h3_int8::gemm_kernel<h3_int8::TallTile, false>(map_a, map_b, XS, WS, C, M, N, K);
 }
 
 __global__ void __launch_bounds__(256, 1) h3_swiglu_int8_tma(
         const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
         const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
-    h3_int8::gemm_kernel<h3_int8::TallTile, h3_int8::Epilogue::swiglu>(map_a, map_b, XS, WS, C, M, N, K);
-}
-
-// The TMA product at a scale per 128-deep K block on both operands (h3_quantize_blocks' layout), on
-// 128x128 tiles: out and fc2, whose picture needs scales finer than a row's.
-__global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma_blocks(
-        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
-        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
-    h3_int8::gemm_kernel<h3_int8::SquareTile, h3_int8::Epilogue::blocks>(map_a, map_b, XS, WS, C, M, N, K);
-}
-
-// h3_quantize at a scale per 128-wide chunk instead of per row: chunk c of row r scales by its own
-// rotated absmax / 127 at S[c * M + r] (block-major, as h3_gemm_int8_tma_blocks reads it), M =
-// gridDim.x. One warp a chunk, so the absmax is a warp max; an infinity scales its chunk by +inf
-// and a NaN quantizes to zero, h3_quantize's rules a chunk at a time. Grid [M], 256 threads.
-__global__ void __launch_bounds__(256) h3_quantize_blocks(const __nv_bfloat16* X, int8_t* Q, float* S, int K) {
-    const size_t row = blockIdx.x;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = K >> 7;
-    for (int c = warp; c < chunks; c += 8) {
-        float v[4];
-        rotated_chunk(X + row * K, c, v);
-        const float most = tf_common::warp_max(fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3]))));
-        const float scale = most > 0.f ? most / 127.f : 1.f;
-        if (lane == 0) S[static_cast<size_t>(c) * gridDim.x + row] = scale;
-        *reinterpret_cast<char4*>(Q + row * K + c * 128 + lane * 4) =
-            make_char4(__float2int_rn(v[0] / scale), __float2int_rn(v[1] / scale), __float2int_rn(v[2] / scale), __float2int_rn(v[3] / scale));
-    }
+    h3_int8::gemm_kernel<h3_int8::TallTile, true>(map_a, map_b, XS, WS, C, M, N, K);
 }
 
 // Interleaves an fc1's int8 weight rows and fp32 scales pairwise for the swiglu epilogue: product

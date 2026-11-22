@@ -8,8 +8,8 @@ const schedule = h3image.schedule;
 const cascade = h3image.cascade;
 
 const usage =
-    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16|--fp4|--int8-blocks] [--load-threads N] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
-    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16|--fp4|--int8-blocks] [--load-threads N] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
+    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16|--fp4] [--load-threads N] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
+    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16|--fp4] [--load-threads N] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
     \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
@@ -19,8 +19,6 @@ const usage =
     \\rows, exact int32 sums, and the picture passes episode 1's gates. --fp4 instead quantizes every projection
     \\to block-scaled NVFP4 (e2m1, one e4m3 scale every 16 values) on GB10's FP4 tensor cores: faster products,
     \\a different picture — its numbers and gates are the recipe's, and it never runs unless asked.
-    \\--int8-blocks also runs attention out and mlp out in int8, a scale per 128 of K on both operands:
-    \\0.77 s faster warm at 2048², but the fox misses episode 1's gates (the recipe's card 176).
     \\--draft-steps N runs the first N of the checkpoint's steps on the half-size canvas, as mmh3's
     \\--draft-steps does: the clean draft is enlarged bilinearly, noised to the next step's sigma (or
     \\to --renoise-sigma X) and redrawn at full size for the rest. It draws a different picture, not a
@@ -33,9 +31,8 @@ const usage =
     \\It draws a different picture; 0 (default) keeps every step dense.
 ;
 
-/// The transformer's linear layers: the int8 default, all-bf16, or the opt-ins: block-scaled NVFP4
-/// products, or int8 `out` and `fc2` at a scale per 128 of K beside the default's int8 `qkvc` and `fc1`.
-const Linear = enum { int8, bf16, fp4, int8_blocks };
+/// The transformer's linear layers: the int8 default, all-bf16, or the opt-in block-scaled NVFP4 products.
+const Linear = enum { int8, bf16, fp4 };
 
 fn read(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
     const path = try std.fs.path.join(a, &.{ dir, name });
@@ -73,7 +70,7 @@ const Folder = struct {
         const model = try h3.Model.loadSharded(init.gpa, &ck, threads);
         errdefer model.deinit();
         if (model.gated) return error.H3NotPictureModel; // a picture's blocks are dense: every tile sees every tile
-        if (linear == .int8 or linear == .int8_blocks) try h3.Int8.quantize(model, linear == .int8_blocks);
+        if (linear == .int8) try h3.Int8.quantize(model);
         if (linear == .fp4) try h3.Fp4.quantize(model);
         ck.evict(); // the prompt and decoder stages share this memory; each render evicts what it read back
         const heads = try h3.checkpoint.Checkpoint.open(try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, heads_name }, 0));
@@ -124,9 +121,6 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--fp4")) {
             if (linear != .int8) return error.BadArguments;
             linear = .fp4;
-        } else if (std.mem.eql(u8, arg, "--int8-blocks")) {
-            if (linear != .int8) return error.BadArguments;
-            linear = .int8_blocks;
         } else if (std.mem.eql(u8, arg, "--load-threads")) {
             i += 1;
             if (i >= all.len) return error.BadArguments;

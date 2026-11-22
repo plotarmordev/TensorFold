@@ -1,4 +1,4 @@
-//! MiniMax H3's int8 projection kernels (h3_quantize, h3_quantize_blocks and the TMA products) under the contract, against float64 formulas.
+//! MiniMax H3's int8 projection kernels (h3_quantize, h3_gemm_int8_tma) under the contract, against float64 formulas.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
@@ -23,21 +23,19 @@ fn none(_: c.Shape) usize {
 }
 
 const quantize_rule = "a row with an infinity scales by +inf and quantizes to zeros; a NaN's chunk quantizes to zeros and leaves the row's absmax";
-const blocks_rule = "a chunk with an infinity scales by +inf and quantizes to zeros; a NaN's chunk quantizes to zeros and leaves its absmax";
 
-/// One scale a row (h3_quantize) or a 128-wide chunk (h3_quantize_blocks); rows and k (the 128-wide
-/// chunks) are its dimensions, n repeats k.
-pub fn quantizeSpec(blocks: bool) c.Spec {
+/// One scale a row; rows and k (the 128-wide chunks) are its dimensions, n repeats k.
+pub fn quantizeSpec() c.Spec {
     return .{
-        .name = if (blocks) "cuda h3 int8 chunks h3_quantize_blocks" else "cuda h3 int8 rows h3_quantize",
+        .name = "cuda h3 int8 rows h3_quantize",
         .accum = .f32,
         .depth = rotationChain,
         .ops = 2,
         .out = .f32,
-        .nan = .{ .stated = if (blocks) blocks_rule else quantize_rule },
+        .nan = .{ .stated = quantize_rule },
         .tiles = .{ .{}, .{}, .{ .size = 1024, .step = 128, .min = 128 } },
-        .served = if (blocks) &.{ .{ .rows = 16, .n = inner, .k = inner }, .{ .rows = 16, .n = mlp, .k = mlp } } else &.{ .{ .rows = 16, .n = hidden, .k = hidden }, .{ .rows = 16, .n = inner, .k = inner }, .{ .rows = 16, .n = mlp, .k = mlp } },
-        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "an absmax over 128-term rotations: one fp32 scale a row or chunk, its codes checked against it" },
+        .served = &.{ .{ .rows = 16, .n = hidden, .k = hidden }, .{ .rows = 16, .n = inner, .k = inner }, .{ .rows = 16, .n = mlp, .k = mlp } },
+        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "an absmax over 128-term rotations: one fp32 scale a row, its codes checked against it" },
     };
 }
 
@@ -50,8 +48,6 @@ pub const Quantize = struct {
     rig: rig_.Rig,
     f: cuda.Function,
     arena: std.heap.ArenaAllocator,
-    /// h3_quantize_blocks: a scale per 128-wide chunk at S[chunk * rows + row].
-    blocks: bool = false,
     shape: c.Shape = undefined,
     x: []f64 = &.{},
     xd: u64 = 0,
@@ -65,15 +61,10 @@ pub const Quantize = struct {
     }
 
     pub fn kernel(t: *Quantize) g.Kernel {
-        return .{ .spec = quantizeSpec(t.blocks), .ctx = t, .vt = &vt };
+        return .{ .spec = quantizeSpec(), .ctx = t, .vt = &vt };
     }
 
     const vt = g.hooks(Quantize);
-
-    /// The 128-wide chunks one scale covers: the row's, or one.
-    fn span(t: *const Quantize) usize {
-        return if (t.blocks) 1 else t.shape.k / 128;
-    }
 
     pub fn prepare(t: *Quantize, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
         if (shape.k % 128 != 0 or shape.k == 0) return false;
@@ -99,7 +90,7 @@ pub const Quantize = struct {
             v.* = c.fromBf16(o.*);
         }
         t.xd = try t.rig.input(std.mem.sliceAsBytes(h));
-        t.s = try t.rig.output(t.count() * 4);
+        t.s = try t.rig.output(shape.rows * 4);
         t.q = try t.rig.output(shape.rows * k);
         return true;
     }
@@ -112,14 +103,8 @@ pub const Quantize = struct {
         try t.rig.s.synchronize();
     }
 
-    /// One scale a row, or one a row's chunk.
-    pub fn count(t: *const Quantize) usize {
-        return t.shape.rows * (t.shape.k / 128 / t.span());
-    }
-
-    /// Where row `row`'s chunk `ch` finds its scale: the row's, or block-major chunk-by-chunk.
-    fn scaleAt(t: *const Quantize, row: usize, ch: usize) usize {
-        return if (t.blocks) ch * t.shape.rows + row else row;
+    pub fn count(t: *Quantize) usize {
+        return t.shape.rows;
     }
 
     /// Rotated value `j` of chunk `ch` in row `row`, summed as `acc` in `order` (float64 when .none), and its magnitude.
@@ -137,22 +122,20 @@ pub const Quantize = struct {
         return .{ sum / @sqrt(128.0), mag / @sqrt(128.0) };
     }
 
-    /// Each scale's absmax / 127 over its finite chunks, and the largest chunk magnitude / 127 as the bound's mag.
+    /// Each row's absmax / 127 over its finite chunks, and the largest chunk magnitude / 127 as the bound's mag.
     fn scales(t: *Quantize, acc: c.Accum, order: Order, want: []f64, mag: []f64) void {
         var terms: [128]f64 = undefined;
-        const span_ = t.span();
-        for (0..t.shape.rows) |row| for (0..t.shape.k / 128 / span_) |unit| {
+        for (want, mag, 0..) |*w, *m, row| {
             var most: f64 = 0;
             var big: f64 = 0;
-            for (unit * span_..(unit + 1) * span_) |ch| for (0..128) |j| {
+            for (0..t.shape.k / 128) |ch| for (0..128) |j| {
                 const v = t.rotated(&terms, row, ch, j, acc, order);
                 if (!std.math.isNan(v[0])) most = @max(most, @abs(v[0]));
                 if (std.math.isFinite(v[1])) big = @max(big, v[1]);
             };
-            const at = t.scaleAt(row, unit);
-            want[at] = if (most > 0) most / 127 else 1;
-            mag[at] = big / 127;
-        };
+            w.* = if (most > 0) most / 127 else 1;
+            m.* = big / 127;
+        }
     }
 
     pub fn reference(t: *Quantize, want: []f64, mag: []f64) !void {
@@ -164,37 +147,33 @@ pub const Quantize = struct {
         t.scales(acc, order, out, mag);
     }
 
-    /// The scales within their bound, then every code the nearest integer to its rotated value over its own scale,
+    /// The scales within their bound, then every code the nearest integer to its rotated value over the row's own scale,
     /// within a code where the rotation's fp32 error reaches a rounding tie; the stated rule at planted rows.
     pub fn check(t: *Quantize, at: g.Gate) !?[]const u8 {
-        const s = quantizeSpec(t.blocks);
+        const s = quantizeSpec();
         const rows = t.shape.rows;
         const k = t.shape.k;
-        const span_ = t.span();
         const a = t.arena.allocator();
-        const want = try a.alloc(f64, t.count());
-        const mag = try a.alloc(f64, t.count());
+        const want = try a.alloc(f64, rows);
+        const mag = try a.alloc(f64, rows);
         try t.reference(want, mag);
-        const got_s = try a.dupe(u8, try t.rig.bytes(t.s, t.count() * 4));
+        const got_s = try a.dupe(u8, try t.rig.bytes(t.s, rows * 4));
         const got_q = std.mem.bytesAsSlice(i8, try t.rig.bytes(t.q, rows * k));
         var terms: [128]f64 = undefined;
         var planted: usize = 0;
-        for (0..rows) |row| for (0..k / 128 / span_) |unit| {
-            const i = t.scaleAt(row, unit);
-            const scale = c.read(.f32, got_s, i);
-            const codes = got_q[row * k + unit * span_ * 128 ..][0 .. span_ * 128];
+        for (0..rows) |row| {
+            const scale = c.read(.f32, got_s, row);
             var inf = false;
-            for (t.x[row * k + unit * span_ * 128 ..][0 .. span_ * 128]) |v| inf = inf or std.math.isInf(v);
+            for (t.x[row * k ..][0..k]) |v| inf = inf or std.math.isInf(v);
             if (inf) {
                 planted += 1;
-                if (scale != std.math.inf(f64)) return try std.fmt.bufPrint(&t.msg, "row {d} scale {d} covers an infinity but is {e}", .{ row, unit, scale });
-                for (codes) |q| if (q != 0) return try std.fmt.bufPrint(&t.msg, "row {d} scale {d} covers an infinity but a code is {d}", .{ row, unit, q });
+                if (scale != std.math.inf(f64)) return try std.fmt.bufPrint(&t.msg, "row {d} holds an infinity but scales by {e}", .{ row, scale });
+                for (got_q[row * k ..][0..k]) |q| if (q != 0) return try std.fmt.bufPrint(&t.msg, "row {d} holds an infinity but a code is {d}", .{ row, q });
                 continue;
             }
-            if (!(@abs(scale - want[i]) <= c.bound(s, t.shape, want[i], mag[i]))) return try std.fmt.bufPrint(&t.msg, "row {d} scale {d} is {e} where float64 gives {e}", .{ row, unit, scale, want[i] });
-            for (0..span_) |part| for (0..128) |j| {
-                const ch = unit * span_ + part;
-                const q: f64 = @floatFromInt(codes[part * 128 + j]);
+            if (!(@abs(scale - want[row]) <= c.bound(s, t.shape, want[row], mag[row]))) return try std.fmt.bufPrint(&t.msg, "row {d} scales by {e} where float64 gives {e}", .{ row, scale, want[row] });
+            for (0..k / 128) |ch| for (0..128) |j| {
+                const q: f64 = @floatFromInt(got_q[row * k + ch * 128 + j]);
                 const v = t.rotated(&terms, row, ch, j, .none, .sequential);
                 if (std.math.isNan(v[0])) {
                     planted += 1;
@@ -205,7 +184,7 @@ pub const Quantize = struct {
                 const slack = (c.gamma(@floatFromInt(rotationChain(t.shape)), 0x1p-24) * v[1] + 0x1p-22 * @abs(v[0])) / scale;
                 if (@abs(q) > 127 or @abs(q - exact) > 0.5 + slack) return try std.fmt.bufPrint(&t.msg, "row {d} code {d} is {d} where float64 gives {d:.4}", .{ row, ch * 128 + j, q, exact });
             };
-        };
+        }
         if (at == .nonfinite and planted == 0) return "no planted value reached a launched row: no proof";
         return null;
     }
@@ -238,28 +217,20 @@ fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, bo
     if (res != cuda.abi.success) return error.CudaFailed;
 }
 
-/// TallTile's ring: 2 stages of (256 + 128) x 128 bytes; the blocks product's SquareTile ring:
-/// 2 stages of (128 + 128) x 128 bytes.
+/// TallTile's ring (the only tile the picture uses): 2 stages of (256 + 128) x 128 bytes.
 const tma_shared_bytes = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
-const blocks_shared_bytes = 2 * (128 + 128) * 128 + 1024 + 2 * 16;
 
 /// A TMA product kernel with its ring's dynamic shared memory allowed (past the 48 KiB default).
-pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8, shared: u32) !cuda.Function {
+pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8) !cuda.Function {
     const f = try mod.function(name);
-    try f.allowDynamicShared(shared);
+    try f.allowDynamicShared(tma_shared_bytes);
     return f;
 }
 
 /// What a GemmTma registration launches: the plain product, fc1's SwiGLU epilogue on interleaved
-/// rows, out and fc2's product at a scale per 128-deep K block, or the control - the plain product
-/// at a width cuBLASLt took (n % 4) but the TMA grid, whole 128-column tiles only, leaves partly
-/// unwritten.
-pub const Mode = enum { plain, swiglu, blocks, control };
-
-/// The blocks product's fp32 fold: one acc_b * xs_b * ws_b term a K block, then two roundings.
-fn blockChain(s: c.Shape) usize {
-    return s.k / 128 + 2;
-}
+/// rows, or the control - the plain product at a width cuBLASLt took (n % 4) but the TMA grid,
+/// whole 128-column tiles only, leaves partly unwritten.
+pub const Mode = enum { plain, swiglu, control };
 
 /// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact; SwiGLU's
 /// is h3_swiglu's on the plain product's [gate | up] halves, bit for bit.
@@ -276,30 +247,21 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
             .{ .rows = 300, .n = 512, .k = 256 }, // a partial M tile, two tiles and K blocks
             .{ .rows = 256, .n = 2 * mlp, .k = hidden }, // fc1's real fan-out
         },
-        .blocks => &.{
-            .{ .rows = 16, .n = 128, .k = 128 }, // one tile, one K block
-            .{ .rows = 300, .n = 128, .k = 384 }, // partial M tiles past three K blocks
-            .{ .rows = 64, .n = 384, .k = 256 }, // three N tiles
-            .{ .rows = 16, .n = hidden, .k = inner }, // out's real fan-out and depth
-            .{ .rows = 16, .n = hidden, .k = mlp }, // fc2's
-        },
         .control => &.{.{ .rows = 16, .n = 392, .k = 128 }}, // n % 8 keeps the epilogue's 16-byte stores aligned
     };
     return .{
         .name = switch (mode) {
             .plain => "cuda h3 int8 tma product h3_gemm_int8_tma",
             .swiglu => "cuda h3 int8 tma swiglu h3_swiglu_rows + h3_swiglu_int8_tma",
-            .blocks => "cuda h3 int8 tma blocks h3_gemm_int8_tma_blocks",
             .control => "control: h3_gemm_int8_tma at a width off whole 128-column tiles",
         },
-        // int32 sums, exact: no fp accumulator for gate 4 to stress, save the blocks product's fp32 fold
-        .accum = if (mode == .blocks) .f32 else .none,
-        .depth = if (mode == .blocks) blockChain else none,
-        .ops = if (mode == .blocks) 0 else 3,
+        .accum = .none, // int32 sums, exact: no fp accumulator for gate 4 to stress
+        .depth = none,
+        .ops = 3,
         .out = .bf16,
         .nan = .{ .stated = "a nonfinite row or column scale reaches every output it multiplies, as h3_dequantize's did" },
         .tiles = switch (mode) {
-            .plain, .blocks => .{ .{}, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 128, .step = 128, .min = 128 } },
+            .plain => .{ .{}, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 128, .step = 128, .min = 128 } },
             .swiglu => .{ .{}, .{ .size = 256, .step = 256, .min = 256 }, .{ .size = 128, .step = 128, .min = 128 } },
             .control => .{ .{}, .{}, .{} },
         },
@@ -311,8 +273,7 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
 
 /// C (rows, n) bf16 = (X int8 rows,k . W int8 n,k)^T * xs[rows] * ws[n], as the TMA kernel writes
 /// it; in swiglu mode W's rows are [gate | up], interleaved on the device as fc1's are, and C is
-/// silu(gate) * up, (rows, n / 2); in blocks mode xs and ws hold a scale per 128-deep K block,
-/// block-major, and C sums each block's product at its own scales.
+/// silu(gate) * up, (rows, n / 2).
 pub const GemmTma = struct {
     rig: rig_.Rig,
     mode: Mode,
@@ -342,14 +303,9 @@ pub const GemmTma = struct {
         return if (t.mode == .swiglu) t.shape.n / 2 else t.shape.n;
     }
 
-    /// The K blocks a scale covers: all of them, or one in blocks mode.
-    fn scaleBlocks(t: *const GemmTma) usize {
-        return if (t.mode == .blocks) t.shape.k / 128 else 1;
-    }
-
     pub fn prepare(t: *GemmTma, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
         const width: usize = switch (t.mode) {
-            .plain, .blocks => 128,
+            .plain => 128,
             .swiglu => 256,
             .control => 8,
         };
@@ -362,8 +318,8 @@ pub const GemmTma = struct {
         const rng = prng.random();
         t.xq = try a.alloc(i8, shape.rows * shape.k);
         t.wq = try a.alloc(i8, shape.n * shape.k);
-        t.xs = try a.alloc(f32, shape.rows * t.scaleBlocks());
-        t.ws = try a.alloc(f32, shape.n * t.scaleBlocks());
+        t.xs = try a.alloc(f32, shape.rows);
+        t.ws = try a.alloc(f32, shape.n);
         for (t.xq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
         for (t.wq) |*v| v.* = rng.intRangeAtMost(i8, -127, 127);
         for (t.xs) |*v| v.* = 0.001 + 0.004 * rng.float(f32);
@@ -391,9 +347,8 @@ pub const GemmTma = struct {
 
     /// One TMA product launch: `wq` and `ws` the weight rows and scales it reads, into `out`.
     fn product(t: *GemmTma, name: [:0]const u8, wq: u64, ws: u64, out: u64) !void {
-        const block_m: usize, const shared: u32 = if (t.mode == .blocks) .{ 128, blocks_shared_bytes } else .{ 256, tma_shared_bytes };
         var maps: [2]TensorMap = undefined;
-        try encodeTiled(t.enc, &maps[0], t.dev[0], t.shape.rows, t.shape.k, @intCast(block_m));
+        try encodeTiled(t.enc, &maps[0], t.dev[0], t.shape.rows, t.shape.k, 256);
         try encodeTiled(t.enc, &maps[1], wq, t.shape.n, t.shape.k, 128);
         var args: cuda.Args = .{};
         args.add(maps[0]);
@@ -401,8 +356,8 @@ pub const GemmTma = struct {
         for ([_]u64{ t.dev[1], ws, out }) |p| args.add(p);
         for ([_]usize{ t.shape.rows, t.shape.n, t.shape.k }) |v| args.add(@as(c_int, @intCast(v)));
         const sm: usize = @intCast(try t.rig.gpu.ctx.attribute(.multiprocessor_count));
-        const tiles = (t.shape.rows + block_m - 1) / block_m * (t.shape.n / 128);
-        try cuda.launch.launch(try tmaFunction(t.mod, name, shared), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = shared }, t.rig.s, &args);
+        const tiles = (t.shape.rows + 255) / 256 * (t.shape.n / 128);
+        try cuda.launch.launch(try tmaFunction(t.mod, name), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
     }
 
     pub fn run(t: *GemmTma) !void {
@@ -412,7 +367,7 @@ pub const GemmTma = struct {
             args.add(@as(c_int, @intCast(t.shape.k)));
             try cuda.launch.launch(try t.mod.function("h3_swiglu_rows"), .{ .grid = .{ .x = @intCast(t.shape.n / 2) }, .block = .{ .x = 256 } }, t.rig.s, &args);
             try t.product("h3_swiglu_int8_tma", t.dev[5], t.dev[6], t.dev[4]);
-        } else try t.product(if (t.mode == .blocks) "h3_gemm_int8_tma_blocks" else "h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[4]);
+        } else try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[4]);
         try t.rig.s.synchronize();
     }
 
@@ -432,22 +387,12 @@ pub const GemmTma = struct {
 
     /// The float64 product: exact int32 dots over the whole row (the mma order is irrelevant to
     /// them), then acc * xs * ws in fp32 rounded to bf16 as the store does; SwiGLU then rounds
-    /// silu(gate) and silu * up to bf16 as h3_swiglu does. Blocks mode sums every K block's exact
-    /// dot at its scales in float64, unrounded: the fold's fp32 error is the bound's.
+    /// silu(gate) and silu * up to bf16 as h3_swiglu does.
     pub fn reference(t: *GemmTma, want: []f64, mag: []f64) !void {
         const k = t.shape.k;
         const n = t.shape.n;
         const cols = t.outColumns();
         const half = n / 2;
-        if (t.mode == .blocks) {
-            const terms = try t.arena.allocator().alloc(f64, k / 128);
-            for (0..t.shape.rows) |row| for (0..n) |col| {
-                want[row * n + col] = 0;
-                mag[row * n + col] = t.blockTerms(row, col, terms);
-                for (terms) |v| want[row * n + col] += v;
-            };
-            return;
-        }
         for (0..t.shape.rows) |row| for (0..cols) |col| {
             const x = t.xq[row * k ..][0..k];
             const at = row * cols + col;
@@ -465,30 +410,6 @@ pub const GemmTma = struct {
             const silu = c.fromBf16(c.toBf16(g32 / (1 + @exp(-g32))));
             want[at] = c.fromBf16(c.toBf16(@floatCast(silu * up)));
             mag[at] = @abs(want[at]);
-        };
-    }
-
-    /// Element (row, col)'s per-block terms dot_b * xs_b * ws_b in float64 (each dot exact), and the
-    /// sum of their magnitudes.
-    fn blockTerms(t: *const GemmTma, row: usize, col: usize, terms: []f64) f64 {
-        const k = t.shape.k;
-        var mag: f64 = 0;
-        for (terms, 0..) |*v, b| {
-            const dot = dots(t.xq[row * k + b * 128 ..][0..128], t.wq[col * k + b * 128 ..][0..128]);
-            const scale = @as(f64, t.xs[b * t.shape.rows + row]) * t.ws[b * t.shape.n + col];
-            v.* = @as(f64, @floatFromInt(dot[0])) * scale;
-            mag += @as(f64, @floatFromInt(dot[1])) * scale;
-        }
-        return mag;
-    }
-
-    /// Blocks mode's fold with its K blocks' terms summed as `acc` in `order`, stored as bf16.
-    pub fn simulate(t: *GemmTma, acc: c.Accum, order: Order, out: []f64) !void {
-        const n = t.shape.n;
-        const terms = try t.arena.allocator().alloc(f64, t.shape.k / 128);
-        for (0..t.shape.rows) |row| for (0..n) |col| {
-            _ = t.blockTerms(row, col, terms);
-            out[row * n + col] = c.fromBf16(c.toBf16(@floatCast(sumIn(acc, order, terms))));
         };
     }
 };
@@ -543,7 +464,7 @@ pub fn bench(gpu: gpu_check.Gpu) !void {
 
     var mod = try cuda.Module.load(gpu.d, &image_h3);
     defer mod.unload();
-    const f = try tmaFunction(mod, "h3_gemm_int8_tma", tma_shared_bytes);
+    const f = try tmaFunction(mod, "h3_gemm_int8_tma");
 
     var lt = try lt_.Library.open();
     defer lt.close();

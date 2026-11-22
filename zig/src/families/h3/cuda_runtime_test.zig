@@ -182,25 +182,11 @@ test "h3 int8: quantize refuses a GPU below sm_90 before allocating, then needs 
     defer mock.clean(m);
     m.gated = false;
     mock.sm = 86;
-    try std.testing.expectError(error.H3Int8RequiresSm90, h3.Int8.quantize(m, false));
+    try std.testing.expectError(error.H3Int8RequiresSm90, h3.Int8.quantize(m));
     try std.testing.expect(m.int8 == null);
     try std.testing.expectEqual(@as(usize, 0), mock.at);
     mock.sm = 121;
-    try std.testing.expectError(error.MissingSymbol, h3.Int8.quantize(m, false));
-}
-test "h3 int8: the scratch holds the widest projection input when the FFN is not it" {
-    const m = try mock.model();
-    defer mock.clean(m);
-    m.hidden = 384; // h3_norm_quant's rows for qkvc/fc1
-    m.inner = 256; // `out`'s
-    m.mlp = 128; // `fc2`'s
-    var t: h3.Int8 = .{ .blocks = &.{}, .enc = undefined, .scratch = .{ .d = &m.driver, .ptr = 0, .len = 0 } };
-    defer t.scratch.free();
-    const rows = 3;
-    const lay = try t.layout(m, rows);
-    // hidden-wide codes, then a scale for each 128-wide chunk of a row (a row's own scale is the first)
-    try std.testing.expectEqual(lay.xq + rows * 384, lay.xs);
-    try std.testing.expectEqual(@as(usize, rows * (384 + 3 * 4)), t.scratch.len);
+    try std.testing.expectError(error.MissingSymbol, h3.Int8.quantize(m));
 }
 test "h3 fp4: a failed scratch growth keeps the old scratch for the model's cleanup to free" {
     const m = try mock.model();
