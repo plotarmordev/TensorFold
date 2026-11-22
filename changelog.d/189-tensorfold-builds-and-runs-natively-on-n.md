@@ -5,4 +5,8 @@
 - The server's speech turn (`gpu_turn.zig`) skips POSIX file modes on Windows, and DXGI's COM
   calls cast vtable entries with `@alignCast` for aarch64; both stopped `tensorfold-native`.
 - `compile-native-cuda-windows` now also type-checks the sm_121 `aarch64-windows-gnu` product.
-- `docs/WINDOWS.md` lists what the native N1X build still lacks.
+- `glm_index_rope.cuh` uses CUDA's `__noinline__`, not GCC's `__attribute__((noinline))`, which nvcc
+  with cl.exe rejected in `glm_glue` and `glm_index`; Windows fatbins pass `/wd4819`, whose code-page
+  warnings buried that error.
+- `docs/WINDOWS.md` records the N1X laptop's build, `tf-cuda-test` counts and Qwen3.5-2B tok/s, and
+  what Inkling 2 Mini still needs there.

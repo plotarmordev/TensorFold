@@ -216,6 +216,22 @@ shares it) with Zig 0.17.0 and the CUDA 13.5.0 `windows-arm64` redistributables 
 - `tensorfold-native`: `gpu_turn.zig` set POSIX file modes (`Permissions.fromMode`), and DXGI's COM calls cast untyped
   vtable entries to aarch64 function pointers without `@alignCast`.
 - `zig build compile-native-cuda-windows` now type-checks the `aarch64-windows-gnu` sm_121 product too.
+- `glm_index_rope.cuh` marked `turn` GCC's way (`__attribute__((noinline))`), which nvcc with cl.exe rejects, so
+  `glm_glue` and `glm_index` did not build; it is `__noinline__` now. `compile-native-cuda-windows` embeds empty
+  images and cannot catch a kernel source that only cl.exe rejects.
+- Windows fatbins pass `-Xcompiler=/wd4819`: under the laptop's code page 936, C4819 warnings from the CUDA headers
+  buried that error.
+
+Then, at `09ea6dd6e` with the `__noinline__` fix, on the same laptop (git 2.56.1, Zig 0.17.0, nvcc 13.5.37 with
+`cl` 14.44.35207 arm64 from VS 2022 Build Tools 17.14, `vcvarsall arm64`; no Python or WSL):
+
+- `zig build native install -Dsm=121 -Dstrip=true -Dnvcc=%CUDA_PATH%\bin\nvcc.exe` exits 0.
+- `tf-cuda-test` (sm_121, 48 SMs, 51,816 MiB), passed / failed: `smoke` 8/0, `glue` 1/0 (1473 of 1473 byte-equal),
+  `sample` 2/0, `quant-ref` 4/0 (worst 0.510 of its tolerance), `affine8` 1/0 (24 cases, worst 0.338), `modelopt`
+  6/0, `exlr8` 7/0 (worst 0.1084).
+- `tensorfold-native serve` of `mlx-community/Qwen3.5-2B-MLX-4bit` (`--context 8192 --parallel 1 --temperature 0`):
+  HTTP 200, 26 prompt and 200 completion tokens, 145.9 tok/s at the server (first token 0.027 s), 137.3 tok/s at the
+  client.
 
 Inkling 2 Mini is not served on any OS yet: `zig/src/families/inkling2` has kernels, ops and the host-side config,
 names, plan and prompt, which `tf-cuda-test`'s contracts use (they compile for `aarch64-windows-gnu`). For Windows it
@@ -229,3 +245,5 @@ needs:
    packages are, so a cross-target `zig build test` does not try to run a Windows binary.
 4. Admission against the WDDM pool: the 20.2 GB checkpoint leaves about 20 GiB of this laptop's 40 GiB CUDA share for
    the cache and streams.
+5. Its CUDA sources in CUDA's qualifiers (`__noinline__`, `__forceinline__`), not GCC attributes: only a build with
+   nvcc and cl.exe, such as this laptop's, rejects them.
