@@ -17,7 +17,7 @@ phase card
 echo "=== main: bf16 attention (patch -R) ==="
 git -c safe.directory='*' apply -R "$patch_file"
 tree=$(git -c safe.directory='*' add -A zig && git -c safe.directory='*' write-tree --prefix=zig/)
-[ "$tree" = e98644533d4fdd7e6aea4db44bd2143af2d9b77c ] || { echo "patch -R rebuilt zig/ $tree, not main's" >&2; exit 1; }
+[ "$tree" = 5dd31fb21b69781901eb72712ce8e4906eb27ccc ] || { echo "patch -R rebuilt zig/ $tree, not main's" >&2; exit 1; }
 phase main
 git -c safe.directory='*' apply "$patch_file"
 for side in card main; do
