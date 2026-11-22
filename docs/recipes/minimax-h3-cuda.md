@@ -1474,3 +1474,24 @@ the file absent then present, one cold 2048² picture each way plus three warm).
 
 The int8 handle leak its review found (a plan stored before its pick was recorded) lived only in that cache code:
 main's int8 products no longer plan through cuBLASLt, so no fix lands here.
+
+### Card 181: the norms' AdaLN tables in bf16, read a lane's four values at once — measured, no gain shown
+
+I stored the AdaLN tables as bf16 (`h3m_project` already rounded every value to bf16 before writing it to an f32
+word) and had `h3_norm_quant` and `h3_norm_quant_fp4` read each lane's four norm weights, scales and shifts as one
+vector load each (`uint2`, four bf16), on fork branch `feat/181-minimax-h3-image-on-the-spark-the-0-61-s` at head
+`d95d750d`. The fp32 sums and their order were unchanged, and in every job all four latents and PNGs were byte for
+byte main's. It shows no measurable gain on the GB10, so none of its code is on main.
+
+`bench-181-ab.sh` on that branch ran the A/B in four jobs (driver 580.173.02,
+`H3_PROFILE=1`): one at `d9f9f4fa` whose log I fetched without its job id, `top-d7a9943165b5` at `d9f9f4fa`,
+`top-b16f3abdffbd` at `66fb51ee` and `top-563acf5a3365` at `bba8b760`. Each ran the branch, then main's `zig/` tree,
+one cold pilot fox and three warm 2048² prompts a side.
+
+- **Warm wall:** over the twelve warm runs the branch's median is 14.14 s, main's 14.17 s. Run against run the
+  branch is faster in six, tied in two and slower in four; the outliers (main's 14.94 s, the branch's 15.47 s) sit in
+  the prompt stage, not the transformer.
+- **`norms`:** 0.62 → 0.60 s. The kernel is bound by its reads and writes of the bf16 row, not by the tables.
+
+The full fold of the norms into the qkvc and fc1 products was not attempted: it needs a product kernel that reads
+the whole bf16 row, which main does not have, and it would save at most `norms`' 0.6 s.
