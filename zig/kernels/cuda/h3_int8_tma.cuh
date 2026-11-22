@@ -338,8 +338,9 @@ __device__ __forceinline__ void h3_head_store(float (&ordered)[4][8], const Head
         float a[2];
         #pragma unroll
         for (int e = 0; e < 2; ++e) {
-            constexpr int p = (j + e) < 16 ? j + e + 16 : j + e - 16;
-            constexpr int offset = (j + e) < 16 ? 1 : 2;
+            // A 48-channel partner is 16 slots away in the next quarter but one (cyclic over q/k's three).
+            const int p = (j + e) < 16 ? j + e + 16 : j + e - 16;
+            const int offset = (j + e) < 16 ? 1 : 2;
             const int c = c0 + j + e;
             const bool low = c < rot;
             const int t = c < 2 * rot ? (low ? c : c - rot) : 0;

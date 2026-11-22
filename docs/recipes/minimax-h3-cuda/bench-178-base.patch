@@ -16,10 +16,10 @@ index 2b378e66a..0a53e33a1 100644
          const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
          const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
 diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
-index 06c1131d2..2b03c8ce0 100644
+index 06c1131d2..a04160b4f 100644
 --- a/zig/kernels/cuda/h3_int8_tma.cuh
 +++ b/zig/kernels/cuda/h3_int8_tma.cuh
-@@ -285,6 +285,78 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
+@@ -285,6 +285,79 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
      }
  }
  
@@ -76,8 +76,9 @@ index 06c1131d2..2b03c8ce0 100644
 +        float a[2];
 +        #pragma unroll
 +        for (int e = 0; e < 2; ++e) {
-+            constexpr int p = (j + e) < 16 ? j + e + 16 : j + e - 16;
-+            constexpr int offset = (j + e) < 16 ? 1 : 2;
++            // A 48-channel partner is 16 slots away in the next quarter but one (cyclic over q/k's three).
++            const int p = (j + e) < 16 ? j + e + 16 : j + e - 16;
++            const int offset = (j + e) < 16 ? 1 : 2;
 +            const int c = c0 + j + e;
 +            const bool low = c < rot;
 +            const int t = c < 2 * rot ? (low ? c : c - rot) : 0;
@@ -98,7 +99,7 @@ index 06c1131d2..2b03c8ce0 100644
  // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
  // silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
  // produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
-@@ -295,15 +367,16 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
+@@ -295,15 +368,16 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
  // GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
  // ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
  // fp32 rows are written unrounded.
@@ -117,7 +118,7 @@ index 06c1131d2..2b03c8ce0 100644
  
      TileGrid grid;
      grid.tiles_m = (m + Config::block_m - 1) / Config::block_m;
-@@ -407,12 +480,13 @@ __device__ __forceinline__ void
+@@ -407,12 +481,13 @@ __device__ __forceinline__ void
          }
  
          #pragma unroll
@@ -135,7 +136,7 @@ index 06c1131d2..2b03c8ce0 100644
                      uint32_t words[4];
                      #pragma unroll
                      for (int slot = 0; slot < 4; slot++) {
-@@ -435,6 +509,14 @@ __device__ __forceinline__ void
+@@ -435,6 +510,14 @@ __device__ __forceinline__ void
                          words[1] = words[3];
                          words[3] = swapped;
                      }
@@ -150,7 +151,7 @@ index 06c1131d2..2b03c8ce0 100644
                      const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
                      if (row < m) {
                          if constexpr (SWIGLU) {
-@@ -443,18 +525,34 @@ __device__ __forceinline__ void
+@@ -443,18 +526,34 @@ __device__ __forceinline__ void
                              *reinterpret_cast<uint2 *>(output + static_cast<size_t>(row) * (n / 2) + column / 2) =
                                  make_uint2(h3_pack_bf16(h3_swiglu_value(words[0]), h3_swiglu_value(words[1])),
                                             h3_pack_bf16(h3_swiglu_value(words[2]), h3_swiglu_value(words[3])));

@@ -1538,36 +1538,25 @@ the file absent then present, one cold 2048² picture each way plus three warm).
 The int8 handle leak its review found (a plan stored before its pick was recorded) lived only in that cache code:
 main's int8 products no longer plan through cuBLASLt, so no fix lands here.
 
-### Card 178: q/k norm and rotary in the int8 qkv epilogue — reverted
+### Card 178: q/k norm and rotary in the int8 qkv epilogue
 
-The experiment at `3e2fce2fa` replaced dense int8 `h3_gemm_int8_tma` + `h3_heads` with one
-`h3_heads_int8_tma` launch. Each 128-column q/k head reused its completed TMA tile: the epilogue kept the old
-four-lane fp32 sum order and every bf16 rounding point, shared normalized rotary partners through the tile, and
-stored q/k/v in tile order. The non-finite, repeat and five-shape byte-replacement contract gates passed, including
-persistent full-head tiles; sm_121 reported 235 registers and 99,360 dynamic shared bytes. BF16 and FP4 were
-unchanged.
+The first fusion at `3e2fce2fa` staged each 128-column head in the GEMM's shared ring. It preserved the output
+bytes but merely moved the cost: TOP job `top-bde3a9eee232` measured fox QKV 2.56 s against main's 1.65 s while
+`heads` fell from 0.94 to zero. Four-prompt warm means were 13.3 candidate and 13.2 main. That shared-tile design
+was removed; adding another whole-head allocation beside the 99,360-byte ring is not a speedup.
 
-TOP job `top-bde3a9eee232` ran candidate then the exact `e0c33d47` base in one job, with fox, harbour, meadow and
-steam in every run. All selftests passed and all eight compared latents and PNGs were byte-identical. Warm 2048²
-wall was **13.4, 13.3, 13.3 s** for the epilogue against **13.3, 13.2, 13.2 s** for main (means 13.3 versus 13.2),
-so it did not meet the faster-warm-total gate and was reverted. The final warm run's stage table was:
+The register-resident replacement gives one warp all 128 columns of one head. Redistribution uses convergent
+warp shuffles so each lane reconstructs its original contiguous 32-value quarter before `h3_heads`'s serial
+norm sum, xor reductions, bf16 normalization, rotary products, and packed stores. Q and K stay in registers;
+V is written in slot order. No shared tile or second TMA ring pass is added. The 48-angle MiniMax geometry
+launches `h3_heads_int8_tma`; other rotary widths retain the independent `h3_heads` pass.
 
-| stage | epilogue, s | main, s |
-| --- | ---: | ---: |
-| norms | 0.62 | 0.61 |
-| q k v gate | 2.56 | 1.65 |
-| heads | **0.00** | 0.94 |
-| routing | 0.00 | 0.00 |
-| attention | 1.93 | 1.81 |
-| gate mix | 0.00 | 0.00 |
-| attention out | 1.15 | 1.15 |
-| mlp in | 2.24 | 2.21 |
-| mlp out | 2.24 | 2.27 |
-| outside the blocks | 0.13 | 0.13 |
-| transformer | 10.88 | 10.77 |
-
-Removing `heads` moved essentially all of its 0.94 s into `q k v gate`; sharing normalized partners did not create
-a net saving. The branch therefore retains only this measurement, not the kernel or routing change.
+`contract_h3` `heads` compares every q/k/v byte against the original pipeline for odd grouped layouts,
+including one row, 257 rows, zero slots, nonfinite products, and exact bf16 rounding. The launch record
+fixes the fused kernel at 256 threads, 99,360 opt-in shared bytes, and at most 255 registers. The reproducible
+same-job driver is `bench-178-ab.sh`; its reverse patch reconstructs merge parent
+`a03e5c4595bb22f45436b2f1e5073d9e58f26ace` (Zig tree
+`9fa1f41ca6c1029251ad09b47f36424f3cc5875d`) for the baseline half.
 
 ### Card 181: the norms' AdaLN tables in bf16, read a lane's four values at once — measured, no gain shown
 
