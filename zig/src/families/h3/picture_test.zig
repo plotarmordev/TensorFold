@@ -282,6 +282,11 @@ test "picture far field: every target key once, full in the query's band, pooled
     }
     try testing.expectEqualSlices(i32, &.{ 0, 1, 2, 3, 4 }, f.list[0..5]);
     try testing.expectEqual(@as(i32, 257 + p.far_band), f.list[1 + 4 * p.far_band]);
+    // 100 text rows: 2 prefix tiles, so target tiles start at 2 and pooled rows at 2 + 256
+    const two = (try p.far(x, .{ .text = 100, .references = &.{}, .target = .{ .rows = 256, .columns = 256 } })).?;
+    try testing.expectEqual(f.per_query + 1, two.per_query);
+    try testing.expectEqualSlices(i32, &.{ 0, 1, 2, 3, 4, 5 }, two.list[0..6]);
+    try testing.expectEqual(@as(i32, 258 + p.far_band), two.list[2 + 4 * p.far_band]);
     // 4096 x 2048 is exactly 8,192 rows and pools; 4096 x 1984 is under them, 2048 x 2048 too; 2048 x 8192 is a pooled
     // row of two tiles; references keep it dense
     try testing.expectEqual(@as(usize, 32), (try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 128, .columns = 256 } })).?.pooled);

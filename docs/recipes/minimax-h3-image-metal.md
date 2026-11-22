@@ -1855,7 +1855,8 @@ Warm (seed 7) 4096 steps: 55.4-59.0 s dense, 49.0-50.0 s with the flag (one 70.8
 or -6 s.
 2048 is under 8,192 rows and stays dense: its pictures with the flag are byte-identical. Gates, `--far-pool` (from
 step 4) against the same seed without it, card 80's rule (latent cosine at least 0.99, PSNR at least 28.2 dB, mean
-pixel difference at most 4.1):
+pixel difference at most 4.1), on the 4096 x 4096 square only: 4096 x 2048 (exactly 8,192 rows) also pools and is
+not yet gated:
 
 | Seed | Cosine | PSNR | Mean | |
 |---|---|---|---|---|
