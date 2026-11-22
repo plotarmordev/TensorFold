@@ -1864,6 +1864,7 @@ least 28.2 dB, mean pixel difference at most 4.1), on the 4096 x 4096 square:
 | 4096 s42 | 0.999089 | 31.32 dB | 3.63 | pass |
 | 4096 s7 | 0.999096 | 30.97 dB | 3.78 | pass |
 | 2048 s42, s7 | 1 | identical | 0 | pass, PNG byte-identical |
+
 ### Card 180: step caching, measured and reverted
 
 A `--step-cache X` option on `tf-h3-image-server` skipped a step's transformer pass and stepped the resident latent
