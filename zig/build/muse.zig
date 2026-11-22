@@ -18,7 +18,9 @@ pub fn moduleOver(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
 }
 
 /// tf-muse: rank 1 behind the server (`follow`) and the family's device checks; installed, and its own step.
+/// Not on Windows: rank 1 follows over the POSIX TP session (tp.zig skips it there too).
 pub fn tool(b: *std.Build, m: *std.Build.Module, strip: ?bool) void {
+    if (m.resolved_target.?.result.os.tag == .windows) return;
     const root = b.createModule(.{ .root_source_file = b.path("zig/src/families/muse_spark/m1_main.zig"), .target = m.resolved_target, .optimize = m.optimize, .link_libc = true, .strip = strip });
     for ([_][]const u8{ "cuda", "core", "tp", "tp_kernel" }) |name| root.addImport(name, m.import_table.get(name).?);
     root.addImport("muse_spark", m);
