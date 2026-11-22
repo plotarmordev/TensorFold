@@ -23,6 +23,7 @@ pub const Settings = struct {
     no_proxy: []const u8 = "",
     connect_s: u32 = 30,
     stall_s: u32 = 60,
+    skipped: []const u8 = "", // a socks or https:// proxy pull cannot use: it connects directly, as before proxies
 };
 
 pub const connect_name = "TENSORFOLD_PULL_CONNECT_SECONDS";
@@ -47,8 +48,8 @@ pub fn fromEnv(a: std.mem.Allocator, env: ?*const std.process.Environ.Map) !Sett
         }
     }.get;
     var s: Settings = .{};
-    if (get(env, &.{ "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY" })) |hit| s.https = try parse(a, hit[0], hit[1]);
-    if (get(env, &.{ "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY" })) |hit| s.http = try parse(a, hit[0], hit[1]);
+    if (get(env, &.{ "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY" })) |hit| s.https = try usable(a, &s, hit[0], hit[1]);
+    if (get(env, &.{ "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY" })) |hit| s.http = try usable(a, &s, hit[0], hit[1]);
     if (get(env, &.{ "no_proxy", "NO_PROXY" })) |hit| s.no_proxy = hit[1];
     const raw = struct {
         fn raw(m: ?*const std.process.Environ.Map, n: []const u8) ?[]const u8 {
@@ -64,6 +65,18 @@ pub fn fromEnv(a: std.mem.Allocator, env: ?*const std.process.Environ.Map) !Sett
         return error.InvalidEnvironment;
     };
     return s;
+}
+
+/// A socks or https:// proxy is skipped, not refused: 1.3.3 and earlier ignored every proxy.
+fn usable(a: std.mem.Allocator, s: *Settings, from: []const u8, value: []const u8) !?Proxy {
+    return parse(a, from, value) catch |e| switch (e) {
+        error.ProxyScheme => {
+            refused = "";
+            s.skipped = from;
+            return null;
+        },
+        else => e,
+    };
 }
 
 /// http://[user[:password]@]host[:port] or host[:port]; port 80 when none is given, as Python's requests does.
@@ -209,18 +222,23 @@ pub fn tunnelOf(io: std.Io, address: *const std.Io.net.IpAddress) ?Tunnel {
 const AddressDeadline = struct { address: std.Io.net.IpAddress = undefined, deadline: std.Io.Clock.Timestamp = .{ .raw = .zero, .clock = .awake } };
 var addresses: [64]AddressDeadline = @splat(.{});
 var address_count: usize = 0;
+var address_next: usize = 0; // once full, the oldest entry is replaced (a pull over rotating CDN addresses never runs out)
 
-/// Carries a name's original deadline to each address the resolver returned.
-pub fn rememberAddress(io: std.Io, address: std.Io.net.IpAddress, deadline: std.Io.Clock.Timestamp) !void {
+/// Carries a name's deadline to each resolved address; when full, the oldest goes (its connect gets a fresh deadline).
+pub fn rememberAddress(io: std.Io, address: std.Io.net.IpAddress, deadline: std.Io.Clock.Timestamp) error{TooManyHosts}!void {
     lock.lockUncancelable(io);
     defer lock.unlock(io);
     for (addresses[0..address_count]) |*a| if (a.address.eql(&address)) {
         a.deadline = deadline;
         return;
     };
-    if (address_count == addresses.len) return error.TooManyHosts;
-    addresses[address_count] = .{ .address = address, .deadline = deadline };
-    address_count += 1;
+    if (address_count < addresses.len) {
+        addresses[address_count] = .{ .address = address, .deadline = deadline };
+        address_count += 1;
+        return;
+    }
+    addresses[address_next] = .{ .address = address, .deadline = deadline };
+    address_next = (address_next + 1) % addresses.len;
 }
 
 pub fn addressDeadline(io: std.Io, address: *const std.Io.net.IpAddress) ?std.Io.Clock.Timestamp {
