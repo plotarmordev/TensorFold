@@ -37,11 +37,12 @@ fn product(enc: mtl.ComputeEncoder, pipe: mtl.Pipeline, s: usize, x: mtl.Buffer,
 /// The int8 scale group: one scale a row for each 256 values of K, the product's K block.
 pub const group = 256;
 
-/// `rows` rows of x (k values each) to int8 in q, in groups of `g` values, each group's scale in s.
-pub fn quantize(m: *const Model, enc: mtl.ComputeEncoder, x: Ref, rows: usize, k: usize, g: usize, q: Ref, s: Ref) void {
+/// `rows` rows of x (k values each) to int8 in q, in groups of `g` values, each group's scale in s; `pack` writes q
+/// in the int8 product's weight order (`kernels.packedAt`) for its right operand.
+pub fn quantize(m: *const Model, enc: mtl.ComputeEncoder, x: Ref, rows: usize, k: usize, g: usize, q: Ref, s: Ref, pack: bool) void {
     enc.setPipeline(m.pipeline("h3_quantize_rows"));
     enc.setBuffer(x.buffer, x.offset, 0);
-    enc.setValue([3]i32{ @intCast(rows), @intCast(k), @intCast(g) }, 1);
+    enc.setValue([4]i32{ @intCast(rows), @intCast(k), @intCast(g), @intFromBool(pack) }, 1);
     enc.setBuffer(q.buffer, q.offset, 2);
     enc.setBuffer(s.buffer, s.offset, 3);
     enc.dispatchGroups(mtl.Size.of(rows, 1, 1), mtl.Size.of(32, 1, 1));
@@ -52,7 +53,7 @@ pub fn quantize(m: *const Model, enc: mtl.ComputeEncoder, x: Ref, rows: usize, k
 fn linear(m: *Model, pass: *h3.Pass, x: mtl.Buffer, w: Ref, d: mtl.Buffer, n: usize, k: usize, qi: h3.Int8, quantized: bool) !void {
     if (!m.base) return gemm(m, pass.enc, x, w, d, n, k);
     if (!quantized) {
-        quantize(m, pass.enc, .{ .buffer = x }, m.rows, k, group, .{ .buffer = m.xq }, .{ .buffer = m.xs });
+        quantize(m, pass.enc, .{ .buffer = x }, m.rows, k, group, .{ .buffer = m.xq }, .{ .buffer = m.xs }, false);
         try m.lap(pass, "quantize");
     }
     const enc = pass.enc;
@@ -300,17 +301,22 @@ test "h3 gemm: int8 operands give their exact dequantized product to bf16 roundi
     defer wq.deinit();
     const ws = try device.buffer(n * groups * 4, shared);
     defer ws.deinit();
+    // the weights again as bind packs them, for the product; their scales overwrite ws with the same values
+    const wp = try device.buffer(n * k, shared);
+    defer wp.deinit();
     const d = try device.buffer((rows * n + guard) * 2, shared);
     defer d.deinit();
     @memset(d.slice(u16, rows * n + guard), 0xffff); // a NaN no product of these inputs makes
     const cb = queue.commandBuffer();
     const enc = cb.compute(.concurrent);
-    quantize(&m, enc, .{ .buffer = x }, rows, k, group, .{ .buffer = xq }, .{ .buffer = xs });
-    quantize(&m, enc, .{ .buffer = w }, n, k, group, .{ .buffer = wq }, .{ .buffer = ws });
+    quantize(&m, enc, .{ .buffer = x }, rows, k, group, .{ .buffer = xq }, .{ .buffer = xs }, false);
+    quantize(&m, enc, .{ .buffer = w }, n, k, group, .{ .buffer = wq }, .{ .buffer = ws }, false);
+    enc.barrier();
+    quantize(&m, enc, .{ .buffer = w }, n, k, group, .{ .buffer = wp }, .{ .buffer = ws }, true);
     enc.barrier();
     enc.setBuffer(xs, 0, 4);
     enc.setBuffer(ws, 0, 5);
-    product(enc, m.pipeline(kernels.gemm_32x64_i8), swizzle, xq, .{ .buffer = wq }, d, rows, n, k, 128);
+    product(enc, m.pipeline(kernels.gemm_32x64_i8), swizzle, xq, .{ .buffer = wp }, d, rows, n, k, 128);
     enc.end();
     cb.commit();
     cb.wait();
@@ -334,6 +340,9 @@ test "h3 gemm: int8 operands give their exact dequantized product to bf16 roundi
     }
     const xi = xq.slice(i8, rows * k);
     const wi = wq.slice(i8, n * k);
+    // bind's packing moves every weight byte to its slot, unchanged
+    const packed_w = wp.slice(i8, n * k);
+    for (0..n) |r| for (0..k) |c| try std.testing.expectEqual(wi[r * k + c], packed_w[kernels.packedAt(r, c, k)]);
     const out = d.slice(u16, rows * n + guard);
     for (0..rows) |r| for (0..n) |c| {
         var exact: f64 = 0;
@@ -431,7 +440,7 @@ test "h3 fused: h3_norm_quant's rows are bit-identical to h3_norm then h3_quanti
         enc.setBuffer(xn, 0, 8);
         enc.dispatchGroups(mtl.Size.of(rows, 1, 1), mtl.Size.of(32, 1, 1));
         enc.barrier();
-        quantize(&m, enc, .{ .buffer = xn }, rows, C, group, .{ .buffer = xq }, .{ .buffer = xs });
+        quantize(&m, enc, .{ .buffer = xn }, rows, C, group, .{ .buffer = xq }, .{ .buffer = xs }, false);
         enc.end();
         cb.commit();
         cb.wait();

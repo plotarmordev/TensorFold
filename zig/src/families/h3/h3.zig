@@ -311,9 +311,9 @@ pub const Model = struct {
         self.gpa.destroy(self);
     }
 
-    /// A picture's linears: every block's four projections to int8 in `wq`, a scale per 256 values of K in `ws`, one
-    /// pass at bind, and room for a product's input in int8 and its scales. Private storage: only the GPU reads them,
-    /// and a step's encode no longer pays for 20 GiB of shared pages.
+    /// A picture's linears: every block's four projections to int8 in `wq`, packed in the order the int8 product reads
+    /// them, a scale per 256 values of K in `ws`, one pass at bind, and room for a product's input in int8 and its
+    /// scales. Private storage: only the GPU reads them, and a step's encode no longer pays for 20 GiB of shared pages.
     fn quantizeWeights(self: *Model) !void {
         const hidden = self.hidden;
         const inner = self.inner;
@@ -342,7 +342,7 @@ pub const Model = struct {
             inline for (parts) |p| {
                 const q = &@field(b.int8, p[0]);
                 q.* = .{ .w = .{ .buffer = self.wq, .offset = w_at }, .s = .{ .buffer = self.ws, .offset = s_at } };
-                block.quantize(self, enc, @field(b.*, p[0]), p[1], p[2], block.group, q.w, q.s);
+                block.quantize(self, enc, @field(b.*, p[0]), p[1], p[2], block.group, q.w, q.s, true);
                 w_at += p[1] * p[2];
                 s_at += p[1] * (p[2] / block.group) * 4;
             }

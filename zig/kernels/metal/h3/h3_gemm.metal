@@ -1,12 +1,48 @@
 // H3's products at 64 rows x 128 columns a threadgroup, each warp 32 x 64: every loaded fragment feeds two MMAs
 // instead of one. Each output's K chain is MLX's, 32-deep steps in order. The int8 form takes both operands
 // quantized by h3_quantize_rows a scale per 256 values of K: each 256-deep block's int32 sums fold into fp32 at
-// both scales for that block.
+// both scales for that block. Its weights are packed at bind in the order the MMA's right operand takes them.
 namespace tfp {
+
+// A packed int8 weight matrix (N x K, N a multiple of 32): each 32-row band, then each 16-deep K step, holds 32 lanes
+// of 16 bytes, lane l's the two 16x16 fragments (the band's rows 0-15, then 16-31) frag_home(l) places in that lane,
+// so a lane loads the right operand of one mma_16x32 as one 16-byte read. A band starts at 32 k bytes, as unpacked.
+inline long h3_packed(int r, int c, int k) {
+  const int x = c & 15, y = r & 15;
+  const int lane = (x & 8) | (x & 4) >> 2 | (y & 3) << 1 | (y & 4) << 2;
+  return long(r >> 5) * 32 * k + (c >> 4) * 512 + lane * 16 + (r & 16) / 2 + (y & 8) / 2 + (x & 3);
+}
+
+// A step's right operands, the 4 x 16 rows at B by 32 deep from kk: the bf16 form row-major (the int8 form's ragged
+// K tail never happens, K a multiple of 256), the int8 form packed with B at its first band's step 0.
+template <bool BOUND, typename T>
+inline void h3_b(thread frag<T> (&b)[2][4], const device T* B, int ldb, int kk, int kn, int cols, short2 home, uint) {
+  TF_UNROLL
+  for (short k = 0; k < 2; k++) {
+    TF_UNROLL
+    for (short n = 0; n < 4; n++) {
+      if (BOUND) frag_get_in(b[k][n], B, ldb, 16 * n, kk + 16 * k, home, cols, kk + kn);
+      else frag_get(b[k][n], B, ldb, 16 * n, kk + 16 * k, home);
+    }
+  }
+}
+
+template <bool BOUND>
+inline void h3_b(thread frag<int8_t> (&b)[2][4], const device int8_t* B, int ldb, int kk, int, int, short2, uint lane) {
+  TF_UNROLL
+  for (short k = 0; k < 2; k++) {
+    TF_UNROLL
+    for (short j = 0; j < 2; j++) {
+      const uint4 v = *(const device uint4*)(B + long(j) * 32 * ldb + (kk / 16 + k) * 512 + lane * 16);
+      b[k][2 * j] = as_type<frag<int8_t>>(v.xy);
+      b[k][2 * j + 1] = as_type<frag<int8_t>>(v.zw);
+    }
+  }
+}
 
 template <bool BOUND, typename T, typename C>
 inline void h3_step(thread frag<C> (&acc)[2][4], const device T* A, const device T* B, int lda, int ldb, int kk, int kn,
-                    int rows, int cols, short2 home) {
+                    int rows, int cols, short2 home, uint lane) {
   frag<T> a[2][2], b[2][4];
   TF_UNROLL
   for (short m = 0; m < 2; m++) {
@@ -16,14 +52,7 @@ inline void h3_step(thread frag<C> (&acc)[2][4], const device T* A, const device
       else frag_get(a[m][k], A, lda, 16 * m, kk + 16 * k, home);
     }
   }
-  TF_UNROLL
-  for (short k = 0; k < 2; k++) {
-    TF_UNROLL
-    for (short n = 0; n < 4; n++) {
-      if (BOUND) frag_get_in(b[k][n], B, ldb, 16 * n, kk + 16 * k, home, cols, kk + kn);
-      else frag_get(b[k][n], B, ldb, 16 * n, kk + 16 * k, home);
-    }
-  }
+  h3_b<BOUND>(b, B, ldb, kk, kn, cols, home, lane);
   TF_UNROLL
   for (short m = 0; m < 2; m++) {
     TF_UNROLL
@@ -62,10 +91,10 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
     threadgroup_barrier(mem_flags::mem_none);
     if (full) {
 #pragma clang loop unroll(disable)
-      for (int kk = 0; kk < 256; kk += 32) h3_step<false>(acc, A, B, lda, ldb, kk, 32, rows, cols, home);
+      for (int kk = 0; kk < 256; kk += 32) h3_step<false>(acc, A, B, lda, ldb, kk, 32, rows, cols, home, lane);
     } else if (live) {
 #pragma clang loop unroll(disable)
-      for (int kk = 0; kk < 256; kk += 32) h3_step<true>(acc, A, B, lda, ldb, kk, 32, rows, cols, home);
+      for (int kk = 0; kk < 256; kk += 32) h3_step<true>(acc, A, B, lda, ldb, kk, 32, rows, cols, home, lane);
     }
     if (I8 && live) {
       // lane columns col + 16 n + home.x + (e & 3), each with its scale for this block, and rows row + 16 m +
@@ -84,14 +113,14 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
       }
     }
     A += 256;
-    B += 256;
+    B += I8 ? 32 * 256 : 256; // a packed band's 16 steps of 512 bytes
   }
   const int rest = P[2] - kblocks * 256;
   if (rest > 0) {
     simdgroup_barrier(mem_flags::mem_none);
     if (live) {
 #pragma clang loop unroll(disable)
-      for (int kk = 0; kk < rest; kk += 32) h3_step<true>(acc, A, B, lda, ldb, kk, max(0, rest - kk), rows, cols, home);
+      for (int kk = 0; kk < rest; kk += 32) h3_step<true>(acc, A, B, lda, ldb, kk, max(0, rest - kk), rows, cols, home, lane);
     }
   }
   if (!live) return;
@@ -110,6 +139,7 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
 
 // Each of P[0] rows of X (P[1] values) to int8 in groups of P[2], each at its absolute max over 127: Q = rint(X / S),
 // S [row, group] its scale (non-finite when the group holds NaN or an infinity). One simdgroup a row, its groups in turn.
+// P[3] nonzero writes Q packed for h3_gemm_32x64_i8's weights (h3_packed), else row-major.
 [[kernel]] void h3_quantize_rows(
   const device bfloat16_t* X [[buffer(0)]],
   const device int32_t* P [[buffer(1)]],
@@ -118,8 +148,8 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
   uint at [[threadgroup_position_in_grid]],
   uint lane [[thread_index_in_simdgroup]]) {
   const int k = P[1], g = P[2];
+  const bool packed = P[3] != 0;
   X += long(at) * k;
-  Q += long(at) * k;
   S += long(at) * (k / g);
   for (int from = 0; from < k; from += g) {
     float most = 0;
@@ -132,7 +162,8 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
     // max drops NaN: a group holding one takes a NaN scale, so its products come out NaN
     most = simd_any(nan) ? NAN : simd_max(most);
     const float scale = most > 0 || isnan(most) ? most / 127 : 1;
-    for (int i = from + int(lane); i < from + g; i += 32) Q[i] = int8_t(rint(float(X[i]) / scale));
+    for (int i = from + int(lane); i < from + g; i += 32)
+      Q[packed ? tfp::h3_packed(int(at), i, k) : long(at) * k + i] = int8_t(rint(float(X[i]) / scale));
     if (lane == 0) S[from / g] = scale;
   }
 }
