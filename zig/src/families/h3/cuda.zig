@@ -313,9 +313,14 @@ pub const Model = struct {
     pub fn warm(self: *Model, rows: usize) !void {
         const inner = self.inner;
         if (self.fp4) |t| return t.warm(self, rows);
-        if (self.int8) |t| return t.warm(self, rows);
-        _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
-        _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
+        if (self.int8) |t| {
+            try t.warm(self, rows);
+            if (t.blocks.len > 0 and t.blocks[0].out != null) return;
+        } else {
+            _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
+            _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
+        }
+        // `out` and `fc2` stay bf16 unless the int8 path quantized them per block (`--int8-blocks`)
         _ = try self.gemms.plan(rows, self.hidden, inner);
         _ = try self.gemms.plan(rows, self.hidden, self.mlp);
     }
@@ -404,7 +409,11 @@ pub const Model = struct {
                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
                 try self.lap("gate mix", &mark);
             }
-            if (self.int8) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else if (self.fp4) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
+            // the per-block int8 `out`/`fc2` (`--int8-blocks`), else bf16 beside the int8 qkvc/fc1
+            const q8 = if (self.int8) |t| &t.blocks[index] else null;
+            const out8 = if (q8) |q| q.out else null;
+            const fc2_8 = if (q8) |q| q.fc2 else null;
+            if (out8) |w| try self.int8.?.linear(self, g.ya, w, g.y, rows) else if (self.fp4) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
             try self.lap("attention out", &mark);
             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m, iq, is);
             try self.lap("norms", &mark);
@@ -418,7 +427,7 @@ pub const Model = struct {
                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
             }
             try self.lap("mlp in", &mark);
-            if (self.int8) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else if (self.fp4) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
+            if (fc2_8) |w| try self.int8.?.linear(self, g.act, w, g.y, rows) else if (self.fp4) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
             try self.lap("mlp out", &mark);
         }
         {

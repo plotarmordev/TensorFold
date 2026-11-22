@@ -31,7 +31,7 @@ selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or
 }
 selftest transformer "$bin/tf-h3-image-cuda" --self-test
 case ${H3_DECODER:-} in exact) decflag=--exact ;; tc) decflag=--tc ;; *) decflag= ;; esac
-case ${H3_LINEAR:-int8} in bf16) linflag=--bf16 ;; fp4) linflag=--fp4 ;; *) linflag= ;; esac
+case ${H3_LINEAR:-int8} in bf16) linflag=--bf16 ;; fp4) linflag=--fp4 ;; int8-blocks) linflag=--int8-blocks ;; *) linflag= ;; esac
 selftest decoder "$bin/tf-h3-image-decoder-cuda" selftest $decflag
 selftest prompt "$bin/tf-h3-image-prompt-cuda" selftest /work/out/h3-prompt-selftest
 sample() { # until killed, twice a second: time, GPU memory used (MiB), power (W), the compute processes' memory (MiB)

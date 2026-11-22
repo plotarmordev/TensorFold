@@ -1,12 +1,11 @@
 #!/bin/sh
 # Card 176's job: the int8 contract (gates 1-4 on the per-block TMA product and h3_quantize_blocks, gate 5's
-# live sm_121 limits), then a same-job A/B of the pictures (job clones carry no history to check main out
-# from): bench-script.sh on this commit (out and fc2 int8 at a scale per 128 of K), then
-# bench-176-base.patch reverse-applied (out and fc2 back to bf16, main's default) and the same runs, then
-# this commit with --bf16 as the picture reference. Each phase renders the pilot prompt cold and three
-# prompts no earlier job used warm, H3_PROFILE on for the stage times. The picture gates (latent cosine
-# >= 0.99, PSNR >= 28.2 dB, mean diff <= 4.1) run here on every warm picture against bf16's, stdlib only:
-# TOP has no PIL and the PNGs are filter-0 RGB.
+# live sm_121 limits), then a same-job A/B of the pictures on this commit: bench-script.sh with
+# --int8-blocks (out and fc2 int8 at a scale per 128 of K), then the int8 default (out and fc2 bf16, as
+# main), then --bf16 as the picture reference. Each phase renders the pilot prompt cold and three prompts no
+# earlier job used warm, H3_PROFILE on for the stage times. The picture gates (latent cosine >= 0.99, PSNR
+# >= 28.2 dB, mean diff <= 4.1) run here on every warm picture against bf16's, stdlib only: TOP has no PIL
+# and the PNGs are filter-0 RGB.
 # Results: /work/out/h3-176-{card,main,bf16} and GATE lines on stdout.
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-176-ab.sh
 set -eu
@@ -37,18 +36,16 @@ bench() { # bench OUT [LINEAR]: the four runs into /work/out/OUT
 stages() { # every run's wall and the transformer's H3_PROFILE block stages
     for run in 1 2 3 4; do
         echo "--- $1 2048-$run"
-        awk 'NR == 1 { s = $1 } END { printf "wall %.2f s\n", $1 - s }' "$1/2048-$run.time"
+        awk 'NR == 1 { s = $1 } END { printf "wall %.2f s\n", $1 - s }' "$1/2048-$run.time" || true
         grep -hE "^transformer: " "$1/2048-$run.image.log" || true
         grep -E '^  [a-z ]+: [0-9.]+ s$' "$1/2048-$run.image.log" || true
     done
 }
-echo "=== card: this commit $(git -c safe.directory='*' rev-parse --short HEAD) ==="
-bench h3-176-card
-echo "=== main: out and fc2 bf16 (patch -R) ==="
-git -c safe.directory='*' apply -R $here/bench-176-base.patch
+echo "=== card: --int8-blocks at $(git -c safe.directory='*' rev-parse --short HEAD) ==="
+bench h3-176-card int8-blocks
+echo "=== main: the int8 default, out and fc2 bf16 ==="
 bench h3-176-main
-git -c safe.directory='*' apply $here/bench-176-base.patch
-echo "=== bf16: this commit, --bf16 ==="
+echo "=== bf16: --bf16 ==="
 bench h3-176-bf16 bf16
 for side in card main bf16; do
     echo "=== $side ==="
