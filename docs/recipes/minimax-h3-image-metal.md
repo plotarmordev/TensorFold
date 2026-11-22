@@ -1915,10 +1915,22 @@ steps / decoder / total; `F` marks a step reporting `timing_valid=false`):
 | greenhouse | 0.61 / 11.31 / 5.91 / 20.22 | | | |
 
 The totals swing with the load; the steps themselves are steadier. A routed step 5 or 6 took 1.36-1.42 s of wall time
-against 1.54-1.69 s dense, so routing saves about 0.2 s a step, 0.4 s a picture, in both modes. With `profile` on
-greenhouse (each launch on the GPU's timestamp counters, one request a session, load 37-93), attention over the six
-steps took 3.72 s dense and 2.47 s routed, with 0.04 s of routing; the drop is larger than two routed steps can give,
-so the load moved it too.
+against 1.54-1.69 s dense, so routing saves about 0.2 s a step, 0.4 s a picture, in both modes.
+
+The attention pass, with `profile` on greenhouse: each launch on the GPU's timestamp counters, one request a session
+of 13-24 s at load 10-22, every step `timing_valid=true`. Seconds of attention launches summed over the profiled
+steps (a fast run's three half-size draft steps are not profiled), then the whole picture as above:
+
+| Mode | dense attention | routed attention (+ routing) | dense picture | routed picture |
+|---|---|---|---|---|
+| normal, 6 steps | 1.649 | 1.206 (+0.025) | 0.23 / 14.13 / 0.73 / 15.75 | 0.28 / 12.00 / 0.63 / 13.86 |
+| fast, 3 full-size steps | 0.763 | 0.435 (+0.025) | 0.28 / 8.33 / 0.61 / 10.05 | 0.23 / 9.21 / 0.63 / 10.68 |
+
+Two routed steps take attention down by 0.44 s in normal mode (27%) and 0.33 s in fast mode (43%), 4-7% of the
+profiled steps' GPU time. The whole-picture times move more than that either way (the
+profile serialises launches and other work shared the CPU), so the steady per-step walls above are the better
+measure of the gain. An earlier profile pair at load 37-93 (3.72 s dense, 2.47 s routed over six steps) is in the
+receipts and not counted.
 
 The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.2 dB, mean pixel difference at most
 4.1) on one prompt of three, against the dense picture of the same mode:
