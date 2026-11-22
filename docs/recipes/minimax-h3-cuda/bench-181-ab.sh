@@ -1,6 +1,7 @@
 #!/bin/sh
-# Card 181's same-job A/B (job clones carry no history to check main out from): bench-script.sh on this
-# commit — the AdaLN tables stored bf16 and the fused norms' weight and table reads 8 bytes a lane — then
+# Card 181's same-job A/B (job clones carry no history to check main out from): the h3 kernels' contract gates
+# on this commit (h3_norm and h3_gate_add read the bf16 tables), then bench-script.sh on this commit — the
+# AdaLN tables stored bf16 and the fused norms' weight and table reads 8 bytes a lane — then
 # bench-181-base.patch reverse-applied (the job stops unless the result is main's zig/ tree) and the same runs
 # again. Each phase renders the pilot fox cold, then three prompts neither phase's server has seen warm,
 # H3_PROFILE on for the stage times. The card's latents and PNGs must be main's bytes: the job fails when any
@@ -12,6 +13,8 @@ here=docs/recipes/minimax-h3-cuda
 patch_file=$here/bench-181-base.patch
 prompts="/assets/drama3-pilot/h3-image-pilot/prompt.txt $here/prompts/greenhouse.txt $here/prompts/tram.txt $here/prompts/trench.txt"
 status=0
+echo "=== contract: h3 kernels at this commit ==="
+H3_BUILD=contract H3_CONTRACT=h3 sh "$here/cuda-build.sh" || status=$?
 phase() { # phase NAME: bench-script.sh into /work/out/h3-181-NAME
     H3_PROFILE=1 H3_BENCH_OUT=/work/out/h3-181-$1 H3_BENCH_SKIP_COMPARE=1 H3_BENCH_PROMPTS="$prompts" \
         sh "$here/bench-script.sh" || status=$?

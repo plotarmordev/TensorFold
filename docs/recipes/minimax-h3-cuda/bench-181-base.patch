@@ -229,6 +229,20 @@ index 8226ca9ab..c1c3280e4 100644
      var line: [rows]i32 = undefined;
      for (&line, 0..) |*v, i| v.* = @intCast(i % lines);
  
+diff --git a/zig/src/families/h3/cuda_lib.zig b/zig/src/families/h3/cuda_lib.zig
+index 875f15dad..c0dcda22a 100644
+--- a/zig/src/families/h3/cuda_lib.zig
++++ b/zig/src/families/h3/cuda_lib.zig
+@@ -166,6 +166,9 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
+     try std.testing.expectError(error.BadH3Address, m.plan(&in));
+     try std.testing.expectEqual(@as(f64, -1), tf_h3_forward_host(&m, &in));
+     try report.expect("tf_h3_forward_host", error.BadH3Address);
++    in = valid;
++    in.tables = 0x1002;
++    try std.testing.expectError(error.BadH3Address, m.plan(&in));
+     _ = try m.plan(&valid);
+     in = valid;
+     in.rot = 64;
 diff --git a/zig/src/families/h3/cuda_modulation.zig b/zig/src/families/h3/cuda_modulation.zig
 index 629c48442..af66cc0cc 100644
 --- a/zig/src/families/h3/cuda_modulation.zig
@@ -373,3 +387,38 @@ index c431f5f46..347c43325 100644
      }
  
      fn go(self: *Mod, grid: cuda.Dim3, args: *cuda.Args) !void {
+diff --git a/zig/tests/cuda/contract_h3_image_ref.zig b/zig/tests/cuda/contract_h3_image_ref.zig
+index daf962cdc..6bb18f92c 100644
+--- a/zig/tests/cuda/contract_h3_image_ref.zig
++++ b/zig/tests/cuda/contract_h3_image_ref.zig
+@@ -425,7 +425,7 @@ pub fn membed(in: In, s: Sum, want: []f64, mag: []f64) void {
+     };
+ }
+ 
+-/// h3m_project: out [rows, n] = bf16(total + b) stored in f32; each x element rounded to bf16 first,
++/// h3m_project: out [rows, n] = bf16(total + b); each x element rounded to bf16 first,
+ /// 32 lane partials of strided terms then their serial chain, all in f32. `s.of` on the terms approximates
+ /// the lane-partial order; .strided is the declared order's closest shape.
+ /// a x [rows, k] fp32, b w [n, k], d b [n].
+diff --git a/zig/tests/cuda/contract_h3_prep.zig b/zig/tests/cuda/contract_h3_prep.zig
+index aa2bd4a92..4fcef79ff 100644
+--- a/zig/tests/cuda/contract_h3_prep.zig
++++ b/zig/tests/cuda/contract_h3_prep.zig
+@@ -51,7 +51,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
+             const x = try self.values(s.rows * C, 0, 2, fill, rng, true, true);
+             const y = try self.values(s.rows * C, 0, 2, .random, rng, true, false);
+             const w = try self.values(C, 0.5, 1.5, .random, rng, true, false);
+-            // the six modulation tables of one line, bf16 values held in fp32 as the engine's are
++            // the six modulation tables of one line, stored bf16 as the engine's are
+             const tab = try self.values(6 * C, 0, 0.5, .random, rng, true, false);
+             self.in.a = x;
+             self.in.b = y;
+@@ -65,7 +65,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
+             self.fresh = try self.encode(x, true);
+             try self.upload(y, true);
+             if (self.which == .norm) try self.upload(w, true);
+-            try self.upload(tab, false);
++            try self.upload(tab, true);
+             try self.ints(line);
+             if (self.which == .norm) try self.output(x.len * 2);
+             self.outs = (if (self.which == .norm) @as(usize, 2) else 1) * s.rows * C;
