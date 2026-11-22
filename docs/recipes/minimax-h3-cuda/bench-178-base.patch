@@ -16,7 +16,7 @@ index 2b378e66a..fa140f6bc 100644
          const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
          const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
 diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
-index b9d9198cc..b8908fd27 100644
+index b9d9198cc..1d331608e 100644
 --- a/zig/kernels/cuda/h3_int8_tma.cuh
 +++ b/zig/kernels/cuda/h3_int8_tma.cuh
 @@ -236,6 +236,62 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
@@ -102,7 +102,15 @@ index b9d9198cc..b8908fd27 100644
  
      TileGrid grid;
      grid.tiles_m = (m + Config::block_m - 1) / Config::block_m;
-@@ -293,7 +351,13 @@ __device__ __forceinline__ void
+@@ -278,6 +336,7 @@ __device__ __forceinline__ void
+     // Position of the lane in the MMA accumulator layout.
+     const int group_id = lane / 4;
+     const int quad_lane = lane % 4;
++    int tile_m, tile_n;
+ 
+     // Waits for the ring's current stage, multiplies it and releases it; the warp that releases it
+     // last refills it.
+@@ -293,14 +352,19 @@ __device__ __forceinline__ void
              if (atomicAdd(release_counts + ring.stage, 1) == tma_warps - 1) {
                  release_counts[ring.stage] = 0;
                  h3_async_proxy_fence();
@@ -117,6 +125,13 @@ index b9d9198cc..b8908fd27 100644
              }
          }
          ring.advance();
+     };
+ 
+     for (int tile = blockIdx.x; tile < grid.tiles; tile += gridDim.x) {
+-        int tile_m, tile_n;
+         grid.coordinates(tile, tile_m, tile_n);
+         int32_t accumulators[Config::m_tiles][Config::n_tiles][4];
+         #pragma unroll
 @@ -348,6 +412,10 @@ __device__ __forceinline__ void
              }
          }
