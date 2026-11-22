@@ -43,6 +43,8 @@ pub const affine_mm = @import("core/affine_mm.zig");
 pub const moe_route = @import("core/moe_route.zig");
 /// The checkpoint formats (MLX affine and its fp64 reader for the device checks, exact widen).
 pub const quant = @import("core/quant/quant.zig");
+pub const modelopt = @import("core/modelopt.zig");
+pub const visit_plan = @import("core/visit_plan.zig");
 pub const exl3_format = @import("core/exl3_format.zig");
 pub const exl3_projection = @import("core/exl3_projection.zig");
 pub const exlr8 = @import("core/exlr8.zig");

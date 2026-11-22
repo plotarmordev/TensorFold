@@ -307,17 +307,17 @@ fn parseLoop(o: std.json.ObjectMap, t: *const Text, why: *Why) !Loop {
         return error.Unsupported;
     };
     const l: Loop = .{
-        .start = try int(o, "core_start", why),
-        .end = try int(o, "core_end", why),
+        .start = try index(o, "core_start", why),
+        .end = try index(o, "core_end", why),
         .passes = try int(o, "num_passes", why),
         .rank = try int(o, "gate_rank", why),
     };
     if (l.start == 0 or l.start >= l.end or l.end > t.layers) {
-        why.set("loop_config core range {d}..{d} must start after layer 0, be nonempty and fit inside the {d} physical layers", .{ l.start, l.end, t.layers });
+        why.set("loop_config core range {d}..{d} must start after layer 0, be nonempty and fit inside the {d} physical layers; bounds outside the backbone's first and last blocks are not whole blocks of {d}", .{ l.start, l.end, t.layers, t.block });
         return error.Layout;
     }
     if (l.start % t.block != 0 or l.end % t.block != 0 or l.start != t.block or l.end + t.block != t.layers) {
-        why.set("loop_config core_start and core_end must be multiples of the {d}-layer attention-residual block, leaving its first and last blocks outside the loop", .{t.block});
+        why.set("loop_config core_start and core_end must be multiples of the {d}-layer attention-residual block, not whole blocks of {d} outside its first and last blocks", .{ t.block, t.block });
         return error.Layout;
     }
     if (l.passes < 2 or l.rank > max_gate_rank) {
@@ -429,7 +429,7 @@ pub fn parse(gpa: std.mem.Allocator, json: []const u8, why: *Why) !Config {
     const small = std.mem.eql(u8, name, "Inkling2ForConditionalGeneration") and std.mem.eql(u8, kind, "inkling2");
     const looped = std.mem.eql(u8, name, "Inkling2LoopForConditionalGeneration") and std.mem.eql(u8, kind, "inkling2_loop");
     if (!small and !looped) {
-        why.set("not an Inkling 2 checkpoint: Inkling2ForConditionalGeneration (inkling2) or Inkling2LoopForConditionalGeneration (inkling2_loop)", .{});
+        why.set("not an Inkling 2 checkpoint: model_type and architectures must match Inkling2ForConditionalGeneration (inkling2) or Inkling2LoopForConditionalGeneration (inkling2_loop)", .{});
         return error.NotInkling2;
     }
     try fixed(o, "tie_word_embeddings", false, why);

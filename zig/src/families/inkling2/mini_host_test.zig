@@ -4,7 +4,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const names = @import("names.zig");
 const plan = @import("plan.zig");
-const st = @import("safetensors");
+const st = @import("core").safetensors;
 const unfold = @import("names_test.zig").unfold;
 
 const t = std.testing;

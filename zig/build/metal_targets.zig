@@ -489,6 +489,10 @@ pub fn metalEngineModules(b: *std.Build, target: std.Build.ResolvedTarget, optim
     engine.addImport("inkling2_metal_ref", inkling2_metal_ref);
     engine.addImport("inkling2_glue_plan", inkling2_glue_plan);
     engine.addImport("inkling2_loop_plan", inkling2_loop_plan);
+    const inkling2_parts = b.createModule(.{ .root_source_file = b.path("zig/src/families/inkling2/core_parts.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    inkling2_parts.addImport("core", engine);
+    engine.addImport("visit_plan", inkling2_parts);
+    engine.addImport("modelopt", inkling2_parts);
     engine.addImport("engram_hash_core", b.createModule(.{ .root_source_file = b.path("zig/src/families/deepseek_v41/engram_hash.zig"), .target = target, .optimize = optimize }));
     return .{ .metal = metal, .lanes = lanes, .fabric = fabric, .sources = sources, .engine = engine, .living = living, .qwen27 = qwen27_build.engineModules(b, target, metal, sources, engine) };
 }
