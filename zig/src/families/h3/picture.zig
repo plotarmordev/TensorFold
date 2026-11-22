@@ -290,10 +290,10 @@ pub fn tiles(a: std.mem.Allocator, prefix_rows: usize, target_rows: usize) !Tile
 
 /// Pooled far-field keys (`--far-pool`): each target query tile attends the prefix, full keys in a band of
 /// `far_band` pooled rows around its own, and outside it the target's keys and values 2 x 2 mean-pooled, each
-/// pooled logit lifted by ln 4. Off below `far_min_rows` target rows, where attention is a small part of a step,
-/// and before step `far_from_step`: pooled from the first step, the early steps lay the picture out differently
+/// pooled logit lifted by ln 4. Only on `far_grid`, the one size its picture gates passed at, and from step
+/// `far_from_step`: pooled from the first step, the early steps lay the picture out differently
 /// (card 182: cosine 0.70; from step 3, PSNR 27.9 dB; from step 4 every gate holds).
-pub const far_min_rows = 8192;
+pub const far_grid: Grid = .{ .rows = 256, .columns = 256 };
 pub const far_band = 8;
 pub const far_from_step = 4;
 
@@ -301,13 +301,11 @@ pub const far_from_step = 4;
 /// indices from `tiles` up are pooled tiles, pooled row r at `tiles + r`.
 pub const Far = struct { list: []i32, per_query: usize, pooled: usize };
 
-/// Null when the target is under `far_min_rows` rows, has references, or a pooled row is not one whole tile of 64
-/// keys (the target 128 rows wide: a 4096-pixel canvas width) over an even number of picture rows.
+/// Null unless the target is `far_grid` (a 4096 x 4096 canvas) without references.
 pub fn far(a: std.mem.Allocator, layout: Layout) !?Far {
     const g = layout.target;
-    const width = g.columns / 2;
+    if (layout.references.len != 0 or g.rows != far_grid.rows or g.columns != far_grid.columns) return null;
     const height = g.rows / 2;
-    if (layout.references.len != 0 or try gridRows(g) < far_min_rows or width != 2 * geometry.tile_rows or height % 2 != 0) return null;
     const prefix_tiles = (layout.text + geometry.tile_rows - 1) / geometry.tile_rows;
     const pooled = height / 2;
     // a pooled row covers two picture rows of two tiles each
