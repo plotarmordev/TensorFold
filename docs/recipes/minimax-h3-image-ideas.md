@@ -91,9 +91,10 @@ The linear layers are 62-87% of a step and row-independent. Unified memory lets 
 bf16 weights and activations with no copy, so each product's rows split in the measured throughput ratio. Every
 other runner leaves the CPU idle.
 
-- **Gain.** 1.05-1.07x at 4096 if SME2 sustains 1.5-2 TFLOP/s beside about 18 on the GPU (h3-image-mlx's rate)
-  [INFERENCE: unmeasured].
-- **Risk.** None beyond fp32 summation order; shared memory bandwidth and heat may eat the gain.
+- **Gain.** Measured on an M5 Ultra (card 174): 1.015x at most on fc2 at 4,120 rows and 1.008x at 16,384, the
+  CPU's rows bit-identical to the GPU's. The int8 GPU product runs at 123-140 TOPS, while SME2's bare `smopa` peak
+  is 10.4 TOPS and a real tile beside the GPU 2.2-3.4. Stopped under the 1.07x bar; numbers in the Metal recipe.
+- **Risk.** Shared memory bandwidth and contention: E-core threads slowed the GPU's own rows.
 - **Proof.** A 5,376 x 14,336 product at 16,384 rows split against the GPU alone, at least 1.07x; PSNR at least 50
   dB against GPU-only pictures; no slowdown over three back-to-back 4096 runs.
 
@@ -105,7 +106,11 @@ other runner leaves the CPU idle.
 - **Caching the prompt's rows, or keeping its encoder apart from the transformer.** SGLang and vLLM-Omni cache
   conditioning; h3-image-mlx and the maintainer's tools run the encoder and the transformer as separate processes.
 - **Reusing a step's residuals or an edit reference's rows across steps.** Six steps, each with its own head, and
-  the reference's hidden states move with the target rows: not exact, so opt-in at most.
+  the reference's hidden states move with the target rows: not exact, so opt-in at most. Card 180 measured two forms
+  behind a gate, and both lost: reusing the last step's velocity (best 21.76 dB against 28.2), and reusing blocks
+  1-49's residual when block 0's branch barely moves (FBCache): that branch moves 49-80% every step, and skipping
+  only the quietest step gives 19.8-25.4 dB. Both were reverted
+  ([minimax-h3-image-metal.md](minimax-h3-image-metal.md#card-180-step-caching-measured-and-reverted)).
 - **Merging similar picture rows.** Merged rows fall outside the 2 x 2 patch distribution the model learned.
 - **Streaming bf16 blocks from the SSD on 24-36 GB Macs.** A block is 0.69 GB; at 4096 a block's compute is fast
   enough that 5-7 GB/s of SSD cannot keep up, so it works but is not fast. Community MLX ports of the video model
@@ -124,8 +129,8 @@ The bar is h3-image-mlx's 356.84 s at 4096 x 4096 on an M5 Pro, at int8; these c
 3. **H3-Image: pooled far-field keys at 16,384 rows and above (`far=pool`).**
    - A kernel test that equal keys give dense attention's output; off below 8,192 rows; idea 2's gates hold.
 4. **H3-Image: GPU and SME2 row split for the linear layers.**
-   - At least 1.07x on idea 3's product with PSNR at least 50 dB.
-5. **H3-Image at 4096 x 4096 in at most 180 s on an M5 Pro, at least 1.98x faster than h3-image-mlx**, cards 2 to 4
+   - At least 1.07x on idea 3's product with PSNR at least 50 dB. Measured at 1.015x at most (card 174): stopped.
+5. **H3-Image at 4096 x 4096 in at most 180 s on an M5 Pro, at least 1.98x faster than h3-image-mlx**, cards 2 and 3
    together, every quality gate green; at 2048 x 2048 faster than the best published Mac figure at that size.
 
 ## The cascade's lift (started here)
