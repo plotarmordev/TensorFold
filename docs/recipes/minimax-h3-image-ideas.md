@@ -112,6 +112,11 @@ other runner leaves the CPU idle.
   saves about 0.2 s a step, but canal's picture misses the 28.2 dB floor by 1.6 dB (fast mode 3.3 dB), with pilot
   and foundry passing. It stays opt-in and off by default
   ([minimax-h3-image-metal.md](minimax-h3-image-metal.md#card-187-fasth3s-routed-attention-in-the-last-steps-measured-and-rejected-as-a-default)).
+- **INT8 attention, QK and PV on the integer tensor cores.** Card 179 measured it on the Spark: 168 registers against
+  217, but 2.26-2.28 s of attention against main's 1.76-1.81 s, and all four pictures missed the gates (cosine
+  0.924-0.994, PSNR 16.6-26.0 dB) because u8 probability codes drop the diffuse rows' mass. Not kept; QK alone in
+  int8 with P·V in bf16 is the open shape
+  ([minimax-h3-cuda.md](minimax-h3-cuda.md#card-179-dense-attentions-qk-and-pv-on-the-int8-tensor-cores--measured-not-kept)).
 - **The decoder in larger tiles on the tensor units.** About 1.7% of a 4096 run.
 - **Caching the prompt's rows, or keeping its encoder apart from the transformer.** SGLang and vLLM-Omni cache
   conditioning; h3-image-mlx and the maintainer's tools run the encoder and the transformer as separate processes.

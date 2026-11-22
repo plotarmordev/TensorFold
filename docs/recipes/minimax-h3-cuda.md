@@ -1080,9 +1080,9 @@ All four pass (0.99, 28.2 dB, 4.1), and the profiled pass's routed pictures matc
 stays **opt-in**. It is a different picture, though a close one, for 2.8%, while `--fp4` gives 19%. Routing more steps
 or running at 4096 (four times the tiles, attention a larger share) was not measured.
 
-### Card 179: dense attention's QK and PV on the INT8 tensor cores — measured and reverted
+### Card 179: dense attention's QK and PV on the INT8 tensor cores — measured, not kept
 
-`h3_attention_int8.cuh` ran the image transformer's dense attention with both products on the integer tensor
+I ran the image transformer's dense attention (`h3_attention_int8.cuh`) with both products on the integer tensor
 cores: QK^T on `mma.sync.aligned.m16n8k32.s8.s8.s32` and P·V on `m16n8k32.u8.s8.s32` (unsigned probabilities
 against signed values), the online softmax in fp32 and its int32 sums exact. The scales were mmh3's: Q and K rows
 at their absmax/127, V per tile and channel at its live keys' absmax/127 (one outlier cannot flatten a tile), and
@@ -1099,7 +1099,7 @@ byte-identical repeats, six shapes within the float64 bound (worst 0.975 of it),
 and the limits audit's five SMs matched the records; its other 59 problems were main's stale records (`h3_norm`,
 `h3_quantize`, the fp4 pair, GLM's BF16 images and exl3's controls), not this card's launches.
 
-`bench-179-ab.sh` at `fa094cb8e` (job `top-28126dd9a5e7`, GB10, driver 580.173.02) ran this kernel, then
+I ran `bench-179-ab.sh` at `fa094cb8e` (job `top-28126dd9a5e7`, GB10, driver 580.173.02): this kernel, then
 `bench-179-base.patch` reverse-applied for main's bf16 attention — the job stopped unless the result was main's
 `zig/` tree, `5dd31fb2`. Every selftest passed on both sides. The attention stage, the fox cold and the three
 unseen prompts warm:
@@ -1122,12 +1122,17 @@ All four fail. Two causes. The codes scale `p` by the running maximum, so a tile
 `log2(510)` ≈ 9 below it rounds entirely to zero; with 4,096 keys a dense row's attention is diffuse, so most of
 the numerator's mass disappears while the denominator keeps the exact fp32 mass — `fb5090ae`'s e4m3 probabilities
 (a relative error on small `p`) measured 0.9882 on the same model, and this u8 code is coarser there. On time,
-`h3_attention` loads its fragments with `ldmatrix4`; int8 fragments are 4-byte shared reads (there is no 8-bit
-ldmatrix), and `h3_heads_quant` adds a pass over each block's q/k/v, so the narrower mma returns less than they
-cost.
+`h3_attention` loads its fragments with `ldmatrix4`; this kernel's int8 fragments were 4-byte shared reads, and
+`h3_heads_quant` adds a pass over each block's q/k/v, so the narrower mma returned less than they cost.
 
-Reverted in full: the dense path stays `h3_attention`, and the A/B script and its base patch remain only at
+I reverted it in full: the dense path stays `h3_attention`, and the A/B script and its base patch remain only at
 `fa094cb8e`. The register win is real; the picture and the time are not.
+
+The next shapes, each its own card and gated on the picture before the clock: QK^T alone in int8, with K smoothed
+by its per-channel mean (exact under softmax, since it shifts each row's scores by one constant) and P·V kept on
+bf16 `ldmatrix4` fragments, which removes the probability codes that failed here; and the int8 operands loaded with
+`ldmatrix` on a k-major shared layout, 16 bytes a lane instead of 4, before any rate is compared
+[INFERENCE: neither was built or measured].
 
 ### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
 
