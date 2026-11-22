@@ -773,6 +773,9 @@ Every other stage stays within 0.04 s. Gates against the same job's `--bf16` pic
 | orchard | 0.9861, 23.17 dB, 8.17 — fail | 0.9824, 22.37 dB, 8.40 — fail |
 | fox, against episode 1's Mac latent and PNG | 0.9910, 26.26 dB, 5.17 — fail | 0.9952, 28.69 dB, 4.01 — pass |
 
+Measured, not kept: per-128 scales fail the gates on bakery and orchard. In job `top-639918032e5e` I read
+bakery at 0.9824, 23.42 dB, 7.77 and orchard at 0.9861, 23.17 dB, 8.17, and the fox fails too.
+
 I measured the fox locally on the fetched pictures with `h3_image_compare.py` against
 `h3-image-runs/34/t2i-2048.latent.f32` and `fox-2048-seed42.png`. The same job's `--bf16` fox measured 0.9958,
 28.71 dB and 3.61 there. On the unseen prompts the card's PSNR and mean diff are at or above main's, and its
@@ -782,10 +785,9 @@ holds them, as card 139's per-256 scales did (28.02 dB, 4.27). By the recipe's r
 0.77 s does not buy a default below the gates. An opt-in that fails the gates has no use either, so the code
 is reverted and `out` and `fc2` stay bf16.
 
-The review's rerun at `8027eb54` (per-block behind `--int8-blocks`, same three phases) exited 1: the `--bf16`
-reference hit `CUDA_ERROR_OUT_OF_MEMORY` after its cold run. Its warm runs averaged 13.41 s wall and 10.06 s
-transformer with `--int8-blocks`, against 14.11 s and 10.92 s for the default. A scale per 64 or 32 of K would
-need a fold inside the 128-deep K block; it stays untried.
+The review's rerun at `8027eb54` (per-block behind `--int8-blocks`, same three phases) did not complete: the
+`--bf16` reference hit `CUDA_ERROR_OUT_OF_MEMORY` after its cold run and the job exited 1. No speed or quality
+figure here rests on it. A scale per 64 or 32 of K would need a fold inside the 128-deep K block; it stays untried.
 
 ### Card 143: the prompt encoder resident in int8 per-row products — measured and reverted
 
