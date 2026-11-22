@@ -265,7 +265,7 @@ pub const Model = struct {
     pub const Inputs = extern struct {
         /// The packed stream, (rows, hidden) bf16, updated in place.
         x: u64,
-        /// Every block's modulation tables: (blocks, lines, 6, hidden) float.
+        /// Every block's modulation tables: (blocks, lines, 6, hidden) bf16, 8-byte aligned.
         tables: u64,
         /// Each row's line in the tables: (rows) int32.
         line: u64,
@@ -340,7 +340,7 @@ pub const Model = struct {
         const heads = self.heads;
         // the dense forward needs no routing gate: its product stops after q, k and v
         const width = if (dense) 3 * inner else 4 * inner;
-        const table_bytes = @as(usize, in.lines) * 6 * hidden * 4;
+        const table_bytes = @as(usize, in.lines) * 6 * hidden * 2;
         const video_tiles = tiles - prefix;
         const count = checked.count;
         var mark = seconds();

@@ -20,6 +20,29 @@ __device__ __forceinline__ float modulated(float x, float inv, float w, float sc
     return bf(bf(bf(x * inv * w) * bf(1.0f + bf(scale))) + bf(shift));
 }
 
+// Four bf16 values from 8-byte-aligned p in one load.
+__device__ __forceinline__ void load4(const __nv_bfloat16* p, float v[4]) {
+    const uint2 u = *reinterpret_cast<const uint2*>(p);
+    const float2 lo = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&u.x));
+    const float2 hi = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&u.y));
+    v[0] = lo.x;
+    v[1] = lo.y;
+    v[2] = hi.x;
+    v[3] = hi.y;
+}
+
+// A lane's four normed values at `base` rounded to bf16, as h3_norm writes them: the weight and tables in
+// 8-byte loads, x as the gated add left it.
+__device__ __forceinline__ void normed4(const __nv_bfloat16* x, const __nv_bfloat16* NW, const __nv_bfloat16* s,
+                                        const __nv_bfloat16* h, int base, float inv, float v[4]) {
+    float w[4], sc[4], sh[4];
+    load4(NW + base, w);
+    load4(s + base, sc);
+    load4(h + base, sh);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) v[j] = bf(modulated(f(x[base + j]), inv, w[j], sc[j], sh[j]));
+}
+
 } // namespace tf_h3
 
 using namespace tf_h3;
@@ -27,17 +50,17 @@ using namespace tf_h3;
 extern "C" {
 
 __global__ void __launch_bounds__(256) h3_norm(__nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
-                                               const float* GT, const float* TAB, const int* LINE, __nv_bfloat16* O,
+                                               const __nv_bfloat16* GT, const __nv_bfloat16* TAB, const int* LINE, __nv_bfloat16* O,
                                                int C, int gate, int scale, int shift, float eps) {
     __shared__ float scratch[8];
     const int row = blockIdx.x, line = LINE[row];
     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
     float sq = 0.0f;
     if (gate >= 0) {
-        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
+        const __nv_bfloat16* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
         const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
         for (int c = threadIdx.x; c < C; c += blockDim.x) {
-            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
+            const float v = bf(f(x[c]) + f(y[c]) * f(g[c]));
             x[c] = __float2bfloat16(v);
             sq += v * v;
         }
@@ -45,20 +68,20 @@ __global__ void __launch_bounds__(256) h3_norm(__nv_bfloat16* X, const __nv_bflo
         for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
     }
     const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
-    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
-    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
+    const __nv_bfloat16* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
+    const __nv_bfloat16* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
     __nv_bfloat16* o = O + static_cast<size_t>(row) * C;
-    for (int c = threadIdx.x; c < C; c += blockDim.x) o[c] = __float2bfloat16(modulated(f(x[c]), inv, f(NW[c]), s[c], h[c]));
+    for (int c = threadIdx.x; c < C; c += blockDim.x) o[c] = __float2bfloat16(modulated(f(x[c]), inv, f(NW[c]), f(s[c]), f(h[c])));
 }
 
 // X += GT[line, part] * Y in one rounding, as torch's addcmul: the last block's MLP branch. Grid [M], 256 threads.
-__global__ void __launch_bounds__(256) h3_gate_add(__nv_bfloat16* X, const __nv_bfloat16* Y, const float* GT,
+__global__ void __launch_bounds__(256) h3_gate_add(__nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* GT,
                                                    const int* LINE, int C, int part) {
     const int row = blockIdx.x;
-    const float* g = GT + (static_cast<size_t>(LINE[row]) * 6 + part) * C;
+    const __nv_bfloat16* g = GT + (static_cast<size_t>(LINE[row]) * 6 + part) * C;
     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
     const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
-    for (int c = threadIdx.x; c < C; c += blockDim.x) x[c] = __float2bfloat16(f(x[c]) + f(y[c]) * bf(g[c]));
+    for (int c = threadIdx.x; c < C; c += blockDim.x) x[c] = __float2bfloat16(f(x[c]) + f(y[c]) * f(g[c]));
 }
 
 // q, k, v to bf16 in tile order: head RMSNorm, then split-half rotary rounded as the reference's bf16 tables round it.
@@ -319,17 +342,17 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
 // only reader, so the unfused pair's bf16 round trip through a row buffer drops out. Grid [M], 256 threads.
 __global__ void __launch_bounds__(256) h3_norm_quant(
     __nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
-    const float* GT, const float* TAB, const int* LINE,
+    const __nv_bfloat16* GT, const __nv_bfloat16* TAB, const int* LINE,
     int8_t* Q, float* S, int C, int gate, int scale, int shift, float eps) {
     __shared__ float scratch[32];
     const int row = blockIdx.x, line = LINE[row];
     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
     float sq = 0.0f;
     if (gate >= 0) {
-        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
+        const __nv_bfloat16* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
         const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
         for (int c = threadIdx.x; c < C; c += blockDim.x) {
-            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
+            const float v = bf(f(x[c]) + f(y[c]) * f(g[c]));
             x[c] = __float2bfloat16(v);
             sq += v * v;
         }
@@ -337,18 +360,15 @@ __global__ void __launch_bounds__(256) h3_norm_quant(
         for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
     }
     const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
-    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
-    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
+    const __nv_bfloat16* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
+    const __nv_bfloat16* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = C >> 7;
     float most = 0.f, v[quantize_chunks][4];
 #pragma unroll
     for (int i = 0; i < quantize_chunks; ++i) {
         const int c = warp + 8 * i;
         if (c < chunks) {
-            const int base = c * 128 + lane * 4;
-#pragma unroll
-            for (int j = 0; j < 4; ++j)
-                v[i][j] = f(__float2bfloat16(modulated(f(x[base + j]), inv, f(NW[base + j]), s[base + j], h[base + j])));
+            normed4(x, NW, s, h, c * 128 + lane * 4, inv, v[i]);
             hadamard128(v[i]);
             for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[i][j]));
         }
@@ -388,17 +408,17 @@ __global__ void __launch_bounds__(256) h3_quantize_fp4(const __nv_bfloat16* X, u
 // reads from h3_norm's output row. Grid [M], 256 threads.
 __global__ void __launch_bounds__(256) h3_norm_quant_fp4(
     __nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
-    const float* GT, const float* TAB, const int* LINE,
+    const __nv_bfloat16* GT, const __nv_bfloat16* TAB, const int* LINE,
     uint8_t* Q, uint8_t* S, int C, int gate, int scale, int shift, float eps) {
     __shared__ float scratch[32];
     const int row = blockIdx.x, line = LINE[row];
     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
     float sq = 0.0f;
     if (gate >= 0) {
-        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
+        const __nv_bfloat16* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
         const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
         for (int c = threadIdx.x; c < C; c += blockDim.x) {
-            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
+            const float v = bf(f(x[c]) + f(y[c]) * f(g[c]));
             x[c] = __float2bfloat16(v);
             sq += v * v;
         }
@@ -406,15 +426,12 @@ __global__ void __launch_bounds__(256) h3_norm_quant_fp4(
         for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
     }
     const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
-    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
-    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
+    const __nv_bfloat16* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
+    const __nv_bfloat16* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = C >> 7;
     for (int c = warp; c < chunks; c += 8) {
-        const int base = c * 128 + lane * 4;
         float v[4];
-#pragma unroll
-        for (int j = 0; j < 4; ++j)
-            v[j] = f(__float2bfloat16(modulated(f(x[base + j]), inv, f(NW[base + j]), s[base + j], h[base + j])));
+        normed4(x, NW, s, h, c * 128 + lane * 4, inv, v);
         hadamard128(v);
         store_fp4(v, row, c, lane, C, Q, S);
     }

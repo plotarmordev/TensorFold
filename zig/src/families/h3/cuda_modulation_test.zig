@@ -29,13 +29,13 @@ pub fn run(a: std.mem.Allocator) !void {
     }
     for (&w, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 31)) - 15)) / 32;
     for (&b, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 7)) / 8;
-    var expected: [t * n]f32 = undefined;
-    try rows.modulation(f32, &xb, &w, &b, &expected, t, k, groups, parts, width);
+    var want: [t * n]u16 = undefined;
+    try rows.modulation(u16, &xb, &w, &b, &want, t, k, groups, parts, width);
     var x_dev = try cuda.DeviceBuffer.fromHost(&driver, std.mem.sliceAsBytes(&x));
     defer x_dev.free();
-    var output = try cuda.DeviceBuffer.alloc(&driver, @sizeOf(@TypeOf(expected)));
+    var output = try cuda.DeviceBuffer.alloc(&driver, @sizeOf(@TypeOf(want)));
     defer output.free();
-    var actual: [t * n]f32 = undefined;
+    var actual: [t * n]u16 = undefined;
     var wb: [n * k]u16 = undefined;
     var bb: [n]u16 = undefined;
     for (&wb, w) |*v, f| v.* = bf.bits(f);
@@ -53,7 +53,7 @@ pub fn run(a: std.mem.Allocator) !void {
             try cuda.launch.launch(try module.function("h3m_project"), .{ .grid = .{ .x = (n + 7) / 8, .y = t }, .block = .{ .x = 256 } }, stream, &args);
             try stream.synchronize();
             try output.download(0, std.mem.sliceAsBytes(&actual));
-            if (!std.mem.eql(u8, std.mem.sliceAsBytes(&actual), std.mem.sliceAsBytes(&expected))) return error.H3ModulationMismatch;
+            if (!std.mem.eql(u16, &actual, &want)) return error.H3ModulationMismatch;
         }
     }
     try embedCheck(a, &driver, module, stream);

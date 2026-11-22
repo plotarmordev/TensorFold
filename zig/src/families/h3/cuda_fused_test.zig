@@ -44,13 +44,13 @@ pub fn run(a: std.mem.Allocator) !void {
     for (&y, 0..) |*v, i| v.* = bf.bits(@as(f32, @floatFromInt(@as(i32, @intCast(i * 40503 % 61)) - 30)) / 32);
     var nw: [C]u16 = undefined;
     for (&nw, 0..) |*v, i| v.* = bf.bits(1 + @as(f32, @floatFromInt(@as(i32, @intCast(i % 9)) - 4)) / 16);
-    var tab: [lines * 6 * C]f32 = undefined;
+    var tab: [lines * 6 * C]u16 = undefined;
     // the AdaLN parts h3_norm reads: gated add gate_m, then scale_a/shift_a modulation
     const gate_m: c_int = 5;
     const scale_a: c_int = 1;
     const shift_a: c_int = 0;
 
-    for (&tab, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(i32, @intCast(i * 97 % 41)) - 20)) / 32;
+    for (&tab, 0..) |*v, i| v.* = bf.bits(@as(f32, @floatFromInt(@as(i32, @intCast(i * 97 % 41)) - 20)) / 32);
     var line: [rows]i32 = undefined;
     for (&line, 0..) |*v, i| v.* = @intCast(i % lines);
 

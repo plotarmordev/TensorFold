@@ -30,9 +30,10 @@ extern "C" __global__ void __launch_bounds__(256) h3m_embed(
     out[i] = v / (1.0f + expf(-v));
 }
 
-// One warp per output; the 32 partials meet in lane order, as rows_reference.modulation does.
+// One warp per output; the 32 partials meet in lane order, as rows_reference.modulation does. The tables are
+// bf16: the reference rounds every AdaLN value there.
 extern "C" __global__ void __launch_bounds__(256) h3m_project(
-        const float* x, const void* w, const void* b, float* out, int rows, int n, int k, int ww, int bw) {
+        const float* x, const void* w, const void* b, __nv_bfloat16* out, int rows, int n, int k, int ww, int bw) {
     const int lane = threadIdx.x % 32;
     const int c = blockIdx.x * 8 + threadIdx.x / 32;
     const int r = blockIdx.y;
@@ -44,5 +45,5 @@ extern "C" __global__ void __launch_bounds__(256) h3m_project(
     }
     float total = 0;
     for (int j = 0; j < 32; ++j) total = __fadd_rn(total, __shfl_sync(0xffffffffu, sum, j));
-    if (lane == 0) out[size_t(r) * n + c] = __bfloat162float(__float2bfloat16_rn(__fadd_rn(total, h3m_read(b, c, bw))));
+    if (lane == 0) out[size_t(r) * n + c] = __float2bfloat16_rn(__fadd_rn(total, h3m_read(b, c, bw)));
 }

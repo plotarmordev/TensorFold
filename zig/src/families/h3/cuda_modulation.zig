@@ -1,10 +1,9 @@
-//! GPU timestep embedding and AdaLN preparation; only the small final-norm table returns to the host.
+//! GPU timestep embedding and AdaLN preparation into bf16 tables; only the small final-norm table returns to the host.
 const std = @import("std");
 const cuda = @import("cuda");
 const checkpoint = @import("checkpoint.zig");
 const shape = @import("modulation_shape.zig");
 const geometry = @import("geometry.zig");
-const bf16 = @import("bf16_round");
 const image align(16) = @embedFile("fatbin_h3_modulation").*;
 
 pub const Tables = struct {
@@ -98,9 +97,9 @@ pub fn prepare(a: std.mem.Allocator, d: *const cuda.Driver, stream: cuda.Stream,
     defer middle.free();
     var embedded = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ times.len, k, 4 }));
     defer embedded.free();
-    var blocks = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ count, 4 }));
+    var blocks = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ count, 2 }));
     errdefer blocks.free();
-    var last = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ final_count, 4 }));
+    var last = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ final_count, 2 }));
     defer last.free();
     var args: cuda.Args = .{};
     args.add(time.ptr);
@@ -111,13 +110,10 @@ pub fn prepare(a: std.mem.Allocator, d: *const cuda.Driver, stream: cuda.Stream,
     try project(module, &staging, stream, ck, "time_embedder.proj_in.", sinusoid.ptr, middle.ptr, times.len, ib.shape[0], dim, true);
     try project(module, &staging, stream, ck, "time_embedder.proj_out.", middle.ptr, embedded.ptr, times.len, k, ib.shape[0], true);
     var name: [128]u8 = undefined;
-    for (0..layers) |i| try project(module, &staging, stream, ck, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.", .{i}), embedded.ptr, blocks.ptr + i * times.len * n * 4, times.len, n, k, false);
+    for (0..layers) |i| try project(module, &staging, stream, ck, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.", .{i}), embedded.ptr, blocks.ptr + i * times.len * n * 2, times.len, n, k, false);
     try project(module, &staging, stream, ck, "final_layer.adaln_proj.linear.", embedded.ptr, last.ptr, times.len, 2 * hidden, k, false);
     const final = try a.alloc(u16, final_count);
     errdefer a.free(final);
-    const values = try a.alloc(f32, final_count);
-    defer a.free(values);
-    try last.download(0, std.mem.sliceAsBytes(values));
-    for (final, values) |*to, from| to.* = bf16.bits(from);
+    try last.download(0, std.mem.sliceAsBytes(final));
     return .{ .blocks = blocks, .final = final, .allocator = a };
 }

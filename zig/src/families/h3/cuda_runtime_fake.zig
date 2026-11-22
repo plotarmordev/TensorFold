@@ -169,7 +169,7 @@ pub fn input() h3.Model.Inputs {
     return .{ .x = @intFromPtr(&x), .tables = @intFromPtr(&tables), .line = @intFromPtr(&line), .cos = 0, .sin = 0, .slot = @intFromPtr(&slot), .sizes = @intFromPtr(&sizes), .rows = 2, .tiles = 1, .lines = 1, .rot = 0, .prefix_tiles = 0, .keep = 0 };
 }
 pub var x: [256]u16 = @splat(0);
-pub var tables: [768]f32 = @splat(0);
+pub var tables: [768]u16 align(8) = @splat(0);
 pub var line: [2]i32 = .{ 0, 0 };
 pub var slot: [2]i32 = .{ 0, 1 };
 pub var sizes: [1]i32 = .{2};

@@ -44,12 +44,13 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
     const heads = m.heads;
     const mlp = m.mlp;
     const input = [8]usize{
-        try product(&.{ rows, h, 2 }),      try product(&.{ count, in.lines, 6, h, 4 }),                     try product(&.{ rows, 4 }),
+        try product(&.{ rows, h, 2 }),      try product(&.{ count, in.lines, 6, h, 2 }),                     try product(&.{ rows, 4 }),
         try product(&.{ rows, in.rot, 4 }), try product(&.{ rows, in.rot, 4 }),                              try product(&.{ rows, 4 }),
         try product(&.{ tiles, 4 }),        if (in.attention_out == 0) 0 else try product(&.{ rows, i, 2 }),
     };
     const pointers = [8]u64{ in.x, in.tables, in.line, in.cos, in.sin, in.slot, in.sizes, in.attention_out };
-    for (pointers, input, [_]usize{ 2, 4, 4, 4, 4, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
+    // the fused norms read the tables 8 bytes at a time
+    for (pointers, input, [_]usize{ 2, 8, 4, 4, 4, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
     const padded = try product(&.{ heads, tiles, 64, 128, 2 });
     const means = try product(&.{ heads, tiles, 128, 4 });
     return .{ .count = count, .prefix = prefix, .keep = keep, .own0 = own0, .own1 = own1, .input = input, .buffers = .{
