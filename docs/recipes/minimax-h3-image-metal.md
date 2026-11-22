@@ -1813,6 +1813,46 @@ A first round of the latent-move gate at 0.08 measured warm totals of 23.65, 10.
 8.50 and 7.72 s against `--step-cache 0`'s 11.89, 12.09 and 10.98 s, under the same quality failure. Its logs were
 overwritten by the second round, so its `timing_valid` lines were never checked and these times are not a receipt.
 
+#### Second attempt: the first block's residual (FBCache)
+
+The untried form above: run block 0 every step and compare its MLP branch, relative L1 over the picture rows, with the
+last fully run step's. Under the gate, skip blocks 1-49 and add that step's residual (the stream after the last gate
+add minus the stream after block 0) to this step's stream, then run this step's own final norm and distilled head.
+The per-step AdaLN of block 0 and the head stay live, so only the 49 blocks' work is reused. Same main `e0c33d47b`,
+prompts and lock as above; one session a build, 69-104 s each, every request listed (receipts in
+`h3-image-runs/180`, outside the repo):
+
+- **`--step-cache 0`** ran every block and drew main's bytes: all four latents identical to main's, PSNR infinite.
+- **The probe never settles.** Block 0's branch moves 0.49-0.52 at step 2, 0.49 at 3, 0.55-0.57 at 4, 0.68-0.72 at 5
+  and 0.75-0.80 at 6, the same on all four prompts. FBCache's published gates are 0.08-0.12 on 20-50-step models;
+  here every step moves four to ten times that.
+- **`--step-cache 0.5`** skips step 3 alone, the quietest, on every prompt. That one skip breaks every picture:
+
+| Prompt | latent cosine | PSNR | mean pixel diff |
+|---|---|---|---|
+| pilot | 0.983510 | 23.510 dB | 9.489 |
+| harbour | 0.973617 | 19.755 dB | 11.760 |
+| meadow | 0.991200 | 24.489 dB | 9.434 |
+| steam | 0.988035 | 25.447 dB | 7.268 |
+
+Better than reusing a velocity (15.9-20.6 dB for one skip), still 2.8-8.4 dB under card 80's 28.2 floor. Any
+gate that skips more steps or later ones reuses an older residual against a larger move, so no gate in reach passes.
+
+Seconds (prompt / 6 steps / decoder / total; `F` marks a request with a step reporting `timing_valid=false`):
+
+| Request | main | `--step-cache 0` | `--step-cache 0.5` |
+|---|---|---|---|
+| cold pilot | 0.39 / 10.31 / 0.68 / 12.74 | 0.29 / 9.89 / 1.37 / 12.44 F | 1.09 / 14.29 / 2.61 / 19.97 F |
+| harbour | 0.22 / 9.78 / 0.66 / 12.18 | 0.32 / 13.97 / 1.95 / 17.53 | 0.80 / 21.08 / 2.62 / 27.03 F |
+| meadow | 0.22 / 9.27 / 0.67 / 11.13 | 0.53 / 15.78 / 2.91 / 21.72 | 2.12 / 17.50 / 5.30 / 29.90 F |
+| steam | 0.22 / 9.27 / 0.68 / 10.18 | 0.91 / 16.49 / 2.91 / 20.40 | 0.34 / 8.93 / 0.69 / 9.98 |
+
+Load was 63-71 through main's session and 35-71 through the branch's, with other builds on the CPU. Steam's steps under
+0.5 are the one all-valid pair: 1.68, 1.66, **0.14** (skipped), 1.71, 1.94 and 1.78 s against main's 1.54 s each,
+8.93 s against 9.27 s. A skip saves its 49 blocks, but the host's pass over the stream (block 0 drained, its 22M bf16
+values widened, compared and kept each step) costs 0.1-0.4 s on every run step, so one skip nets about 0.3 s, and
+moving that pass to the GPU would buy at most 1.5 s for a picture that fails. The code is reverted.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
@@ -1821,7 +1861,7 @@ overwritten by the second round, so its `timing_valid` lines were never checked 
 | 2 | PNG writing | landed overlapped (card 170, -0.13 s at 2048); upper estimate -18 s at 4096, -4 s at 2048 in parallel bands | Card 170 streams each tile row's band into one `flate.Compress` while the GPU decodes the next: the bytes stay main's. Parallel bands could remove much more but change compressed bytes, so they do not satisfy the PNG byte-identity gate; a decoded-pixel gate in its place needs explicit approval before runs. |
 | 3 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps at 4096 | The steps are compute-bound: a 2048 step is about 183 TFLOP in 1.83 s, a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs. ComfyUI's int8 here shows the other half: dequantized before each product, its steps are 1.7-1.9x slower than our bf16, so int8 weights alone buy only bytes. Not bit-identical; it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000: -32% at 2048, -22% at 4K. |
 | 4 | Attention | up to -15 s at 4096 | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. |
-| 5 | Step caching (TeaCache, FBCache, cache-dit) | measured, lost (card 180) | Reusing the last velocity saves about 1.6 s a skipped step at 2048, but no step's velocity stands in for another's: one skip at step 2 gives PSNR 15.9-20.6 dB, and step 6 alone 21.76 dB, against the 28.2 floor. The six distilled heads' clean picture still moves 15-19% at the last step. Residual caching inside the blocks is untried; it would need the per-step AdaLN and head on cached hidden states. |
+| 5 | Step caching (TeaCache, FBCache, cache-dit) | measured, lost twice (card 180) | Neither form keeps card 80's rule. Reusing the last velocity: one skip at step 2 gives 15.9-20.6 dB, step 6 alone 21.76 dB. Reusing blocks 1-49's residual behind a first-block gate (FBCache): block 0's branch moves 49-80% a step, four to ten times FBCache's gates, and skipping step 3 alone gives 19.8-25.4 dB against the 28.2 floor. Six distilled steps leave no step close enough to its neighbour to reuse; closed. |
 | 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU; SGLang batches its tiles the same way. |
 
 ## On an M5 Ultra with the release weights
