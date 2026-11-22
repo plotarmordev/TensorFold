@@ -425,7 +425,7 @@ pub fn membed(in: In, s: Sum, want: []f64, mag: []f64) void {
     };
 }
 
-/// h3m_project: out [rows, n] = bf16(total + b) stored in f32; each x element rounded to bf16 first,
+/// h3m_project: out [rows, n] = bf16(total + b); each x element rounded to bf16 first,
 /// 32 lane partials of strided terms then their serial chain, all in f32. `s.of` on the terms approximates
 /// the lane-partial order; .strided is the declared order's closest shape.
 /// a x [rows, k] fp32, b w [n, k], d b [n].
