@@ -161,6 +161,23 @@ pub fn pool(in: In, s: Sum, scratch: []f64, want: []f64, mag: []f64) void {
     };
 }
 
+/// h3_far_pool, in place: K then V in `a` (each [heads, slots, 128]); pooled row r of 64 slots is the mean of each
+/// 2 x 2 block of the four tiles from `ints[0] + 4 r`, stored past tile `ints[1]`; every other value stays.
+pub fn farPool(in: In, s: Sum, scratch: []f64, want: []f64, mag: []f64) void {
+    @memcpy(want, in.a);
+    for (mag, in.a) |*m, v| m.* = @abs(v);
+    const first: usize = @intCast(in.ints[0]);
+    const past: usize = @intCast(in.ints[1]);
+    for (0..2 * in.heads) |kh| for (0..in.rows) |r| for (0..64) |j| for (0..128) |i| {
+        const top = kh * in.slots + (first + 4 * r) * 64 + 2 * j;
+        const terms = scratch[0..4];
+        for (terms, [_]usize{ 0, 1, 128, 129 }) |*v, d| v.* = in.a[(top + d) * 128 + i];
+        const o = (kh * in.slots + (past + r) * 64 + j) * 128 + i;
+        want[o] = s.of(terms) / 4;
+        mag[o] = absSum(terms) / 4;
+    };
+}
+
 /// h3_tile_scores: S[h, tq, tk] = QP[h, tq] . KP[h, tk] / sqrt(128). a QP, b KP.
 pub fn scores(in: In, s: Sum, scratch: []f64, want: []f64, mag: []f64) void {
     const T = in.rows;

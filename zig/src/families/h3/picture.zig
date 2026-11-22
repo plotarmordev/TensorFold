@@ -288,6 +288,47 @@ pub fn tiles(a: std.mem.Allocator, prefix_rows: usize, target_rows: usize) !Tile
     return .{ .slot = slot, .sizes = sizes, .prefix = prefix, .target = target };
 }
 
+/// Pooled far-field keys (`--far-pool`): each target query tile attends the prefix, full keys in a band of
+/// `far_band` pooled rows around its own, and outside it the target's keys and values 2 x 2 mean-pooled, each
+/// pooled logit lifted by ln 4. Only on `far_grid`, the one size its picture gates passed at, and from step
+/// `far_from_step`: pooled from the first step, the early steps lay the picture out differently
+/// (card 182: cosine 0.70; from step 3, PSNR 27.9 dB; from step 4 every gate holds).
+pub const far_grid: Grid = .{ .rows = 256, .columns = 256 };
+pub const far_band = 8;
+pub const far_from_step = 4;
+
+/// A far-field binding's key tiles: `list` holds `per_query` tile indices for each target query tile in order;
+/// indices from `tiles` up are pooled tiles, pooled row r at `tiles + r`.
+pub const Far = struct { list: []i32, per_query: usize, pooled: usize };
+
+/// Null unless the target is `far_grid` (a 4096 x 4096 canvas) without references.
+pub fn far(a: std.mem.Allocator, layout: Layout) !?Far {
+    const g = layout.target;
+    if (layout.references.len != 0 or g.rows != far_grid.rows or g.columns != far_grid.columns) return null;
+    const height = g.rows / 2;
+    const prefix_tiles = (layout.text + geometry.tile_rows - 1) / geometry.tile_rows;
+    const pooled = height / 2;
+    // a pooled row covers two picture rows of two tiles each
+    const band: usize = @min(far_band, pooled);
+    const per_query = prefix_tiles + 4 * band + pooled - band;
+    const target_tiles = 4 * pooled;
+    const list = try a.alloc(i32, target_tiles * per_query);
+    for (0..target_tiles) |t| {
+        const lo = @min((t / 4) -| band / 2, pooled - band);
+        const out = list[t * per_query ..][0..per_query];
+        for (0..prefix_tiles) |p| out[p] = @intCast(p);
+        var at = prefix_tiles;
+        for (0..pooled) |r| if (r >= lo and r < lo + band) {
+            for (0..4) |k| out[at + k] = @intCast(prefix_tiles + 4 * r + k);
+            at += 4;
+        } else {
+            out[at] = @intCast(prefix_tiles + target_tiles + r);
+            at += 1;
+        };
+    }
+    return .{ .list = list, .per_query = per_query, .pooled = pooled };
+}
+
 fn field(o: std.json.ObjectMap, key: []const u8) !std.json.Value {
     return o.get(key) orelse error.H3NotPictureModel;
 }
