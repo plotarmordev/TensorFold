@@ -1772,6 +1772,43 @@ stretches to 0.87-3.82 s, its single-threaded deflate after the pass, while the 
 GPU (round 9 loaded both). Rounds 4 (this card only), 5 and 7 (main only, load 57-99) lost their partner session to the
 load and are left out.
 
+### Card 174: fc2's rows split between the GPU and SME2, measured and stopped
+
+The ideas page's idea 3: the CPU's SME2 units take a product's last rows while `h3_gemm_32x64_i8` runs the rest,
+both on the same shared int8 operands and scales. The card's gate was a microbench first, kept only at 1.07x or more.
+A throwaway bench (not kept) ran fc2, 5,376 x 14,336, at 4,120 and 16,384 rows: the shipped launch on the GPU's
+rows, and on the CPU a pthread pool of SME2 32 x 32 tiles. Each tile ran four `smopa` int8 to int32 ZA tiles over
+K-quad-packed operands, folded each 256-deep block at both scales in the GPU's order, then rounded to bf16. Times
+are the wall from commit to both sides done, warm medians of eight, under `/tmp/tensorfold-model.lock`, 22 Nov, M5
+Ultra, load 26-33. The CPU rows match the GPU's bf16 output bit for bit, so the picture gate cannot fail; speed is
+what stops it:
+
+| Rows | CPU rows (12 threads) | GPU alone | Split wall | Speedup |
+|---|---|---:|---:|---:|
+| 4,120 | 32 | 5.43 ms | 5.36 ms | 1.013x |
+| 4,120 | 64 | 5.43 ms | 5.35 ms | 1.015x |
+| 4,120 | 96 | 5.43 ms | 5.41 ms | 1.004x |
+| 4,120 | 160 | 5.43 ms | 7.95 ms | 0.68x |
+| 16,384 | 160 | 18.20 ms | 18.18 ms | 1.001x |
+| 16,384 | 320 | 18.20 ms | 18.06 ms | 1.008x |
+| 16,384 | 480 | 18.20 ms | 21.76 ms | 0.84x |
+
+The GPU runs fc2 at 123 TOPS at 4,120 rows and 140 at 16,384. To reach 1.07x the CPU would need 8.6 and 9.8 TOPS
+beside it. These CPU rates were measured:
+
+- `smopa` alone, four independent ZA tiles: 3.1 TOPS on one thread and 10.4 on twelve (load ~14).
+- The real tile, with operand loads and the fold, ran alone at 0.68 TOPS on one thread, 3.0-3.6 on twelve and
+  5.4-5.8 on 24-36.
+- Beside the GPU, twelve threads ran at 2.2-3.4 TOPS. The E-cores' threads (36) collapsed to 0.5-1.7 TOPS and
+  slowed the GPU's own rows.
+
+Even the bare `smopa` peak sits at the bar, before any load, fold or contention. The other three products run the
+same kernel and tile on the GPU at 123-139 TOPS (card 150), so their bar is also 8.6 TOPS or more, about three times
+the best real tile beside the GPU: no product split reaches 1.07x. The resident server change and its
+warm A/B were not built. One build note for any later SME2 work here: Apple clang's `-march=armv9-a` emits
+non-streaming SVE (`cntd`) into the streaming prologue, and the M5 traps it (SIGILL); `-march=armv8.6-a+sme2` builds
+and runs.
+
 ### Card 180: step caching, measured and reverted
 
 A `--step-cache X` option on `tf-h3-image-server` skipped a step's transformer pass and stepped the resident latent
