@@ -7,7 +7,7 @@ const core = @import("core");
 const check = @import("check.zig");
 
 const native = mini.native;
-const Backend = @TypeOf(@as(native.Owned, undefined).backend);
+const Lane = @typeInfo(@FieldType(@FieldType(native.Owned, "backend"), "lanes")).pointer.child;
 const Gpu = check.Gpu;
 const sampled: lanes.Sampling = .{ .seed = 37, .temperature = 0.8, .top_k = 64, .top_p = 0.95 };
 
@@ -23,13 +23,14 @@ const Trace = struct {
     }
 };
 
-fn target(loaded: *native.Loaded) *Backend {
-    return &loaded.target.backend;
+/// Lane 0: a lone stream always takes the first free lane.
+fn target(loaded: *native.Loaded) *Lane {
+    return &loaded.target.backend.lanes[0];
 }
 
-fn download(b: *Backend, src: u64, out: []f32) !void {
-    try b.s.synchronize();
-    try cuda.memory.download(b.d, src, std.mem.sliceAsBytes(out));
+fn download(l: *Lane, src: u64, out: []f32) !void {
+    try l.s.synchronize();
+    try cuda.memory.download(l.s.d, src, std.mem.sliceAsBytes(out));
 }
 
 /// A real target pass with either CUDA's draws or host selection over its downloaded fp32 logits.
@@ -47,7 +48,7 @@ fn trace(gpu: Gpu, loaded: *native.Loaded, prompt: []const u32, sampling: ?lanes
     const draw_row: ?[]f32 = if (host and cuda.sample.ruleFor(sampling) != null) try gpu.gpa.alloc(f32, v) else null;
     defer if (draw_row) |rounded| gpu.gpa.free(rounded);
     try b.prefill(&s);
-    try download(t, t.slot[0].ptr, logits[0..v]);
+    try download(t, t.last.ptr, logits[0..v]);
     var handle: ?u64 = try b.first(&s, prompt.len);
     for (0..n) |i| {
         ids[i] = if (host) blk: {
@@ -90,16 +91,16 @@ fn hostReference(gpu: Gpu, loaded: *native.Loaded, prompt: []const u32) !void {
 
 /// Save one complete state at `cut`, restore it through the genuine prompt-reuse hook and rerun the suffix.
 fn resumedAt(gpu: Gpu, loaded: *native.Loaded, prompt: []const u32, cut: u32, sampling: ?lanes.Sampling, fresh: *const Trace) !void {
-    const Saved = @TypeOf(loaded.target.model).Saved;
+    const Saved = @TypeOf(target(loaded).m).Saved;
     const Keeper = struct {
-        b: *Backend,
+        b: *native.Owned,
         saved: ?*Saved = null,
         fn at(ptr: *anyopaque, s: *lanes.Stream, mark: u32) void {
             const k: *@This() = @ptrCast(@alignCast(ptr));
-            k.saved = k.b.saveState(s, mark) catch null;
+            k.saved = k.b.backend.saveState(s, mark) catch null;
         }
     };
-    const t = target(loaded);
+    const t = loaded.target;
     const saved = snapshot: {
         var s = try lanes.Stream.init(gpu.gpa, .{ .id = "mini-snapshot", .prompt = prompt, .max_new = 1, .reuse = .{ .marks = &.{cut} } });
         defer s.deinit(gpu.gpa);
@@ -110,7 +111,7 @@ fn resumedAt(gpu: Gpu, loaded: *native.Loaded, prompt: []const u32, cut: u32, sa
         try b.prefill(&s);
         break :snapshot keeper.saved orelse return error.MiniSnapshotNotSaved;
     };
-    defer t.dropState(saved);
+    defer t.backend.dropState(saved);
     var resumed = try trace(gpu, loaded, prompt, sampling, fresh.ids.len, false, .{ .saved = saved, .at = cut });
     defer resumed.deinit(gpu.gpa);
     if (resumed.cached != cut or resumed.failed) return error.MiniSnapshotNotRestored;
@@ -142,6 +143,7 @@ fn serve(gpu: Gpu, loaded: *native.Loaded, s: *lanes.Stream, proposer: ?lanes.pr
     if (s.reason != .length) return error.MiniServingDidNotFinish;
 }
 
+/// Both lanes decode at once in shared rounds; a third request finds no free lane until one ends.
 fn admission(gpu: Gpu, loaded: *native.Loaded, a: []const u32, b: []const u32) !void {
     var plain_a = try trace(gpu, loaded, a, null, 10, false, .{});
     defer plain_a.deinit(gpu.gpa);
@@ -151,24 +153,27 @@ fn admission(gpu: Gpu, loaded: *native.Loaded, a: []const u32, b: []const u32) !
     defer first.deinit(gpu.gpa);
     var second = try lanes.Stream.init(gpu.gpa, .{ .id = "mini-second", .prompt = b, .max_new = 10, .sampling = sampled });
     defer second.deinit(gpu.gpa);
+    var third = try lanes.Stream.init(gpu.gpa, .{ .id = "mini-third", .prompt = a, .max_new = 10 });
+    defer third.deinit(gpu.gpa);
     var cfg = try lanes.Config.init(gpu.gpa, loaded.facts, native.prompt_rows, native.window_rows);
     defer cfg.deinit(gpu.gpa);
     cfg.timed = false;
     var clock: lanes.fake.FixedClock = .{};
     var e = lanes.Engine.init(gpu.gpa, &cfg, loaded.backend, clock.clock());
     defer e.deinit();
-    if (!native.fits(loaded.ctx, @intCast(a.len), first.max_new)) return error.MiniUnexpectedFreeSlot;
     try e.addStream(&first);
-    if (native.fits(loaded.ctx, @intCast(b.len), second.max_new)) return error.MiniBusyAdmissionRefused;
-    try std.testing.expectError(error.NoFreeSlot, loaded.backend.prefill(&second));
-    while (!first.finished) try e.step();
-    try std.testing.expectEqual(lanes.stream.Reason.length, first.reason);
-    if (!std.mem.eql(u32, first.emitted(), plain_a.ids)) return error.MiniAdmissionChangedFirst;
-    if (!native.fits(loaded.ctx, @intCast(b.len), second.max_new)) return error.MiniSlotNotReleased;
+    if (!native.fits(loaded.ctx, @intCast(b.len), second.max_new)) return error.MiniSecondLaneRefused;
     try e.addStream(&second);
-    while (!second.finished) try e.step();
+    if (native.fits(loaded.ctx, @intCast(a.len), third.max_new)) return error.MiniBusyAdmissionRefused;
+    try std.testing.expectError(error.NoFreeSlot, loaded.backend.prefill(&third));
+    const rounds = e.shared_rounds;
+    while (!first.finished or !second.finished) try e.step();
+    if (e.shared_rounds == rounds) return error.MiniLanesNeverShared;
+    try std.testing.expectEqual(lanes.stream.Reason.length, first.reason);
     try std.testing.expectEqual(lanes.stream.Reason.length, second.reason);
+    if (!std.mem.eql(u32, first.emitted(), plain_a.ids)) return error.MiniAdmissionChangedFirst;
     if (!std.mem.eql(u32, second.emitted(), plain_b.ids)) return error.MiniAdmissionChangedSecond;
+    if (!native.fits(loaded.ctx, @intCast(a.len), third.max_new)) return error.MiniSlotNotReleased;
 }
 
 /// Priced copies deliberately alternate whole matches, first-row rejection and a prefix match.
@@ -291,14 +296,14 @@ pub fn run(gpu: Gpu, model: []const u8, ids_path: []const u8) !void {
     defer gpu.gpa.free(ids);
     if (ids.len < 4096) return error.MiniServingPromptTooShort;
     const context = ids.len + 64;
-    var loaded = try native.open(gpu.gpa, gpu.io, gpu.ctx, model, null, .{ .context = context, .drafts = true });
+    var loaded = try native.open(gpu.gpa, gpu.io, gpu.ctx, model, null, .{ .context = context, .drafts = true, .lanes = 2 });
     defer loaded.deinit(loaded.ctx);
     try hostReference(gpu, &loaded, ids[0..4096]);
     check.pass("Mini CUDA serving matches the host reference token for token", .{});
     try freshAndResumed(gpu, &loaded, ids[0..2309]);
     check.pass("Mini CUDA fresh and resumed prompts produce identical logits and tokens", .{});
     try admission(gpu, &loaded, ids[0..257], ids[17..1042]);
-    check.pass("Mini CUDA one-slot admission serializes concurrent requests without changing tokens", .{});
+    check.pass("Mini CUDA two lanes decode together in shared rounds without changing tokens; a third waits", .{});
     try copiedDrafts(gpu, &loaded, ids[0..64]);
     check.pass("Mini CUDA opt-in copy drafting preserves target tokens and rolls back exactly", .{});
 }

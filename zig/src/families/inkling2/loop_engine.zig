@@ -253,6 +253,13 @@ pub const Model = struct {
         m.buffers.deinit(m.gpa);
     }
 
+    /// Device bytes one sequence holds: its cache and its forward scratch.
+    pub fn heldBytes(m: *const Model) u64 {
+        var n: u64 = m.cache.len;
+        for (m.buffers.items) |b| n += b.len;
+        return n;
+    }
+
     pub fn deinit(m: *Model) void {
         m.deinitBuffers();
         m.cache.free();

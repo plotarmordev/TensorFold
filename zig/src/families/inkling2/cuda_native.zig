@@ -22,6 +22,7 @@ pub const Room = struct { ctx: *anyopaque, read: *const fn (*anyopaque) ?u64 };
 pub const Options = struct {
     context: usize,
     drafts: bool,
+    lanes: u32 = 1,
     segments: usize = 1,
     slide: bool = false,
     vision: ?VisionOptions = null,
@@ -38,18 +39,17 @@ pub const Owned = struct {
     gpa: std.mem.Allocator,
     admission: loop.Admission,
     kernels: engine.Kernels,
-    stream: cuda.Stream,
     weights: @import("loop_weights.zig").Weights,
-    model: engine.Model,
     backend: backend.Backend,
 };
 
+/// `free_streams`: every lane's sequence state is allocated at open, so admission adds none.
 pub const Loaded = struct {
     backend: lanes.backend.Backend,
     facts: lanes.Model,
     rows: u32,
     stream_bytes: usize,
-    free_streams: u32 = 1,
+    free_streams: u32,
     ctx: *anyopaque,
     deinit: *const fn (*anyopaque) void,
     target: *Owned,
@@ -61,10 +61,7 @@ fn own(ptr: *anyopaque) *Owned {
 
 fn release(p: *anyopaque) void {
     const o = own(p);
-    o.stream.synchronize() catch {};
     o.backend.deinit();
-    o.stream.deinit();
-    o.model.deinit();
     o.kernels.deinit();
     o.weights.deinit();
     const gpa = o.gpa;
@@ -103,30 +100,22 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
     for (ck.files.items) |file| try @import("names.zig").merge(header_arena.allocator(), &merged, file.names);
     try @import("names.zig").precisions(merged, c.text.layers, &precisions);
     const p = try plan_.build(&c.text, precisions[0..c.text.layers]);
-    var w = try @import("loop_weights.zig").load(gpa, ctx.d, &ck, &c, p);
-    errdefer w.deinit();
-    if (ck.unused() != 0) return error.UnusedCheckpointTensor;
-    ck.release();
-    var k = try engine.Kernels.load(ctx);
-    errdefer k.deinit();
-    var stream = try cuda.Stream.init(ctx.d, true);
-    errdefer stream.deinit();
-    var m = try engine.Model.init(gpa, ctx.d, stream, &w, o.context);
-    errdefer m.deinit();
-    var be = try backend.Backend.init(gpa, ctx.d, &m, &k, stream);
-    errdefer be.deinit();
     const out = try gpa.create(Owned);
     errdefer gpa.destroy(out);
-    out.* = .{ .gpa = gpa, .admission = .{ .context = @intCast(o.context) }, .kernels = k, .stream = stream, .weights = w, .model = m, .backend = be };
-    // The value copies above own pointers to their old stack homes; retarget the live model/backend now.
-    out.model.w = &out.weights;
-    out.backend.m = &out.model;
-    out.backend.k = &out.kernels;
-    return .{ .backend = out.backend.backend(), .facts = out.backend.facts(), .rows = window_rows, .stream_bytes = out.model.layout.bytes, .ctx = out, .deinit = release, .target = out };
+    out.* = .{ .gpa = gpa, .admission = .{ .context = @intCast(o.context) }, .kernels = undefined, .weights = try @import("loop_weights.zig").load(gpa, ctx.d, &ck, &c, p), .backend = undefined };
+    errdefer out.weights.deinit();
+    if (ck.unused() != 0) return error.UnusedCheckpointTensor;
+    ck.release();
+    out.kernels = try engine.Kernels.load(ctx);
+    errdefer out.kernels.deinit();
+    const room: ?u64 = if (o.room) |r| r.read(r.ctx) else null;
+    out.backend = try backend.Backend.init(gpa, ctx.d, &out.weights, &out.kernels, o.context, o.lanes, room);
+    const be = &out.backend;
+    return .{ .backend = be.backend(), .facts = be.facts(), .rows = window_rows, .stream_bytes = be.lanes[0].m.layout.bytes, .free_streams = @intCast(be.lanes.len), .ctx = out, .deinit = release, .target = out };
 }
 
 pub fn snap_bytes(ptr: *anyopaque, at: u32) u64 {
-    return own(ptr).model.snapshotBytes(at);
+    return own(ptr).backend.lanes[0].m.snapshotBytes(at);
 }
 
 pub fn snap_save(ptr: *anyopaque, owner: ?*anyopaque, at: u32) anyerror!*anyopaque {
