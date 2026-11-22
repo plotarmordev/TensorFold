@@ -1998,6 +1998,34 @@ The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.
 Canal misses the floor by 1.64 dB in normal mode and 3.26 dB in fast mode, so routing stays off by default: about 0.4 s
 of a 10-12 s warm picture does not pay for a gate that fails. Receipts are in `h3-image-runs/187`, outside the repo.
 
+### Card 191: the decoder's attention tiles in registers, as the Spark's card 175
+
+`h3d_attention` now runs on 8 x 8 simdgroup matrices. A threadgroup of 128 threads (four simdgroups, 32 queries) stages
+a tile-head's keys 32 at a time in fp32. Each simdgroup's q·kᵀ scores, all 288 key slots, stay in its registers. The
+max-subtracted softmax runs there in place, a row's max and total shuffled over its four lanes (^1, ^8). The weights
+are then the A operand of p·v as the values stream through the same 8.5 KiB tile. Only keys and values touch
+threadgroup memory: 8,704 bytes, where main's kernel held 11,264 bytes of queries and weights.
+One kernel serves every Apple GPU (simdgroup matrices date from the M1), so the tensor-unit and simd forms no longer
+differ here. Only the M5 Ultra was run.
+
+Same session, M5 Ultra, ReleaseFast `tf-h3-image-decoder` for main `35ff44def` and this card, the same 2048x2048
+latent (128 x 128, 121 tiles, card 152's `cand-2`). Each run took `/tmp/tensorfold-model.lock` for itself
+(`zsystem flock`) and was one process: weights loaded, then one decode. Attention's time is the difference against a
+throwaway build of each that dispatches `h3d_attention` twice a block. The second dispatch reads q, k and v warm, so
+this is a lower bound. Load (one minute) 11.5-11.9. Seconds, GPU / decode wall:
+
+| Run | main | main, attention twice | card | card, attention twice |
+|---|---|---|---|---|
+| 1 | 0.61 / 0.63 | 0.77 / 0.80 | 0.49 / 0.52 | 0.54 / 0.57 |
+| 2 | 0.56 / 0.58 | 0.76 / 0.79 | 0.45 / 0.47 | 0.51 / 0.55 |
+
+Decoder attention goes from 0.16-0.20 s to 0.05-0.06 s a picture, and the whole decoder's GPU time from
+0.56-0.61 s to 0.45-0.49 s. **Kept.** The picture differs from main's by the sums' new order alone: 56.54 dB
+(mean 0.14, max 5) against card 80's 28.2 dB floor. Each build's two-dispatch PNG is byte-identical to its own one-dispatch
+PNG. `h3-image-contract --only h3d_attention` passes gates 1-4. The bound's denominator is now a lane's 72 weights and
+two shuffles. The control (staging drops the last key) goes red at shapes.
+The script (`ab.sh`), its log and the PNGs are in `h3-image-runs/191`, outside the repo.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
