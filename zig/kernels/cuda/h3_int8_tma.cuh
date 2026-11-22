@@ -312,11 +312,12 @@ __device__ __forceinline__ void h3_head_quarter(const float (&ordered)[4][8], fl
     }
 }
 
-template <int QUAD>
-__device__ __forceinline__ void h3_head_finish(float (&v)[32], const HeadEpilogue &heads,
-                                               bool query, int head, int row, int group, int m) {
+__device__ __forceinline__ void h3_head_store(float (&ordered)[4][8], const HeadEpilogue &heads,
+                                              bool query, int head, int row, int group, int quarter, int m) {
     constexpr int rot = 48;
-    constexpr int c0 = QUAD * 32;
+    float v[32];
+    h3_head_quarter(ordered, v, group, quarter);
+    const int c0 = quarter * 32;
     const __nv_bfloat16 *nw = query ? heads.nq : heads.nk;
     float sq = 0.0f;
     #pragma unroll
@@ -337,33 +338,22 @@ __device__ __forceinline__ void h3_head_finish(float (&v)[32], const HeadEpilogu
         float a[2];
         #pragma unroll
         for (int e = 0; e < 2; ++e) {
-            constexpr int c = c0 + j + e;
+            constexpr int p = (j + e) < 16 ? j + e + 16 : j + e - 16;
+            constexpr int offset = (j + e) < 16 ? 1 : 2;
+            const int c = c0 + j + e;
+            const bool low = c < rot;
+            const int t = c < 2 * rot ? (low ? c : c - rot) : 0;
+            const float sign = low ? -1.0f : 1.0f;
+            const float co = __bfloat162float(__float2bfloat16(heads.cos[(live ? row : 0) * rot + t]));
+            const float si = __bfloat162float(__float2bfloat16(heads.sin[(live ? row : 0) * rot + t]));
+            const float partner = __shfl_sync(0xffffffffu, v[p], group * 4 + (quarter + offset) % 3);
             a[e] = v[j + e];
-            if constexpr (c < 2 * rot) {
-                constexpr bool low = c < rot;
-                constexpr int p = low ? c + rot : c - rot;
-                constexpr int t = low ? c : c - rot;
-                constexpr float sign = low ? -1.0f : 1.0f;
-                const float co = __bfloat162float(__float2bfloat16(heads.cos[(live ? row : 0) * rot + t]));
-                const float si = __bfloat162float(__float2bfloat16(heads.sin[(live ? row : 0) * rot + t]));
-                const float partner = __shfl_sync(0xffffffffu, v[p % 32], group * 4 + p / 32);
+            if (c < 2 * rot) {
                 a[e] = __bfloat162float(__float2bfloat16(a[e] * co)) +
                        __bfloat162float(__float2bfloat16(sign * partner * si));
             }
         }
         if (live) *reinterpret_cast<uint32_t *>(out + at + j) = h3_pack_bf16(a[0], a[1]);
-    }
-}
-
-__device__ __forceinline__ void h3_head_store(float (&ordered)[4][8], const HeadEpilogue &heads,
-                                              bool query, int head, int row, int group, int quarter, int m) {
-    float v[32];
-    h3_head_quarter(ordered, v, group, quarter);
-    switch (quarter) {
-        case 0: h3_head_finish<0>(v, heads, query, head, row, group, m); break;
-        case 1: h3_head_finish<1>(v, heads, query, head, row, group, m); break;
-        case 2: h3_head_finish<2>(v, heads, query, head, row, group, m); break;
-        default: h3_head_finish<3>(v, heads, query, head, row, group, m); break;
     }
 }
 
