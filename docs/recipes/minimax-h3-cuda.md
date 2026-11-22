@@ -50,8 +50,9 @@ MiniMax-H3-Image's `transformer/` uses the clip model's base block names, and th
 `attn.to_gate_compress` from it (`h3.zig` `baseBlock`): its attention is dense, so no routing gate is needed.
 `tf_h3_open` loads such a checkpoint with q, k and v alone in each block's first product (`tf_h3_shape` is
 unchanged). The release fuses each head's q, k and v rows (`block.zig`); the load stacks them as `h3_heads` reads
-them, all heads' q, then k, then v. A forward with `keep` set is refused with `BadH3Ungated` and
-`tf_h3_set_weight` of the gate with `NoGate`, so neither reads past the smaller buffer.
+them, all heads' q, then k, then v. A forward with `keep` set routes without the pooled branch: each video tile
+attends the prefix and its `keep` top-k tiles and the rest are dropped (card 186's `--routed-steps`);
+`tf_h3_set_weight` of the gate is refused with `NoGate`, so nothing reads past the smaller buffer.
 
 The block arithmetic is the clip model's. Three tools build a picture on a Spark with no Metal and no PyTorch, each
 writing the file the matching Metal tool writes (docs/recipes/minimax-h3-image-metal.md), so any stage swaps:
@@ -982,6 +983,46 @@ colours.](minimax-h3-cuda/int8-vs-fp4.png)
 
 `--fp4` stays **opt-in** (`H3_LINEAR=fp4` in the bench scripts): 19% faster warm than main's TMA int8 (10.7 s
 against 13.2 s), 13.5 GB less resident, and a different picture — never the default, which keeps episode 1's gates.
+
+### Card 186: FastH3's routed attention in the last steps — opt-in, the gates hold
+
+`tf-h3-image-cuda --routed-steps N` runs the last N of the six steps through the video engines' routing:
+`h3_pool`, `h3_tile_scores` and `h3_topk` (`contract_h3_topk.zig`, now also at the picture's 64 and 256 tiles) choose
+each picture tile's key tiles. Each tile keeps the prompt's tiles and the fifth of the picture's tiles that its
+pooled query scores best, which is FastH3's top 20%. The image checkpoint has no `attn.to_gate_compress`, so there is
+no pooled branch and no gate mix: the dropped tiles are dropped. The default is 0, which runs main's launches.
+
+[`bench-186-ab.sh`](minimax-h3-cuda/bench-186-ab.sh) at `d5968c7e` (job `top-e1cd6974b1da`, GB10, driver 580.173.02,
+int8 default, seed 42, 2048²) ran four passes, each with one resident server. Every pass rendered the pilot fox cold
+and then three prompts no earlier card used (`observatory`, `bakery`, `reef`) warm. The passes were dense and
+`--routed-steps 2` with CUDA graphs, then both again under `H3_PROFILE`. Every selftest passed on every pass. The
+dense latents are the same with graphs and with `H3_PROFILE`, and the fox's is sha256 `8d067d75…`, main's.
+
+| pass | cold s | warm wall s | warm transformer s | routed step s |
+|---|---:|---:|---:|---:|
+| dense, graphs | 149.8 | 14.45 / 14.22 / 14.25 | 11.00 / 10.79 / 10.78 | — (dense 1.77-1.85) |
+| routed 2, graphs | 147.2 | 13.86 / 13.91 / 13.97 | 10.42 / 10.50 / 10.50 | 1.61-1.63 |
+| dense, profiled | 150.3 | 14.18 / 14.24 / 14.26 | 10.77 / 10.82 / 10.79 | — (dense 1.77-1.79) |
+| routed 2, profiled | 147.4 | 13.85 / 14.04 / 13.99 | 10.43 / 10.60 / 10.51 | 1.62-1.65 |
+
+Across all six steps, the profiled warm runs spent 1.79 / 1.80 / 1.81 s on attention dense and 1.39 / 1.39 / 1.39 s
+routed, plus 0.10 s of routing. Every other stage held within 0.1 s. A dense step's attention is about 0.30 s. A
+routed step's attention is about 0.10 s, and routing adds 0.05 s, so attention plus routing is about 2x faster in
+those two steps. Attention is 1.8 s of a 10.8 s transformer, though, so the warm picture is only 0.40 s faster (14.31 s
+mean against 13.91 s, 2.8%).
+
+Gates, each routed picture against the dense picture of the same prompt (`gate.py`, in the job: TOP has no numpy):
+
+| prompt | latent cosine | PSNR dB | mean diff |
+|---|---:|---:|---:|
+| fox (pilot) | 0.9993 | 36.71 | 2.13 |
+| observatory | 0.9985 | 29.71 | 3.35 |
+| bakery | 0.9992 | 32.54 | 2.77 |
+| reef | 0.9993 | 33.00 | 3.15 |
+
+All four pass (0.99, 28.2 dB, 4.1), and the profiled pass's routed pictures match these figures. `--routed-steps 2`
+stays **opt-in**. It is a different picture, though a close one, for 2.8%, while `--fp4` gives 19%. Routing more steps
+or running at 4096 (four times the tiles, attention a larger share) was not measured.
 
 ### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
 

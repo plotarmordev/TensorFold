@@ -101,7 +101,13 @@ other runner leaves the CPU idle.
 ### Considered, not ranked
 
 - **FastH3's routed attention in the last steps.** The video engines already ship it, and it drops tiles where
-  pooled far-field keys keep them. Card 187 measured it on the Mac behind `--routed-steps N` (FastH3's top fifth of
+  pooled far-field keys keep them. Card 186 measured it on the Spark as `--routed-steps N`, the video engines'
+  `h3_topk` with no pooled branch. At 2048² with the last two of six steps routed, attention plus routing is about
+  2x faster in those steps. The warm picture went from 14.31 s to 13.91 s (2.8%), and every gate holds against the
+  dense picture (latent cosine 0.9985 or better, PSNR 29.7-36.7 dB, mean diff 3.35 or less) on the fox and three
+  unseen prompts. It is kept, opt-in, for a different picture
+  ([minimax-h3-cuda.md](minimax-h3-cuda.md#card-186-fasth3s-routed-attention-in-the-last-steps--opt-in-the-gates-hold)).
+  Card 187 measured it on the Mac behind `--routed-steps N` (FastH3's top fifth of
   picture tiles, no pooled branch, since the release weights were trained dense): at 2048, routing steps 5 and 6
   saves about 0.2 s a step, but canal's picture misses the 28.2 dB floor by 1.6 dB (fast mode 3.3 dB), with pilot
   and foundry passing. It stays opt-in and off by default
