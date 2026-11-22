@@ -2022,8 +2022,9 @@ this is a lower bound. Load (one minute) 11.5-11.9. Seconds, GPU / decode wall:
 Decoder attention goes from 0.16-0.20 s to 0.05-0.06 s a picture, and the whole decoder's GPU time from
 0.56-0.61 s to 0.45-0.49 s. **Kept.** The picture differs from main's by the sums' new order alone: 56.54 dB
 (mean 0.14, max 5) against card 80's 28.2 dB floor. Each build's two-dispatch PNG is byte-identical to its own one-dispatch
-PNG. `h3-image-contract --only h3d_attention` passes gates 1-4. The bound's denominator is now a lane's 72 weights and
-two shuffles. The control (staging drops the last key) goes red at shapes.
+PNG. `tf-h3-image-contract --only "image decoder"` passes gates 1-4 on all 10 decoder kernels, and all 12 controls go
+red as planted, with no limit problems. The attention bound's denominator is now a lane's 72 weights and two shuffles.
+Its control (staging drops the last key) goes red at shapes. `tf-h3-image-decoder selftest` passes.
 The script (`ab.sh`), its log and the PNGs are in `h3-image-runs/191`, outside the repo.
 
 ### Next, ranked
