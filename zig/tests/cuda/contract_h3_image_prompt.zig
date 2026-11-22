@@ -36,9 +36,9 @@ fn rowChain(s: c.Shape) usize {
 fn headChain(_: c.Shape) usize {
     return 128 + 2;
 }
-/// attention's sequential key dots of 128, then the weight and value sums over the keys in order.
+/// attention's sequential key dots of 128, then the weight and value sums over the keys (one a row) in order.
 fn attnChain(s: c.Shape) usize {
-    return 128 + s.k + 2;
+    return 128 + s.rows + 2;
 }
 /// linear's sequential dot over k.
 fn dotK(s: c.Shape) usize {
@@ -256,8 +256,7 @@ pub const Prm = struct {
                 self.outs = s.rows * q_row;
             },
             .attention_causal, .attention_fused => {
-                // q [rows, 4*128], k/v [rows, 2*128]; causal for the text model, all rows for the refiner.
-                if (s.k > s.rows) return false;
+                // q [rows, 4*128], k/v [rows, 2*128], one key a row; causal for the text model, all rows for the refiner.
                 const heads = 4;
                 const kv = 2;
                 const causal = self.which == .attention_causal;

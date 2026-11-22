@@ -11,3 +11,5 @@
 - `docs/WINDOWS.md` records the N1X laptop's build, `tf-cuda-test` counts, the kernel-contract run that
   ended before its SUMMARY (12 FAIL lines, all MiniMax-H3 image kernels), Qwen3.5-2B tok/s, and what
   Inkling 2 Mini still needs there.
+- The kernel contract's `h3p_attention` takes gate 4's 4-row cut of its 77-row shape (its keys are its rows; it
+  refused fewer rows than K on every OS), and MLP128's N/A line names its sm_120-only tile, not the sm_90 cluster.

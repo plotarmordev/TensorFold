@@ -216,7 +216,8 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     defer for (&mm) |*m| m.deinit();
     for (&mm) |*m| {
         const k = m.kernel() orelse {
-            std.debug.print("N/A  {s}: cluster path needs sm_90 or newer, this GPU is sm_{d}\n", .{ mm_k.spec(m.kind).name, cap });
+            const why = if (m.kind == .mlp128_bits or m.kind == .mlp128_fp64) "MLP128 tile runs on sm_120 alone" else "cluster path needs sm_90 or newer";
+            std.debug.print("N/A  {s}: {s}, this GPU is sm_{d}\n", .{ mm_k.spec(m.kind).name, why, cap });
             continue;
         };
         if (cap < 90 and (m.kind == .lane_gemv or m.kind == .lane_gemv_split))

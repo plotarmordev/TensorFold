@@ -223,8 +223,9 @@ shares it) with Zig 0.17.0 and the CUDA 13.5.0 `windows-arm64` redistributables 
   C4819 warnings from the CUDA headers buried it. The build still prints C4819 warnings with it; which nvcc pass
   they come from is not known.
 
-Then, from a clean checkout of `8365021a7` on the same laptop (git 2.56.1, Zig 0.17.0, nvcc 13.5.37 with `cl`
-14.44.35207 arm64 from VS 2022 Build Tools 17.14, `vcvarsall arm64`; no Python or WSL; power mode not recorded):
+Then, from a clean checkout of `8365021a7` on the same laptop, run by its only operator, the Codync bot
+`codync@rtx-spark` (git 2.56.1, Zig 0.17.0, nvcc 13.5.37 with `cl` 14.44.35207 arm64 from VS 2022 Build Tools 17.14,
+`vcvarsall arm64`; no Python or WSL; power mode not recorded):
 
 - `zig build native install -Dsm=121 -Dstrip=true -Dnvcc=%CUDA_PATH%\bin\nvcc.exe` exits 0 in 629 s, 222 of 222
   steps.
@@ -239,12 +240,13 @@ Then, from a clean checkout of `8365021a7` on the same laptop (git 2.56.1, Zig 0
   - Seven `shapes` lines are one to four bf16 steps from float64, at 1.01 to 1.81 of their bound: `h3d_embed`,
     `h3d_rms_norm`, `h3d_layer_norm`, `h3d_attention`, `h3p_norm` (qwen and h3) and `h3p_heads rotary`. Two `sums`
     lines (`h3d_layer_norm`, `h3d_attention`) leave the bound. These kernels pass their nonfinite and repeat gates.
-    nvcc's flags differ from Linux's only by cl.exe's own three. The laptop reads the misses as bounds too tight
-    for bf16 outputs, not broken kernels; the same gates on Linux at this commit would settle it, and were not run.
-  - Two `sums` lines, `h3p_attention` causal and all rows, say "refused a served shape". That is the test's own
-    shape on any OS: gate 4 cuts the 77-row shape to 4 rows, and their `prepare` refuses fewer rows than K.
-  - Two of the N/A lines say MLP128's "cluster path needs sm_90 or newer, this GPU is sm_121". The wording is wrong
-    and the skip is right: those kinds run on sm_120 alone.
+    The four `h3d` misses are not Windows': Linux sm_121 on TOP gave the same ratios (1.14, 1.11, 1.36, 1.81) and the
+    same two `sums` lines at `2915d6f7` (`docs/recipes/minimax-h3-cuda.md`, card 144).
+  - Two `sums` lines, `h3p_attention` causal and all rows, said "refused a served shape" on any OS: gate 4 cuts the
+    77-row shape to 4 rows, and their `prepare` refused fewer rows than K. The kernel's keys are its rows, so
+    `prepare` no longer reads K and the depth bound counts rows.
+  - Two of the N/A lines said MLP128's "cluster path needs sm_90 or newer, this GPU is sm_121". The skip is right
+    (those kinds run on sm_120 alone); the line now says so.
 - `tensorfold-native serve` was not run at `8365021a7`: the laptop's owner had the checkpoint deleted, and nothing
   is downloaded there without their say. It stands from `09ea6dd6e` with the `__noinline__` change by hand, the
   sources `8365021a7` builds apart from the `/wd4819` flag: one request to `mlx-community/Qwen3.5-2B-MLX-4bit` at
@@ -266,6 +268,4 @@ needs:
 5. Its CUDA sources in CUDA's qualifiers (`__noinline__`, `__forceinline__`), not GCC attributes: only a build with
    nvcc and cl.exe, such as this laptop's, rejects them.
 6. The kernel contract finished on this laptop, the only run that qualifies its kernels there: what ends the run
-   with exit code 5, the `h3d` and `h3p` gates at the same commit on a Linux sm_121 Spark to tell a fault of nvcc
-   with cl.exe from bounds too tight everywhere, and the two faults any OS has (gate 4's 4-row shape for
-   `h3p_attention`, the MLP128 N/A wording).
+   with exit code 5 before its SUMMARY, and the `h3d` and `h3p` shape bounds that miss on Linux sm_121 too.
