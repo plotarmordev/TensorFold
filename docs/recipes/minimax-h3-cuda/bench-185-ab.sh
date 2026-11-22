@@ -4,6 +4,7 @@
 # runs again. Each phase renders the pilot prompt cold and three unseen prompts warm at 2048², H3_PROFILE off so no
 # stage waits skew the decoder. Per run: wall, the decoder's pass wall, GPU and in-all seconds, and its host side
 # (in all less the passes); then each picture's sha256 on both sides, which must match.
+# Run at d3de0451 (job top-b20e9be30f8b): kept; the patch is the receipt of what ran.
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-185-ab.sh
 set -eu
 here=docs/recipes/minimax-h3-cuda
