@@ -1,0 +1,69 @@
+Apple M5 Ultra: prompt weights mapped and kernels built in 1.1 s
+Apple M5 Ultra: decoder weights in bf16 in 0.8 s
+loaded the prompt encoder, transformer weights and decoder in 3.6 s; ready
+info: h3 image weights: 117.6 GiB kept wired between requests, inside 70% of 256 GiB of RAM
+117.6 GiB of weights held resident
+52 tokens; text encoder, 50 layers: 0.27 s wall, 0.26 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 7
+step 1/6: 3.57 s wall, 0.56 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+1024x1024 draft done, lifting
+step 5/6: 1.58 s wall, 1.55 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.56 s wall, 1.56 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote 4-warmup.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.55 s (0.54 s on the GPU, 0.00 s waited for speech), 0.63 s in all; wrote 4-warmup.png at 2048x2048
+4-warmup: prompt 0.28 s, case 0.01 s, transformer bound 0.70 s, 6 steps 9.82 s, decoder 0.63 s, total 11.45 s
+52 tokens; prompt states kept: text encoder and refiner skipped
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 7
+step 1/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+1024x1024 draft done, lifting
+step 5/6: 1.57 s wall, 1.55 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.56 s wall, 1.56 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote 4-text.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.59 s (0.54 s on the GPU, 0.00 s waited for speech), 0.78 s in all; wrote 4-text.png at 2048x2048
+4-text: prompt 0.00 s, case 0.01 s, transformer reused 0.00 s, 6 steps 5.15 s, decoder 0.78 s, total 5.94 s
+35 tokens; text encoder, 50 layers: 0.21 s wall, 0.21 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 7
+step 1/6: 1.88 s wall, 0.56 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 0.50 s wall, 0.50 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 0.50 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+1024x1024 draft done, lifting
+step 5/6: 1.59 s wall, 1.55 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.55 s wall, 1.55 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote 4-faces.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.58 s (0.55 s on the GPU, 0.00 s waited for speech), 1.00 s in all; wrote 4-faces.png at 2048x2048
+4-faces: prompt 0.22 s, case 0.02 s, transformer bound 1.17 s, 6 steps 7.76 s, decoder 1.00 s, total 10.17 s
+34 tokens; text encoder, 50 layers: 0.21 s wall, 0.21 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 7
+step 1/6: 2.13 s wall, 0.56 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 0.56 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 0.51 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 0.50 s wall, 0.49 s GPU, 0.00 s waited for speech, timing_valid=true
+1024x1024 draft done, lifting
+step 5/6: 1.57 s wall, 1.55 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.55 s wall, 1.55 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote 4-texture.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.58 s (0.55 s on the GPU, 0.00 s waited for speech), 1.07 s in all; wrote 4-texture.png at 2048x2048
+4-texture: prompt 0.23 s, case 0.03 s, transformer bound 1.24 s, 6 steps 8.07 s, decoder 1.07 s, total 10.63 s
+32 tokens; text encoder, 50 layers: 0.21 s wall, 0.21 s GPU, 0.00 s waited for speech
+condition_proj and the token refiner: 0.01 s wall, 0.01 s GPU, 0.00 s waited for speech
+2048x2048 drawn on a 2048x2048 canvas (128 x 128 cells), seed 7
+step 1/6: 1.58 s wall, 0.51 s GPU, 0.00 s waited for speech, timing_valid=true
+step 2/6: 0.45 s wall, 0.45 s GPU, 0.00 s waited for speech, timing_valid=true
+step 3/6: 0.45 s wall, 0.45 s GPU, 0.00 s waited for speech, timing_valid=true
+step 4/6: 0.45 s wall, 0.45 s GPU, 0.00 s waited for speech, timing_valid=true
+1024x1024 draft done, lifting
+step 5/6: 1.51 s wall, 1.48 s GPU, 0.00 s waited for speech, timing_valid=true
+step 6/6: 1.49 s wall, 1.48 s GPU, 0.00 s waited for speech, timing_valid=true
+wrote 4-architecture.latent.f32: [24, 128, 128] normalised float32
+2048x2048 canvas: decoded 121 tiles in 0.56 s (0.54 s on the GPU, 0.00 s waited for speech), 0.73 s in all; wrote 4-architecture.png at 2048x2048
+4-architecture: prompt 0.22 s, case 0.03 s, transformer bound 1.30 s, 6 steps 7.06 s, decoder 0.73 s, total 9.34 s
