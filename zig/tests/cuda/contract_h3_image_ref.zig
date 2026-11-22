@@ -96,7 +96,7 @@ pub fn embed(in: In, s: Sum, want: []f64, mag: []f64) void {
         if (t < cells) {
             for (out, om, 0..) |*o, *m, j| {
                 for (&terms, 0..) |*v, k| v.* = in.b[j * 24 + k] * in.a[(tile * cells + t) * 24 + k];
-                o.* = bf(s.of(&terms) + in.d[j]);
+                o.* = s.of(&terms) + in.d[j];
                 m.* = magOf(&terms);
             }
         } else if (t < cells + 4) {
@@ -120,7 +120,7 @@ pub fn rmsNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
         for (&terms, xr) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(&terms) / 1024.0 + in.eps);
         for (0..1024) |i| {
-            want[r * 1024 + i] = bf(xr[i] * inv * in.b[i]);
+            want[r * 1024 + i] = xr[i] * inv * in.b[i];
             mag[r * 1024 + i] = xr[i] * xr[i];
         }
     }
@@ -137,7 +137,7 @@ pub fn layerNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
         for (&terms, xr) |*t, v| t.* = (v - mean) * (v - mean);
         const rstd = 1.0 / @sqrt(s.of(&terms) / 1024.0 + in.eps);
         for (0..1024) |i| {
-            want[r * 1024 + i] = bf((xr[i] - mean) * rstd * in.b[i] + in.d[i]);
+            want[r * 1024 + i] = (xr[i] - mean) * rstd * in.b[i] + in.d[i];
             mag[r * 1024 + i] = @abs(xr[i] - mean) * @abs(xr[i] - mean);
         }
     }
@@ -230,7 +230,7 @@ pub fn attention(in: In, s: Sum, want: []f64, mag: []f64) void {
         const at = ((tile * T + query) * 16 + head) * 64;
         for (0..64) |ch| {
             for (vt[0..T], 0..) |*t, key| t.* = sc[key] * in.d[base + key * 64 + ch];
-            want[at + ch] = bf(s.of(vt[0..T]) / total);
+            want[at + ch] = s.of(vt[0..T]) / total;
             mag[at + ch] = magOf(vt[0..T]);
         }
     };
@@ -256,7 +256,7 @@ pub fn norm(in: In, s: Sum, want: []f64, mag: []f64) void {
         for (terms[0..width], xr) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(terms[0..width]) / @as(f64, @floatFromInt(width)) + in.eps);
         for (0..width) |i| {
-            want[r * width + i] = if (in.mode == 0) bf(in.b[i] * bf(xr[i] * inv)) else bf(xr[i] * inv * in.b[i]);
+            want[r * width + i] = if (in.mode == 0) in.b[i] * bf(xr[i] * inv) else xr[i] * inv * in.b[i];
             mag[r * width + i] = xr[i] * xr[i];
         }
     }
@@ -289,12 +289,12 @@ pub fn pheads(in: In, s: Sum, want: []f64, mag: []f64, fused: bool) void {
         for (&terms, src) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(&terms) / @as(f64, @floatFromInt(D)) + in.eps);
         var v: [128]f64 = undefined;
-        for (&v, src, w) |*o, xv, wv| o.* = if (in.mode == 0) bf(wv * bf(xv * inv)) else bf(xv * inv * wv);
+        for (&v, src, w) |*o, xv, wv| o.* = if (in.mode == 0) wv * bf(xv * inv) else xv * inv * wv;
         var o = v;
         if (in.rotary) for (0..D) |ch| {
             const table_at = r * 64 + ch % 64;
             const other = if (ch < 64) -v[ch + 64] else v[ch - 64];
-            o[ch] = bf(bf(v[ch] * in.f[table_at]) + bf(other * in.g[table_at]));
+            o[ch] = bf(v[ch] * in.f[table_at]) + bf(other * in.g[table_at]);
         };
         for (0..D) |i| {
             want[at + i] = o[i];
