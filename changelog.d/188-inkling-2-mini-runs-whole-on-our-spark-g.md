@@ -7,3 +7,4 @@
   memory at 1 and 4 streams. The recipe's README notes what RTX Spark (Windows and WSL2) needs.
 - Mini prompt snapshots save and restore each key head's ring rows: the CUDA caches are head-major, and the
   row-major copy left restored prompts' logits off from a fresh prefill.
+- Mini loop messages now store `[core][role][row][c]` planes, matching each controller's role offset across multi-row prompt chunks; the CUDA reference checks the same served layout.
