@@ -120,7 +120,8 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
     simdgroup_barrier(mem_flags::mem_none);
     if (live) {
 #pragma clang loop unroll(disable)
-      for (int kk = 0; kk < rest; kk += 32) h3_step<true>(acc, A, B, lda, ldb, kk, max(0, rest - kk), rows, cols, home, lane);
+      for (int kk = 0; kk < rest; kk += 32)
+        h3_step<true>(acc, A, B, lda, ldb, kk, max(0, rest - kk), rows, cols, home, lane);
     }
   }
   if (!live) return;
@@ -138,8 +139,8 @@ inline void h3_gemm(const device T* A, const device T* B, device bfloat* D, cons
 }  // namespace tfp
 
 // Each of P[0] rows of X (P[1] values) to int8 in groups of P[2], each at its absolute max over 127: Q = rint(X / S),
-// S [row, group] its scale (non-finite when the group holds NaN or an infinity). One simdgroup a row, its groups in turn.
-// P[3] nonzero writes Q packed for h3_gemm_32x64_i8's weights (h3_packed), else row-major.
+// S [row, group] its scale (non-finite when the group holds NaN or an infinity). One simdgroup a row, its groups in
+// turn. P[3] nonzero writes Q packed for h3_gemm_32x64_i8's weights (h3_packed), else row-major.
 [[kernel]] void h3_quantize_rows(
   const device bfloat16_t* X [[buffer(0)]],
   const device int32_t* P [[buffer(1)]],
