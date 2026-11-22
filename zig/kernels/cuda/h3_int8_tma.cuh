@@ -236,74 +236,6 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
     return silu * gv.y;
 }
 
-struct HeadEpilogue {
-    const __nv_bfloat16 *nq, *nk;
-    const float *cos, *sin;
-    const int *slot;
-    __nv_bfloat16 *tq, *tk, *tv;
-    int heads, slots, rot;
-    float eps;
-};
-
-// One q or k head from the product's shared tile, in h3_heads' exact sum and rounding order.
-__device__ __forceinline__ void h3_head_epilogue(__nv_bfloat16 *tile, const HeadEpilogue &heads,
-                                                 bool query, int head, int m, int tile_m) {
-    __syncthreads();
-    const int s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32;
-    const __nv_bfloat16 *nw = query ? heads.nq : heads.nk;
-    __nv_bfloat16 *out = query ? heads.tq : heads.tk;
-    for (int first = 0; first < 256; first += 64) {
-        const int local = first + s, row = tile_m * 256 + local;
-        __nv_bfloat16 *x = tile + local * 128;
-        float sq = 0.0f;
-        #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const float v = __bfloat162float(x[c0 + j]);
-            sq += v * v;
-        }
-        sq += __shfl_xor_sync(0xffffffffu, sq, 1);
-        sq += __shfl_xor_sync(0xffffffffu, sq, 2);
-        if (row < m) {
-            const float inv = rsqrtf(sq / 128.0f + heads.eps);
-            #pragma unroll
-            for (int j = 0; j < 32; j += 2) {
-                float a[2];
-                #pragma unroll
-                for (int e = 0; e < 2; ++e) {
-                    const int c = c0 + j + e;
-                    a[e] = __bfloat162float(__float2bfloat16(__bfloat162float(x[c]) * inv * __bfloat162float(nw[c])));
-                }
-                *reinterpret_cast<uint32_t *>(x + c0 + j) = h3_pack_bf16(a[0], a[1]);
-            }
-        }
-        __syncwarp();
-        if (row >= m) continue;
-        const int slot = heads.slot[row];
-        const size_t at = (static_cast<size_t>(head) * heads.slots + slot) * 128 + c0;
-        #pragma unroll
-        for (int j = 0; j < 32; j += 2) {
-            float a[2];
-            #pragma unroll
-            for (int e = 0; e < 2; ++e) {
-                const int c = c0 + j + e;
-                a[e] = __bfloat162float(x[c]);
-                if (c < 2 * heads.rot) {
-                    const bool low = c < heads.rot;
-                    const int p = low ? c + heads.rot : c - heads.rot, t = low ? c : c - heads.rot;
-                    const float sign = low ? -1.0f : 1.0f;
-                    const float co = __bfloat162float(__float2bfloat16(heads.cos[row * heads.rot + t]));
-                    const float si = __bfloat162float(__float2bfloat16(heads.sin[row * heads.rot + t]));
-                    const float partner = __bfloat162float(x[p]);
-                    a[e] = __bfloat162float(__float2bfloat16(a[e] * co)) +
-                           __bfloat162float(__float2bfloat16(sign * partner * si));
-                }
-            }
-            *reinterpret_cast<uint32_t *>(out + at + j) = h3_pack_bf16(a[0], a[1]);
-        }
-    }
-    __syncthreads();
-}
-
 // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
 // silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
 // produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
@@ -311,17 +243,15 @@ __device__ __forceinline__ void h3_head_epilogue(__nv_bfloat16 *tile, const Head
 // producer warp costs every warp its registers. The tensor maps bind by reference so their
 // addresses stay in parameter space — a by-value copy would land in local space, which
 // cp.async.bulk.tensor refuses.
-template <typename Config, bool SWIGLU, bool HEADS = false>
+template <typename Config, bool SWIGLU>
 __device__ __forceinline__ void
     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
                 const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
-                __nv_bfloat16 *__restrict__ output, int m, int n, int k, const HeadEpilogue *heads = nullptr) {
+                __nv_bfloat16 *__restrict__ output, int m, int n, int k) {
     extern __shared__ __align__(1024) uint8_t shared_memory[];
     const uint32_t shared_base = (h3_shared_address(shared_memory) + 1023) & ~1023u;
     const uint32_t barriers = shared_base + tma_stages * Config::stage_bytes;
     int *release_counts = reinterpret_cast<int *>(shared_memory + (barriers - h3_shared_address(shared_memory)) + tma_stages * 8);
-    // After accumulation the ring is dead; q/k reuse its first 64 KiB as the head tile.
-    __nv_bfloat16 *head_tile = reinterpret_cast<__nv_bfloat16 *>(shared_memory);
 
     TileGrid grid;
     grid.tiles_m = (m + Config::block_m - 1) / Config::block_m;
@@ -348,7 +278,6 @@ __device__ __forceinline__ void
     // Position of the lane in the MMA accumulator layout.
     const int group_id = lane / 4;
     const int quad_lane = lane % 4;
-    int tile_m, tile_n;
 
     // Waits for the ring's current stage, multiplies it and releases it; the warp that releases it
     // last refills it.
@@ -364,19 +293,14 @@ __device__ __forceinline__ void
             if (atomicAdd(release_counts + ring.stage, 1) == tma_warps - 1) {
                 release_counts[ring.stage] = 0;
                 h3_async_proxy_fence();
-                const int future = ring.sequence + tma_stages;
-                bool refill = true;
-                if constexpr (HEADS) {
-                    // q/k reuse the ring for their head tile, so its next-tile copies must wait.
-                    if (tile_n < 2 * heads->heads && future / grid.k_blocks > ring.sequence / grid.k_blocks) refill = false;
-                }
-                if (refill) fill_stage<Config>(grid, future, stage_a, barrier, &map_a, &map_b);
+                fill_stage<Config>(grid, ring.sequence + tma_stages, stage_a, barrier, &map_a, &map_b);
             }
         }
         ring.advance();
     };
 
     for (int tile = blockIdx.x; tile < grid.tiles; tile += gridDim.x) {
+        int tile_m, tile_n;
         grid.coordinates(tile, tile_m, tile_n);
         int32_t accumulators[Config::m_tiles][Config::n_tiles][4];
         #pragma unroll
@@ -424,10 +348,6 @@ __device__ __forceinline__ void
             }
         }
 
-        // All warps must finish consuming the TMA ring before q/k stores overwrite it.
-        if constexpr (HEADS) {
-            if (tile_n < 2 * heads->heads) __syncthreads();
-        }
         #pragma unroll
         for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
             const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
@@ -465,42 +385,12 @@ __device__ __forceinline__ void
                             *reinterpret_cast<uint2 *>(output + static_cast<size_t>(row) * (n / 2) + column / 2) =
                                 make_uint2(h3_pack_bf16(h3_swiglu_value(words[0]), h3_swiglu_value(words[1])),
                                            h3_pack_bf16(h3_swiglu_value(words[2]), h3_swiglu_value(words[3])));
-                        } else if constexpr (HEADS) {
-                            if (tile_n < 2 * heads->heads) {
-                                const int local_row = row - tile_m * Config::block_m;
-                                const int local_column = column - tile_n * Config::block_n;
-                                *reinterpret_cast<uint4 *>(head_tile + local_row * Config::block_n + local_column) =
-                                    make_uint4(words[0], words[1], words[2], words[3]);
-                            } else {
-                                const int head = tile_n - 2 * heads->heads;
-                                const int slot = heads->slot[row];
-                                const size_t at = (static_cast<size_t>(head) * heads->slots + slot) * Config::block_n + column - tile_n * Config::block_n;
-                                *reinterpret_cast<uint4 *>(heads->tv + at) = make_uint4(words[0], words[1], words[2], words[3]);
-                            }
                         } else {
                             *reinterpret_cast<uint4 *>(output + static_cast<size_t>(row) * n + column) =
                                 make_uint4(words[0], words[1], words[2], words[3]);
                         }
                     }
                 }
-            }
-        }
-        if constexpr (HEADS) {
-            if (tile_n < 2 * heads->heads) {
-                const bool query = tile_n < heads->heads;
-                const int head = query ? tile_n : tile_n - heads->heads;
-                h3_head_epilogue(head_tile, *heads, query, head, m, tile_m);
-                if (threadIdx.x == 0) {
-                    for (int stage = 0; stage < tma_stages; stage++) h3_barrier_init(barriers + stage * 8, 1);
-                    h3_barrier_init_fence();
-                    for (int stage = 0; stage < tma_stages; stage++) {
-                        fill_stage<Config>(grid, ring.sequence + stage, shared_base + stage * Config::stage_bytes, barriers + stage * 8, &map_a, &map_b);
-                    }
-                }
-                __syncthreads();
-                const int sequence = ring.sequence;
-                ring = Ring{};
-                ring.sequence = sequence;
             }
         }
     }
