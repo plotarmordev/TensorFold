@@ -1406,6 +1406,50 @@ The window confirms the quiet round at six steps: even on pure step GPU time (9.
 normal / 7.8 s fast totals under this host load (8.8-45.0); the best warm totals in the window were main 12.40 s and
 head 12.32 s at six steps, and main 11.00 s (`timing_valid=false`; 11.62 s valid) and head 12.20 s in fast mode.
 
+### Card 184: the int8 weights packed in fragment order, kept
+
+Card 150's table puts the int8 product at 25-28% of its path's ceiling, each B fragment gathered as eight scalar
+reads. Bind now quantizes every block's four projections straight into the order the MMA's right operand takes them
+(`h3_packed` in `h3_gemm.metal`, `packedAt` in `kernels.zig`): each 32-row band, then each 16-deep K step, holds 32
+lanes of 16 bytes, a lane's two 16 x 16 fragments for one `mma_16x32`. `h3_gemm_32x64_i8` loads them as one 16-byte
+read where main made eight; A, the fold order and every value are main's. `h3_quantize_rows` takes a fourth parameter
+(nonzero writes packed); the step's own input quantizers stay row-major.
+
+Isolated replays, the same harness as card 150 (`tools/zig/metal_bench.swift`, main's kernel against this card's on the
+same int8 operands, head's B packed by `packedAt`), warm medians of eight command buffers in µs, three sets a side
+under `/tmp/tensorfold-model.lock`; every output byte-identical to main's on all four shapes:
+
+| `h3_gemm_32x64_i8` launch | Shape M x N x K | Card 150 | main, set 1 | head, set 1 | main, set 2 | head, set 2 |
+|---|---|---:|---:|---:|---:|---:|
+| qkv | 4,120 x 21,504 x 5,376 | 6.88 ms | 9.16 ms | 5.82 ms (-36%) | 17.45 ms | 13.63 ms (-22%) |
+| attention out | 4,120 x 5,376 x 7,168 | 2.54 ms | 3.15 ms | 2.81 ms (-11%) | 6.45 ms | 4.97 ms (-23%) |
+| fc1 (gate+value) | 4,120 x 28,672 x 5,376 | 9.13 ms | 15.35 ms | 7.40 ms (-52%) | 22.88 ms | 17.81 ms (-22%) |
+| fc2 | 4,120 x 5,376 x 14,336 | 5.22 ms | 5.27 ms | 4.10 ms (-22%) | 13.00 ms | 10.04 ms (-23%) |
+
+Set 1 ran at load 92-95, set 2 at 26-41 while another card's resident server shared the GPU, so neither is a quiet
+rate; within a set, head beats main on every shape and every one of the three runs.
+
+Served warm A/B, ReleaseFast `tf-h3-image-server`, main `bc1012c35` against this card's head, one resident server a
+session holding the lock for its own 39-68 s: card 34's pilot cold, then harbour, meadow and steam warm and unseen (seed
+42, 2048x2048). Every step of all five sessions is `timing_valid=true`, and every latent and PNG is sha1-identical
+between the builds: the pilot's latent is `776b443a…` (card 135's pin) and its PNG `85098fa9…`. Seconds of the six
+steps, cold then the three warm (total in brackets):
+
+| Session | Load | pilot (cold) | harbour | meadow | steam |
+|---|---|---|---|---|---|
+| head | 39.0 → 28.4 | 8.22 (10.23) | 7.60 (9.37) | 7.70 (9.54) | 7.69 (8.53) |
+| main | 17.9 → 12.8 | 9.25 (11.29) | 8.94 (10.51) | 9.25 (10.81) | 9.22 (10.07) |
+| head | 12.1 → 9.8 | 7.68 (9.48) | 7.56 (9.33) | 7.70 (9.51) | 7.68 (8.55) |
+| main | 13.1 → 13.2 | 10.70 (13.36) | 9.08 (10.89) | 10.63 (13.00) | 9.27 (10.23) |
+| head | 13.1 → 16.9 | 8.04 (10.29) | 8.72 (10.85) | 8.77 (11.18) | 7.75 (8.74) |
+
+Head's warm six steps are 7.56-8.77 s against main's 8.94-10.70 s here and card 148's 9.20 s, about 1.5 s off a
+picture at the quietest pair. The packed byte writes cost bind 0.2 s (0.91-1.34 s against 0.72-1.25 s), which a
+warm picture that rebinds still more than earns back. The load never fell under the 8 the card asked for: the
+window's other builds and services kept it at 10-39, so these are the best this window gave, not quiet numbers.
+Receipts (`bench.py`, `bench-load92.log`, `bench.log`, `session.sh`, `contract.log`) are in `h3-image-runs/184`,
+outside the repo.
+
 ### Card 151: a faster `h3_attention`, measured and reverted
 
 `h3_attention` already runs q·kᵀ and p·v on the tensor units (`matmul2d`, 8 simdgroups, 64-row query tiles) with an
