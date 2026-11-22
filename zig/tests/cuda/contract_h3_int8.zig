@@ -294,7 +294,10 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
             .heads => "h3_gemm_int8_tma then h3_heads",
             else => null,
         },
-        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
+        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = if (mode == .heads)
+            "int32 dots are exact; dequantization, normalized values, bf16 cosine/sine and each rotary product round to bf16 before the final bf16 pack; norm sums are fp32"
+        else
+            "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
     };
 }
 

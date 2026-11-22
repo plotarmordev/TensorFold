@@ -8,7 +8,7 @@ index 2b378e66a..0a53e33a1 100644
  
 +__global__ void __launch_bounds__(256, 1) h3_heads_int8_tma(
 +        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
-+        const float* XS, const float* WS, int M, int N, int K, h3_int8::HeadEpilogue heads) {
++        const float* XS, const float* WS, int M, int N, int K, const __grid_constant__ h3_int8::HeadEpilogue heads) {
 +    h3_int8::gemm_kernel<h3_int8::HeadTile, false, false, true>(map_a, map_b, XS, WS, heads.tq, M, N, K, &heads);
 +}
 +
@@ -132,17 +132,15 @@ index 06c1131d2..a5e364201 100644
          float row_scales[Config::m_tiles][2];
          #pragma unroll
          for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
-@@ -387,37 +466,52 @@ __device__ __forceinline__ void
+@@ -387,37 +466,50 @@ __device__ __forceinline__ void
                  row_scales[m_tile][half] = row < m ? activation_scales[row] : 0.0f;
              }
          }
 -        #pragma unroll
 -        for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
 -            const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
-+        // HEADS scales and packs in the store loop, so its epilogue holds no 128-float table beside the
-+        // head's own registers.
-+        float values[Config::m_tiles][Config::n_tiles][4];
 +        if constexpr (!HEADS) {
++            float values[Config::m_tiles][Config::n_tiles][4];
              #pragma unroll
 -            for (int slot = 0; slot < 4; slot++) {
 -                const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
@@ -419,7 +417,7 @@ index ee7c72293..3ddfddcef 100644
  
  /// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact; SwiGLU's
  /// is h3_swiglu's on the plain product's [gate | up] halves, bit for bit.
-@@ -247,26 +261,39 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
+@@ -247,26 +261,42 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
              .{ .rows = 300, .n = 512, .k = 256 }, // a partial M tile, two tiles and K blocks
              .{ .rows = 256, .n = 2 * mlp, .k = hidden }, // fc1's real fan-out
          },
@@ -458,7 +456,11 @@ index ee7c72293..3ddfddcef 100644
 +            .heads => "h3_gemm_int8_tma then h3_heads",
 +            else => null,
 +        },
-         .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
+-        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
++        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = if (mode == .heads)
++            "int32 dots are exact; dequantization, normalized values, bf16 cosine/sine and each rotary product round to bf16 before the final bf16 pack; norm sums are fp32"
++        else
++            "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
      };
  }
 @@ -285,8 +312,8 @@ pub const GemmTma = struct {

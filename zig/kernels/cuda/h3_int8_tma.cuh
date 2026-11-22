@@ -466,10 +466,8 @@ __device__ __forceinline__ void
                 row_scales[m_tile][half] = row < m ? activation_scales[row] : 0.0f;
             }
         }
-        // HEADS scales and packs in the store loop, so its epilogue holds no 128-float table beside the
-        // head's own registers.
-        float values[Config::m_tiles][Config::n_tiles][4];
         if constexpr (!HEADS) {
+            float values[Config::m_tiles][Config::n_tiles][4];
             #pragma unroll
             for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
                 const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;

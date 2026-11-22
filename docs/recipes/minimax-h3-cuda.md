@@ -1551,8 +1551,8 @@ norm sum, xor reductions, bf16 normalization, rotary products, and packed stores
 V is written in slot order. No shared tile or second TMA ring pass is added. The 48-angle MiniMax geometry
 launches `h3_heads_int8_tma`; other rotary widths retain the independent `h3_heads` pass.
 
-`contract_h3` `heads` compares every q/k/v byte against the original pipeline for odd grouped layouts,
-including one row, 257 rows, zero slots, nonfinite products, and exact bf16 rounding. The launch record
+`contract_h3_int8` mode `heads` compares every q/k/v byte against the original pipeline for grouped layouts,
+including a partial 256-row tile, padding slots, nonfinite products, and exact bf16 rounding. The launch record
 fixes the fused kernel at 256 threads, 99,360 opt-in shared bytes, and at most 255 registers. The reproducible
 same-job driver is `bench-178-ab.sh`; its reverse patch reconstructs merge parent
 `a03e5c4595bb22f45436b2f1e5073d9e58f26ace` (Zig tree
