@@ -271,4 +271,7 @@ needs:
    `h3p` shape bounds above, which Linux sm_121 misses the same way. The exit code 5 before SUMMARY was the test's
    heap: TOP's run at `137959df8` died the same way ("double free or corruption") after `h3p_add`. Gate 1 grows
    `h3p_scatter_add` and `h3p_splice`'s 4-row shape to 5 rows, and their indices `2i` then wrote past the 8-row
-   buffer; they now spread over its rows.
+   buffer; they now spread over its rows. At `5e49289e5`, [`contract-job.sh`](recipes/minimax-h3-cuda/contract-job.sh)
+   (`kernel-contract h3d h3p`, TOP's GB10, job `top-210ab786d31c`) reached its SUMMARY and exited 1: "26 kernels:
+   19 pass gates 1-4, 7 fail; 1 limit problems". The 7 are the nine lines above; the limit is `h3p_norm`'s live
+   1024 static shared bytes against the 4 recorded (its `__shared__ float r`), cause not known.
