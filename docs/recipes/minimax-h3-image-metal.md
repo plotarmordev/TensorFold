@@ -1851,7 +1851,9 @@ Load was 63-71 through main's session and 35-71 through the branch's, with other
 0.5 are the one all-valid pair: 1.68, 1.66, **0.14** (skipped), 1.71, 1.94 and 1.78 s against main's 1.54 s each,
 8.93 s against 9.27 s. A skip saves its 49 blocks, but the host's pass over the stream (block 0 drained, its 22M bf16
 values widened, compared and kept each step) costs 0.1-0.4 s on every run step, so one skip nets about 0.3 s, and
-moving that pass to the GPU would buy at most 1.5 s for a picture that fails. The code is reverted.
+moving that pass to the GPU would buy at most 1.5 s for a picture that fails. Its 9.98 s total, the best of either
+design and under main's 10.18 s here, is one request with a failed picture, so it is claimed as nothing. The code is
+reverted.
 
 ### Next, ranked
 
