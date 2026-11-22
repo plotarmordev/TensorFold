@@ -147,7 +147,7 @@ pub const Model = struct {
         // the TMA products' two-stage rings (h3_int8_tma.cuh Config::shared_bytes), once at setup so
         // no launch needs the attribute raced against the stream
         try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
-        try self.function("h3_heads_int8_tma").allowDynamicShared(@import("cuda_int8.zig").heads_shared);
+        try self.function("h3_heads_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
         try self.function("h3_swiglu_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
         // the legacy default stream: work queued by the caller's framework comes first
         self.stream = .{ .d = d, .handle = null };

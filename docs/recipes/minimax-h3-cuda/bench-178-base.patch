@@ -16,10 +16,10 @@ index 2b378e66a..0a53e33a1 100644
          const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
          const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
 diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
-index 06c1131d2..b97affc50 100644
+index 06c1131d2..a5e364201 100644
 --- a/zig/kernels/cuda/h3_int8_tma.cuh
 +++ b/zig/kernels/cuda/h3_int8_tma.cuh
-@@ -285,6 +285,78 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
+@@ -285,6 +285,82 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
      }
  }
  
@@ -32,27 +32,31 @@ index 06c1131d2..b97affc50 100644
 +    float eps;
 +};
 +
-+// The fused epilogue's staging, after the ring: each warp's 8 rows x 4 lanes x 32 columns of one head.
-+// h3_heads' work on one lane's contiguous quarter, read back from that buffer: the serial norm sum in
-+// column order, the xor reductions across the quarter's four lanes, the bf16
-+// normalization, the 48-angle rotary and the packed store in tile order. Same inputs, sum order and
-+// rounding, so the bytes match h3_heads'.
-+__device__ __forceinline__ void h3_head_store(const float *group_stage, const HeadEpilogue &heads,
++// h3_heads' work on one lane's contiguous quarter, gathered from the group's four lanes by warp
++// shuffles (no shared staging: the GB10's 99 KiB opt-in is the ring's): the serial norm sum in
++// column order, the xor reductions across the quarter's four lanes, the bf16 normalization, the
++// 48-angle rotary and the packed store in tile order. Same inputs, sum order and rounding, so the
++// bytes match h3_heads'.
++__device__ __forceinline__ void h3_head_store(const uint32_t (&words)[4][4], const HeadEpilogue &heads,
 +                                              bool query, int head, int row, int group, int quarter, int m) {
 +    constexpr int rot = 48;
++    // The lane's quarter is block `quarter` of the head; each of the group's four lanes holds 8 of its
++    // columns, so four rounds over the block index put the quarter in column order in every lane.
 +    float v[32];
 +    #pragma unroll
-+    for (int source = 0; source < 4; source++) {
-+        const float4 low = *reinterpret_cast<const float4 *>(group_stage + source * 32 + quarter * 8);
-+        const float4 high = *reinterpret_cast<const float4 *>(group_stage + source * 32 + quarter * 8 + 4);
-+        v[source * 8 + 0] = low.x;
-+        v[source * 8 + 1] = low.y;
-+        v[source * 8 + 2] = low.z;
-+        v[source * 8 + 3] = low.w;
-+        v[source * 8 + 4] = high.x;
-+        v[source * 8 + 5] = high.y;
-+        v[source * 8 + 6] = high.z;
-+        v[source * 8 + 7] = high.w;
++    for (int block = 0; block < 4; block++) {
++        #pragma unroll
++        for (int source = 0; source < 4; source++) {
++            #pragma unroll
++            for (int pair = 0; pair < 4; pair++) {
++                const uint32_t word = __shfl_sync(0xffffffffu, words[block][pair], group * 4 + source);
++                if (quarter == block) {
++                    const float2 value = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162 *>(&word));
++                    v[source * 8 + 2 * pair] = value.x;
++                    v[source * 8 + 2 * pair + 1] = value.y;
++                }
++            }
++        }
 +    }
 +    const int c0 = quarter * 32;
 +    const __nv_bfloat16 *nw = query ? heads.nq : heads.nk;
@@ -98,7 +102,7 @@ index 06c1131d2..b97affc50 100644
  // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
  // silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
  // produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
-@@ -295,15 +367,21 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
+@@ -295,15 +371,19 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
  // GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
  // ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
  // fp32 rows are written unrounded.
@@ -116,13 +120,11 @@ index 06c1131d2..b97affc50 100644
      const uint32_t shared_base = (h3_shared_address(shared_memory) + 1023) & ~1023u;
      const uint32_t barriers = shared_base + tma_stages * Config::stage_bytes;
      int *release_counts = reinterpret_cast<int *>(shared_memory + (barriers - h3_shared_address(shared_memory)) + tma_stages * 8);
-+    float *transpose = nullptr;
-+    if constexpr (HEADS) transpose = reinterpret_cast<float *>(shared_memory + ((barriers - h3_shared_address(shared_memory) + tma_stages * 16 + 15) & ~15u));
 +    static_assert(!HEADS || (Config::warps_n == 1 && Config::n_tiles == 16), "one warp must hold a whole head");
  
      TileGrid grid;
      grid.tiles_m = (m + Config::block_m - 1) / Config::block_m;
-@@ -377,7 +455,6 @@ __device__ __forceinline__ void
+@@ -377,7 +457,6 @@ __device__ __forceinline__ void
  
          // Scale the int32 products. Slot j of each quad of n-tiles holds output columns 2((j + t) %
          // 4) and the one after among the lane's eight.
@@ -130,7 +132,7 @@ index 06c1131d2..b97affc50 100644
          float row_scales[Config::m_tiles][2];
          #pragma unroll
          for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
-@@ -387,37 +464,52 @@ __device__ __forceinline__ void
+@@ -387,37 +466,52 @@ __device__ __forceinline__ void
                  row_scales[m_tile][half] = row < m ? activation_scales[row] : 0.0f;
              }
          }
@@ -177,7 +179,7 @@ index 06c1131d2..b97affc50 100644
 -            for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
 +            for (int half = 0; half < 2; half++) {
 +                const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
-+                float ordered[4][8];
++                uint32_t ordered[4][4];
                  #pragma unroll
 -                for (int half = 0; half < 2; half++) {
 +                for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
@@ -200,7 +202,7 @@ index 06c1131d2..b97affc50 100644
                      }
                      // Rotate the slots right by t to put the columns in order.
                      if (quad_lane & 1) {
-@@ -435,7 +527,16 @@ __device__ __forceinline__ void
+@@ -435,7 +529,12 @@ __device__ __forceinline__ void
                          words[1] = words[3];
                          words[3] = swapped;
                      }
@@ -208,17 +210,13 @@ index 06c1131d2..b97affc50 100644
 +                    if constexpr (HEADS) {
 +                        if (tile_n < 2 * heads->heads) {
 +                            #pragma unroll
-+                            for (int j = 0; j < 4; j++) {
-+                                const float2 pair = __bfloat1622float2(*reinterpret_cast<__nv_bfloat162 *>(&words[j]));
-+                                ordered[quad][2 * j] = pair.x;
-+                                ordered[quad][2 * j + 1] = pair.y;
-+                            }
++                            for (int j = 0; j < 4; j++) ordered[quad][j] = words[j];
 +                        }
 +                    }
                      if (row < m) {
                          if constexpr (SWIGLU) {
                              // The lane's eight columns hold the (gate, up) pairs of features
-@@ -443,18 +544,42 @@ __device__ __forceinline__ void
+@@ -443,18 +542,33 @@ __device__ __forceinline__ void
                              *reinterpret_cast<uint2 *>(output + static_cast<size_t>(row) * (n / 2) + column / 2) =
                                  make_uint2(h3_pack_bf16(h3_swiglu_value(words[0]), h3_swiglu_value(words[1])),
                                             h3_pack_bf16(h3_swiglu_value(words[2]), h3_swiglu_value(words[3])));
@@ -237,18 +235,9 @@ index 06c1131d2..b97affc50 100644
                  }
 +                if constexpr (HEADS) {
 +                    if (tile_n < 2 * heads->heads) {
-+                        // Each lane stages its 32 columns, then reads back its own contiguous quarter.
-+                        float *group_stage = transpose + warp * 8 * 4 * 32 + group_id * 128;
-+                        float *lane = group_stage + quad_lane * 32;
-+                        #pragma unroll
-+                        for (int q = 0; q < 4; q++) {
-+                            *reinterpret_cast<float4 *>(lane + q * 8) = make_float4(ordered[q][0], ordered[q][1], ordered[q][2], ordered[q][3]);
-+                            *reinterpret_cast<float4 *>(lane + q * 8 + 4) = make_float4(ordered[q][4], ordered[q][5], ordered[q][6], ordered[q][7]);
-+                        }
-+                        __syncwarp();
 +                        const bool query = tile_n < heads->heads;
 +                        const int head = query ? tile_n : tile_n - heads->heads;
-+                        h3_head_store(group_stage, *heads, query, head, row, group_id, quad_lane, m);
++                        h3_head_store(ordered, *heads, query, head, row, group_id, quad_lane, m);
 +                    }
 +                }
              }
@@ -262,19 +251,19 @@ index 06c1131d2..b97affc50 100644
  using PromptTile = GemmConfig<64, 64, 4>;
  
 diff --git a/zig/src/core/contract/registry_media.zig b/zig/src/core/contract/registry_media.zig
-index dcb13d7ce..70724a5ff 100644
+index dcb13d7ce..f7d940a6a 100644
 --- a/zig/src/core/contract/registry_media.zig
 +++ b/zig/src/core/contract/registry_media.zig
 @@ -76,6 +76,7 @@ pub const cuda_pending = [_]CudaRecord{
  /// pending the five-SM limits job.
  pub const cuda_tma_pending = [_]CudaRecord{
      .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(222) },
-+    .{ .launch = .{ .name = "h3 h3_heads_int8_tma", .symbol = "h3_heads_int8_tma", .image = "h3", .threads = 256, .dynamic = 132128, .opt_in = true, .min_sm = 90 }, .usage = sm121(255) },
++    .{ .launch = .{ .name = "h3 h3_heads_int8_tma", .symbol = "h3_heads_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(255) },
      .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(219) },
      .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = @import("registry.zig").none },
  };
 diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
-index 0e1fa22e9..f455ceeb6 100644
+index 0e1fa22e9..09871d857 100644
 --- a/zig/src/families/h3/cuda.zig
 +++ b/zig/src/families/h3/cuda.zig
 @@ -28,7 +28,7 @@ const scale_m = 4;
@@ -290,7 +279,7 @@ index 0e1fa22e9..f455ceeb6 100644
          // the TMA products' two-stage rings (h3_int8_tma.cuh Config::shared_bytes), once at setup so
          // no launch needs the attribute raced against the stream
          try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
-+        try self.function("h3_heads_int8_tma").allowDynamicShared(@import("cuda_int8.zig").heads_shared);
++        try self.function("h3_heads_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
          try self.function("h3_swiglu_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
          // the legacy default stream: work queued by the caller's framework comes first
          self.stream = .{ .d = d, .handle = null };
@@ -348,15 +337,10 @@ index 0e1fa22e9..f455ceeb6 100644
 -
  };
 diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
-index 712685e8c..a9f5bfc80 100644
+index 712685e8c..64a319539 100644
 --- a/zig/src/families/h3/cuda_int8.zig
 +++ b/zig/src/families/h3/cuda_int8.zig
-@@ -28,9 +28,25 @@ pub fn encoder(d: *cuda.Driver) !Encode {
- /// TallTile's Config::shared_bytes: 2 stages of (256 + 128) * 128 bytes, the 1 KiB alignment slack
- /// and the barriers.
- pub const gemm_shared = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
-+/// The ring, then the fused epilogue's staging: 8 warps of 8 rows x 4 lanes x 32 columns of float.
-+pub const heads_shared = gemm_shared + 8 * 8 * 4 * 32 * 4;
+@@ -31,6 +31,20 @@ pub const gemm_shared = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
  const block_m = 256;
  const block_n = 128;
  
@@ -377,7 +361,7 @@ index 712685e8c..a9f5bfc80 100644
  /// A projection (N, K): its int8 rows, then N fp32 row scales; `swiglu` marks fc1's
  /// pairwise-interleaved rows.
  pub const Weight = struct {
-@@ -153,6 +169,23 @@ pub const Int8 = struct {
+@@ -153,6 +167,23 @@ pub const Int8 = struct {
          try self.launchShared(name, blocks, 256, gemm_shared, &args);
      }
  
@@ -395,23 +379,20 @@ index 712685e8c..a9f5bfc80 100644
 +        const sm: usize = @intCast(try self.ctx.attribute(.multiprocessor_count));
 +        const tiles = (rows + block_m - 1) / block_m * (w.n / block_n);
 +        const blocks: u32 = @intCast(@min(sm, tiles));
-+        try self.launchShared(Model.functionIndex("h3_heads_int8_tma"), blocks, 256, heads_shared, &args);
++        try self.launchShared(Model.functionIndex("h3_heads_int8_tma"), blocks, 256, gemm_shared, &args);
 +    }
 +
      /// Room for `rows` before a step is captured: `layout` then only hands out buffers.
      pub fn warm(t: *Int8, self: *Model, rows: usize) !void {
          try t.reserve(self, rows);
 diff --git a/zig/tests/cuda/contract_h3_int8.zig b/zig/tests/cuda/contract_h3_int8.zig
-index ee7c72293..8e7cc83af 100644
+index ee7c72293..3ddfddcef 100644
 --- a/zig/tests/cuda/contract_h3_int8.zig
 +++ b/zig/tests/cuda/contract_h3_int8.zig
-@@ -219,18 +219,34 @@ fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, bo
- 
+@@ -220,6 +220,20 @@ fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, bo
  /// TallTile's ring (the only tile the picture uses): 2 stages of (256 + 128) x 128 bytes.
  const tma_shared_bytes = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
-+/// The ring, then the fused heads epilogue's staging: 8 warps of 8 rows x 4 lanes x 32 columns of float.
-+const heads_shared_bytes = tma_shared_bytes + 8 * 8 * 4 * 32 * 4;
-+
+ 
 +const HeadEpilogue = extern struct {
 +    nq: u64,
 +    nk: u64,
@@ -425,15 +406,11 @@ index ee7c72293..8e7cc83af 100644
 +    slots: c_int,
 +    eps: f32,
 +};
- 
++
  /// A TMA product kernel with its ring's dynamic shared memory allowed (past the 48 KiB default).
  pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8) !cuda.Function {
      const f = try mod.function(name);
--    try f.allowDynamicShared(tma_shared_bytes);
-+    try f.allowDynamicShared(heads_shared_bytes);
-     return f;
- }
- 
+@@ -230,7 +244,7 @@ pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8) !cuda.Function {
  /// What a GemmTma registration launches: the plain product, fc1's SwiGLU epilogue on interleaved
  /// rows, or the control - the plain product at a width cuBLASLt took (n % 4) but the TMA grid,
  /// whole 128-column tiles only, leaves partly unwritten.
@@ -442,7 +419,7 @@ index ee7c72293..8e7cc83af 100644
  
  /// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact; SwiGLU's
  /// is h3_swiglu's on the plain product's [gate | up] halves, bit for bit.
-@@ -247,26 +263,39 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
+@@ -247,26 +261,39 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
              .{ .rows = 300, .n = 512, .k = 256 }, // a partial M tile, two tiles and K blocks
              .{ .rows = 256, .n = 2 * mlp, .k = hidden }, // fc1's real fan-out
          },
@@ -484,7 +461,7 @@ index ee7c72293..8e7cc83af 100644
          .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
      };
  }
-@@ -285,8 +314,8 @@ pub const GemmTma = struct {
+@@ -285,8 +312,8 @@ pub const GemmTma = struct {
      wq: []i8 = &.{},
      xs: []f32 = &.{},
      ws: []f32 = &.{},
@@ -495,7 +472,7 @@ index ee7c72293..8e7cc83af 100644
  
      pub fn deinit(t: *GemmTma) void {
          t.rig.deinit();
-@@ -294,10 +323,34 @@ pub const GemmTma = struct {
+@@ -294,10 +321,34 @@ pub const GemmTma = struct {
      }
  
      pub fn kernel(t: *GemmTma) g.Kernel {
@@ -531,7 +508,7 @@ index ee7c72293..8e7cc83af 100644
  
      fn outColumns(t: *const GemmTma) usize {
          return if (t.mode == .swiglu) t.shape.n / 2 else t.shape.n;
-@@ -307,6 +360,7 @@ pub const GemmTma = struct {
+@@ -307,6 +358,7 @@ pub const GemmTma = struct {
          const width: usize = switch (t.mode) {
              .plain => 128,
              .swiglu => 256,
@@ -539,7 +516,7 @@ index ee7c72293..8e7cc83af 100644
              .control => 8,
          };
          if (shape.k % 128 != 0 or shape.n % width != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
-@@ -335,12 +389,33 @@ pub const GemmTma = struct {
+@@ -335,12 +387,33 @@ pub const GemmTma = struct {
          t.dev[1] = try t.rig.input(std.mem.sliceAsBytes(t.xs));
          t.dev[2] = try t.rig.input(std.mem.sliceAsBytes(t.wq));
          t.dev[3] = try t.rig.input(std.mem.sliceAsBytes(t.ws));
@@ -574,7 +551,7 @@ index ee7c72293..8e7cc83af 100644
          }
          return true;
      }
-@@ -360,6 +435,40 @@ pub const GemmTma = struct {
+@@ -360,6 +433,40 @@ pub const GemmTma = struct {
          try cuda.launch.launch(try tmaFunction(t.mod, name), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
      }
  
@@ -609,13 +586,13 @@ index ee7c72293..8e7cc83af 100644
 +        args.add(heads);
 +        const sm: usize = @intCast(try t.rig.gpu.ctx.attribute(.multiprocessor_count));
 +        const tiles = (t.shape.rows + 255) / 256 * (t.shape.n / 128);
-+        try cuda.launch.launch(try tmaFunction(t.mod, "h3_heads_int8_tma"), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = heads_shared_bytes }, t.rig.s, &args);
++        try cuda.launch.launch(try tmaFunction(t.mod, "h3_heads_int8_tma"), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
 +    }
 +
      pub fn run(t: *GemmTma) !void {
          if (t.mode == .swiglu) {
              var args: cuda.Args = .{};
-@@ -367,12 +476,26 @@ pub const GemmTma = struct {
+@@ -367,12 +474,26 @@ pub const GemmTma = struct {
              args.add(@as(c_int, @intCast(t.shape.k)));
              try cuda.launch.launch(try t.mod.function("h3_swiglu_rows"), .{ .grid = .{ .x = @intCast(t.shape.n / 2) }, .block = .{ .x = 256 } }, t.rig.s, &args);
              try t.product("h3_swiglu_int8_tma", t.dev[5], t.dev[6], t.dev[4]);
@@ -642,7 +619,7 @@ index ee7c72293..8e7cc83af 100644
          try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[7]);
          var args: cuda.Args = .{};
          for ([_]u64{ t.dev[7], t.dev[8] }) |p| args.add(p);
-@@ -382,13 +505,21 @@ pub const GemmTma = struct {
+@@ -382,13 +503,21 @@ pub const GemmTma = struct {
      }
  
      pub fn count(t: *GemmTma) usize {

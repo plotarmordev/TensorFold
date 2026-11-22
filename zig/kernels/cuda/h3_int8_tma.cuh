@@ -294,27 +294,31 @@ struct HeadEpilogue {
     float eps;
 };
 
-// The fused epilogue's staging, after the ring: each warp's 8 rows x 4 lanes x 32 columns of one head.
-// h3_heads' work on one lane's contiguous quarter, read back from that buffer: the serial norm sum in
-// column order, the xor reductions across the quarter's four lanes, the bf16
-// normalization, the 48-angle rotary and the packed store in tile order. Same inputs, sum order and
-// rounding, so the bytes match h3_heads'.
-__device__ __forceinline__ void h3_head_store(const float *group_stage, const HeadEpilogue &heads,
+// h3_heads' work on one lane's contiguous quarter, gathered from the group's four lanes by warp
+// shuffles (no shared staging: the GB10's 99 KiB opt-in is the ring's): the serial norm sum in
+// column order, the xor reductions across the quarter's four lanes, the bf16 normalization, the
+// 48-angle rotary and the packed store in tile order. Same inputs, sum order and rounding, so the
+// bytes match h3_heads'.
+__device__ __forceinline__ void h3_head_store(const uint32_t (&words)[4][4], const HeadEpilogue &heads,
                                               bool query, int head, int row, int group, int quarter, int m) {
     constexpr int rot = 48;
+    // The lane's quarter is block `quarter` of the head; each of the group's four lanes holds 8 of its
+    // columns, so four rounds over the block index put the quarter in column order in every lane.
     float v[32];
     #pragma unroll
-    for (int source = 0; source < 4; source++) {
-        const float4 low = *reinterpret_cast<const float4 *>(group_stage + source * 32 + quarter * 8);
-        const float4 high = *reinterpret_cast<const float4 *>(group_stage + source * 32 + quarter * 8 + 4);
-        v[source * 8 + 0] = low.x;
-        v[source * 8 + 1] = low.y;
-        v[source * 8 + 2] = low.z;
-        v[source * 8 + 3] = low.w;
-        v[source * 8 + 4] = high.x;
-        v[source * 8 + 5] = high.y;
-        v[source * 8 + 6] = high.z;
-        v[source * 8 + 7] = high.w;
+    for (int block = 0; block < 4; block++) {
+        #pragma unroll
+        for (int source = 0; source < 4; source++) {
+            #pragma unroll
+            for (int pair = 0; pair < 4; pair++) {
+                const uint32_t word = __shfl_sync(0xffffffffu, words[block][pair], group * 4 + source);
+                if (quarter == block) {
+                    const float2 value = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162 *>(&word));
+                    v[source * 8 + 2 * pair] = value.x;
+                    v[source * 8 + 2 * pair + 1] = value.y;
+                }
+            }
+        }
     }
     const int c0 = quarter * 32;
     const __nv_bfloat16 *nw = query ? heads.nq : heads.nk;
@@ -379,8 +383,6 @@ __device__ __forceinline__ void
     const uint32_t shared_base = (h3_shared_address(shared_memory) + 1023) & ~1023u;
     const uint32_t barriers = shared_base + tma_stages * Config::stage_bytes;
     int *release_counts = reinterpret_cast<int *>(shared_memory + (barriers - h3_shared_address(shared_memory)) + tma_stages * 8);
-    float *transpose = nullptr;
-    if constexpr (HEADS) transpose = reinterpret_cast<float *>(shared_memory + ((barriers - h3_shared_address(shared_memory) + tma_stages * 16 + 15) & ~15u));
     static_assert(!HEADS || (Config::warps_n == 1 && Config::n_tiles == 16), "one warp must hold a whole head");
 
     TileGrid grid;
@@ -493,7 +495,7 @@ __device__ __forceinline__ void
             #pragma unroll
             for (int half = 0; half < 2; half++) {
                 const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
-                float ordered[4][8];
+                uint32_t ordered[4][4];
                 #pragma unroll
                 for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
                     const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
@@ -530,11 +532,7 @@ __device__ __forceinline__ void
                     if constexpr (HEADS) {
                         if (tile_n < 2 * heads->heads) {
                             #pragma unroll
-                            for (int j = 0; j < 4; j++) {
-                                const float2 pair = __bfloat1622float2(*reinterpret_cast<__nv_bfloat162 *>(&words[j]));
-                                ordered[quad][2 * j] = pair.x;
-                                ordered[quad][2 * j + 1] = pair.y;
-                            }
+                            for (int j = 0; j < 4; j++) ordered[quad][j] = words[j];
                         }
                     }
                     if (row < m) {
@@ -559,18 +557,9 @@ __device__ __forceinline__ void
                 }
                 if constexpr (HEADS) {
                     if (tile_n < 2 * heads->heads) {
-                        // Each lane stages its 32 columns, then reads back its own contiguous quarter.
-                        float *group_stage = transpose + warp * 8 * 4 * 32 + group_id * 128;
-                        float *lane = group_stage + quad_lane * 32;
-                        #pragma unroll
-                        for (int q = 0; q < 4; q++) {
-                            *reinterpret_cast<float4 *>(lane + q * 8) = make_float4(ordered[q][0], ordered[q][1], ordered[q][2], ordered[q][3]);
-                            *reinterpret_cast<float4 *>(lane + q * 8 + 4) = make_float4(ordered[q][4], ordered[q][5], ordered[q][6], ordered[q][7]);
-                        }
-                        __syncwarp();
                         const bool query = tile_n < heads->heads;
                         const int head = query ? tile_n : tile_n - heads->heads;
-                        h3_head_store(group_stage, *heads, query, head, row, group_id, quad_lane, m);
+                        h3_head_store(ordered, *heads, query, head, row, group_id, quad_lane, m);
                     }
                 }
             }

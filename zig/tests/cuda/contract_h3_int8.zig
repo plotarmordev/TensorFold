@@ -219,8 +219,6 @@ fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, bo
 
 /// TallTile's ring (the only tile the picture uses): 2 stages of (256 + 128) x 128 bytes.
 const tma_shared_bytes = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
-/// The ring, then the fused heads epilogue's staging: 8 warps of 8 rows x 4 lanes x 32 columns of float.
-const heads_shared_bytes = tma_shared_bytes + 8 * 8 * 4 * 32 * 4;
 
 const HeadEpilogue = extern struct {
     nq: u64,
@@ -239,7 +237,7 @@ const HeadEpilogue = extern struct {
 /// A TMA product kernel with its ring's dynamic shared memory allowed (past the 48 KiB default).
 pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8) !cuda.Function {
     const f = try mod.function(name);
-    try f.allowDynamicShared(heads_shared_bytes);
+    try f.allowDynamicShared(tma_shared_bytes);
     return f;
 }
 
@@ -466,7 +464,7 @@ pub const GemmTma = struct {
         args.add(heads);
         const sm: usize = @intCast(try t.rig.gpu.ctx.attribute(.multiprocessor_count));
         const tiles = (t.shape.rows + 255) / 256 * (t.shape.n / 128);
-        try cuda.launch.launch(try tmaFunction(t.mod, "h3_heads_int8_tma"), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = heads_shared_bytes }, t.rig.s, &args);
+        try cuda.launch.launch(try tmaFunction(t.mod, "h3_heads_int8_tma"), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
     }
 
     pub fn run(t: *GemmTma) !void {

@@ -28,8 +28,6 @@ pub fn encoder(d: *cuda.Driver) !Encode {
 /// TallTile's Config::shared_bytes: 2 stages of (256 + 128) * 128 bytes, the 1 KiB alignment slack
 /// and the barriers.
 pub const gemm_shared = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
-/// The ring, then the fused epilogue's staging: 8 warps of 8 rows x 4 lanes x 32 columns of float.
-pub const heads_shared = gemm_shared + 8 * 8 * 4 * 32 * 4;
 const block_m = 256;
 const block_n = 128;
 
@@ -183,7 +181,7 @@ pub const Int8 = struct {
         const sm: usize = @intCast(try self.ctx.attribute(.multiprocessor_count));
         const tiles = (rows + block_m - 1) / block_m * (w.n / block_n);
         const blocks: u32 = @intCast(@min(sm, tiles));
-        try self.launchShared(Model.functionIndex("h3_heads_int8_tma"), blocks, 256, heads_shared, &args);
+        try self.launchShared(Model.functionIndex("h3_heads_int8_tma"), blocks, 256, gemm_shared, &args);
     }
 
     /// Room for `rows` before a step is captured: `layout` then only hands out buffers.
