@@ -302,22 +302,495 @@ index 000000000..1edbb9688
 +}
 +
 +} // namespace tf_h3
+diff --git a/zig/kernels/cuda/h3_image_decoder.cu b/zig/kernels/cuda/h3_image_decoder.cu
+index 8b605c16c..0210aae31 100644
+--- a/zig/kernels/cuda/h3_image_decoder.cu
++++ b/zig/kernels/cuda/h3_image_decoder.cu
+@@ -3,9 +3,9 @@
+ // sums; h3d_linear sums K sequentially in fp32, and h3d_finish applies bias and LayerScale at their points.
+ #include <cuda_bf16.h>
+ #include <math.h>
++#include <mma.h>
+ #include <stddef.h>
+ #include <stdint.h>
+-#include "common/qmm_frag.cuh"
+ #include "common/reduce.cuh"
+ 
+ typedef __nv_bfloat16 bf16;
+@@ -16,14 +16,6 @@ static __device__ __forceinline__ float bf(float x) { return __bfloat162float(__
+ // Correctly rounded reciprocal square root, as the host's float64 1/sqrt rounded to f32.
+ static __device__ __forceinline__ float inv_sqrt(float x) { return __frsqrt_rn(x); }
+ 
+-// h3d_flash's shared rows: 16-byte unit c of 64-wide bf16 row r, swizzled so ldmatrix's eight rows hit eight banks.
+-static __device__ __forceinline__ unsigned h3d_swz(unsigned r, unsigned c) { return r * 8 + (c ^ (r & 7)); }
+-
+-static __device__ __forceinline__ uint32_t h3d_pack(float lo, float hi) {
+-    const __nv_bfloat162 v = __floats2bfloat162_rn(lo, hi);
+-    return *reinterpret_cast<const uint32_t*>(&v);
+-}
+-
+ // One parameter block for every kernel: the pass's tiles and their geometry, a product's size, the norms' epsilon.
+ struct H3dShape {
+     unsigned tiles;
+@@ -242,134 +234,114 @@ __global__ void __launch_bounds__(256) h3d_res_norm(
+     }
+ }
+ // The fast path's attention fused flash style: softmax(q kᵀ / 8) v of a tile's (head, 64 queries)
+-// a block of 4 warps, 16 queries a warp, 64 keys a chunk. Both products are mma.sync m16n8k16 bf16
+-// with fp32 sums, their tiles in registers: the scores' accumulators become p · v's A fragments
+-// directly, and only the chunk's keys and values pass through shared memory (swizzled for ldmatrix).
+-// The softmax runs online in fp32 with each chunk's exp rounded to bf16 for p . v and its rounded
+-// values summed, so the weights still normalise to one. Writes the out projection's rows
++// a block of 4 warps, 16 queries a warp, 64 keys a chunk. Both products on bf16 tensor cores with
++// fp32 sums; the softmax runs online in fp32 with each chunk's exp rounded to bf16 for p . v and its
++// rounded values summed, so the weights still normalise to one. Writes the out projection's rows
+ // [tiles * T, 1,024] directly. Grid [ceil(T / 64), 16, tiles].
+ __global__ void __launch_bounds__(128) h3d_flash(
+         const bf16* q, const bf16* k, const bf16* v, bf16* o, H3dShape p) {
+-    __shared__ uint4 ks[64 * 8];
+-    __shared__ uint4 vs[64 * 8];
++    using namespace nvcuda;
++    __shared__ __align__(32) bf16 ks[64 * 64];
++    __shared__ __align__(32) bf16 vs[64 * 64];
++    __shared__ __align__(32) float ss[4][16 * 64];
++    __shared__ __align__(32) bf16 ps[4][16 * 64];
+     const unsigned warp = threadIdx.x >> 5;
+     const unsigned lane = threadIdx.x & 31;
+-    // a lane's accumulator rows g and g + 8, columns 2 qd and 2 qd + 1 of each n8 tile; mt picks its ldmatrix tile
+-    const unsigned g = lane >> 2;
+-    const unsigned qd = lane & 3;
+-    const unsigned mt = lane >> 3;
+     const unsigned T = p.tokens;
+     const size_t base = ((size_t)blockIdx.z * 16 + blockIdx.y) * T * 64;
+     const unsigned q0 = blockIdx.x * 64 + warp * 16;
+-    uint32_t qa[4][4];
+-#pragma unroll
+-    for (unsigned i = 0; i < 4; ++i) {
+-        const unsigned r = q0 + g + (i & 1) * 8;
+-        const unsigned c = (i >> 1) * 8 + 2 * qd;
+-#pragma unroll
+-        for (unsigned d = 0; d < 4; ++d)
+-            qa[d][i] = r < T ? *reinterpret_cast<const uint32_t*>(q + base + (size_t)r * 64 + d * 16 + c) : 0u;
++    float* s = ss[warp];
++    bf16* pw = ps[warp];
++    // the warp's queries through its weights' buffer into registers, zero rows past T
++    for (unsigned i = lane; i < 16 * 8; i += 32) {
++        const unsigned r = i >> 3;
++        const unsigned c = (i & 7) * 8;
++        uint4 val = make_uint4(0, 0, 0, 0);
++        if (q0 + r < T) val = *reinterpret_cast<const uint4*>(q + base + (size_t)(q0 + r) * 64 + c);
++        *reinterpret_cast<uint4*>(pw + r * 64 + c) = val;
+     }
+-    float top[2] = {-INFINITY, -INFINITY};
+-    float sum[2] = {0.0f, 0.0f};
+-    float acc[8][4];
++    __syncwarp();
++    wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> qf[4];
++#pragma unroll
++    for (unsigned d = 0; d < 4; ++d) wmma::load_matrix_sync(qf[d], pw + d * 16, 64);
++    // a lane holds half a query row: row lane / 2, columns 32 * (lane & 1) on
++    const unsigned row = lane >> 1;
++    const unsigned half = (lane & 1) * 32;
++    float* sr = s + row * 64 + half;
++    float top = -INFINITY;
++    float sum = 0.0f;
++    float acc[32];
+ #pragma unroll
+-    for (unsigned n = 0; n < 8; ++n) acc[n][0] = acc[n][1] = acc[n][2] = acc[n][3] = 0.0f;
++    for (unsigned j = 0; j < 32; ++j) acc[j] = 0.0f;
+     for (unsigned k0 = 0; k0 < T; k0 += 64) {
+         __syncthreads();
+         for (unsigned i = threadIdx.x; i < 64 * 8; i += 128) {
+             const unsigned r = i >> 3;
++            const unsigned c = (i & 7) * 8;
+             uint4 kv = make_uint4(0, 0, 0, 0);
+             uint4 vv = kv;
+             if (k0 + r < T) {
+-                kv = *reinterpret_cast<const uint4*>(k + base + (size_t)(k0 + r) * 64 + (i & 7) * 8);
+-                vv = *reinterpret_cast<const uint4*>(v + base + (size_t)(k0 + r) * 64 + (i & 7) * 8);
++                kv = *reinterpret_cast<const uint4*>(k + base + (size_t)(k0 + r) * 64 + c);
++                vv = *reinterpret_cast<const uint4*>(v + base + (size_t)(k0 + r) * 64 + c);
+             }
+-            ks[h3d_swz(r, i & 7)] = kv;
+-            vs[h3d_swz(r, i & 7)] = vv;
++            *reinterpret_cast<uint4*>(ks + r * 64 + c) = kv;
++            *reinterpret_cast<uint4*>(vs + r * 64 + c) = vv;
+         }
+         __syncthreads();
+-        float s[8][4];
+ #pragma unroll
+-        for (unsigned d = 0; d < 4; ++d) {
++        for (unsigned n = 0; n < 4; ++n) {
++            wmma::fragment<wmma::accumulator, 16, 16, 16, float> sf;
++            wmma::fill_fragment(sf, 0.0f);
+ #pragma unroll
+-            for (unsigned n = 0; n < 8; n += 2) {
+-                uint32_t b[4];
+-                qmm_frag::ldmatrix4(b, ks + h3d_swz(8 * (n + mt / 2) + (lane & 7), 2 * d + mt % 2));
+-                if (d == 0) {
+-                    qmm_frag::mma0(s[n], qa[d], b[0], b[1]);
+-                    qmm_frag::mma0(s[n + 1], qa[d], b[2], b[3]);
+-                } else {
+-                    qmm_frag::mma(s[n], qa[d], b[0], b[1]);
+-                    qmm_frag::mma(s[n + 1], qa[d], b[2], b[3]);
+-                }
++            for (unsigned d = 0; d < 4; ++d) {
++                wmma::fragment<wmma::matrix_b, 16, 16, 16, bf16, wmma::col_major> kf;
++                wmma::load_matrix_sync(kf, ks + n * 16 * 64 + d * 16, 64);
++                wmma::mma_sync(sf, qf[d], kf, sf);
+             }
++            wmma::store_matrix_sync(s + n * 16, sf, 64, wmma::mem_row_major);
+         }
+-        // keys past T score -inf; every chunk holds key k0 < T, so the new top is finite and the first alpha is 0
+-        float hi[2] = {-INFINITY, -INFINITY};
++        __syncwarp();
++        float hi = -INFINITY;
+ #pragma unroll
+-        for (unsigned n = 0; n < 8; ++n) {
+-#pragma unroll
+-            for (unsigned e = 0; e < 4; ++e) {
+-                s[n][e] = k0 + 8 * n + 2 * qd + (e & 1) < T ? s[n][e] * p.scale : -INFINITY;
+-                hi[e >> 1] = fmaxf(hi[e >> 1], s[n][e]);
+-            }
++        for (unsigned j = 0; j < 32; ++j) {
++            if (k0 + half + j < T) hi = fmaxf(hi, sr[j] * p.scale);
+         }
+-        float alpha[2];
+-        float part[2] = {0.0f, 0.0f};
+-#pragma unroll
+-        for (unsigned h = 0; h < 2; ++h) {
+-            hi[h] = fmaxf(hi[h], __shfl_xor_sync(0xffffffffu, hi[h], 1));
+-            hi[h] = fmaxf(top[h], fmaxf(hi[h], __shfl_xor_sync(0xffffffffu, hi[h], 2)));
+-            alpha[h] = expf(top[h] - hi[h]);
+-            top[h] = hi[h];
++        // every chunk holds key k0 < T, so `next` is finite and the first chunk's alpha is 0
++        const float next = fmaxf(top, fmaxf(hi, __shfl_xor_sync(0xffffffffu, hi, 1)));
++        const float alpha = expf(top - next);
++        float part = 0.0f;
++#pragma unroll
++        for (unsigned j = 0; j < 32; ++j) {
++            const bf16 e = __float2bfloat16(k0 + half + j < T ? expf(sr[j] * p.scale - next) : 0.0f);
++            pw[row * 64 + half + j] = e;
++            part += f(e);
+         }
+-#pragma unroll
+-        for (unsigned n = 0; n < 8; ++n) {
+-#pragma unroll
+-            for (unsigned e = 0; e < 4; ++e) {
+-                s[n][e] = bf(expf(s[n][e] - top[e >> 1]));
+-                part[e >> 1] += s[n][e];
++        sum = sum * alpha + part + __shfl_xor_sync(0xffffffffu, part, 1);
++        top = next;
++        __syncwarp();
++#pragma unroll
++        for (unsigned n = 0; n < 4; ++n) {
++            wmma::fragment<wmma::accumulator, 16, 16, 16, float> of;
++            wmma::fill_fragment(of, 0.0f);
++#pragma unroll
++            for (unsigned kk = 0; kk < 4; ++kk) {
++                wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> pf;
++                wmma::fragment<wmma::matrix_b, 16, 16, 16, bf16, wmma::row_major> vf;
++                wmma::load_matrix_sync(pf, pw + kk * 16, 64);
++                wmma::load_matrix_sync(vf, vs + kk * 16 * 64 + n * 16, 64);
++                wmma::mma_sync(of, pf, vf, of);
+             }
++            wmma::store_matrix_sync(s + n * 16, of, 64, wmma::mem_row_major);
+         }
++        __syncwarp();
+ #pragma unroll
+-        for (unsigned h = 0; h < 2; ++h) {
+-            part[h] += __shfl_xor_sync(0xffffffffu, part[h], 1);
+-            part[h] += __shfl_xor_sync(0xffffffffu, part[h], 2);
+-            sum[h] = sum[h] * alpha[h] + part[h];
+-        }
+-#pragma unroll
+-        for (unsigned n = 0; n < 8; ++n) {
+-            acc[n][0] *= alpha[0];
+-            acc[n][1] *= alpha[0];
+-            acc[n][2] *= alpha[1];
+-            acc[n][3] *= alpha[1];
+-        }
+-        // two adjacent score tiles' accumulators are one 16-key A fragment of the weights
+-#pragma unroll
+-        for (unsigned j = 0; j < 4; ++j) {
+-            const uint32_t pa[4] = {
+-                h3d_pack(s[2 * j][0], s[2 * j][1]), h3d_pack(s[2 * j][2], s[2 * j][3]),
+-                h3d_pack(s[2 * j + 1][0], s[2 * j + 1][1]), h3d_pack(s[2 * j + 1][2], s[2 * j + 1][3])};
+-#pragma unroll
+-            for (unsigned n = 0; n < 8; n += 2) {
+-                uint32_t b[4];
+-                qmm_frag::ldmatrix4t(b, vs + h3d_swz(16 * j + 8 * (mt % 2) + (lane & 7), n + mt / 2));
+-                qmm_frag::mma(acc[n], pa, b[0], b[1]);
+-                qmm_frag::mma(acc[n + 1], pa, b[2], b[3]);
+-            }
+-        }
++        for (unsigned j = 0; j < 32; ++j) acc[j] = acc[j] * alpha + sr[j];
+     }
++    const unsigned query = q0 + row;
++    if (query >= T) return;
++    bf16* out = o + ((size_t)blockIdx.z * T + query) * 1024 + blockIdx.y * 64 + half;
+ #pragma unroll
+-    for (unsigned h = 0; h < 2; ++h) {
+-        const unsigned query = q0 + g + 8 * h;
+-        if (query >= T) continue;
+-        bf16* out = o + ((size_t)blockIdx.z * T + query) * 1024 + blockIdx.y * 64 + 2 * qd;
+-#pragma unroll
+-        for (unsigned n = 0; n < 8; ++n)
+-            *reinterpret_cast<__nv_bfloat162*>(out + 8 * n) =
+-                __floats2bfloat162_rn(acc[n][2 * h] / sum[h], acc[n][2 * h + 1] / sum[h]);
+-    }
++    for (unsigned j = 0; j < 32; ++j) out[j] = __float2bfloat16(acc[j] / sum);
+ }
+ 
+ // Per row and head: q and k RMS-normed (no weight) to bf16, their first 32 dims turned half-style in bf16; v copied.
+diff --git a/zig/kernels/cuda/h3_image_prompt.cu b/zig/kernels/cuda/h3_image_prompt.cu
+index 6956fec5d..c6a94a8c6 100644
+--- a/zig/kernels/cuda/h3_image_prompt.cu
++++ b/zig/kernels/cuda/h3_image_prompt.cu
+@@ -1,12 +1,9 @@
+ // MiniMax-H3-Image's prompt stage on CUDA: the glue between the checkpoint's bf16 cuBLASLt products,
+ // rounding exactly as the Metal kernels (zig/kernels/metal/h3/h3_prompt.metal) and the host reference
+ // (zig/src/families/h3/prompt_reference.zig) do: bf16 in, fp32 sums, every output rounded once to bf16.
+-// The default text encoder runs its products int8 at a scale per 128 of K (h3p_quantize_groups, then
+-// h3p_gemm_int8_groups); the bf16 h3p_linear is --bf16's.
+ #include <cuda_bf16.h>
+ #include <math.h>
+ #include <stddef.h>
+-#include "h3_int8_tma.cuh"
+ 
+ typedef __nv_bfloat16 bf16;
+ 
+@@ -217,29 +214,3 @@ extern "C" __global__ void __launch_bounds__(256) h3p_round(const float* x, bf16
+     const int i = blockIdx.x * 256 + threadIdx.x;
+     if (i < n) y[i] = h(x[i]);
+ }
+-
+-// Each bf16 row of X (M, K) to int8 Q at a scale per 128 of K: one warp a 128-wide group, quantized at
+-// its absmax / 127, the scale at S[group * ld + row] — group-major, the layout h3p_gemm_int8_groups reads
+-// (`ld` the operand's rows; a weight's row offset is folded into S). Grid [M], 256 threads.
+-extern "C" __global__ void __launch_bounds__(256) h3p_quantize_groups(const bf16* X, signed char* Q, float* S, int K, int ld) {
+-    const size_t row = blockIdx.x;
+-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+-    for (int g = warp; g < K >> 7; g += 8) {
+-        const size_t at = row * K + g * 128 + lane * 4;
+-        const __nv_bfloat162* p = reinterpret_cast<const __nv_bfloat162*>(X + at);
+-        const float2 lo = __bfloat1622float2(p[0]), hi = __bfloat1622float2(p[1]);
+-        float most = fmaxf(fmaxf(fabsf(lo.x), fabsf(lo.y)), fmaxf(fabsf(hi.x), fabsf(hi.y)));
+-        for (int o = 16; o; o >>= 1) most = fmaxf(most, __shfl_xor_sync(0xffffffffu, most, o));
+-        const float scale = most > 0.0f ? most / 127.0f : 1.0f;
+-        *reinterpret_cast<char4*>(Q + at) = make_char4(__float2int_rn(lo.x / scale), __float2int_rn(lo.y / scale), __float2int_rn(hi.x / scale), __float2int_rn(hi.y / scale));
+-        if (lane == 0) S[static_cast<size_t>(g) * ld + row] = scale;
+-    }
+-}
+-
+-// C (M, N) fp32 = Σ_g (XQ · WQᵀ over K group g) · XS[g · M + row] · WS[g · N + column]: the TMA int8 product
+-// on 64 × 64 tiles, each K block's exact int32 sums folded at its group's scales. N a multiple of 64.
+-extern "C" __global__ void __launch_bounds__(256) h3p_gemm_int8_groups(
+-        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
+-        const float* XS, const float* WS, float* C, int M, int N, int K) {
+-    h3_int8::gemm_kernel<h3_int8::PromptTile, false, true>(map_a, map_b, XS, WS, C, M, N, K);
+-}
+diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
+index 06c1131d2..b9d9198cc 100644
+--- a/zig/kernels/cuda/h3_int8_tma.cuh
++++ b/zig/kernels/cuda/h3_int8_tma.cuh
+@@ -17,7 +17,6 @@
+ #include <cudaTypedefs.h>
+ #include <cuda_bf16.h>
+ #include <cuda_runtime.h>
+-#include <type_traits>
+ 
+ namespace h3_int8 {
+ 
+@@ -237,54 +236,6 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
+     return silu * gv.y;
+ }
+ 
+-// GROUPED's tile: after each K block g the warp's int32 sums (exact: 127² · 128 < 2²⁴, so their
+-// float is too) fold into fp32 at xs[g * m + row] · ws[g * n + column] and restart; the fp32 sums
+-// land at output[row, column]. `row0` is the lane's first row, `column0` its first column.
+-template <typename Config, typename Consume>
+-__device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumulators)[Config::m_tiles][Config::n_tiles][4], int k_blocks,
+-                                             const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
+-                                             float *__restrict__ output, int m, int n, int row0, int column0) {
+-    float sums[Config::m_tiles][Config::n_tiles][4] = {};
+-    for (int g = 0; g < k_blocks; g++) {
+-        consume(accumulators);
+-        #pragma unroll
+-        for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+-            #pragma unroll
+-            for (int half = 0; half < 2; half++) {
+-                const int row = row0 + m_tile * 16 + half * 8;
+-                const float row_scale = row < m ? activation_scales[static_cast<size_t>(g) * m + row] : 0.0f;
+-                #pragma unroll
+-                for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
+-                    const int column = column0 + n_tile / 4 * 32 + ((n_tile % 4 + threadIdx.x % 4) & 3) * 2;
+-                    const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + static_cast<size_t>(g) * n + column);
+-                    int32_t *products = accumulators[m_tile][n_tile] + half * 2;
+-                    float *sum = sums[m_tile][n_tile] + half * 2;
+-                    sum[0] += static_cast<float>(products[0]) * row_scale * column_scale.x;
+-                    sum[1] += static_cast<float>(products[1]) * row_scale * column_scale.y;
+-                    products[0] = 0;
+-                    products[1] = 0;
+-                }
+-            }
+-        }
+-    }
+-    #pragma unroll
+-    for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+-        #pragma unroll
+-        for (int half = 0; half < 2; half++) {
+-            const int row = row0 + m_tile * 16 + half * 8;
+-            if (row >= m) {
+-                continue;
+-            }
+-            #pragma unroll
+-            for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
+-                const int column = column0 + n_tile / 4 * 32 + ((n_tile % 4 + threadIdx.x % 4) & 3) * 2;
+-                const float *sum = sums[m_tile][n_tile] + half * 2;
+-                *reinterpret_cast<float2 *>(output + static_cast<size_t>(row) * n + column) = make_float2(sum[0], sum[1]);
+-            }
+-        }
+-    }
+-}
+-
+ // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
+ // silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
+ // produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
+@@ -292,14 +243,11 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
+ // producer warp costs every warp its registers. The tensor maps bind by reference so their
+ // addresses stay in parameter space — a by-value copy would land in local space, which
+ // cp.async.bulk.tensor refuses.
+-// GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
+-// ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
+-// fp32 rows are written unrounded.
+-template <typename Config, bool SWIGLU, bool GROUPED = false, typename Out = std::conditional_t<GROUPED, float, __nv_bfloat16>>
++template <typename Config, bool SWIGLU>
+ __device__ __forceinline__ void
+     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
+                 const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
+-                Out *__restrict__ output, int m, int n, int k) {
++                __nv_bfloat16 *__restrict__ output, int m, int n, int k) {
+     extern __shared__ __align__(1024) uint8_t shared_memory[];
+     const uint32_t shared_base = (h3_shared_address(shared_memory) + 1023) & ~1023u;
+     const uint32_t barriers = shared_base + tma_stages * Config::stage_bytes;
+@@ -365,12 +313,6 @@ __device__ __forceinline__ void
+                 }
+             }
+         }
+-        if constexpr (GROUPED) {
+-            grouped_tile<Config>(consume, accumulators, grid.k_blocks, activation_scales, weight_scales, output, m, n,
+-                                 tile_m * Config::block_m + warp_row + group_id,
+-                                 tile_n * Config::block_n + warp_column + quad_lane * 8);
+-            continue; // what follows is the per-row epilogue
+-        }
+         for (int k_block = 0; k_block < grid.k_blocks; k_block++) {
+             consume(accumulators);
+         }
+@@ -455,7 +397,5 @@ __device__ __forceinline__ void
+ }
+ 
+ using TallTile = GemmConfig<256, 128, 4>;
+-// The prompt encoder's few rows: 64 × 64 tiles, so even a 40-row prompt spreads N over every SM.
+-using PromptTile = GemmConfig<64, 64, 4>;
+ 
+ } // namespace h3_int8
+diff --git a/zig/src/core/contract/h3_image_cuda_records.zig b/zig/src/core/contract/h3_image_cuda_records.zig
+index 184403760..cd35b7c1c 100644
+--- a/zig/src/core/contract/h3_image_cuda_records.zig
++++ b/zig/src/core/contract/h3_image_cuda_records.zig
+@@ -18,7 +18,7 @@ pub const records = [_]registry.CudaRecord{
+     record("h3d_res_norm", "h3_image_decoder", 256, 80, .{ .{ .regs = 30, .static = 32, .bound = 256 }, .{ .regs = 30, .static = 32, .bound = 256 }, .{ .regs = 30, .static = 32, .bound = 256 }, .{ .regs = 26, .static = 32, .bound = 256 }, .{ .regs = 26, .static = 32, .bound = 256 } }),
+     record("h3d_heads", "h3_image_decoder", 32, 80, .{ .{ .regs = 23, .static = 0, .bound = 32 }, .{ .regs = 24, .static = 0, .bound = 32 }, .{ .regs = 22, .static = 0, .bound = 32 }, .{ .regs = 21, .static = 0, .bound = 32 }, .{ .regs = 21, .static = 0, .bound = 32 } }),
+     record("h3d_attention", "h3_image_decoder", 256, 80, .{ .{ .regs = 37, .static = 11264, .bound = 256 }, .{ .regs = 48, .static = 11264, .bound = 256 }, .{ .regs = 48, .static = 11264, .bound = 256 }, .{ .regs = 48, .static = 11264, .bound = 256 }, .{ .regs = 48, .static = 11264, .bound = 256 } }),
+-    record("h3d_flash", "h3_image_decoder", 128, 80, .{ .{ .regs = 130, .static = 16384, .bound = 128 }, .{ .regs = 130, .static = 16384, .bound = 128 }, .{ .regs = 130, .static = 16384, .bound = 128 }, .{ .regs = 128, .static = 16384, .bound = 128 }, .{ .regs = 128, .static = 16384, .bound = 128 } }),
++    record("h3d_flash", "h3_image_decoder", 128, 80, .{ .{ .regs = 128, .static = 40960, .bound = 128 }, .{ .regs = 130, .static = 40960, .bound = 128 }, .{ .regs = 130, .static = 40960, .bound = 128 }, .{ .regs = 144, .static = 40960, .bound = 128 }, .{ .regs = 144, .static = 40960, .bound = 128 } }),
+     record("h3d_swiglu", "h3_image_decoder", 256, 80, .{ .{ .regs = 18, .static = 0, .bound = 256 }, .{ .regs = 20, .static = 0, .bound = 256 }, .{ .regs = 20, .static = 0, .bound = 256 }, .{ .regs = 20, .static = 0, .bound = 256 }, .{ .regs = 20, .static = 0, .bound = 256 } }),
+     record("h3p_norm", "h3_image_prompt", 256, 80, .{ .{ .regs = 30, .static = 4, .bound = 256 }, .{ .regs = 30, .static = 4, .bound = 256 }, .{ .regs = 30, .static = 4, .bound = 256 }, .{ .regs = 25, .static = 4, .bound = 256 }, .{ .regs = 25, .static = 4, .bound = 256 } }),
+     record("h3p_heads", "h3_image_prompt", 256, 80, .{ .{ .regs = 30, .static = 0, .bound = 256 }, .{ .regs = 38, .static = 0, .bound = 256 }, .{ .regs = 38, .static = 0, .bound = 256 }, .{ .regs = 38, .static = 0, .bound = 256 }, .{ .regs = 38, .static = 0, .bound = 256 } }),
 diff --git a/zig/src/core/contract/registry_media.zig b/zig/src/core/contract/registry_media.zig
-index dcb13d7ce..184002fba 100644
+index dcb13d7ce..d7139503e 100644
 --- a/zig/src/core/contract/registry_media.zig
 +++ b/zig/src/core/contract/registry_media.zig
-@@ -70,6 +70,9 @@ pub const cuda = [_]CudaRecord{
- pub const cuda_pending = [_]CudaRecord{
-     .{ .launch = .{ .name = "drama3 d3_router_compact", .symbol = "d3_router_compact", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
-     .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
-+    // the dense image's int8 attention (h3_attention_int8.cuh): unmeasured until the limits job compiles it
-+    .{ .launch = .{ .name = "h3 h3_heads_quant", .symbol = "h3_heads_quant", .image = "h3", .threads = 128 }, .usage = @import("registry.zig").none },
-+    .{ .launch = .{ .name = "h3 h3_attention_i8", .symbol = "h3_attention_i8", .image = "h3", .threads = 128, .dynamic = 24576 }, .usage = @import("registry.zig").none },
- };
+@@ -11,6 +11,8 @@ pub const cuda = [_]CudaRecord{
+     .{ .launch = .{ .name = "h3 h3_tile_scores", .symbol = "h3_tile_scores", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 20, .static = 0, .bound = 256 }, .{ .regs = 20, .static = 0, .bound = 256 }, .{ .regs = 20, .static = 0, .bound = 256 }, .{ .regs = 21, .static = 0, .bound = 256 }, .{ .regs = 21, .static = 0, .bound = 256 } } },
+     .{ .launch = .{ .name = "h3 h3_coarse", .symbol = "h3_coarse", .image = "h3", .threads = 32 }, .usage = .{ .{ .regs = 32, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 39, .static = 0, .bound = 0 }, .{ .regs = 39, .static = 0, .bound = 0 } } },
+     .{ .launch = .{ .name = "h3 h3_attention", .symbol = "h3_attention", .image = "h3", .threads = 128, .dynamic = 49152 }, .usage = .{ .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 217, .static = 0, .bound = 128 }, .{ .regs = 217, .static = 0, .bound = 128 } } },
++    .{ .launch = .{ .name = "h3 h3_heads_quant", .symbol = "h3_heads_quant", .image = "h3", .threads = 128 }, .usage = .{ .{ .regs = 80, .static = 0, .bound = 128 }, .{ .regs = 80, .static = 0, .bound = 128 }, .{ .regs = 80, .static = 0, .bound = 128 }, .{ .regs = 86, .static = 0, .bound = 128 }, .{ .regs = 86, .static = 0, .bound = 128 } } },
++    .{ .launch = .{ .name = "h3 h3_attention_i8", .symbol = "h3_attention_i8", .image = "h3", .threads = 128, .dynamic = 24576 }, .usage = .{ .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 } } },
+     .{ .launch = .{ .name = "h3 h3_topk", .symbol = "h3_topk", .image = "h3", .threads = 32 }, .usage = .{ .{ .regs = 32, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 38, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 } } },
+     .{ .launch = .{ .name = "h3 h3_quantize", .symbol = "h3_quantize", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 73, .static = 128, .bound = 256 }, .{ .regs = 72, .static = 128, .bound = 256 }, .{ .regs = 72, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 } } },
+     .{ .launch = .{ .name = "h3 h3_norm_quant", .symbol = "h3_norm_quant", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 74, .static = 128, .bound = 256 }, .{ .regs = 74, .static = 128, .bound = 256 } } },
+diff --git a/zig/src/families/h3/block.zig b/zig/src/families/h3/block.zig
+index c5ba69b83..e9d1be688 100644
+--- a/zig/src/families/h3/block.zig
++++ b/zig/src/families/h3/block.zig
+@@ -111,28 +111,8 @@ fn attend(m: *const Model, enc: mtl.ComputeEncoder, list: mtl.Buffer, queries: u
+     enc.dispatchGroups(mtl.Size.of(queries, m.heads, 1), mtl.Size.of(256, 1, 1));
+ }
  
- /// The picture's TMA products (h3_int8_tma.cuh): sm_121's usage from GB10's live check; sm_120's
+-/// The tiles' means of q, k and v, the routing pass's input.
+-fn means(m: *const Model, enc: mtl.ComputeEncoder) void {
+-    enc.setPipeline(m.pipeline("h3_pool"));
+-    enc.setBuffer(m.tq, 0, 0);
+-    enc.setBuffer(m.tk, 0, 1);
+-    enc.setBuffer(m.tv, 0, 2);
+-    enc.setBuffer(m.sizes.buffer, m.sizes.offset, 3);
+-    enc.setBuffer(m.qp, 0, 4);
+-    enc.setBuffer(m.kp, 0, 5);
+-    enc.setBuffer(m.vp, 0, 6);
+-    enc.dispatchGroups(mtl.Size.of(m.tiles, m.heads, 1), mtl.Size.of(32, 1, 1));
+-}
+-
+-/// The prefix's query tiles see every tile; a target tile sees the prefix and its chosen tiles.
+-fn attendRouted(m: *const Model, enc: mtl.ComputeEncoder) void {
+-    attend(m, enc, m.all_tiles, m.prefix_tiles, m.tiles, 0, false);
+-    attend(m, enc, m.chosen, m.tiles - m.prefix_tiles, m.prefix_tiles + m.keep, m.prefix_tiles, true);
+-}
+-
+ /// Block `index` of a forward; the block before left its MLP's rows in y, added here with this block's first norm.
+-/// `routed`: a dense model's step routes its target tiles (Model.routed_steps).
+-pub fn run(m: *Model, pass: *h3.Pass, index: usize, routed: bool) !void {
++pub fn run(m: *Model, pass: *h3.Pass, index: usize) !void {
+     const b = &m.blocks[index];
+     const enc = &pass.enc;
+     const heads = m.heads;
+@@ -163,20 +143,24 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize, routed: bool) !void {
+     enc.setBuffer(m.tv, 0, 12);
+     enc.dispatchGroups(mtl.Size.of(m.rows, heads, 1), mtl.Size.of(32, 1, 1));
+     try m.lap(pass, "heads");
+-    if (m.dense and routed) {
+-        means(m, enc.*);
+-        m.choose(enc.*);
+-        try m.lap(pass, "routing");
+-        attendRouted(m, enc.*);
+-        try m.lap(pass, "attention");
+-    } else if (m.dense) {
++    if (m.dense) {
+         attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, false);
+         try m.lap(pass, "attention");
+     } else {
+-        means(m, enc.*);
++        enc.setPipeline(m.pipeline("h3_pool"));
++        enc.setBuffer(m.tq, 0, 0);
++        enc.setBuffer(m.tk, 0, 1);
++        enc.setBuffer(m.tv, 0, 2);
++        enc.setBuffer(m.sizes.buffer, m.sizes.offset, 3);
++        enc.setBuffer(m.qp, 0, 4);
++        enc.setBuffer(m.kp, 0, 5);
++        enc.setBuffer(m.vp, 0, 6);
++        enc.dispatchGroups(mtl.Size.of(m.tiles, heads, 1), mtl.Size.of(32, 1, 1));
+         m.route(enc.*);
+         try m.lap(pass, "routing");
+-        attendRouted(m, enc.*);
++        // the prefix's query tiles see every tile; a video tile sees the prefix and its chosen tiles
++        attend(m, enc.*, m.all_tiles, m.prefix_tiles, m.tiles, 0, false);
++        attend(m, enc.*, m.chosen, m.tiles - m.prefix_tiles, m.prefix_tiles + m.keep, m.prefix_tiles, true);
+         try m.lap(pass, "attention");
+         // the pooled branch gated into the attention rows in place
+         enc.setPipeline(m.pipeline("h3_gate_mix"));
 diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
-index 58b16d656..5e5f82e12 100644
+index 0e1fa22e9..5e5f82e12 100644
 --- a/zig/src/families/h3/cuda.zig
 +++ b/zig/src/families/h3/cuda.zig
 @@ -28,13 +28,16 @@ const scale_m = 4;
@@ -346,10 +819,11 @@ index 58b16d656..5e5f82e12 100644
          // the TMA products' two-stage rings (h3_int8_tma.cuh Config::shared_bytes), once at setup so
          // no launch needs the attribute raced against the stream
          try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
-@@ -234,6 +238,18 @@ pub const Model = struct {
+@@ -234,7 +238,19 @@ pub const Model = struct {
          try self.launch("h3_attention", .{ .x = @intCast(count), .y = @intCast(self.heads) }, 128, attention_shared, &args);
      }
  
+-    /// FastH3's routing for all tiles: tile scores, each video tile's key tiles, and the pooled branch the gate mixes in.
 +    /// The dense path's int8 attention: h3_heads_quant's codes and dequant factors into
 +    /// h3_attention_i8 (h3_attention_int8.cuh). Same tile lists and output as `attend`.
 +    fn attend_i8(self: *Model, par: usize, list: u64, sizes: u64, count: usize, queries: usize, keys: usize, first: usize, per_query: bool) !void {
@@ -362,10 +836,39 @@ index 58b16d656..5e5f82e12 100644
 +        try self.launch("h3_attention_i8", .{ .x = @intCast(count), .y = @intCast(self.heads) }, 128, attention_i8_shared, &args);
 +    }
 +
-     /// FastH3's routing for all tiles: tile scores, each video tile's key tiles, and the pooled branch.
++    /// FastH3's routing for all tiles: tile scores, each video tile's key tiles, and the pooled branch.
      fn route(self: *Model, par: usize, own0: usize, own1: usize) !void {
          const g = &self.geometry;
-@@ -378,7 +394,15 @@ pub const Model = struct {
+         const tiles = g.tiles;
+@@ -254,7 +270,6 @@ pub const Model = struct {
+             for ([_]usize{ tiles, g.prefix, g.keep }) |n| args.add(@as(c_int, @intCast(n)));
+             try self.launch("h3_topk", .{ .x = @intCast(video1 - video0), .y = @intCast(self.heads) }, 32, 0, &args);
+         }
+-        if (!self.gated) return;
+         args = .{};
+         args.add(g.scores + own0 * tiles * 4);
+         args.add(g.vp[par]);
+@@ -283,7 +298,6 @@ pub const Model = struct {
+         /// Tiles ahead of the video's; they attend to and are seen by every tile.
+         prefix_tiles: u32,
+         /// Video tiles a video tile keeps; 0 for dense attention (every tile sees every tile, no pooled branch).
+-        /// A model without the routing gate (MiniMax-H3-Image) routes with no pooled branch: dropped tiles are dropped.
+         keep: u32,
+         /// Blocks to run, from the first; 0 for all.
+         blocks: u32 = 0,
+@@ -340,9 +354,8 @@ pub const Model = struct {
+         const hidden = self.hidden;
+         const inner = self.inner;
+         const heads = self.heads;
+-        // only the routed forward of a gated model mixes in the pooled branch: its product carries the gate rows
+-        const mixed = !dense and self.gated;
+-        const width = if (mixed) 4 * inner else 3 * inner;
++        // the dense forward needs no routing gate: its product stops after q, k and v
++        const width = if (dense) 3 * inner else 4 * inner;
+         const table_bytes = @as(usize, in.lines) * 6 * hidden * 4;
+         const video_tiles = tiles - prefix;
+         const count = checked.count;
+@@ -381,7 +394,15 @@ pub const Model = struct {
              }
              try self.lap("heads", &mark);
              if (dense) {
@@ -382,6 +885,15 @@ index 58b16d656..5e5f82e12 100644
                  try self.lap("attention", &mark);
              } else {
                  var args: cuda.Args = .{};
+@@ -403,7 +424,7 @@ pub const Model = struct {
+                 try self.lap("attention", &mark);
+             }
+             if (in.attention_out != 0 and index == count - 1) try self.driver.check(self.driver.api.cuMemcpyDtoDAsync_v2(in.attention_out, g.ya, rows * inner * 2, self.stream.handle), "cuMemcpyDtoDAsync");
+-            if (mixed) {
++            if (!dense) {
+                 var args: cuda.Args = .{};
+                 for ([_]u64{ g.ya, g.qkvc + 3 * inner * 2, g.coarse, in.slot }) |p| args.add(p);
+                 for ([_]usize{ inner, width, tiles }) |n| args.add(@as(c_int, @intCast(n)));
 diff --git a/zig/src/families/h3/cuda_geometry.zig b/zig/src/families/h3/cuda_geometry.zig
 index d2f055bd4..c7d8c0fd7 100644
 --- a/zig/src/families/h3/cuda_geometry.zig
@@ -423,8 +935,136 @@ index d2f055bd4..c7d8c0fd7 100644
      g.rows = in.rows;
      g.tiles = in.tiles;
      g.prefix = p.prefix;
+diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
+index 712685e8c..28d748ca9 100644
+--- a/zig/src/families/h3/cuda_int8.zig
++++ b/zig/src/families/h3/cuda_int8.zig
+@@ -18,10 +18,10 @@ const Model = h3.Model;
+ 
+ /// The driver encodes a [rows, columns] matrix with 128-byte rows into a CUtensorMap whose TMA box
+ /// is `box_rows` by 128 bytes: one K block of one operand tile.
+-pub const TensorMap = extern struct { bytes: [128]u8 align(64) };
+-pub const Encode = *const fn (*TensorMap, c_uint, c_uint, ?*anyopaque, *const [2]u64, *const u64, *const [2]u32, *const [2]u32, c_uint, c_uint, c_uint, c_uint) callconv(.c) cuda.abi.Result;
++const TensorMap = extern struct { bytes: [128]u8 align(64) };
++const Encode = *const fn (*TensorMap, c_uint, c_uint, ?*anyopaque, *const [2]u64, *const u64, *const [2]u32, *const [2]u32, c_uint, c_uint, c_uint, c_uint) callconv(.c) cuda.abi.Result;
+ 
+-pub fn encoder(d: *cuda.Driver) !Encode {
++fn encoder(d: *cuda.Driver) !Encode {
+     return d.lib.lookup(Encode, "cuTensorMapEncodeTiled") orelse error.MissingSymbol;
+ }
+ 
+@@ -169,7 +169,7 @@ pub const Int8 = struct {
+ 
+ /// TMA's UINT8 map of a [rows, k] int8 matrix: boxes of `box_rows` by 128 bytes, the K block, L2
+ /// 256B promotion and zero fill past the end.
+-pub fn encode(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, box_rows: u32) !void {
++fn encode(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, box_rows: u32) !void {
+     const dims: [2]u64 = .{ k, rows };
+     const strides: u64 = k; // bytes between rows; dimension 0's stride is the contiguous row
+     const box: [2]u32 = .{ 128, box_rows };
+@@ -185,70 +185,3 @@ fn launchQuantize(self: *Model, x: u64, q: u64, s: u64, rows: usize, k: usize) !
+     args.add(@as(c_int, @intCast(k)));
+     try self.launch("h3_quantize", .{ .x = @intCast(rows) }, 256, 0, &args);
+ }
+-
+-/// An int8 product resident: its (n, k) rows at `q`, then the k / 128 group-major scales at `s`.
+-pub const Product = struct { q: u64, s: u64 };
+-
+-/// The prompt encoder's int8 products at a scale per 128 of K on both operands (h3p_quantize_groups,
+-/// h3p_gemm_int8_groups): per-row scales moved its picture past the episode-1 gates (card 143), and
+-/// a scale a K block is folded in registers, so only an own product carries it.
+-pub const Groups = struct {
+-    enc: Encode,
+-    sms: u32,
+-
+-    /// PromptTile's whole N tiles; K whole groups.
+-    pub fn checkGeometry(n: usize, k: usize) !void {
+-        if (k % 128 != 0 or n % prompt_block != 0) return error.BadGeometry;
+-    }
+-
+-    /// The bf16 `parts`, stacked row-wise into one (n, k) product, each staged through `staging` by
+-    /// `r.copy` and quantized by `f` into the next 256-aligned slot of `arena` at `at`.
+-    pub fn load(f: cuda.Function, r: anytype, staging: u64, arena: u64, at: *usize, nk: [2]usize, parts: anytype) !Product {
+-        const p: Product = .{ .q = arena + at.*, .s = arena + at.* + nk[0] * nk[1] };
+-        at.* += std.mem.alignForward(usize, bytes(nk[0], nk[1]), 256);
+-        var row: usize = 0;
+-        inline for (parts) |t| {
+-            const rows = t.len / (2 * nk[1]);
+-            if (t.len != rows * nk[1] * 2 or row + rows > nk[0]) return error.H3UnexpectedTensor;
+-            try r.copy(t, staging);
+-            try quantize(f, r.stream, staging, p.q + row * nk[1], p.s + row * 4, rows, nk[1], nk[0]);
+-            row += rows;
+-        }
+-        return if (row == nk[0]) p else error.H3UnexpectedTensor;
+-    }
+-
+-    /// Bytes of an (n, k) int8 operand and its k / 128 scales a row.
+-    pub fn bytes(n: usize, k: usize) usize {
+-        return n * k + n * (k / 128) * 4;
+-    }
+-
+-    /// x's bf16 (rows, k) rows to int8 at `q`, the scales group-major at `s` with `ld` rows a group;
+-    /// a weight quantized in parts passes its first row's scale address and the whole matrix's rows.
+-    pub fn quantize(f: cuda.Function, stream: cuda.Stream, x: u64, q: u64, s: u64, rows: usize, k: usize, ld: usize) !void {
+-        var args: cuda.Args = .{};
+-        for ([_]u64{ x, q, s }) |a| args.add(a);
+-        for ([_]usize{ k, ld }) |v| args.add(@as(c_int, @intCast(v)));
+-        try cuda.launch.launch(f, .{ .grid = .{ .x = @intCast(rows) }, .block = .{ .x = 256 } }, stream, &args);
+-    }
+-
+-    /// y (rows, n) fp32 = x (rows, k) int8 · w (n, k) int8ᵀ, each K group at xs[g · rows + row] ·
+-    /// ws[g · n + column].
+-    pub fn gemm(t: Groups, f: cuda.Function, stream: cuda.Stream, xq: u64, xs: u64, wq: u64, ws: u64, y: u64, rows: usize, n: usize, k: usize) !void {
+-        var maps: [2]TensorMap = undefined;
+-        try encode(t.enc, &maps[0], xq, rows, k, prompt_block);
+-        try encode(t.enc, &maps[1], wq, n, k, prompt_block);
+-        var args: cuda.Args = .{};
+-        args.add(maps[0]);
+-        args.add(maps[1]);
+-        for ([_]u64{ xs, ws, y }) |a| args.add(a);
+-        for ([_]usize{ rows, n, k }) |v| args.add(@as(c_int, @intCast(v)));
+-        const tiles = (rows + prompt_block - 1) / prompt_block * (n / prompt_block);
+-        const blocks: u32 = @intCast(@min(2 * t.sms, tiles));
+-        try cuda.launch.launch(f, .{ .grid = .{ .x = blocks }, .block = .{ .x = 256 }, .shared = prompt_shared }, stream, &args);
+-    }
+-};
+-
+-/// PromptTile's square tile and its Config::shared_bytes: 2 stages of (64 + 64) * 128 bytes, the
+-/// slack and barriers — under the 48 KiB default, so two CTAs share an SM without an opt-in.
+-const prompt_block = 64;
+-const prompt_shared = 2 * (64 + 64) * 128 + 1024 + 2 * 16;
+diff --git a/zig/src/families/h3/cuda_runtime_test.zig b/zig/src/families/h3/cuda_runtime_test.zig
+index 2cb3187ac..3a7849e0d 100644
+--- a/zig/src/families/h3/cuda_runtime_test.zig
++++ b/zig/src/families/h3/cuda_runtime_test.zig
+@@ -110,7 +110,7 @@ test "h3 runtime: keep exceeds actual video choices before dispatch" {
+     try std.testing.expectEqual(@as(usize, 0), mock.at);
+ }
+ 
+-test "h3 runtime: a dense-only model plans a routed forward without the pooled branch" {
++test "h3 runtime: a dense-only model refuses a routed forward before dispatch" {
+     const m = try mock.model();
+     defer mock.clean(m);
+     m.gated = false;
+@@ -122,11 +122,11 @@ test "h3 runtime: a dense-only model plans a routed forward without the pooled b
+     in.keep = 1;
+     in.slot = @intFromPtr(&slots);
+     in.sizes = @intFromPtr(&sizes);
+-    const p = try m.plan(&in);
+-    try std.testing.expectEqual(@as(usize, 1), p.prefix);
+-    try std.testing.expectEqual(@as(usize, 1), p.keep);
+-    in.keep = 2;
+-    try std.testing.expectError(error.BadH3Keep, m.plan(&in));
++    try std.testing.expectError(error.BadH3Ungated, m.forward(&in));
++    try std.testing.expectEqual(@as(usize, 0), mock.at);
++    in.keep = 0;
++    in.prefix_tiles = 0;
++    _ = try m.plan(&in);
+ }
+ 
+ test "h3 runtime: host optional attention output uses separate device storage and host readback" {
 diff --git a/zig/src/families/h3/cuda_validation.zig b/zig/src/families/h3/cuda_validation.zig
-index e88c7e367..e2aa36931 100644
+index c8e460c21..e2aa36931 100644
 --- a/zig/src/families/h3/cuda_validation.zig
 +++ b/zig/src/families/h3/cuda_validation.zig
 @@ -7,7 +7,7 @@ pub const Plan = struct {
@@ -436,7 +1076,15 @@ index e88c7e367..e2aa36931 100644
  };
  pub fn product(ns: []const usize) !usize {
      var n: usize = 1;
-@@ -52,8 +52,13 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
+@@ -32,6 +32,7 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
+     if (m.heads > 65535 or tiles > 65535) return error.BadH3Scalar;
+     if (own0 >= own1 or own1 > tiles or rows > try product(&.{ own1 - own0, 64 }) or rows < own1 - own0) return error.BadH3Dimensions;
+     if (in.prefix_tiles > tiles or (in.keep != 0 and in.keep > tiles - in.prefix_tiles)) return error.BadH3Keep;
++    if (in.keep != 0 and !m.gated) return error.BadH3Ungated;
+     // CUDA's rotary argument is a half-width within a 128-wide head.
+     if (in.rot > 64) return error.BadH3Rotary;
+     const count: usize = if (in.blocks == 0) m.blocks.len else in.blocks;
+@@ -51,8 +52,13 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
      for (pointers, input, [_]usize{ 2, 4, 4, 4, 4, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
      const padded = try product(&.{ heads, tiles, 64, 128, 2 });
      const means = try product(&.{ heads, tiles, 128, 4 });
@@ -450,6 +1098,419 @@ index e88c7e367..e2aa36931 100644
 +        codes,                                     codes,                                                               codes,                            rowscales,                        rowscales,                       tilescales,
      } };
  }
+diff --git a/zig/src/families/h3/h3.zig b/zig/src/families/h3/h3.zig
+index f7e4e6adb..493872c46 100644
+--- a/zig/src/families/h3/h3.zig
++++ b/zig/src/families/h3/h3.zig
+@@ -132,9 +132,6 @@ pub const Model = struct {
+     audio_velocity: mtl.Buffer,
+     /// Every query tile attends to every tile and the pooled branch is left out (not how the checkpoint was trained).
+     dense: bool = false,
+-    /// With `dense`, the last `routed_steps` steps route each target query tile to its `keep` best-scoring target
+-    /// tiles (FastH3's top-k) beside the whole prefix, with no pooled branch; 0 keeps every step dense.
+-    routed_steps: usize = 0,
+     /// The released MiniMax-H3 layout: dense attention without routing gates, the fused q/k/v rows in `qkv`.
+     base: bool = false,
+     qkv: mtl.Buffer,
+@@ -407,8 +404,8 @@ pub const Model = struct {
+         try self.next(pass);
+     }
+ 
+-    /// After the tiles' means: tile scores and each video tile's chosen key tiles.
+-    pub fn choose(self: *const Model, enc: mtl.ComputeEncoder) void {
++    /// After the tiles' means: tile scores, each video tile's chosen key tiles and the pooled branch.
++    pub fn route(self: *const Model, enc: mtl.ComputeEncoder) void {
+         const heads = self.heads;
+         enc.barrier();
+         enc.setPipeline(self.pipeline("h3_tile_scores"));
+@@ -423,17 +420,12 @@ pub const Model = struct {
+         enc.setValue([3]i32{ @intCast(self.tiles), @intCast(self.prefix_tiles), @intCast(self.keep) }, 1);
+         enc.setBuffer(self.chosen, 0, 2);
+         enc.dispatchGroups(mtl.Size.of(self.tiles - self.prefix_tiles, heads, 1), mtl.Size.of(32, 1, 1));
+-    }
+-
+-    /// `choose`, then the pooled branch.
+-    pub fn route(self: *const Model, enc: mtl.ComputeEncoder) void {
+-        self.choose(enc);
+         enc.setPipeline(self.pipeline("h3_coarse"));
+         enc.setBuffer(self.tile_scores, 0, 0);
+         enc.setBuffer(self.vp, 0, 1);
+         enc.setValue([1]i32{@intCast(self.tiles)}, 2);
+         enc.setBuffer(self.coarse, 0, 3);
+-        enc.dispatchGroups(mtl.Size.of(self.tiles, self.heads, 1), mtl.Size.of(32, 1, 1));
++        enc.dispatchGroups(mtl.Size.of(self.tiles, heads, 1), mtl.Size.of(32, 1, 1));
+     }
+ 
+     fn rowsIn(self: *const Model, enc: mtl.ComputeEncoder, from: mtl.Buffer, w: Ref, b: Ref, count: usize, width: usize, first: usize) void {
+@@ -517,9 +509,8 @@ pub const Model = struct {
+         // Keep blocks queued to hide host wake-up latency without submitting the entire forward ahead of speech.
+         var queued: [3]mtl.CommandBuffer = undefined;
+         var n: usize = 0;
+-        const routed = step + self.routed_steps >= self.adaln.len / self.rows;
+         for (0..self.blocks.len) |index| {
+-            try block.run(self, &pass, index, routed);
++            try block.run(self, &pass, index);
+             const t = self.give_way orelse continue;
+             pass.enc.end();
+             pass.cb.commit();
+diff --git a/zig/src/families/h3/picture_test.zig b/zig/src/families/h3/picture_test.zig
+index a34798f40..21689196b 100644
+--- a/zig/src/families/h3/picture_test.zig
++++ b/zig/src/families/h3/picture_test.zig
+@@ -48,13 +48,10 @@ test "picture draft schedule: mmh3's renoised grid, drafts then the renoise or t
+     defer a.deinit();
+     const x = a.allocator();
+     const base = try p.pdd(x, "{\"num_inference_steps\": 6, \"sigmas\": [1.0, 0.9675, 0.8875, 0.75, 0.5328, 0.232, 0.0]}");
+-    // cascade=M is drafts with no renoise: every M keeps the checkpoint's own sigmas, timesteps and deltas
+-    for (1..6) |m| {
+-        const cascade = try p.draftSchedule(x, base, m, null);
+-        try testing.expectEqualSlices(f32, base.sigmas, cascade.sigmas);
+-        try testing.expectEqualSlices(f32, base.timesteps, cascade.timesteps);
+-        try testing.expectEqualSlices(f32, base.deltas, cascade.deltas);
+-    }
++    // two drafts, no renoise: the draft sigmas, then the rest of the grid from sigma 3
++    const two = try p.draftSchedule(x, base, 2, null);
++    try testing.expectEqualSlices(f32, base.sigmas, two.sigmas);
++    try testing.expectEqual(@as(usize, 6), two.steps());
+     // three drafts renoised to 0.5: [1, .9675, .8875] at half size, [.5, .232] and 0 at full size
+     const ren = try p.draftSchedule(x, base, 3, 0.5);
+     try testing.expectEqualSlices(f32, &.{ 1.0, 0.9675, 0.8875, 0.5, 0.232, 0.0 }, ren.sigmas);
+diff --git a/zig/src/families/h3/prompt_cuda.zig b/zig/src/families/h3/prompt_cuda.zig
+index 1adf5fdfb..d39d04997 100644
+--- a/zig/src/families/h3/prompt_cuda.zig
++++ b/zig/src/families/h3/prompt_cuda.zig
+@@ -1,7 +1,6 @@
+ //! MiniMax-H3-Image's prompt stage on CUDA: Qwen3-VL's text model to layer 50, then condition_proj and
+-//! the refiner, all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products
+-//! run int8 at a scale per 128 of K on our TMA product by default, or (`--bf16`) sum K in reference order;
+-//! refiner products use cuBLASLt with FP32 sums. Every value the reference stores in bf16 is rounded to bf16
++//! the refiner, all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products sum K in reference
++//! order; refiner products use cuBLASLt with FP32 sums. Every value the reference stores in bf16 is rounded to bf16
+ //! by a kernel before the next step reads it.
+ //! The text model's layer weights and the refiner's tensors live in one resident device arena, loaded
+ //! once by `loadResident`; a warm prompt moves no weights at all.
+@@ -16,14 +15,13 @@ pub const checkpoint = @import("checkpoint.zig");
+ pub const cache = @import("prompt_cache.zig");
+ const report = @import("report.zig");
+ const bf16_round = @import("bf16_round");
+-const int8 = @import("cuda_int8.zig");
+ 
+ const D = rules.head_dim;
+ const mode_qwen: c_int = 0;
+ const mode_h3: c_int = 1;
+ 
+ const image align(16) = @embedFile("fatbin_h3_image_prompt").*;
+-const kernel_names = [_][:0]const u8{ "h3p_norm", "h3p_heads", "h3p_attention", "h3p_glu", "h3p_add", "h3p_scatter_add", "h3p_embed", "h3p_splice", "h3p_linear", "h3p_round", "h3p_quantize_groups", "h3p_gemm_int8_groups" };
++const kernel_names = [_][:0]const u8{ "h3p_norm", "h3p_heads", "h3p_attention", "h3p_glu", "h3p_add", "h3p_scatter_add", "h3p_embed", "h3p_splice", "h3p_linear", "h3p_round" };
+ 
+ /// A presentation's vision rows, as prompt.Vision: the tower's merged rows at its image pads in bf16,
+ /// and DeepStack's three blocks added after encoder layers 0 to 2.
+@@ -48,13 +46,10 @@ pub const LayerSet = rules.Layer(Tensor);
+ /// A refiner block's tensors in rules.Block field order.
+ pub const BlockSet = rules.Block(Tensor);
+ 
+-/// A text layer's int8 products — q/k/v as one, gate/up as one — beside its fp32 norms.
+-const Layer8 = struct { qkv: int8.Product, o: int8.Product, gu: int8.Product, down: int8.Product, norm1: u64, norm2: u64, q_norm: u64, k_norm: u64 };
+-
+ /// The parts of the one device scratch a pass draws from, each part aligned to 256 bytes. Products
+ /// all write the shared fp32 `p` (they run one at a time on one stream), then `h3p_round` moves the
+ /// value to its bf16 buffer — out of place, so a round never writes what another thread still reads.
+-const EncodePart = enum { x, xn, p, qb, kb, vb, att, gb, ub, act, cos, sin, idx, vision, deep, xq, xs };
++const EncodePart = enum { x, xn, p, qb, kb, vb, att, gb, ub, act, cos, sin, idx, vision, deep };
+ const RefinePart = enum { x, xn, p, qkv, att, wide, act };
+ 
+ fn Scratch(comptime Part: type) type {
+@@ -95,8 +90,7 @@ fn asF32(a: std.mem.Allocator, bytes: []const u8) ![]f32 {
+ pub const Resident = struct {
+     arena: cuda.DeviceBuffer,
+     embed: u64,
+-    layers: []rules.Layer(u64), // one of layers and layers8 is empty: bf16 (`--bf16`) or int8
+-    layers8: []Layer8,
++    layers: []rules.Layer(u64),
+     cond_w: u64,
+     cond_b: u64,
+     final_norm: u64,
+@@ -130,16 +124,15 @@ fn fill(r: *Runner, a: std.mem.Allocator, at: *usize, arena: u64, shape: rules.S
+     return ptr;
+ }
+ 
+-/// Every tensor of the prompt stage onto the device once: `embed`, each layer's set from `layer`
+-/// (int8 products when `quantized`), condition_proj's pair, the final norm and each block's set from
+-/// `block`, in one arena the returned Resident names. The copies queue on the runner's stream ahead
+-/// of any encode; the caller's mapped bytes may be dropped once the call returns.
++/// Every tensor of the prompt stage onto the device once: `embed`, each layer's set from `layer`,
++/// condition_proj's weight and bias, the final norm and each block's set from `block`, in one
++/// arena whose slots the returned Resident names. The copies queue on the runner's stream ahead of
++/// any encode or refine; the caller's mapped bytes may be dropped once the call returns.
+ pub fn loadResident(
+     r: *Runner,
+     a: std.mem.Allocator,
+     g: rules.Text,
+     front: rules.Refiner,
+-    quantized: bool,
+     embed: Tensor,
+     layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet,
+     ctx: *anyopaque,
+@@ -153,10 +146,7 @@ pub fn loadResident(
+     const front_specs = rules.frontTensors(front);
+     const block_specs = rules.blockTensors(front);
+     var total = slotOf(.{ g.vocab, g.hidden });
+-    if (quantized) {
+-        for (productShapes(g)) |nk| total += std.mem.alignForward(usize, int8.Groups.bytes(nk[0], nk[1]), 256) * g.layers;
+-        total += (2 * slotOf(.{ g.hidden, 0 }) + 2 * slotOf(.{ D, 0 })) * g.layers;
+-    } else for (layer_specs) |spec| total += slotOf(spec[2]) * g.layers;
++    for (layer_specs) |spec| total += slotOf(spec[2]) * g.layers;
+     for (front_specs) |spec| total += slotOf(spec[2]);
+     for (block_specs) |spec| total += slotOf(spec[2]) * front.blocks;
+     var arena = try cuda.DeviceBuffer.alloc(&r.driver, total);
+@@ -167,8 +157,7 @@ pub fn loadResident(
+     var res: Resident = .{
+         .arena = arena,
+         .embed = undefined,
+-        .layers = try a.alloc(rules.Layer(u64), if (quantized) 0 else g.layers),
+-        .layers8 = try a.alloc(Layer8, if (quantized) g.layers else 0),
++        .layers = try a.alloc(rules.Layer(u64), g.layers),
+         .cond_w = undefined,
+         .cond_b = undefined,
+         .final_norm = undefined,
+@@ -176,12 +165,11 @@ pub fn loadResident(
+     };
+     var at: usize = 0;
+     res.embed = try fill(r, a, &at, res.arena.ptr, .{ g.vocab, g.hidden }, embed);
+-    if (quantized) try loadLayers8(r, a, g, &at, res.arena.ptr, layer, ctx, res.layers8);
+-    for (res.layers, 0..) |*l, li| {
++    for (0..g.layers) |li| {
+         const set = try layer(ctx, li);
+         inline for (comptime std.meta.fieldNames(LayerSet), layer_specs) |field, spec| {
+             std.debug.assert(std.mem.eql(u8, field, spec[0]));
+-            @field(l, field) = try fill(r, a, &at, res.arena.ptr, spec[2], @field(set, field));
++            @field(res.layers[li], field) = try fill(r, a, &at, res.arena.ptr, spec[2], @field(set, field));
+         }
+     }
+     const front_tensors: [3]Tensor = .{ cond_w, cond_b, final_norm };
+@@ -198,31 +186,6 @@ pub fn loadResident(
+     return res;
+ }
+ 
+-/// The int8 products' (n, k): q/k/v fused, o, gate/up fused, down.
+-fn productShapes(g: rules.Text) [4][2]usize {
+-    const qh = g.heads * D;
+-    return .{ .{ qh + 2 * g.kv_heads * D, g.hidden }, .{ g.hidden, qh }, .{ 2 * g.ffn, g.hidden }, .{ g.hidden, g.ffn } };
+-}
+-
+-/// Each text layer's products quantized into the arena at a scale per 128 of K, its norms beside them.
+-fn loadLayers8(r: *Runner, a: std.mem.Allocator, g: rules.Text, at: *usize, arena: u64, layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet, ctx: *anyopaque, out: []Layer8) !void {
+-    if (try r.ctx.capability() < 90) return error.H3Int8RequiresSm90; // the TMA images trap below sm_90
+-    const nk = productShapes(g);
+-    for (nk) |s| try int8.Groups.checkGeometry(s[0], s[1]);
+-    var staging = try cuda.DeviceBuffer.alloc(&r.driver, @max(nk[0][0], nk[2][0]) * g.hidden * 2);
+-    defer {
+-        cuda.completion.drain(&r.driver, r.stream, "h3 prompt cuda: a quantize did not drain");
+-        staging.free();
+-    }
+-    const f = r.function("h3p_quantize_groups");
+-    for (out, 0..) |*l, li| {
+-        const set = try layer(ctx, li);
+-        var p: [4]int8.Product = undefined;
+-        inline for (&p, nk, .{ .{ set.q, set.k, set.v }, .{set.o}, .{ set.gate, set.up }, .{set.down} }) |*to, s, parts| to.* = try int8.Groups.load(f, r, staging.ptr, arena, at, s, parts);
+-        l.* = .{ .qkv = p[0], .o = p[1], .gu = p[2], .down = p[3], .norm1 = try fill(r, a, at, arena, .{ g.hidden, 0 }, set.norm1), .norm2 = try fill(r, a, at, arena, .{ g.hidden, 0 }, set.norm2), .q_norm = try fill(r, a, at, arena, .{ D, 0 }, set.q_norm), .k_norm = try fill(r, a, at, arena, .{ D, 0 }, set.k_norm) };
+-    }
+-}
+-
+ /// One product's plan: cuBLASLt bf16 in, fp32 sums, fp32 out. The bias variant's plan is separate so a
+ /// fused fp32 epilogue is picked only where a bias exists; bf16 bias values convert exactly.
+ const Products = struct {
+@@ -314,23 +277,6 @@ pub const Runner = struct {
+         try cuda.launch.launch(r.function(name), .{ .grid = grid, .block = .{ .x = threads } }, r.stream, args);
+     }
+ 
+-    /// The int8 layer's input-row scratch: `rows` quantized into `xq`, their group scales at `xs`.
+-    const Quantized = struct { groups: int8.Groups, xq: u64, xs: u64, rows: usize };
+-
+-    /// y (rows, n) fp32 = x (rows, k) bf16 · wᵀ: an int8 `w` quantizes x at a scale per 128 of K for
+-    /// the TMA product; a bf16 one (a device pointer) runs h3p_linear.
+-    fn product(r: *const Runner, q: Quantized, x: u64, w: anytype, y: u64, n: usize, k: usize) !void {
+-        if (@TypeOf(w) == u64) return r.linear(x, w, y, q.rows, n, k);
+-        errdefer cuda.completion.drain(&r.driver, r.stream, "h3 prompt cuda: an int8 product did not drain");
+-        try int8.Groups.quantize(r.function("h3p_quantize_groups"), r.stream, x, q.xq, q.xs, q.rows, k, q.rows);
+-        try q.groups.gemm(r.function("h3p_gemm_int8_groups"), r.stream, q.xq, q.xs, w.q, w.s, y, q.rows, n, k);
+-    }
+-
+-    fn projected(r: *const Runner, q: Quantized, x: u64, w: anytype, p: u64, to: u64, n: usize, k: usize) !void {
+-        try r.product(q, x, w, p, n, k);
+-        try r.round(p, to, q.rows * n);
+-    }
+-
+     /// The driver, its primary context, the prompt kernels and the cuBLASLt plans; all freed by deinit.
+     /// Heap-made: the stream, events and buffers each hold `&r.driver`, which a returned copy would move.
+     pub fn init(gpa: std.mem.Allocator) !*Runner {
+@@ -366,7 +312,7 @@ pub const Runner = struct {
+     /// `bytes` through the two pinned stages onto `dst` in 64 MiB windows, each stage waited only when
+     /// its turn comes again, so a copy runs while the other window is filled; the uploads order ahead
+     /// of later work on the runner's stream.
+-    pub fn copy(r: *Runner, bytes: []const u8, dst: u64) !void {
++    fn copy(r: *Runner, bytes: []const u8, dst: u64) !void {
+         var done: usize = 0;
+         var turn: usize = 0;
+         while (done < bytes.len) {
+@@ -442,25 +388,22 @@ pub const Runner = struct {
+ 
+     /// The text model's rows leaving its last run layer [T, hidden] bf16 for `ids` at M-RoPE positions
+     /// `pos`, vision rows spliced at the pads when given. `res` holds the weights on the device, so
+-    /// a warm call moves none — only the rotary tables, ids and vision rows cross. Its int8 layers run
+-    /// q/k/v and gate/up as one product each; every product's fp32 rows round as the bf16 path's do.
++    /// a warm call moves none — only the rotary tables, ids and vision rows cross.
+     pub fn encode(r: *Runner, a: std.mem.Allocator, g: rules.Text, res: *const Resident, ids: []const u32, pos: []const [3]i32, vision: ?Vision, out: []u16) !void {
+         const T = ids.len;
+         const H = g.hidden;
+         const qh = g.heads * D;
+         const kvh = g.kv_heads * D;
+-        if (T == 0 or pos.len != T or out.len != T * H or g.layers == 0 or @max(res.layers.len, res.layers8.len) < g.layers) return error.H3PromptRows;
++        if (T == 0 or pos.len != T or out.len != T * H or g.layers == 0 or res.layers.len < g.layers) return error.H3PromptRows;
+         const n = if (vision) |v| try v.check(T, H) else 0;
+-        const qkv_n = qh + 2 * kvh;
+         var sizes = std.enums.EnumArray(EncodePart, usize).initFill(T * H * 2);
+-        // `p` holds one product's fp32 rows at a time; the rest are bf16 buffers at their width,
+-        // `qb` and `gb` wide enough for the int8 layer's fused q/k/v and gate/up rows
+-        sizes.set(.p, T * @max(H, @max(qkv_n, 2 * g.ffn)) * 4);
+-        sizes.set(.qb, T * qkv_n * 2);
++        // `p` holds one product's fp32 rows at a time; the rest are bf16 buffers at their width
++        sizes.set(.p, T * @max(H, @max(qh, g.ffn)) * 4);
++        sizes.set(.qb, T * qh * 2);
+         sizes.set(.kb, T * kvh * 2);
+         sizes.set(.vb, T * kvh * 2);
+         sizes.set(.att, T * qh * 2);
+-        sizes.set(.gb, T * 2 * g.ffn * 2);
++        sizes.set(.gb, T * g.ffn * 2);
+         sizes.set(.ub, T * g.ffn * 2);
+         sizes.set(.act, T * g.ffn * 2);
+         sizes.set(.cos, T * 64 * 4);
+@@ -468,8 +411,6 @@ pub const Runner = struct {
+         sizes.set(.idx, (T + n) * 4);
+         sizes.set(.vision, n * H * 2);
+         sizes.set(.deep, 3 * n * H * 2);
+-        sizes.set(.xq, T * @max(H, @max(qh, g.ffn)));
+-        sizes.set(.xs, T * @max(H, @max(qh, g.ffn)) / 128 * 4);
+         var s = try Scratch(EncodePart).make(&r.driver, sizes);
+         defer s.buf.free();
+         errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt encode did not drain");
+@@ -503,28 +444,29 @@ pub const Runner = struct {
+         defer ended.deinit();
+         errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt timing did not drain");
+         try begun.record(r.stream);
+-        const groups: int8.Groups = if (res.layers8.len > 0) .{ .enc = try int8.encoder(&r.driver), .sms = @intCast(try r.ctx.attribute(.multiprocessor_count)) } else undefined;
+-        const q: Quantized = .{ .groups = groups, .xq = s.at(.xq), .xs = s.at(.xs), .rows = T };
+-        inline for (.{ res.layers8, res.layers }) |layers| for (layers[0..@min(layers.len, g.layers)], 0..) |w, li| {
+-            // int8 layers project q/k/v and gate/up as one fused product each, so their rows interleave
+-            const fused = @TypeOf(w) == Layer8;
+-            const row: [3]usize = if (fused) .{ qkv_n, qkv_n, qkv_n } else .{ qh, kvh, kvh };
+-            const kv: [2]u64 = if (fused) .{ s.at(.qb) + qh * 2, s.at(.qb) + (qh + kvh) * 2 } else .{ s.at(.kb), s.at(.vb) };
+-            const up = if (fused) s.at(.gb) + g.ffn * 2 else s.at(.ub);
+-            const gu_row = if (fused) 2 * g.ffn else g.ffn;
++        for (0..g.layers) |li| {
++            const w = res.layers[li];
+             try r.norm(s.at(.x), w.norm1, s.at(.xn), T, H, g.eps, mode_qwen);
+-            if (fused) try r.projected(q, s.at(.xn), w.qkv, s.at(.p), s.at(.qb), qkv_n, H) else inline for (.{ w.q, w.k, w.v }, .{ s.at(.qb), kv[0], kv[1] }, row) |m, to, width| try r.projected(q, s.at(.xn), m, s.at(.p), to, width, H);
+-            try r.heads(s.at(.qb), kv[0], w.q_norm, w.k_norm, .{ s.at(.cos), s.at(.sin) }, g.heads, g.kv_heads, row[0], row[1], D, T, g.eps, mode_qwen);
+-            try r.attention(s.at(.qb), kv[0], kv[1], s.at(.att), T, g.heads, g.kv_heads, row[0], row[1], row[2], D, true);
+-            try r.product(q, s.at(.att), w.o, s.at(.p), H, qh);
++            try r.linear(s.at(.xn), w.q, s.at(.p), T, qh, H);
++            try r.round(s.at(.p), s.at(.qb), T * qh);
++            try r.linear(s.at(.xn), w.k, s.at(.p), T, kvh, H);
++            try r.round(s.at(.p), s.at(.kb), T * kvh);
++            try r.linear(s.at(.xn), w.v, s.at(.p), T, kvh, H);
++            try r.round(s.at(.p), s.at(.vb), T * kvh);
++            try r.heads(s.at(.qb), s.at(.kb), w.q_norm, w.k_norm, .{ s.at(.cos), s.at(.sin) }, g.heads, g.kv_heads, qh, kvh, D, T, g.eps, mode_qwen);
++            try r.attention(s.at(.qb), s.at(.kb), s.at(.vb), s.at(.att), T, g.heads, g.kv_heads, qh, kvh, kvh, D, true);
++            try r.linear(s.at(.att), w.o, s.at(.p), T, H, qh);
+             try r.add(s.at(.x), s.at(.p), T * H);
+             try r.norm(s.at(.x), w.norm2, s.at(.xn), T, H, g.eps, mode_qwen);
+-            if (fused) try r.projected(q, s.at(.xn), w.gu, s.at(.p), s.at(.gb), 2 * g.ffn, H) else inline for (.{ w.gate, w.up }, .{ s.at(.gb), up }) |m, to| try r.projected(q, s.at(.xn), m, s.at(.p), to, g.ffn, H);
+-            try r.glu(s.at(.gb), up, s.at(.act), T, g.ffn, gu_row, gu_row, mode_qwen);
+-            try r.product(q, s.at(.act), w.down, s.at(.p), H, g.ffn);
++            try r.linear(s.at(.xn), w.gate, s.at(.p), T, g.ffn, H);
++            try r.round(s.at(.p), s.at(.gb), T * g.ffn);
++            try r.linear(s.at(.xn), w.up, s.at(.p), T, g.ffn, H);
++            try r.round(s.at(.p), s.at(.ub), T * g.ffn);
++            try r.glu(s.at(.gb), s.at(.ub), s.at(.act), T, g.ffn, g.ffn, g.ffn, mode_qwen);
++            try r.linear(s.at(.act), w.down, s.at(.p), T, H, g.ffn);
+             try r.add(s.at(.x), s.at(.p), T * H);
+             if (n > 0 and li < 3) try r.indexed("h3p_scatter_add", s.at(.x), s.at(.deep) + li * n * H * 2, s.at(.idx) + T * 4, n, H);
+-        };
++        }
+         try ended.record(r.stream);
+         try ended.synchronize();
+         r.gpu = @as(f64, try cuda.Event.elapsedMs(begun, ended)) / 1000;
+diff --git a/zig/tests/contract/metal_h3_topk.zig b/zig/tests/contract/metal_h3_topk.zig
+index e5c09d8a8..0c5aaf9dc 100644
+--- a/zig/tests/contract/metal_h3_topk.zig
++++ b/zig/tests/contract/metal_h3_topk.zig
+@@ -2,7 +2,6 @@
+ const std = @import("std");
+ const mtl = @import("metal");
+ const contract = @import("contract");
+-const sources = @import("kernel_sources");
+ const h3k = @import("h3_kernels");
+ const rig_ = @import("rig.zig");
+ 
+@@ -15,8 +14,7 @@ fn noSums(_: c.Shape) usize {
+ 
+ const rule = "a NaN score ranks as -inf, ties go to the lower tile, so every row keeps exactly n tiles";
+ 
+-/// Rows: query video tiles; n: tiles kept a row; k: video tiles. Compiled for 288 tiles, FastH3's at 864x480;
+-/// 64 keeping 13 is a 2048 picture's routed steps (tf-h3-image-server --routed-steps).
++/// Rows: query video tiles; n: tiles kept a row; k: video tiles. Compiled for 288 tiles, FastH3's at 864x480.
+ pub fn spec() c.Spec {
+     return .{
+         .name = "metal h3 tile top-k h3_topk",
+@@ -25,7 +23,7 @@ pub fn spec() c.Spec {
+         .out = .raw,
+         .nan = .{ .stated = rule },
+         .tiles = .{ .{}, .{}, .{ .size = 32 } },
+-        .served = &.{ .{ .rows = 280, .n = 56, .k = 280 }, .{ .rows = 64, .n = 13, .k = 64 }, .{ .rows = 8, .n = 3, .k = 12 } },
++        .served = &.{ .{ .rows = 280, .n = 56, .k = 280 }, .{ .rows = 8, .n = 3, .k = 12 } },
+     };
+ }
+ 
+@@ -47,13 +45,7 @@ pub const TopK = struct {
+     msg: [200]u8 = undefined,
+ 
+     pub fn init(a: std.mem.Allocator, device: mtl.Device, queue: mtl.Queue) !TopK {
+-        // H3's library as source.zig builds it: h3_gemm.metal needs gemm_nax and its fragments ahead of it
+-        const nax = for (sources.prefill) |f| {
+-            if (std.mem.eql(u8, f.name, "gemm_nax")) break f.text;
+-        } else return error.NoGemmNax;
+-        const gemm = try std.mem.replaceOwned(u8, a, nax, "#include \"../nax.h\"", sources.nax);
+-        defer a.free(gemm);
+-        const src = try std.mem.concat(a, u8, &.{ gemm, "#define H3_HEADS 2\n#define H3_SLOTS 18432\n#define H3_TILES 288\n", h3k.source });
++        const src = try std.mem.concat(a, u8, &.{ "#define H3_HEADS 2\n#define H3_SLOTS 18432\n#define H3_TILES 288\n", h3k.source });
+         defer a.free(src);
+         return .{ .a = a, .rig = .{ .a = a, .device = device, .queue = queue }, .pipe = try rig_.pipeline(device, src, "h3_topk") };
+     }
+diff --git a/zig/tests/contract/metal_limits.zig b/zig/tests/contract/metal_limits.zig
+index fa1db860b..ddc75cec9 100644
+--- a/zig/tests/contract/metal_limits.zig
++++ b/zig/tests/contract/metal_limits.zig
+@@ -282,14 +282,17 @@ fn resolve(a: std.mem.Allocator, device: mtl.Device, d: limits.MetalLaunch, comp
+     } else if (std.mem.startsWith(u8, d.name, "minimax image ")) {
+         if (!assemble) return undefined;
+         text = if (has(d.name, " encoder ")) @import("h3_image_encoder_kernels").source else @import("h3_prompt_kernels").source;
+-    } else if (std.mem.startsWith(u8, d.name, "h3 ")) {
++    } else if (std.mem.startsWith(u8, d.name, "h3 product ")) {
+         if (!assemble) return undefined;
+-        // every H3 launch is one library: h3_gemm.metal uses gemm_nax's fragments, joined ahead as source.zig joins them
++        // h3_gemm.metal's products use gemm_nax's fragments, joined ahead of it as source.zig joins them at load
+         const nax = for (sources.prefill) |f| {
+             if (std.mem.eql(u8, f.name, "gemm_nax")) break f.text;
+         } else return error.UnknownLaunch;
+         text = try std.mem.concat(a, u8, &.{ nax, @import("h3_kernels").source });
+         frags = true;
++    } else if (std.mem.startsWith(u8, d.name, "h3 ")) {
++        if (!assemble) return undefined;
++        text = @import("h3_kernels").source;
+     } else if (std.mem.startsWith(u8, d.name, "glm gather ") or std.mem.startsWith(u8, d.name, "glm rows ") or std.mem.startsWith(u8, d.name, "glm moe rows ")) {
+         if (!assemble) return undefined;
+         text = tf.glm.wide.gather_source;
 diff --git a/zig/tests/cuda/contract_h3.zig b/zig/tests/cuda/contract_h3.zig
 index 0240bebef..6132ee8b3 100644
 --- a/zig/tests/cuda/contract_h3.zig
@@ -686,6 +1747,29 @@ index 719a217d2..75b5e192b 100644
  /// h3_swiglu: silu(gate) * value from the first projection's rows [gate | value]. a the rows.
  pub fn swiglu(in: In, want: []f64, mag: []f64) void {
      const N = in.n;
+diff --git a/zig/tests/cuda/contract_h3_topk.zig b/zig/tests/cuda/contract_h3_topk.zig
+index f482d4b80..d225d77be 100644
+--- a/zig/tests/cuda/contract_h3_topk.zig
++++ b/zig/tests/cuda/contract_h3_topk.zig
+@@ -15,8 +15,7 @@ fn noSums(_: c.Shape) usize {
+ 
+ const rule = "a NaN score ranks as -inf, ties go to the lower tile, so every row keeps exactly n tiles";
+ 
+-/// Rows: query video tiles; n: tiles kept a row; k: video tiles. FastH3's 280 video tiles at 864x480 served, and
+-/// MiniMax-H3-Image's `--routed-steps` fifth of its 64 picture tiles at 2048x2048 and 256 at 4096x4096.
++/// Rows: query video tiles; n: tiles kept a row; k: video tiles; FastH3's 280 video tiles at 864x480 served.
+ pub fn spec() c.Spec {
+     return .{
+         .name = "cuda h3 tile top-k h3_topk",
+@@ -25,7 +24,7 @@ pub fn spec() c.Spec {
+         .out = .raw,
+         .nan = .{ .stated = rule },
+         .tiles = .{ .{}, .{}, .{ .size = 32 } },
+-        .served = &.{ .{ .rows = 280, .n = 56, .k = 280 }, .{ .rows = 64, .n = 13, .k = 64 }, .{ .rows = 256, .n = 52, .k = 256 }, .{ .rows = 8, .n = 3, .k = 12 } },
++        .served = &.{ .{ .rows = 280, .n = 56, .k = 280 }, .{ .rows = 8, .n = 3, .k = 12 } },
+     };
+ }
+ 
 diff --git a/zig/tests/cuda/contract_tests.zig b/zig/tests/cuda/contract_tests.zig
 index 87eb83ac6..a7acc2975 100644
 --- a/zig/tests/cuda/contract_tests.zig
@@ -701,3 +1785,340 @@ index 87eb83ac6..a7acc2975 100644
      }
      defer for (&h3_list) |*m| m.deinit();
      for (&h3_list) |*m| try kernels.append(a, m.kernel());
+diff --git a/zig/tests/h3_image.zig b/zig/tests/h3_image.zig
+index bcda2ba32..201ba2391 100644
+--- a/zig/tests/h3_image.zig
++++ b/zig/tests/h3_image.zig
+@@ -96,8 +96,6 @@ pub const Folder = struct {
+     layers: usize,
+     /// Every model bound from the folder gives way to live speech between blocks.
+     turn: h3.gpu_turn.Turn,
+-    /// --routed-steps: the last steps' target tiles see their best fifth of target tiles (FastH3's top 20%).
+-    routed_steps: usize = 0,
+ 
+     pub fn open(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !Folder {
+         // the folder: the image pipeline, an audio-free transformer, the distilled schedule and its heads
+@@ -123,8 +121,6 @@ pub const Folder = struct {
+         errdefer model.release();
+         if (!model.base or model.step_heads != sched.steps() or model.audio != 0) return error.H3NotPictureModel;
+         model.dense = true;
+-        model.routed_steps = f.routed_steps;
+-        if (f.routed_steps > 0) model.keep = (model.tiles - model.prefix_tiles + 4) / 5;
+         const schedule = h3.schedule.Schedule{ .sigmas = sched.sigmas, .timesteps = sched.timesteps };
+         _ = try h3.modulation.reschedule(model, a, schedule, schedule, false);
+         return model;
+diff --git a/zig/tests/h3_image_cuda.zig b/zig/tests/h3_image_cuda.zig
+index 1f31ad916..f65727a6e 100644
+--- a/zig/tests/h3_image_cuda.zig
++++ b/zig/tests/h3_image_cuda.zig
+@@ -8,8 +8,8 @@ const schedule = h3image.schedule;
+ const cascade = h3image.cascade;
+ 
+ const usage =
+-    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16|--fp4] [--load-threads N] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
+-    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16|--fp4] [--load-threads N] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
++    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16|--fp4] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
++    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16|--fp4] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
+     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
+     \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
+     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
+@@ -26,9 +26,6 @@ const usage =
+     \\--load-threads N reads the transformer's weights with N reader threads straight into the pinned
+     \\stages that alternate with the GPU upload, as mmh3's eight-thread loader does; 0 (default) reads
+     \\the shards in place.
+-    \\--routed-steps N routes the last N steps' attention as FastH3 does: each picture tile attends the prompt's
+-    \\tiles and the fifth of the picture tiles its pooled query scores best (h3_topk), every other tile dropped.
+-    \\It draws a different picture; 0 (default) keeps every step dense.
+ ;
+ 
+ /// The transformer's linear layers: the int8 default, all-bf16, or the opt-in block-scaled NVFP4 products.
+@@ -55,8 +52,6 @@ const Folder = struct {
+     pdd: picture.Pdd,
+     modulation: ?h3.modulation.Tables = null,
+     times: []f32 = &.{},
+-    /// The last steps of a picture whose attention is routed (`--routed-steps`); 0 keeps every step dense.
+-    routed: usize = 0,
+ 
+     fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, linear: Linear, threads: usize) !Folder {
+         const heads_name = try picture.checkIndex(a, try read(init, a, dir, "model_index.json"));
+@@ -107,7 +102,6 @@ pub fn main(init: std.process.Init) !void {
+         return h3.rows_test.run(init.gpa);
+     }
+     var draft_steps: usize = 0;
+-    var routed_steps: usize = 0;
+     var load_threads: usize = 0;
+     var renoise: ?f32 = null;
+     var linear: Linear = .int8;
+@@ -133,10 +127,6 @@ pub fn main(init: std.process.Init) !void {
+             i += 1;
+             if (i >= all.len) return error.BadArguments;
+             renoise = std.fmt.parseFloat(f32, all[i]) catch return error.BadArguments;
+-        } else if (std.mem.eql(u8, arg, "--routed-steps")) {
+-            i += 1;
+-            if (i >= all.len) return error.BadArguments;
+-            routed_steps = std.fmt.parseInt(usize, all[i], 10) catch return error.BadArguments;
+         } else try args.append(init.arena.allocator(), arg);
+     }
+     const serving = args.items.len == 2 and std.mem.eql(u8, args.items[1], "--serve");
+@@ -148,7 +138,6 @@ pub fn main(init: std.process.Init) !void {
+     const started = h3.seconds();
+     var folder = try Folder.load(init, init.arena.allocator(), args.items[0], linear, load_threads);
+     defer folder.deinit(init.gpa);
+-    folder.routed = routed_steps;
+     std.debug.print("model loaded in {d:.1} s\n", .{h3.seconds() - started});
+     if (!serving) return render(init, init.arena.allocator(), &folder, args.items[1], args.items[2], draft_steps, renoise);
+     var in_buf: [4096]u8 = undefined;
+@@ -322,19 +311,12 @@ fn streamSteps(
+     // stage() treats every address as host memory: the resident table stays out, x is room for the
+     // stream, and `line` carries this step's count only (the validation reads one step's lines)
+     const checked = try model.plan(&in);
+-    // the routed steps' plan: a picture tile keeps the prompt's tiles and a fifth of the picture's, as FastH3 keeps;
+-    // the geometry is sized for it, and the dense steps read none of its routing buffers
+-    var routed_in = in;
+-    routed_in.keep = @intCast((map.target + 4) / 5);
+-    const routed = try model.plan(&routed_in);
+-    const routed_from = steps - folder.routed;
+-    const geometry = if (first + run > routed_from) routed else checked;
+     try model.drain();
+     var upload = checked;
+     upload.input[1] = 0;
+     var device = try h3.host.stage(model, &in, upload);
+     device.tables = modulation.blocks.ptr;
+-    try h3.geometry.prepare(model, &device, geometry);
++    try h3.geometry.prepare(model, &device, checked);
+     try model.warm(count);
+     try model.drain(); // the staging above is pageable host copies: the first launch must wait on them
+ 
+@@ -342,22 +324,21 @@ fn streamSteps(
+         const mark = h3.seconds();
+         device.line = adaln_dev.ptr + s * count * 4;
+         const last = lift_last and s == first + run - 1;
+-        const step_plan = if (s >= routed_from) routed else checked;
+         // the exec outlives its in-flight launch: graph execs are destroyed only after the stream syncs
+         var launched: ?@import("cuda").graph.Exec = null;
+         defer if (launched) |*e| e.deinit();
+         if (graphs) {
+-            const exec = stepGraph(model, &device, step_plan, &device_rows, s, sched.deltas[s], spans[s], last) catch |err| blk: {
++            const exec = stepGraph(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last) catch |err| blk: {
+                 std.debug.print("step {d} runs without its graph: {s}\n", .{ s + 1, @errorName(err) });
+                 break :blk null;
+             };
+             if (exec) |e| {
+                 try e.launchOn(model.stream);
+                 launched = e;
+-            } else try stepBody(model, &device, step_plan, &device_rows, s, sched.deltas[s], spans[s], last);
+-        } else try stepBody(model, &device, step_plan, &device_rows, s, sched.deltas[s], spans[s], last);
++            } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last);
++        } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last);
+         try model.stream.synchronize();
+-        std.debug.print("step {d}/{d}{s}{s}: {d:.2} s\n", .{ s + 1, steps, if (last) " (draft's clean)" else "", if (s >= routed_from) " (routed)" else "", h3.seconds() - mark });
++        std.debug.print("step {d}/{d}{s}: {d:.2} s\n", .{ s + 1, steps, if (last) " (draft's clean)" else "", h3.seconds() - mark });
+     }
+     const rows = try a.alloc(f32, video.len);
+     try device_rows.latent(rows);
+@@ -384,7 +365,6 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
+     // noised to `renoise` (or to the next sigma without one)
+     const sched = if (draft_steps == 0) pdd else try picture.draftSchedule(a, pdd, draft_steps, renoise);
+     const steps = sched.steps();
+-    if (folder.routed > steps) return error.BadArguments;
+     const spans = try a.alloc(picture.HeadSpan, steps);
+     for (spans, 0..) |*sp, s| sp.* = try picture.headSpan(pdd.sigmas, sched.sigmas, s);
+     // cascade.half enforces the half-canvas grid: both sides multiples of 64 pixels (mmh3's rule)
+diff --git a/zig/tests/h3_image_prompt_cuda.zig b/zig/tests/h3_image_prompt_cuda.zig
+index 9e99ebf0f..04d58dcd4 100644
+--- a/zig/tests/h3_image_prompt_cuda.zig
++++ b/zig/tests/h3_image_prompt_cuda.zig
+@@ -1,6 +1,6 @@
+ //! tf-h3-image-prompt-cuda: MiniMax-H3-Image's prompt stage on CUDA, the same case
+-//! tf-h3-image-prompt(-host) writes — Qwen3-VL's text to layer 50 (int8 products, bf16 with --bf16)
+-//! and the two-block refiner on the GPU, or its synthetic selftest against the float64 host reference.
++//! tf-h3-image-prompt(-host) writes — Qwen3-VL's text to layer 50 and the two-block refiner on the
++//! GPU, or its synthetic selftest against the float64 host reference.
+ const std = @import("std");
+ const hp = @import("h3_prompt_cuda");
+ const tokenizer = @import("tokenizer");
+@@ -18,8 +18,8 @@ const match = @import("h3_image_match.zig");
+ const prompt_cache = hp.cache;
+ 
+ const usage =
+-    \\usage: tf-h3-image-prompt-cuda [--bf16] TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
+-    \\       tf-h3-image-prompt-cuda [--bf16] TEXT_ENCODER_DIR MODEL_DIR --serve
++    \\usage: tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
++    \\       tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR --serve
+     \\       tf-h3-image-prompt-cuda selftest [WORK_DIR]
+     \\  TEXT_ENCODER_DIR  MiniMax-H3's text_encoder/ (Qwen3-VL): config.json, its index and shards
+     \\  MODEL_DIR         the MiniMax-H3-Image folder: model_index.json, tokenizer/, transformer/
+@@ -33,8 +33,6 @@ const usage =
+     \\                    of stdin per picture, each answered `done OUT` or `failed OUT` on stdout;
+     \\                    a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256); with H3_PROMPT_CHECK=1
+     \\                    each encode's refiner rows must reach cosine 0.999 against the host reference, else failed
+-    \\  --bf16            the text encoder's products in bf16, summed in reference order, instead of int8 at a
+-    \\                    scale per 128 of K
+     \\  selftest          the GPU kernels on a tiny synthetic checkpoint against the float64 host reference;
+     \\                    WORK_DIR (default under TMPDIR) holds a new folder with the checkpoint while it runs
+     \\Exit 0: done or every gate passed; 1: a gate failed.
+@@ -43,9 +41,7 @@ const usage =
+ pub fn main(init: std.process.Init) !u8 {
+     const a = init.arena.allocator();
+     const gpa = init.gpa;
+-    const all = try init.minimal.args.toSlice(a);
+-    const bf16 = all.len >= 2 and std.mem.eql(u8, all[1], "--bf16");
+-    const args = if (bf16) try std.mem.concat(a, [:0]const u8, &.{ all[0..1], all[2..] }) else all;
++    const args = try init.minimal.args.toSlice(a);
+     if (args.len >= 2 and std.mem.eql(u8, args[1], "selftest") and args.len <= 3) {
+         const tmp = init.environ_map.get("TMPDIR") orelse "/tmp";
+         const dir = if (args.len == 3) args[2] else try std.fs.path.join(a, &.{ tmp, "tf-h3-image-prompt-cuda-selftest" });
+@@ -56,7 +52,7 @@ pub fn main(init: std.process.Init) !u8 {
+         std.debug.print("{s}", .{usage});
+         return 2;
+     }
+-    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, args[1], args[2], !bf16);
++    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, args[1], args[2]);
+     defer loaded.deinit(gpa);
+     if (serving) return serve(init, gpa, &loaded);
+     try pictureRun(init.io, a, &loaded, args[3], args[4], args[5..]);
+@@ -78,7 +74,7 @@ const Loaded = struct {
+     cache: prompt_cache.Cache,
+     /// H3_PROMPT_CHECK=1: each encode's refiner rows checked against the host reference (`checkRefine`).
+     check: bool,
+-    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8, quantized: bool) !Loaded {
++    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
+         // the folder and its tokenizer, checked as the host prompt path checks them
+         const enc = try rules.checkEncoder(a, try read(io, a, &.{ encoder_dir, "config.json" }));
+         _ = try picture.checkIndex(a, try read(io, a, &.{ model_dir, "model_index.json" }));
+@@ -102,8 +98,8 @@ const Loaded = struct {
+         const started = seconds();
+         var layer_ctx: LayerCtx = .{ .shards = &shards, .g = enc.text, .prefix = prefix };
+         var block_ctx: BlockCtx = .{ .shards = &front_shards, .g = front };
+-        const res = try hp.loadResident(runner, a, enc.text, front, quantized, embed, layerOf, &layer_ctx, blockOf, &block_ctx, front_w.cond_w, front_w.cond_b, front_w.final_norm);
+-        std.debug.print("{d:.2} GiB of prompt weights resident ({s}) in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), if (quantized) "int8" else "bf16", seconds() - started });
++        const res = try hp.loadResident(runner, a, enc.text, front, embed, layerOf, &layer_ctx, blockOf, &block_ctx, front_w.cond_w, front_w.cond_b, front_w.final_norm);
++        std.debug.print("{d:.2} GiB of prompt weights resident in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), seconds() - started });
+         for (shards.folder.files.values()) |*file| file.evict();
+         for (front_shards.folder.files.values()) |*file| file.evict();
+         const cache = prompt_cache.Cache.init(gpa, prompt_cache.Cache.budgetOf(env.get("H3_PROMPT_CACHE")));
+@@ -453,9 +449,7 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
+     const prefix = "model.language_model.";
+     var bits_layer: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
+     var bits_front: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
+-    const front_bits: [3]hp.Tensor = .{ try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight") };
+-    const embed_bits = try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix}));
+-    var res = try hp.loadResident(runner, a, g, f, false, embed_bits, bitsLayer, &bits_layer, bitsBlock, &bits_front, front_bits[0], front_bits[1], front_bits[2]);
++    var res = try hp.loadResident(runner, a, g, f, try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})), bitsLayer, &bits_layer, bitsBlock, &bits_front, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"));
+     defer res.deinit();
+     const enc = try a.alloc(u16, T * g.hidden);
+     const started = seconds();
+@@ -491,17 +485,6 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
+     std.debug.print("encoded in {d:.3} s; again, byte for byte the same: {}\n", .{ enc_s, same });
+     failed = failed or !same;
+ 
+-    // the default int8 products, at a scale per 128 of K: near the oracle's rows, and repeatable
+-    var res8 = try hp.loadResident(runner, a, g, f, true, embed_bits, bitsLayer, &bits_layer, bitsBlock, &bits_front, front_bits[0], front_bits[1], front_bits[2]);
+-    defer res8.deinit();
+-    const enc8 = try a.alloc(u16, enc.len);
+-    try runner.encode(a, g, &res8, ids, pos, null, enc8);
+-    const m8 = match.match(enc8, enc_ref, g.hidden);
+-    match.report("text encoder rows, int8 products at a scale per 128 of K", m8, m8.cosine >= 0.999);
+-    try runner.encode(a, g, &res8, ids, pos, null, again);
+-    std.debug.print("the int8 encode again, byte for byte the same: {}\n", .{std.mem.eql(u16, enc8, again)});
+-    failed = failed or m8.cosine < 0.999 or !std.mem.eql(u16, enc8, again);
+-
+     // an edit's rows: a 6-pad vision block spliced at the marks, DeepStack's blocks scattered after
+     // layers 0 to 2 — the full run, then each part alone so a failure names splice, scatter or layer growth
+     failed = !try withPicture(runner, &res, a, rand, &tiny) or failed;
+diff --git a/zig/tests/h3_image_server.zig b/zig/tests/h3_image_server.zig
+index 7e560392d..fc23345b8 100644
+--- a/zig/tests/h3_image_server.zig
++++ b/zig/tests/h3_image_server.zig
+@@ -8,7 +8,7 @@ const image_tool = @import("h3_image.zig");
+ const decoder_tool = @import("h3_image_decoder.zig");
+ 
+ const usage =
+-    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
++    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile] [--draft-steps N] [--renoise-sigma X]
+     \\  then one request a line on stdin: WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt
+     \\  each writes OUT_PREFIX.safetensors, .h3case.safetensors, .rows.f32, .latent.f32 and .png as
+     \\  tf-h3-image-prompt, tf-h3-image (free) and tf-h3-image-decoder do, and prints a timing line;
+@@ -17,8 +17,6 @@ const usage =
+     \\  profile: each request's six steps by kernel, each launch timed by the GPU's timestamp counters (slower; diagnostic)
+     \\  --draft-steps N runs every request's first N steps on the half-size canvas, as mmh3's does:
+     \\  a different picture, faster (the free run only; no reference edits)
+-    \\  --routed-steps N routes the last N steps' attention, each picture tile to its best fifth of picture
+-    \\  tiles (FastH3's top-k): a different picture, measured in the Metal recipe
+     \\
+ ;
+ 
+@@ -106,7 +104,6 @@ pub fn main(init: std.process.Init) !u8 {
+     const a0 = init.arena.allocator();
+     var profile = false;
+     var draft_steps: usize = 0;
+-    var routed_steps: usize = 0;
+     var renoise: ?f32 = null;
+     var positional: std.ArrayList([]const u8) = .empty;
+     var i: usize = 1;
+@@ -122,10 +119,6 @@ pub fn main(init: std.process.Init) !u8 {
+             i += 1;
+             if (i >= all.len) return 2;
+             renoise = std.fmt.parseFloat(f32, all[i]) catch return 2;
+-        } else if (std.mem.eql(u8, arg, "--routed-steps")) {
+-            i += 1;
+-            if (i >= all.len) return 2;
+-            routed_steps = std.fmt.parseInt(usize, all[i], 10) catch return 2;
+         } else try positional.append(a0, arg);
+     }
+     const args = positional.items;
+@@ -141,7 +134,6 @@ pub fn main(init: std.process.Init) !u8 {
+     defer encoder.deinit(init.gpa);
+     var folder = try image_tool.Folder.open(init, a, args[1]);
+     defer folder.heads.deinit();
+-    folder.routed_steps = routed_steps;
+     const vae = try decoder_tool.Vae.load(init, a, args[1]);
+     defer vae.d.deinit();
+     std.debug.print("loaded the prompt encoder, transformer weights and decoder in {d:.1} s; ready\n", .{mtl.clock.seconds() - loading});
+@@ -511,46 +503,6 @@ test "the steps' Euler on the GPU leaves main's host-Euler latent bit for bit" {
+     try expectSameLatent(x, resident);
+ }
+ 
+-test "routed steps that keep every picture tile leave the dense latent bit for bit" {
+-    const device = try mtl.Device.init();
+-    if (!device.tensorUnits()) return error.SkipZigTest;
+-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+-    defer arena.deinit();
+-    const a = arena.allocator();
+-    var tmp = std.testing.tmpDir(.{});
+-    defer tmp.cleanup();
+-    const dir_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+-    var environ_map: std.process.Environ.Map = .init(testing.allocator);
+-    defer environ_map.deinit();
+-    const init = std.process.Init{
+-        .minimal = .{ .environ = .empty, .args = .{ .vector = &.{} } },
+-        .arena = &arena,
+-        .gpa = testing.allocator,
+-        .io = std.testing.io,
+-        .environ_map = &environ_map,
+-        .preopens = .empty,
+-    };
+-    var f = try residentFixture(init, a, tmp.dir, dir_path, device);
+-    defer {
+-        for (&f.cases) |*c| c.case.file.deinit();
+-        f.folder.heads.deinit();
+-        for (f.folder.ck.shards) |*shard| shard.deinit();
+-        testing.allocator.free(f.folder.ck.shards);
+-    }
+-    const case = &f.cases[0].case;
+-    var dense = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
+-    defer dense.release();
+-    const want = (try image_tool.free(a, dense.model, &f.folder, case, try std.fmt.allocPrint(a, "{s}/dense", .{dir_path}))).rows;
+-
+-    // every step routed: the prefix tile attends densely, each picture tile to the prefix and its chosen tiles
+-    f.folder.routed_steps = f.folder.pdd.steps();
+-    var routed = try Binding.init(testing.allocator, &f.folder, case, f.cases[0].tags, null, null);
+-    defer routed.release();
+-    try testing.expectEqual(routed.model.tiles - routed.model.prefix_tiles, routed.model.keep);
+-    const got = (try image_tool.free(a, routed.model, &f.folder, case, try std.fmt.allocPrint(a, "{s}/routed", .{dir_path}))).rows;
+-    try expectSameLatent(got, want);
+-}
+-
+ test "profile times each picture kernel on the GPU's counters and leaves the latent bit for bit" {
+     const device = try mtl.Device.init();
+     if (!device.tensorUnits() or mtl.counters.query(device).mode() == .unsupported) return error.SkipZigTest;

@@ -11,6 +11,8 @@ pub const cuda = [_]CudaRecord{
     .{ .launch = .{ .name = "h3 h3_tile_scores", .symbol = "h3_tile_scores", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 20, .static = 0, .bound = 256 }, .{ .regs = 20, .static = 0, .bound = 256 }, .{ .regs = 20, .static = 0, .bound = 256 }, .{ .regs = 21, .static = 0, .bound = 256 }, .{ .regs = 21, .static = 0, .bound = 256 } } },
     .{ .launch = .{ .name = "h3 h3_coarse", .symbol = "h3_coarse", .image = "h3", .threads = 32 }, .usage = .{ .{ .regs = 32, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 39, .static = 0, .bound = 0 }, .{ .regs = 39, .static = 0, .bound = 0 } } },
     .{ .launch = .{ .name = "h3 h3_attention", .symbol = "h3_attention", .image = "h3", .threads = 128, .dynamic = 49152 }, .usage = .{ .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 217, .static = 0, .bound = 128 }, .{ .regs = 217, .static = 0, .bound = 128 } } },
+    .{ .launch = .{ .name = "h3 h3_heads_quant", .symbol = "h3_heads_quant", .image = "h3", .threads = 128 }, .usage = .{ .{ .regs = 80, .static = 0, .bound = 128 }, .{ .regs = 80, .static = 0, .bound = 128 }, .{ .regs = 80, .static = 0, .bound = 128 }, .{ .regs = 86, .static = 0, .bound = 128 }, .{ .regs = 86, .static = 0, .bound = 128 } } },
+    .{ .launch = .{ .name = "h3 h3_attention_i8", .symbol = "h3_attention_i8", .image = "h3", .threads = 128, .dynamic = 24576 }, .usage = .{ .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 }, .{ .regs = 168, .static = 0, .bound = 128 } } },
     .{ .launch = .{ .name = "h3 h3_topk", .symbol = "h3_topk", .image = "h3", .threads = 32 }, .usage = .{ .{ .regs = 32, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 }, .{ .regs = 38, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 0, .bound = 0 } } },
     .{ .launch = .{ .name = "h3 h3_quantize", .symbol = "h3_quantize", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 73, .static = 128, .bound = 256 }, .{ .regs = 72, .static = 128, .bound = 256 }, .{ .regs = 72, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 } } },
     .{ .launch = .{ .name = "h3 h3_norm_quant", .symbol = "h3_norm_quant", .image = "h3", .threads = 256 }, .usage = .{ .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 80, .static = 128, .bound = 256 }, .{ .regs = 74, .static = 128, .bound = 256 }, .{ .regs = 74, .static = 128, .bound = 256 } } },
@@ -70,9 +72,6 @@ pub const cuda = [_]CudaRecord{
 pub const cuda_pending = [_]CudaRecord{
     .{ .launch = .{ .name = "drama3 d3_router_compact", .symbol = "d3_router_compact", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
     .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
-    // the dense image's int8 attention (h3_attention_int8.cuh): unmeasured until the limits job compiles it
-    .{ .launch = .{ .name = "h3 h3_heads_quant", .symbol = "h3_heads_quant", .image = "h3", .threads = 128 }, .usage = @import("registry.zig").none },
-    .{ .launch = .{ .name = "h3 h3_attention_i8", .symbol = "h3_attention_i8", .image = "h3", .threads = 128, .dynamic = 24576 }, .usage = @import("registry.zig").none },
 };
 
 /// The picture's TMA products (h3_int8_tma.cuh): sm_121's usage from GB10's live check; sm_120's
