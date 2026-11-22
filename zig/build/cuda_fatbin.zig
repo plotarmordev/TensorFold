@@ -19,8 +19,9 @@ pub fn fatbin(b: *std.Build, nvcc: []const u8, version: std.Build.LazyPath, k: K
     const run = b.addSystemCommand(&.{ nvcc, "-fatbin" });
     run.addFileInput(version);
     run.addArgs(&torch_flags);
-    // CUDA 13's headers with cl.exe need MSVC's conforming preprocessor and M_SQRT2's math define.
-    if (b.graph.host.result.os.tag == .windows) run.addArgs(&.{ "-Xcompiler=/Zc:preprocessor", "-D_USE_MATH_DEFINES" });
+    // CUDA 13's headers with cl.exe need MSVC's conforming preprocessor and M_SQRT2's math define; under a CJK system
+    // code page, C4819 (a header character it cannot represent) buries the real errors in thousands of warnings.
+    if (b.graph.host.result.os.tag == .windows) run.addArgs(&.{ "-Xcompiler=/Zc:preprocessor", "-Xcompiler=/wd4819", "-D_USE_MATH_DEFINES" });
     run.addArgs(k.flags);
     // Generated CUDA sources resolve the same maintained headers as checked-in units.
     run.addDirectoryArg2(b.path("zig/kernels/cuda"), .{ .prefix = "-I" });
