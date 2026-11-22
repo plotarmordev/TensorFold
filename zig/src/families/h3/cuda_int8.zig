@@ -28,7 +28,8 @@ pub fn encoder(d: *cuda.Driver) !Encode {
 /// TallTile's Config::shared_bytes: 2 stages of (256 + 128) * 128 bytes, the 1 KiB alignment slack
 /// and the barriers.
 pub const gemm_shared = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
-pub const heads_shared = gemm_shared;
+/// The ring, then the fused epilogue's staging: 8 warps of 8 rows x 4 lanes x 32 columns of float.
+pub const heads_shared = gemm_shared + 8 * 8 * 4 * 32 * 4;
 const block_m = 256;
 const block_n = 128;
 
@@ -43,7 +44,6 @@ pub const Heads = extern struct {
     tv: u64,
     heads: c_int,
     slots: c_int,
-    rot: c_int,
     eps: f32,
 };
 

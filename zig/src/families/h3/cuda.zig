@@ -374,7 +374,6 @@ pub const Model = struct {
                         .tv = g.tv[par],
                         .heads = @intCast(heads),
                         .slots = @intCast(tiles * slot_tile),
-                        .rot = @intCast(in.rot),
                         .eps = eps,
                     };
                     try t.gemmHeads(self, lay.?, t.blocks[index].qkvc, rows, heads_args);

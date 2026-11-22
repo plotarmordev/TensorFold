@@ -219,7 +219,8 @@ fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, bo
 
 /// TallTile's ring (the only tile the picture uses): 2 stages of (256 + 128) x 128 bytes.
 const tma_shared_bytes = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
-const heads_shared_bytes = tma_shared_bytes;
+/// The ring, then the fused heads epilogue's staging: 8 warps of 8 rows x 4 lanes x 32 columns of float.
+const heads_shared_bytes = tma_shared_bytes + 8 * 8 * 4 * 32 * 4;
 
 const HeadEpilogue = extern struct {
     nq: u64,
@@ -232,7 +233,6 @@ const HeadEpilogue = extern struct {
     tv: u64,
     heads: c_int,
     slots: c_int,
-    rot: c_int,
     eps: f32,
 };
 
@@ -456,7 +456,6 @@ pub const GemmTma = struct {
             .tv = out + 2 * block,
             .heads = @intCast(t.headCount()),
             .slots = @intCast(t.headSlots()),
-            .rot = 48,
             .eps = 1e-5,
         };
         var args: cuda.Args = .{};

@@ -290,33 +290,32 @@ struct HeadEpilogue {
     const float *cos, *sin;
     const int *slot;
     __nv_bfloat16 *tq, *tk, *tv;
-    int heads, slots, rot;
+    int heads, slots;
     float eps;
 };
 
-// Gather one lane's contiguous quarter-head without changing h3_heads' bf16 inputs or sum order.
-__device__ __forceinline__ void h3_head_quarter(const float (&ordered)[4][8], float (&v)[32], int group, int quarter) {
-    #pragma unroll
-    for (int source = 0; source < 4; source++) {
-        #pragma unroll
-        for (int j = 0; j < 8; j++) {
-            float x;
-            switch (quarter) {
-                case 0: x = ordered[0][j]; break;
-                case 1: x = ordered[1][j]; break;
-                case 2: x = ordered[2][j]; break;
-                default: x = ordered[3][j]; break;
-            }
-            v[source * 8 + j] = __shfl_sync(0xffffffffu, x, group * 4 + source);
-        }
-    }
-}
-
-__device__ __forceinline__ void h3_head_store(float (&ordered)[4][8], const HeadEpilogue &heads,
+// The fused epilogue's staging, after the ring: each warp's 8 rows x 4 lanes x 32 columns of one head.
+// h3_heads' work on one lane's contiguous quarter, read back from that buffer: the serial norm sum in
+// column order, the xor reductions across the quarter's four lanes, the bf16
+// normalization, the 48-angle rotary and the packed store in tile order. Same inputs, sum order and
+// rounding, so the bytes match h3_heads'.
+__device__ __forceinline__ void h3_head_store(const float *group_stage, const HeadEpilogue &heads,
                                               bool query, int head, int row, int group, int quarter, int m) {
     constexpr int rot = 48;
     float v[32];
-    h3_head_quarter(ordered, v, group, quarter);
+    #pragma unroll
+    for (int source = 0; source < 4; source++) {
+        const float4 low = *reinterpret_cast<const float4 *>(group_stage + source * 32 + quarter * 8);
+        const float4 high = *reinterpret_cast<const float4 *>(group_stage + source * 32 + quarter * 8 + 4);
+        v[source * 8 + 0] = low.x;
+        v[source * 8 + 1] = low.y;
+        v[source * 8 + 2] = low.z;
+        v[source * 8 + 3] = low.w;
+        v[source * 8 + 4] = high.x;
+        v[source * 8 + 5] = high.y;
+        v[source * 8 + 6] = high.z;
+        v[source * 8 + 7] = high.w;
+    }
     const int c0 = quarter * 32;
     const __nv_bfloat16 *nw = query ? heads.nq : heads.nk;
     float sq = 0.0f;
@@ -368,6 +367,9 @@ __device__ __forceinline__ void h3_head_store(float (&ordered)[4][8], const Head
 // GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
 // ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
 // fp32 rows are written unrounded.
+// HEADS is the qkv product whose N holds q, then k, then v in 128-column heads: each head tile's
+// warp stages its row's head in shared memory, reads back its own quarter and applies h3_heads'
+// norm and rotary, so the separate heads pass is gone.
 template <typename Config, bool SWIGLU, bool GROUPED = false, bool HEADS = false, typename Out = std::conditional_t<GROUPED, float, __nv_bfloat16>>
 __device__ __forceinline__ void
     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
@@ -377,6 +379,8 @@ __device__ __forceinline__ void
     const uint32_t shared_base = (h3_shared_address(shared_memory) + 1023) & ~1023u;
     const uint32_t barriers = shared_base + tma_stages * Config::stage_bytes;
     int *release_counts = reinterpret_cast<int *>(shared_memory + (barriers - h3_shared_address(shared_memory)) + tma_stages * 8);
+    float *transpose = nullptr;
+    if constexpr (HEADS) transpose = reinterpret_cast<float *>(shared_memory + ((barriers - h3_shared_address(shared_memory) + tma_stages * 16 + 15) & ~15u));
     static_assert(!HEADS || (Config::warps_n == 1 && Config::n_tiles == 16), "one warp must hold a whole head");
 
     TileGrid grid;
@@ -451,7 +455,6 @@ __device__ __forceinline__ void
 
         // Scale the int32 products. Slot j of each quad of n-tiles holds output columns 2((j + t) %
         // 4) and the one after among the lane's eight.
-        float values[Config::m_tiles][Config::n_tiles][4];
         float row_scales[Config::m_tiles][2];
         #pragma unroll
         for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
@@ -461,20 +464,25 @@ __device__ __forceinline__ void
                 row_scales[m_tile][half] = row < m ? activation_scales[row] : 0.0f;
             }
         }
-        #pragma unroll
-        for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
-            const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
+        // HEADS scales and packs in the store loop, so its epilogue holds no 128-float table beside the
+        // head's own registers.
+        float values[Config::m_tiles][Config::n_tiles][4];
+        if constexpr (!HEADS) {
             #pragma unroll
-            for (int slot = 0; slot < 4; slot++) {
-                const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
+            for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
+                const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
                 #pragma unroll
-                for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+                for (int slot = 0; slot < 4; slot++) {
+                    const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
                     #pragma unroll
-                    for (int half = 0; half < 2; half++) {
-                        const int32_t *products = accumulators[m_tile][quad * 4 + slot] + half * 2;
-                        float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
-                        scaled[0] = static_cast<float>(products[0]) * row_scales[m_tile][half] * column_scale.x;
-                        scaled[1] = static_cast<float>(products[1]) * row_scales[m_tile][half] * column_scale.y;
+                    for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+                        #pragma unroll
+                        for (int half = 0; half < 2; half++) {
+                            const int32_t *products = accumulators[m_tile][quad * 4 + slot] + half * 2;
+                            float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
+                            scaled[0] = static_cast<float>(products[0]) * row_scales[m_tile][half] * column_scale.x;
+                            scaled[1] = static_cast<float>(products[1]) * row_scales[m_tile][half] * column_scale.y;
+                        }
                     }
                 }
             }
@@ -484,6 +492,7 @@ __device__ __forceinline__ void
         for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
             #pragma unroll
             for (int half = 0; half < 2; half++) {
+                const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
                 float ordered[4][8];
                 #pragma unroll
                 for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
@@ -491,8 +500,16 @@ __device__ __forceinline__ void
                     uint32_t words[4];
                     #pragma unroll
                     for (int slot = 0; slot < 4; slot++) {
-                        const float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
-                        words[slot] = h3_pack_bf16(scaled[0], scaled[1]);
+                        if constexpr (HEADS) {
+                            const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
+                            const int32_t *products = accumulators[m_tile][quad * 4 + slot] + half * 2;
+                            const float row_scale = row_scales[m_tile][half];
+                            words[slot] = h3_pack_bf16(static_cast<float>(products[0]) * row_scale * column_scale.x,
+                                                       static_cast<float>(products[1]) * row_scale * column_scale.y);
+                        } else {
+                            const float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
+                            words[slot] = h3_pack_bf16(scaled[0], scaled[1]);
+                        }
                     }
                     // Rotate the slots right by t to put the columns in order.
                     if (quad_lane & 1) {
@@ -511,14 +528,15 @@ __device__ __forceinline__ void
                         words[3] = swapped;
                     }
                     if constexpr (HEADS) {
-                        #pragma unroll
-                        for (int j = 0; j < 4; j++) {
-                            const float2 pair = __bfloat1622float2(*reinterpret_cast<__nv_bfloat162 *>(&words[j]));
-                            ordered[quad][2 * j] = pair.x;
-                            ordered[quad][2 * j + 1] = pair.y;
+                        if (tile_n < 2 * heads->heads) {
+                            #pragma unroll
+                            for (int j = 0; j < 4; j++) {
+                                const float2 pair = __bfloat1622float2(*reinterpret_cast<__nv_bfloat162 *>(&words[j]));
+                                ordered[quad][2 * j] = pair.x;
+                                ordered[quad][2 * j + 1] = pair.y;
+                            }
                         }
                     }
-                    const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
                     if (row < m) {
                         if constexpr (SWIGLU) {
                             // The lane's eight columns hold the (gate, up) pairs of features
@@ -541,10 +559,18 @@ __device__ __forceinline__ void
                 }
                 if constexpr (HEADS) {
                     if (tile_n < 2 * heads->heads) {
+                        // Each lane stages its 32 columns, then reads back its own contiguous quarter.
+                        float *group_stage = transpose + warp * 8 * 4 * 32 + group_id * 128;
+                        float *lane = group_stage + quad_lane * 32;
+                        #pragma unroll
+                        for (int q = 0; q < 4; q++) {
+                            *reinterpret_cast<float4 *>(lane + q * 8) = make_float4(ordered[q][0], ordered[q][1], ordered[q][2], ordered[q][3]);
+                            *reinterpret_cast<float4 *>(lane + q * 8 + 4) = make_float4(ordered[q][4], ordered[q][5], ordered[q][6], ordered[q][7]);
+                        }
+                        __syncwarp();
                         const bool query = tile_n < heads->heads;
                         const int head = query ? tile_n : tile_n - heads->heads;
-                        const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
-                        h3_head_store(ordered, *heads, query, head, row, group_id, quad_lane, m);
+                        h3_head_store(group_stage, *heads, query, head, row, group_id, quad_lane, m);
                     }
                 }
             }

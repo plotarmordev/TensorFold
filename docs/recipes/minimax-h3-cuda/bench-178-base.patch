@@ -16,10 +16,10 @@ index 2b378e66a..0a53e33a1 100644
          const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
          const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
 diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
-index 06c1131d2..a04160b4f 100644
+index 06c1131d2..b97affc50 100644
 --- a/zig/kernels/cuda/h3_int8_tma.cuh
 +++ b/zig/kernels/cuda/h3_int8_tma.cuh
-@@ -285,6 +285,79 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
+@@ -285,6 +285,78 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
      }
  }
  
@@ -28,33 +28,32 @@ index 06c1131d2..a04160b4f 100644
 +    const float *cos, *sin;
 +    const int *slot;
 +    __nv_bfloat16 *tq, *tk, *tv;
-+    int heads, slots, rot;
++    int heads, slots;
 +    float eps;
 +};
 +
-+// Gather one lane's contiguous quarter-head without changing h3_heads' bf16 inputs or sum order.
-+__device__ __forceinline__ void h3_head_quarter(const float (&ordered)[4][8], float (&v)[32], int group, int quarter) {
-+    #pragma unroll
-+    for (int source = 0; source < 4; source++) {
-+        #pragma unroll
-+        for (int j = 0; j < 8; j++) {
-+            float x;
-+            switch (quarter) {
-+                case 0: x = ordered[0][j]; break;
-+                case 1: x = ordered[1][j]; break;
-+                case 2: x = ordered[2][j]; break;
-+                default: x = ordered[3][j]; break;
-+            }
-+            v[source * 8 + j] = __shfl_sync(0xffffffffu, x, group * 4 + source);
-+        }
-+    }
-+}
-+
-+__device__ __forceinline__ void h3_head_store(float (&ordered)[4][8], const HeadEpilogue &heads,
++// The fused epilogue's staging, after the ring: each warp's 8 rows x 4 lanes x 32 columns of one head.
++// h3_heads' work on one lane's contiguous quarter, read back from that buffer: the serial norm sum in
++// column order, the xor reductions across the quarter's four lanes, the bf16
++// normalization, the 48-angle rotary and the packed store in tile order. Same inputs, sum order and
++// rounding, so the bytes match h3_heads'.
++__device__ __forceinline__ void h3_head_store(const float *group_stage, const HeadEpilogue &heads,
 +                                              bool query, int head, int row, int group, int quarter, int m) {
 +    constexpr int rot = 48;
 +    float v[32];
-+    h3_head_quarter(ordered, v, group, quarter);
++    #pragma unroll
++    for (int source = 0; source < 4; source++) {
++        const float4 low = *reinterpret_cast<const float4 *>(group_stage + source * 32 + quarter * 8);
++        const float4 high = *reinterpret_cast<const float4 *>(group_stage + source * 32 + quarter * 8 + 4);
++        v[source * 8 + 0] = low.x;
++        v[source * 8 + 1] = low.y;
++        v[source * 8 + 2] = low.z;
++        v[source * 8 + 3] = low.w;
++        v[source * 8 + 4] = high.x;
++        v[source * 8 + 5] = high.y;
++        v[source * 8 + 6] = high.z;
++        v[source * 8 + 7] = high.w;
++    }
 +    const int c0 = quarter * 32;
 +    const __nv_bfloat16 *nw = query ? heads.nq : heads.nk;
 +    float sq = 0.0f;
@@ -99,11 +98,14 @@ index 06c1131d2..a04160b4f 100644
  // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
  // silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
  // produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
-@@ -295,15 +368,16 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
+@@ -295,15 +367,21 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
  // GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
  // ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
  // fp32 rows are written unrounded.
 -template <typename Config, bool SWIGLU, bool GROUPED = false, typename Out = std::conditional_t<GROUPED, float, __nv_bfloat16>>
++// HEADS is the qkv product whose N holds q, then k, then v in 128-column heads: each head tile's
++// warp stages its row's head in shared memory, reads back its own quarter and applies h3_heads'
++// norm and rotary, so the separate heads pass is gone.
 +template <typename Config, bool SWIGLU, bool GROUPED = false, bool HEADS = false, typename Out = std::conditional_t<GROUPED, float, __nv_bfloat16>>
  __device__ __forceinline__ void
      gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
@@ -114,11 +116,57 @@ index 06c1131d2..a04160b4f 100644
      const uint32_t shared_base = (h3_shared_address(shared_memory) + 1023) & ~1023u;
      const uint32_t barriers = shared_base + tma_stages * Config::stage_bytes;
      int *release_counts = reinterpret_cast<int *>(shared_memory + (barriers - h3_shared_address(shared_memory)) + tma_stages * 8);
++    float *transpose = nullptr;
++    if constexpr (HEADS) transpose = reinterpret_cast<float *>(shared_memory + ((barriers - h3_shared_address(shared_memory) + tma_stages * 16 + 15) & ~15u));
 +    static_assert(!HEADS || (Config::warps_n == 1 && Config::n_tiles == 16), "one warp must hold a whole head");
  
      TileGrid grid;
      grid.tiles_m = (m + Config::block_m - 1) / Config::block_m;
-@@ -407,12 +481,13 @@ __device__ __forceinline__ void
+@@ -377,7 +455,6 @@ __device__ __forceinline__ void
+ 
+         // Scale the int32 products. Slot j of each quad of n-tiles holds output columns 2((j + t) %
+         // 4) and the one after among the lane's eight.
+-        float values[Config::m_tiles][Config::n_tiles][4];
+         float row_scales[Config::m_tiles][2];
+         #pragma unroll
+         for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+@@ -387,37 +464,52 @@ __device__ __forceinline__ void
+                 row_scales[m_tile][half] = row < m ? activation_scales[row] : 0.0f;
+             }
+         }
+-        #pragma unroll
+-        for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
+-            const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
++        // HEADS scales and packs in the store loop, so its epilogue holds no 128-float table beside the
++        // head's own registers.
++        float values[Config::m_tiles][Config::n_tiles][4];
++        if constexpr (!HEADS) {
+             #pragma unroll
+-            for (int slot = 0; slot < 4; slot++) {
+-                const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
++            for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
++                const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
+                 #pragma unroll
+-                for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
++                for (int slot = 0; slot < 4; slot++) {
++                    const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
+                     #pragma unroll
+-                    for (int half = 0; half < 2; half++) {
+-                        const int32_t *products = accumulators[m_tile][quad * 4 + slot] + half * 2;
+-                        float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
+-                        scaled[0] = static_cast<float>(products[0]) * row_scales[m_tile][half] * column_scale.x;
+-                        scaled[1] = static_cast<float>(products[1]) * row_scales[m_tile][half] * column_scale.y;
++                    for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
++                        #pragma unroll
++                        for (int half = 0; half < 2; half++) {
++                            const int32_t *products = accumulators[m_tile][quad * 4 + slot] + half * 2;
++                            float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
++                            scaled[0] = static_cast<float>(products[0]) * row_scales[m_tile][half] * column_scale.x;
++                            scaled[1] = static_cast<float>(products[1]) * row_scales[m_tile][half] * column_scale.y;
++                        }
+                     }
+                 }
+             }
          }
  
          #pragma unroll
@@ -128,6 +176,7 @@ index 06c1131d2..a04160b4f 100644
              #pragma unroll
 -            for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
 +            for (int half = 0; half < 2; half++) {
++                const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
 +                float ordered[4][8];
                  #pragma unroll
 -                for (int half = 0; half < 2; half++) {
@@ -136,22 +185,40 @@ index 06c1131d2..a04160b4f 100644
                      uint32_t words[4];
                      #pragma unroll
                      for (int slot = 0; slot < 4; slot++) {
-@@ -435,6 +510,14 @@ __device__ __forceinline__ void
+-                        const float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
+-                        words[slot] = h3_pack_bf16(scaled[0], scaled[1]);
++                        if constexpr (HEADS) {
++                            const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
++                            const int32_t *products = accumulators[m_tile][quad * 4 + slot] + half * 2;
++                            const float row_scale = row_scales[m_tile][half];
++                            words[slot] = h3_pack_bf16(static_cast<float>(products[0]) * row_scale * column_scale.x,
++                                                       static_cast<float>(products[1]) * row_scale * column_scale.y);
++                        } else {
++                            const float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
++                            words[slot] = h3_pack_bf16(scaled[0], scaled[1]);
++                        }
+                     }
+                     // Rotate the slots right by t to put the columns in order.
+                     if (quad_lane & 1) {
+@@ -435,7 +527,16 @@ __device__ __forceinline__ void
                          words[1] = words[3];
                          words[3] = swapped;
                      }
+-                    const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
 +                    if constexpr (HEADS) {
-+                        #pragma unroll
-+                        for (int j = 0; j < 4; j++) {
-+                            const float2 pair = __bfloat1622float2(*reinterpret_cast<__nv_bfloat162 *>(&words[j]));
-+                            ordered[quad][2 * j] = pair.x;
-+                            ordered[quad][2 * j + 1] = pair.y;
++                        if (tile_n < 2 * heads->heads) {
++                            #pragma unroll
++                            for (int j = 0; j < 4; j++) {
++                                const float2 pair = __bfloat1622float2(*reinterpret_cast<__nv_bfloat162 *>(&words[j]));
++                                ordered[quad][2 * j] = pair.x;
++                                ordered[quad][2 * j + 1] = pair.y;
++                            }
 +                        }
 +                    }
-                     const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
                      if (row < m) {
                          if constexpr (SWIGLU) {
-@@ -443,18 +526,34 @@ __device__ __forceinline__ void
+                             // The lane's eight columns hold the (gate, up) pairs of features
+@@ -443,18 +544,42 @@ __device__ __forceinline__ void
                              *reinterpret_cast<uint2 *>(output + static_cast<size_t>(row) * (n / 2) + column / 2) =
                                  make_uint2(h3_pack_bf16(h3_swiglu_value(words[0]), h3_swiglu_value(words[1])),
                                             h3_pack_bf16(h3_swiglu_value(words[2]), h3_swiglu_value(words[3])));
@@ -170,10 +237,18 @@ index 06c1131d2..a04160b4f 100644
                  }
 +                if constexpr (HEADS) {
 +                    if (tile_n < 2 * heads->heads) {
++                        // Each lane stages its 32 columns, then reads back its own contiguous quarter.
++                        float *group_stage = transpose + warp * 8 * 4 * 32 + group_id * 128;
++                        float *lane = group_stage + quad_lane * 32;
++                        #pragma unroll
++                        for (int q = 0; q < 4; q++) {
++                            *reinterpret_cast<float4 *>(lane + q * 8) = make_float4(ordered[q][0], ordered[q][1], ordered[q][2], ordered[q][3]);
++                            *reinterpret_cast<float4 *>(lane + q * 8 + 4) = make_float4(ordered[q][4], ordered[q][5], ordered[q][6], ordered[q][7]);
++                        }
++                        __syncwarp();
 +                        const bool query = tile_n < heads->heads;
 +                        const int head = query ? tile_n : tile_n - heads->heads;
-+                        const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
-+                        h3_head_store(ordered, *heads, query, head, row, group_id, quad_lane, m);
++                        h3_head_store(group_stage, *heads, query, head, row, group_id, quad_lane, m);
 +                    }
 +                }
              }
@@ -187,19 +262,19 @@ index 06c1131d2..a04160b4f 100644
  using PromptTile = GemmConfig<64, 64, 4>;
  
 diff --git a/zig/src/core/contract/registry_media.zig b/zig/src/core/contract/registry_media.zig
-index dcb13d7ce..f7d940a6a 100644
+index dcb13d7ce..70724a5ff 100644
 --- a/zig/src/core/contract/registry_media.zig
 +++ b/zig/src/core/contract/registry_media.zig
 @@ -76,6 +76,7 @@ pub const cuda_pending = [_]CudaRecord{
  /// pending the five-SM limits job.
  pub const cuda_tma_pending = [_]CudaRecord{
      .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(222) },
-+    .{ .launch = .{ .name = "h3 h3_heads_int8_tma", .symbol = "h3_heads_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(255) },
++    .{ .launch = .{ .name = "h3 h3_heads_int8_tma", .symbol = "h3_heads_int8_tma", .image = "h3", .threads = 256, .dynamic = 132128, .opt_in = true, .min_sm = 90 }, .usage = sm121(255) },
      .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(219) },
      .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = @import("registry.zig").none },
  };
 diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
-index 0e1fa22e9..8e4814dd9 100644
+index 0e1fa22e9..f455ceeb6 100644
 --- a/zig/src/families/h3/cuda.zig
 +++ b/zig/src/families/h3/cuda.zig
 @@ -28,7 +28,7 @@ const scale_m = 4;
@@ -227,7 +302,7 @@ index 0e1fa22e9..8e4814dd9 100644
          for (self.blocks[0..count], 0..) |*b, index| {
              const tab = in.tables + index * table_bytes;
              const par = index & 1;
-@@ -360,18 +362,33 @@ pub const Model = struct {
+@@ -360,18 +362,32 @@ pub const Model = struct {
              if (index == 0) try self.norm(in.x, b.norms.ptr, tab, tab, in.line, -1, scale_a, shift_a, iq, is) else try self.norm(in.x, b.norms.ptr, tab - table_bytes, tab, in.line, gate_m, scale_a, shift_a, iq, is);
              try self.lap("norms", &mark);
              if (self.int8) |t| {
@@ -246,7 +321,6 @@ index 0e1fa22e9..8e4814dd9 100644
 +                        .tv = g.tv[par],
 +                        .heads = @intCast(heads),
 +                        .slots = @intCast(tiles * slot_tile),
-+                        .rot = @intCast(in.rot),
 +                        .eps = eps,
 +                    };
 +                    try t.gemmHeads(self, lay.?, t.blocks[index].qkvc, rows, heads_args);
@@ -267,21 +341,22 @@ index 0e1fa22e9..8e4814dd9 100644
                  const at = own0 * slot_tile * head_dim * 2;
                  var args: cuda.Args = .{};
                  for ([_]u64{ g.qkvc, b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
-@@ -435,5 +452,4 @@ pub const Model = struct {
+@@ -435,5 +451,4 @@ pub const Model = struct {
              try self.launch("h3_gate_add", .{ .x = @intCast(rows) }, 256, 0, &args);
          }
      }
 -
  };
 diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
-index 712685e8c..a98b1bb50 100644
+index 712685e8c..a9f5bfc80 100644
 --- a/zig/src/families/h3/cuda_int8.zig
 +++ b/zig/src/families/h3/cuda_int8.zig
 @@ -28,9 +28,25 @@ pub fn encoder(d: *cuda.Driver) !Encode {
  /// TallTile's Config::shared_bytes: 2 stages of (256 + 128) * 128 bytes, the 1 KiB alignment slack
  /// and the barriers.
  pub const gemm_shared = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
-+pub const heads_shared = gemm_shared;
++/// The ring, then the fused epilogue's staging: 8 warps of 8 rows x 4 lanes x 32 columns of float.
++pub const heads_shared = gemm_shared + 8 * 8 * 4 * 32 * 4;
  const block_m = 256;
  const block_n = 128;
  
@@ -296,7 +371,6 @@ index 712685e8c..a98b1bb50 100644
 +    tv: u64,
 +    heads: c_int,
 +    slots: c_int,
-+    rot: c_int,
 +    eps: f32,
 +};
 +
@@ -328,14 +402,15 @@ index 712685e8c..a98b1bb50 100644
      pub fn warm(t: *Int8, self: *Model, rows: usize) !void {
          try t.reserve(self, rows);
 diff --git a/zig/tests/cuda/contract_h3_int8.zig b/zig/tests/cuda/contract_h3_int8.zig
-index ee7c72293..471710a4a 100644
+index ee7c72293..8e7cc83af 100644
 --- a/zig/tests/cuda/contract_h3_int8.zig
 +++ b/zig/tests/cuda/contract_h3_int8.zig
 @@ -219,18 +219,34 @@ fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, bo
  
  /// TallTile's ring (the only tile the picture uses): 2 stages of (256 + 128) x 128 bytes.
  const tma_shared_bytes = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
-+const heads_shared_bytes = tma_shared_bytes;
++/// The ring, then the fused heads epilogue's staging: 8 warps of 8 rows x 4 lanes x 32 columns of float.
++const heads_shared_bytes = tma_shared_bytes + 8 * 8 * 4 * 32 * 4;
 +
 +const HeadEpilogue = extern struct {
 +    nq: u64,
@@ -348,7 +423,6 @@ index ee7c72293..471710a4a 100644
 +    tv: u64,
 +    heads: c_int,
 +    slots: c_int,
-+    rot: c_int,
 +    eps: f32,
 +};
  
@@ -500,7 +574,7 @@ index ee7c72293..471710a4a 100644
          }
          return true;
      }
-@@ -360,6 +435,41 @@ pub const GemmTma = struct {
+@@ -360,6 +435,40 @@ pub const GemmTma = struct {
          try cuda.launch.launch(try tmaFunction(t.mod, name), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
      }
  
@@ -525,7 +599,6 @@ index ee7c72293..471710a4a 100644
 +            .tv = out + 2 * block,
 +            .heads = @intCast(t.headCount()),
 +            .slots = @intCast(t.headSlots()),
-+            .rot = 48,
 +            .eps = 1e-5,
 +        };
 +        var args: cuda.Args = .{};
@@ -542,7 +615,7 @@ index ee7c72293..471710a4a 100644
      pub fn run(t: *GemmTma) !void {
          if (t.mode == .swiglu) {
              var args: cuda.Args = .{};
-@@ -367,12 +477,26 @@ pub const GemmTma = struct {
+@@ -367,12 +476,26 @@ pub const GemmTma = struct {
              args.add(@as(c_int, @intCast(t.shape.k)));
              try cuda.launch.launch(try t.mod.function("h3_swiglu_rows"), .{ .grid = .{ .x = @intCast(t.shape.n / 2) }, .block = .{ .x = 256 } }, t.rig.s, &args);
              try t.product("h3_swiglu_int8_tma", t.dev[5], t.dev[6], t.dev[4]);
@@ -569,7 +642,7 @@ index ee7c72293..471710a4a 100644
          try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[7]);
          var args: cuda.Args = .{};
          for ([_]u64{ t.dev[7], t.dev[8] }) |p| args.add(p);
-@@ -382,13 +506,21 @@ pub const GemmTma = struct {
+@@ -382,13 +505,21 @@ pub const GemmTma = struct {
      }
  
      pub fn count(t: *GemmTma) usize {
