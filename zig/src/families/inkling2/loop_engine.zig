@@ -504,24 +504,25 @@ pub const Model = struct {
             const visit = m.w.p.visits.steps[v];
             const layer = m.w.p.at(visit.layer);
             const geometry = m.layerGeometry(visit.layer);
-            const rb = @as(usize, layer.heads.kv) * layer.heads.dim * 2;
+            const rb = @as(usize, layer.heads.dim) * 2;
+            const head_bytes = @as(usize, geometry.ring) * rb; // caches are [kv head][ring slot][dim] (attention.cu prep)
             const global = layer.kind == .global;
             const count = if (global) at else @min(at, m.w.c.text.window - 1);
             const first = at - count;
             const cache = m.cacheOf(visit.of(.conv).?);
-            for ([2]u64{ cache.k, cache.v }) |base| {
+            for ([2]u64{ cache.k, cache.v }) |base| for (0..layer.heads.kv) |h| {
                 var pos = first;
                 while (pos < at) {
                     const row = pos % geometry.ring;
                     const n = @min(at - pos, geometry.ring - row);
-                    const dev = base + row * rb;
+                    const dev = base + h * head_bytes + row * rb;
                     const src = if (out) dev else saved.buf.ptr + off;
                     const dst = if (out) saved.buf.ptr + off else dev;
                     try m.copy(s, dst, src, n * rb);
                     off += n * rb;
                     pos += n;
                 }
-            }
+            };
         }
         const conv = m.cache.ptr + m.layout.at(0).conv_offset;
         const bytes = m.layout.bytes - m.layout.at(0).conv_offset;
