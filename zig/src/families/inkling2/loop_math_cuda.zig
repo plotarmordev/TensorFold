@@ -65,7 +65,7 @@ pub fn ar(k: *const Kernels, s: cuda.Stream, a: ArArgs) !void {
     try go(k.ar_fn, s, .{ .x = @intCast(a.rows) }, 512, &args);
 }
 
-/// Messages: BF16 banks, even/odd qm/kv FP32 queries/output; row-local q/k/v/mlp, no scratch/position/mask/cache.
+/// Messages: BF16 banks, even/odd qm/kv FP32 queries; output [core][role][row][c] (role-major planes).
 pub fn messages(
     k: *const Kernels,
     s: cuda.Stream,
@@ -143,16 +143,6 @@ pub fn roundBf16(k: *const Kernels, s: cuda.Stream, in_f32: u64, out_f32: u64, n
     try go(k.round_bf16_fn, s, .{ .x = @intCast((n + 255) / 256) }, 256, &a);
 }
 
-test "loop math argument ABI and message role offsets" {
+test "loop math argument ABI" {
     try std.testing.expectEqual(@as(usize, 112), @sizeOf(ArArgs));
-    const c = 2304;
-    const j = 7;
-    const row = 3;
-    const core_layers = 12;
-    const base = ((row * core_layers + j) * 4) * c;
-    for ([_]usize{ 0, 1, 2, 3 }, 0..) |role, i| {
-        const at = base + role * c;
-        const queries = @as(usize, 2 * j + @as(usize, @intFromBool(i == 2 or i == 3))) * c;
-        try std.testing.expect(at >= base and queries < 24 * c);
-    }
 }
