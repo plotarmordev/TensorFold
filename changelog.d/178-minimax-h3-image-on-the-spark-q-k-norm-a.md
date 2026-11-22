@@ -1,0 +1,1 @@
+- MiniMax-H3-Image CUDA: fuse int8 q/k RMS normalization, rotary, and tile-order stores into the TMA qkv product, removing the separate warm head-layout pass while preserving bf16 and FP4 paths.
