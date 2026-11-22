@@ -58,7 +58,11 @@ fn trace(gpu: Gpu, loaded: *native.Loaded, prompt: []const u32, sampling: ?lanes
 
 fn sameTrace(a: *const Trace, b: *const Trace) !void {
     if (!std.mem.eql(u32, a.ids, b.ids)) return error.MiniServingTokenMismatch;
-    if (!std.mem.eql(u8, std.mem.sliceAsBytes(a.logits), std.mem.sliceAsBytes(b.logits))) return error.MiniServingLogitMismatch;
+    if (std.mem.indexOfDiff(u32, @ptrCast(a.logits), @ptrCast(b.logits))) |i| {
+        const v = a.logits.len / a.ids.len;
+        std.debug.print("RESULT mini-serving logits differ step={d} id={d} {e} vs {e}\n", .{ i / v, i % v, a.logits[i], b.logits[i] });
+        return error.MiniServingLogitMismatch;
+    }
 }
 
 fn hostReference(gpu: Gpu, loaded: *native.Loaded, prompt: []const u32) !void {
@@ -108,7 +112,10 @@ fn freshAndResumed(gpu: Gpu, loaded: *native.Loaded, prompt: []const u32) !void 
         var fresh = try trace(gpu, loaded, prompt, sampling, 8, false, .{});
         defer fresh.deinit(gpu.gpa);
         const cuts: []const u32 = if (case == 0) &.{ 17, 2048 } else &.{ 2049, @intCast(prompt.len - 1) };
-        for (cuts) |cut| try resumedAt(gpu, loaded, prompt, cut, sampling, &fresh);
+        for (cuts) |cut| resumedAt(gpu, loaded, prompt, cut, sampling, &fresh) catch |err| {
+            std.debug.print("RESULT mini-serving resumed case={d} cut={d} mismatch={s}\n", .{ case, cut, @errorName(err) });
+            return err;
+        };
     }
 }
 
