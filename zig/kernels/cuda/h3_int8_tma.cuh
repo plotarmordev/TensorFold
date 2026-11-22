@@ -336,6 +336,7 @@ __device__ __forceinline__ void
     // Position of the lane in the MMA accumulator layout.
     const int group_id = lane / 4;
     const int quad_lane = lane % 4;
+    int tile_m, tile_n;
 
     // Waits for the ring's current stage, multiplies it and releases it; the warp that releases it
     // last refills it.
@@ -364,7 +365,6 @@ __device__ __forceinline__ void
     };
 
     for (int tile = blockIdx.x; tile < grid.tiles; tile += gridDim.x) {
-        int tile_m, tile_n;
         grid.coordinates(tile, tile_m, tile_n);
         int32_t accumulators[Config::m_tiles][Config::n_tiles][4];
         #pragma unroll
