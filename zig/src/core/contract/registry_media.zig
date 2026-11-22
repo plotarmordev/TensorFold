@@ -79,7 +79,7 @@ pub const cuda_tma_pending = [_]CudaRecord{
     .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(215) },
     .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = @import("registry.zig").none },
     .{ .launch = .{ .name = "h3 h3_gemm_int8_tma_blocks", .symbol = "h3_gemm_int8_tma_blocks", .image = "h3", .threads = 256, .dynamic = 66592, .opt_in = true, .min_sm = 90 }, .usage = sm121(236) },
-    .{ .launch = .{ .name = "h3 h3_quantize_blocks int8", .symbol = "h3_quantize_blocks", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = sm121(28) },
+    .{ .launch = .{ .name = "h3 h3_quantize_blocks", .symbol = "h3_quantize_blocks", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = sm121(28) },
 };
 
 /// A usage row measured on sm_121 alone; the other targets stay missing receipts.

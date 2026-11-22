@@ -723,30 +723,34 @@ byte-identical too.
 scales on them at 28.02 dB and 4.27, below the gates, and `160c5d8b`'s 256-wide rotation in mmh3's ConvRot
 style left the picture at 28.14 dB. Folding the same scales in registers changes only the fp32 order of a
 sum that is otherwise exact, so it should give the same picture (inferred, not run). This card ran no picture
-for them; card 176 below does, at a scale per 128 of K.
+for them; card 176 below does, at a scale per 128 of K, and keeps it opt-in.
 
-### Card 176: `out` and `fc2` int8 on the TMA product at a scale per 128 of K — kept, the fox misses episode 1
+### Card 176: `out` and `fc2` int8 on the TMA product at a scale per 128 of K — opt-in, the fox misses episode 1
 
-`out` and `fc2` now join `qkvc` and `fc1` behind the int8 default, on card 146's product rather than cuBLASLt.
+`--int8-blocks` (`H3_LINEAR=int8-blocks` in `bench-script.sh`) runs `out` and `fc2` on card 146's product
+as well, beside the default's int8 `qkvc` and `fc1`. The default stays as main: `out` and `fc2` in bf16.
 `h3_quantize_blocks` quantizes each 128-wide rotated chunk of K at that chunk's own absmax, one warp per chunk,
 and writes the scales block-major (`S[c·M + row]`). The weights get the same layout. `h3_gemm_int8_tma_blocks`
-(`Epilogue::blocks`, a 128×128 `SquareTile` so both scale strips fit in shared beside the ring) folds every
-K block's exact int32 sums into fp32 at that block's two scales before the next block's MMAs. Nothing ever
-leaves the registers as an int32 plane, which was card 139's cost. `qkvc` and `fc1` keep their per-row
-`TallTile` path unchanged. The contract (`contract_h3_int8.zig`) covers the new kernels as
-`cuda h3 int8 tma blocks` at nine shapes, including `out` and `fc2`'s real K, and `cuda h3 int8 chunks`.
+(`Epilogue::blocks`) folds every K block's exact int32 sums into fp32 at that block's two scales, held per lane
+in registers, before the next block's MMAs. It uses a 128×128 `SquareTile` to keep the register footprint
+under the limit. Nothing ever leaves the registers as an int32 plane, which was card 139's cost. The int8
+scratch holds the widest projection input (`@max(hidden, inner, mlp)`), as `--fp4`'s does. The contract
+(`contract_h3_int8.zig`) covers the new kernels as `cuda h3 int8 tma blocks` at nine shapes, including `out`
+and `fc2`'s real K, and `cuda h3 int8 chunks`.
 
 Contract and stop rule: `bench-146-contract.sh` at `095874ff` on TOP (GB10, driver 580.173.02). All five int8
 kernels pass gates 1-4, and the planted control goes red at shapes. The per-block product's sums stay within the
 fp32 fold's bound at K = 14,336, where fp16 sums would miss 3× and bf16 sums 26.3×. Gate 5's live sm_121 limits
 read 221, 215, 236 and 28 registers. The registry now records those (the first two drifted from 222 and 219).
-Against cuBLASLt int8 in the same job, the per-row product measured `out` at 1.68 ms against 2.09 ms (1.24×) and
-`fc2` at 3.66 ms against 4.22 ms (1.15×).
+The same job's microbench times the per-row `h3_gemm_int8_tma` on these shapes, not the per-block kernel:
+`out` 1.68 ms against cuBLASLt's 2.09 ms (1.24×) and `fc2` 3.66 ms against 4.22 ms (1.15×). The per-block
+kernel's own rate shows only in the picture stages below.
 
-The picture A/B is [`bench-176-ab.sh`](minimax-h3-cuda/bench-176-ab.sh) at `095874ff` (job `top-639918032e5e`,
-22 November, `H3_PROFILE=1`). The job ran this commit, then main's `out`/`fc2` bf16 by reverse-applying
-`bench-176-base.patch`, then this commit with `--bf16` as the reference. Each side ran the fox cold and three
-prompts no earlier job used warm (glacier, bakery, orchard). Every selftest passed.
+The picture A/B is [`bench-176-ab.sh`](minimax-h3-cuda/bench-176-ab.sh), run while the per-block path was
+still the default (`095874ff`, job `top-639918032e5e`, 22 November, `H3_PROFILE=1`). "This card" is that
+path, the one `--int8-blocks` runs now. "Main" is `out`/`fc2` in bf16, which is today's default, and
+`--bf16` is the reference. Each side ran the fox cold and three prompts no earlier job used warm (glacier,
+bakery, orchard). Every selftest passed.
 
 | 2048² | wall s | transformer s | `attention out` s | `mlp out` s |
 |---|---:|---:|---:|---:|
@@ -776,11 +780,11 @@ Every other stage stays within 0.04 s. Gates against the same job's `--bf16` pic
 
 I measured the fox locally on the fetched pictures with `h3_image_compare.py` against
 `h3-image-runs/34/t2i-2048.latent.f32` and `fox-2048-seed42.png`. The same job's `--bf16` fox measured 0.9958,
-28.71 dB and 3.61 there. On the unseen prompts the card sits at or above main against bf16, and the two
-failures are main's too: per-row int8 on `qkvc`/`fc1` already moves those pictures past the gates. The fox is the
-exception. It misses episode 1's gates where main holds them, as card 139's per-256 scales did (28.02 dB, 4.27).
-The per-128 fold is kept for its 0.77 s, but whether the default should carry a fox below the gates is the
-reviewer's call.
+28.71 dB and 3.61 there. On the unseen prompts the card's PSNR and mean diff are at or above main's, and its
+cosine is within 0.0001 of main's on bakery. The two failures are main's too: per-row int8 on `qkvc`/`fc1`
+already moves those pictures past the gates. The fox is the exception. It misses episode 1's gates where main
+holds them, as card 139's per-256 scales did (28.02 dB, 4.27). By the recipe's rule since cards 129 and 139,
+0.77 s does not buy a default below the gates, so the per-block path stays opt-in.
 
 ### Card 143: the prompt encoder resident in int8 per-row products — measured and reverted
 
