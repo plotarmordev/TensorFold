@@ -17,6 +17,7 @@
 #include <cudaTypedefs.h>
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
+#include <type_traits>
 
 namespace h3_int8 {
 
@@ -236,6 +237,54 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
     return silu * gv.y;
 }
 
+// GROUPED's tile: after each K block g the warp's int32 sums (exact: 127² · 128 < 2²⁴, so their
+// float is too) fold into fp32 at xs[g * m + row] · ws[g * n + column] and restart; the fp32 sums
+// land at output[row, column]. `row0` is the lane's first row, `column0` its first column.
+template <typename Config, typename Consume>
+__device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumulators)[Config::m_tiles][Config::n_tiles][4], int k_blocks,
+                                             const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
+                                             float *__restrict__ output, int m, int n, int row0, int column0) {
+    float sums[Config::m_tiles][Config::n_tiles][4] = {};
+    for (int g = 0; g < k_blocks; g++) {
+        consume(accumulators);
+        #pragma unroll
+        for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+            #pragma unroll
+            for (int half = 0; half < 2; half++) {
+                const int row = row0 + m_tile * 16 + half * 8;
+                const float row_scale = row < m ? activation_scales[static_cast<size_t>(g) * m + row] : 0.0f;
+                #pragma unroll
+                for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
+                    const int column = column0 + n_tile / 4 * 32 + ((n_tile % 4 + threadIdx.x % 4) & 3) * 2;
+                    const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + static_cast<size_t>(g) * n + column);
+                    int32_t *products = accumulators[m_tile][n_tile] + half * 2;
+                    float *sum = sums[m_tile][n_tile] + half * 2;
+                    sum[0] += static_cast<float>(products[0]) * row_scale * column_scale.x;
+                    sum[1] += static_cast<float>(products[1]) * row_scale * column_scale.y;
+                    products[0] = 0;
+                    products[1] = 0;
+                }
+            }
+        }
+    }
+    #pragma unroll
+    for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+        #pragma unroll
+        for (int half = 0; half < 2; half++) {
+            const int row = row0 + m_tile * 16 + half * 8;
+            if (row >= m) {
+                continue;
+            }
+            #pragma unroll
+            for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
+                const int column = column0 + n_tile / 4 * 32 + ((n_tile % 4 + threadIdx.x % 4) & 3) * 2;
+                const float *sum = sums[m_tile][n_tile] + half * 2;
+                *reinterpret_cast<float2 *>(output + static_cast<size_t>(row) * n + column) = make_float2(sum[0], sum[1]);
+            }
+        }
+    }
+}
+
 // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
 // silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
 // produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
@@ -243,11 +292,14 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
 // producer warp costs every warp its registers. The tensor maps bind by reference so their
 // addresses stay in parameter space — a by-value copy would land in local space, which
 // cp.async.bulk.tensor refuses.
-template <typename Config, bool SWIGLU>
+// GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
+// ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
+// fp32 rows are written unrounded.
+template <typename Config, bool SWIGLU, bool GROUPED = false, typename Out = std::conditional_t<GROUPED, float, __nv_bfloat16>>
 __device__ __forceinline__ void
     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
                 const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
-                __nv_bfloat16 *__restrict__ output, int m, int n, int k) {
+                Out *__restrict__ output, int m, int n, int k) {
     extern __shared__ __align__(1024) uint8_t shared_memory[];
     const uint32_t shared_base = (h3_shared_address(shared_memory) + 1023) & ~1023u;
     const uint32_t barriers = shared_base + tma_stages * Config::stage_bytes;
@@ -312,6 +364,12 @@ __device__ __forceinline__ void
                     accumulators[m_tile][n_tile][index] = 0;
                 }
             }
+        }
+        if constexpr (GROUPED) {
+            grouped_tile<Config>(consume, accumulators, grid.k_blocks, activation_scales, weight_scales, output, m, n,
+                                 tile_m * Config::block_m + warp_row + group_id,
+                                 tile_n * Config::block_n + warp_column + quad_lane * 8);
+            continue; // what follows is the per-row epilogue
         }
         for (int k_block = 0; k_block < grid.k_blocks; k_block++) {
             consume(accumulators);
@@ -397,5 +455,7 @@ __device__ __forceinline__ void
 }
 
 using TallTile = GemmConfig<256, 128, 4>;
+// The prompt encoder's few rows: 64 × 64 tiles, so even a 40-row prompt spreads N over every SM.
+using PromptTile = GemmConfig<64, 64, 4>;
 
 } // namespace h3_int8

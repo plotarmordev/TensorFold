@@ -22,6 +22,7 @@ mkdir -p "$out"
     echo "sizes: ${H3_BENCH_SIZES:-2048}"
     echo "transformer linear layers: ${H3_LINEAR:-int8}"
     echo "draft steps: ${H3_DRAFT_STEPS:-0}${H3_RENOISE_SIGMA:+, renoise sigma $H3_RENOISE_SIGMA}"
+    echo "routed steps: ${H3_ROUTED_STEPS:-0}"
     echo "prompts per run: ${H3_BENCH_PROMPTS:-$pilot/prompt.txt (all runs, each a kept-states hit)}"
 } >"$out/settings"
 selftest() { # selftest NAME TOOL ARGS...: the log to selftest-NAME.log, PASS or FAIL to selftests
@@ -57,9 +58,10 @@ image() { # the resident transformer renders $case; the server's log since the l
         # H3_PROFILE (off unless set) waits after every stage for its block-stage lines; the default run
         # captures each step as one CUDA graph, which those waits would keep it from doing
         # H3_DRAFT_STEPS (+ optional H3_RENOISE_SIGMA) names --draft-steps (and --renoise-sigma): mmh3's
-        # half-canvas drafts, beside bench-drafts.sh like H3_LINEAR sits beside bench-bf16.sh
+        # half-canvas drafts, beside bench-drafts.sh like H3_LINEAR sits beside bench-bf16.sh; H3_ROUTED_STEPS
+        # names --routed-steps, FastH3's tile routing in the last steps
         # shellcheck disable=SC2046 # $linflag is empty at the int8 default; --bf16 and --fp4 are the opt-ins
-        H3_PROFILE=${H3_PROFILE-} "$bin/tf-h3-image-cuda" "$model" --serve $linflag ${H3_DRAFT_STEPS:+--draft-steps "$H3_DRAFT_STEPS"} ${H3_RENOISE_SIGMA:+--renoise-sigma "$H3_RENOISE_SIGMA"} <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
+        H3_PROFILE=${H3_PROFILE-} "$bin/tf-h3-image-cuda" "$model" --serve $linflag ${H3_DRAFT_STEPS:+--draft-steps "$H3_DRAFT_STEPS"} ${H3_RENOISE_SIGMA:+--renoise-sigma "$H3_RENOISE_SIGMA"} ${H3_ROUTED_STEPS:+--routed-steps "$H3_ROUTED_STEPS"} <"$out/requests" >"$out/replies" 2>"$out/$side.server.log" \
             3>&- 4>&- 5>&- 6>&- 7>&- 8>&- &
         server=$!
         exec 3>"$out/requests" 4<"$out/replies"

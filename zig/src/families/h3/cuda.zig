@@ -250,7 +250,7 @@ pub const Model = struct {
         try self.launch("h3_attention_i8", .{ .x = @intCast(count), .y = @intCast(self.heads) }, 128, attention_i8_shared, &args);
     }
 
-    /// FastH3's routing for all tiles: tile scores, each video tile's key tiles, and the pooled branch.
+    /// FastH3's routing for all tiles: tile scores, each video tile's key tiles, and the pooled branch the gate mixes in.
     fn route(self: *Model, par: usize, own0: usize, own1: usize) !void {
         const g = &self.geometry;
         const tiles = g.tiles;
@@ -270,6 +270,7 @@ pub const Model = struct {
             for ([_]usize{ tiles, g.prefix, g.keep }) |n| args.add(@as(c_int, @intCast(n)));
             try self.launch("h3_topk", .{ .x = @intCast(video1 - video0), .y = @intCast(self.heads) }, 32, 0, &args);
         }
+        if (!self.gated) return;
         args = .{};
         args.add(g.scores + own0 * tiles * 4);
         args.add(g.vp[par]);
@@ -298,6 +299,7 @@ pub const Model = struct {
         /// Tiles ahead of the video's; they attend to and are seen by every tile.
         prefix_tiles: u32,
         /// Video tiles a video tile keeps; 0 for dense attention (every tile sees every tile, no pooled branch).
+        /// A model without the routing gate (MiniMax-H3-Image) routes with no pooled branch: dropped tiles are dropped.
         keep: u32,
         /// Blocks to run, from the first; 0 for all.
         blocks: u32 = 0,
@@ -354,8 +356,9 @@ pub const Model = struct {
         const hidden = self.hidden;
         const inner = self.inner;
         const heads = self.heads;
-        // the dense forward needs no routing gate: its product stops after q, k and v
-        const width = if (dense) 3 * inner else 4 * inner;
+        // only the routed forward of a gated model mixes in the pooled branch: its product carries the gate rows
+        const mixed = !dense and self.gated;
+        const width = if (mixed) 4 * inner else 3 * inner;
         const table_bytes = @as(usize, in.lines) * 6 * hidden * 4;
         const video_tiles = tiles - prefix;
         const count = checked.count;
@@ -424,7 +427,7 @@ pub const Model = struct {
                 try self.lap("attention", &mark);
             }
             if (in.attention_out != 0 and index == count - 1) try self.driver.check(self.driver.api.cuMemcpyDtoDAsync_v2(in.attention_out, g.ya, rows * inner * 2, self.stream.handle), "cuMemcpyDtoDAsync");
-            if (!dense) {
+            if (mixed) {
                 var args: cuda.Args = .{};
                 for ([_]u64{ g.ya, g.qkvc + 3 * inner * 2, g.coarse, in.slot }) |p| args.add(p);
                 for ([_]usize{ inner, width, tiles }) |n| args.add(@as(c_int, @intCast(n)));

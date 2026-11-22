@@ -46,7 +46,8 @@ pub const Vae = struct {
         return .{ .config = config, .d = d };
     }
 
-    /// The normalised `latent` [24, rows, cols] decoded and written to `path` as a PNG of `want` (default the canvas).
+    /// The normalised `latent` [24, rows, cols] decoded and written to `path` as a PNG of `want` (default the canvas):
+    /// at the canvas's size each tile row's band goes to the PNG while the GPU decodes the next.
     pub fn png(v: *const Vae, init: std.process.Init, a: std.mem.Allocator, latent: []f32, rows: usize, cols: usize, want: ?dec.host.Size, path: []const u8) !void {
         if (latent.len != try dec.host.latentLength(rows, cols)) return error.H3BadLatentLength;
         const tiles = try dec.host.tiles(a, &v.config, rows, cols);
@@ -56,8 +57,17 @@ pub const Vae = struct {
         try vae.denormalize(&v.config, latent);
         const started = dec.seconds();
         const decoded = try a.alloc(f32, 3 * width * height);
-        const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded);
-        try hostdec.write(init.io, a, decoded, height, width, size.width, size.height, path);
+        const took = if (size.width == width and size.height == height) streamed: {
+            var bands = try hostdec.Bands.init(a, decoded, height, width);
+            defer bands.deinit();
+            const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded, &bands);
+            try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = path, .data = try bands.finish(a) });
+            break :streamed took;
+        } else resized: {
+            const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded, null);
+            try hostdec.write(init.io, a, decoded, height, width, size.width, size.height, path);
+            break :resized took;
+        };
         std.debug.print("{d}x{d} canvas: decoded {d} tiles in {d:.2} s ({d:.2} s on the GPU), {d:.2} s in all; wrote {s} at {d}x{d}\n", .{ width, height, tiles.total(), took.wall, took.gpu, dec.seconds() - started, path, size.width, size.height });
     }
 };
@@ -85,7 +95,7 @@ fn reference(init: std.process.Init, a: std.mem.Allocator, model_dir: []const u8
     try vae.denormalize(&v.config, latent);
     const ours = try a.alloc(f32, 3 * width * height);
     const started = dec.seconds();
-    const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, ours);
+    const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, ours, null);
     try hostdec.write(init.io, a, ours, height, width, size.width, size.height, gpu_path);
     std.debug.print("{d}x{d} canvas: GPU decoder {d:.2} s in all ({d:.2} s on the GPU); wrote {s} at {d}x{d}\n", .{ width, height, dec.seconds() - started, took.gpu, gpu_path, size.width, size.height });
     var h = try hostdec.Decoder.init(init.gpa, vae.layers);
