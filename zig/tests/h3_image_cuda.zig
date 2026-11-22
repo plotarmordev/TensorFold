@@ -8,8 +8,8 @@ const schedule = h3image.schedule;
 const cascade = h3image.cascade;
 
 const usage =
-    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16|--fp4|--int8-blocks] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
-    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16|--fp4|--int8-blocks] [--load-threads N] [--draft-steps N] [--renoise-sigma X]
+    \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX [--bf16|--fp4|--int8-blocks] [--load-threads N] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
+    \\       tf-h3-image-cuda MODEL_DIR --serve [--bf16|--fp4|--int8-blocks] [--load-threads N] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
     \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.
@@ -28,6 +28,9 @@ const usage =
     \\--load-threads N reads the transformer's weights with N reader threads straight into the pinned
     \\stages that alternate with the GPU upload, as mmh3's eight-thread loader does; 0 (default) reads
     \\the shards in place.
+    \\--routed-steps N routes the last N steps' attention as FastH3 does: each picture tile attends the prompt's
+    \\tiles and the fifth of the picture tiles its pooled query scores best (h3_topk), every other tile dropped.
+    \\It draws a different picture; 0 (default) keeps every step dense.
 ;
 
 /// The transformer's linear layers: the int8 default, all-bf16, or the opt-ins: block-scaled NVFP4
@@ -55,6 +58,8 @@ const Folder = struct {
     pdd: picture.Pdd,
     modulation: ?h3.modulation.Tables = null,
     times: []f32 = &.{},
+    /// The last steps of a picture whose attention is routed (`--routed-steps`); 0 keeps every step dense.
+    routed: usize = 0,
 
     fn load(init: std.process.Init, a: std.mem.Allocator, dir: []const u8, linear: Linear, threads: usize) !Folder {
         const heads_name = try picture.checkIndex(a, try read(init, a, dir, "model_index.json"));
@@ -105,6 +110,7 @@ pub fn main(init: std.process.Init) !void {
         return h3.rows_test.run(init.gpa);
     }
     var draft_steps: usize = 0;
+    var routed_steps: usize = 0;
     var load_threads: usize = 0;
     var renoise: ?f32 = null;
     var linear: Linear = .int8;
@@ -133,6 +139,10 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= all.len) return error.BadArguments;
             renoise = std.fmt.parseFloat(f32, all[i]) catch return error.BadArguments;
+        } else if (std.mem.eql(u8, arg, "--routed-steps")) {
+            i += 1;
+            if (i >= all.len) return error.BadArguments;
+            routed_steps = std.fmt.parseInt(usize, all[i], 10) catch return error.BadArguments;
         } else try args.append(init.arena.allocator(), arg);
     }
     const serving = args.items.len == 2 and std.mem.eql(u8, args.items[1], "--serve");
@@ -144,6 +154,7 @@ pub fn main(init: std.process.Init) !void {
     const started = h3.seconds();
     var folder = try Folder.load(init, init.arena.allocator(), args.items[0], linear, load_threads);
     defer folder.deinit(init.gpa);
+    folder.routed = routed_steps;
     std.debug.print("model loaded in {d:.1} s\n", .{h3.seconds() - started});
     if (!serving) return render(init, init.arena.allocator(), &folder, args.items[1], args.items[2], draft_steps, renoise);
     var in_buf: [4096]u8 = undefined;
@@ -317,12 +328,19 @@ fn streamSteps(
     // stage() treats every address as host memory: the resident table stays out, x is room for the
     // stream, and `line` carries this step's count only (the validation reads one step's lines)
     const checked = try model.plan(&in);
+    // the routed steps' plan: a picture tile keeps the prompt's tiles and a fifth of the picture's, as FastH3 keeps;
+    // the geometry is sized for it, and the dense steps read none of its routing buffers
+    var routed_in = in;
+    routed_in.keep = @intCast((map.target + 4) / 5);
+    const routed = try model.plan(&routed_in);
+    const routed_from = steps - folder.routed;
+    const geometry = if (first + run > routed_from) routed else checked;
     try model.drain();
     var upload = checked;
     upload.input[1] = 0;
     var device = try h3.host.stage(model, &in, upload);
     device.tables = modulation.blocks.ptr;
-    try h3.geometry.prepare(model, &device, checked);
+    try h3.geometry.prepare(model, &device, geometry);
     try model.warm(count);
     try model.drain(); // the staging above is pageable host copies: the first launch must wait on them
 
@@ -330,21 +348,22 @@ fn streamSteps(
         const mark = h3.seconds();
         device.line = adaln_dev.ptr + s * count * 4;
         const last = lift_last and s == first + run - 1;
+        const step_plan = if (s >= routed_from) routed else checked;
         // the exec outlives its in-flight launch: graph execs are destroyed only after the stream syncs
         var launched: ?@import("cuda").graph.Exec = null;
         defer if (launched) |*e| e.deinit();
         if (graphs) {
-            const exec = stepGraph(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last) catch |err| blk: {
+            const exec = stepGraph(model, &device, step_plan, &device_rows, s, sched.deltas[s], spans[s], last) catch |err| blk: {
                 std.debug.print("step {d} runs without its graph: {s}\n", .{ s + 1, @errorName(err) });
                 break :blk null;
             };
             if (exec) |e| {
                 try e.launchOn(model.stream);
                 launched = e;
-            } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last);
-        } else try stepBody(model, &device, checked, &device_rows, s, sched.deltas[s], spans[s], last);
+            } else try stepBody(model, &device, step_plan, &device_rows, s, sched.deltas[s], spans[s], last);
+        } else try stepBody(model, &device, step_plan, &device_rows, s, sched.deltas[s], spans[s], last);
         try model.stream.synchronize();
-        std.debug.print("step {d}/{d}{s}: {d:.2} s\n", .{ s + 1, steps, if (last) " (draft's clean)" else "", h3.seconds() - mark });
+        std.debug.print("step {d}/{d}{s}{s}: {d:.2} s\n", .{ s + 1, steps, if (last) " (draft's clean)" else "", if (s >= routed_from) " (routed)" else "", h3.seconds() - mark });
     }
     const rows = try a.alloc(f32, video.len);
     try device_rows.latent(rows);
@@ -371,6 +390,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
     // noised to `renoise` (or to the next sigma without one)
     const sched = if (draft_steps == 0) pdd else try picture.draftSchedule(a, pdd, draft_steps, renoise);
     const steps = sched.steps();
+    if (folder.routed > steps) return error.BadArguments;
     const spans = try a.alloc(picture.HeadSpan, steps);
     for (spans, 0..) |*sp, s| sp.* = try picture.headSpan(pdd.sigmas, sched.sigmas, s);
     // cascade.half enforces the half-canvas grid: both sides multiples of 64 pixels (mmh3's rule)

@@ -96,6 +96,8 @@ pub const Folder = struct {
     layers: usize,
     /// Every model bound from the folder gives way to live speech between blocks.
     turn: h3.gpu_turn.Turn,
+    /// --routed-steps: the last steps' target tiles see their best fifth of target tiles (FastH3's top 20%).
+    routed_steps: usize = 0,
 
     pub fn open(init: std.process.Init, a: std.mem.Allocator, dir: []const u8) !Folder {
         // the folder: the image pipeline, an audio-free transformer, the distilled schedule and its heads
@@ -121,6 +123,8 @@ pub const Folder = struct {
         errdefer model.release();
         if (!model.base or model.step_heads != sched.steps() or model.audio != 0) return error.H3NotPictureModel;
         model.dense = true;
+        model.routed_steps = f.routed_steps;
+        if (f.routed_steps > 0) model.keep = (model.tiles - model.prefix_tiles + 4) / 5;
         const schedule = h3.schedule.Schedule{ .sigmas = sched.sigmas, .timesteps = sched.timesteps };
         _ = try h3.modulation.reschedule(model, a, schedule, schedule, false);
         return model;

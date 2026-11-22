@@ -50,8 +50,9 @@ MiniMax-H3-Image's `transformer/` uses the clip model's base block names, and th
 `attn.to_gate_compress` from it (`h3.zig` `baseBlock`): its attention is dense, so no routing gate is needed.
 `tf_h3_open` loads such a checkpoint with q, k and v alone in each block's first product (`tf_h3_shape` is
 unchanged). The release fuses each head's q, k and v rows (`block.zig`); the load stacks them as `h3_heads` reads
-them, all heads' q, then k, then v. A forward with `keep` set is refused with `BadH3Ungated` and
-`tf_h3_set_weight` of the gate with `NoGate`, so neither reads past the smaller buffer.
+them, all heads' q, then k, then v. A forward with `keep` set routes without the pooled branch: each video tile
+attends the prefix and its `keep` top-k tiles and the rest are dropped (card 186's `--routed-steps`);
+`tf_h3_set_weight` of the gate is refused with `NoGate`, so nothing reads past the smaller buffer.
 
 The block arithmetic is the clip model's. Three tools build a picture on a Spark with no Metal and no PyTorch, each
 writing the file the matching Metal tool writes (docs/recipes/minimax-h3-image-metal.md), so any stage swaps:
@@ -876,6 +877,37 @@ memory; mma.sync fragments in registers are its next step.
 The job exited 1 on four gate failures in kernels this card leaves unchanged: `h3d_embed` shapes 1.14, `h3d_rms_norm`
 shapes 1.11, `h3d_layer_norm` shapes 1.36 plus its stress sums, and `h3d_attention` shapes 1.81 plus its stress sums.
 
+**Card 175: `h3d_flash`'s tiles in registers.** The kernel keeps card 144's grid (one (tile, head) and 64 queries
+a block, 4 warps of 16 queries, 64-key chunks) and rounding points, but both products are now `mma.sync`
+m16n8k16 bf16 with fp32 sums: the queries load once into A fragments, the chunk's keys and values go to shared
+memory swizzled for `ldmatrix` (`.trans` for the values), and the scores' accumulators are rescaled, rounded to
+bf16 and packed straight into `p·v`'s A fragments, with no score or weight tile in shared memory. It takes
+**16 KiB of static shared memory** (was 40 KiB) and **130 registers on sm_80/86/89, 128 on sm_120/121** (was
+128–144; nvcc 13.0's RECORD). [`check-175.sh`](minimax-h3-cuda/check-175.sh) at `3af9220e` (job `top-7a02984238a5`,
+exit 0) passed all four gates (shapes worst 0.664 of the bound, nonfinite classes, repeat byte-identical, sums) and
+gate 5 live on sm_121.
+
+[`bench-175-ab.sh`](minimax-h3-cuda/bench-175-ab.sh) at `3af9220e` (job `top-6b195e022759`, 22 November, exit 0,
+`H3_PROFILE=1`) ran the bench on this commit, then with `bench-175-base.patch` reverse-applied (card 144's wmma
+kernel): the fox cold, then three prompts no job had used (`prompts/pier`, `kiln`, `dunes`). Every selftest passed
+on both sides, all four latents are byte-identical between them, and the same-latent `reference` held (56.43 dB,
+relative 3.26e-3 under 3e-2).
+
+| 2048² | wall s | decoder s (GPU) | decoder s (all) | attention |
+|---|---:|---:|---:|---:|
+| card, run 1 (cold) | 153.03 | 1.00 | 1.68 | 0.03 |
+| card, run 2 | 15.03 | 0.62 | 1.06 | 0.03 |
+| card, run 3 | 14.19 | 0.62 | 1.01 | 0.03 |
+| card, run 4 | 14.01 | 0.62 | 1.05 | 0.03 |
+| main, run 1 (cold) | 151.50 | 1.12 | 1.73 | 0.19 |
+| main, run 2 | 15.30 | 0.78 | 1.21 | 0.19 |
+| main, run 3 | 14.41 | 0.78 | 1.19 | 0.20 |
+| main, run 4 | 14.19 | 0.78 | 1.20 | 0.19 |
+
+Attention fell from 0.19–0.20 s to **0.03 s**, near mmh3's 27.6 ms, and the warm decode from 0.78 to 0.62 s on the
+GPU; the other stages are unchanged (products 0.33, finish 0.08, swiglu 0.08, heads 0.05, norms 0.04). The decoder's
+remaining distance to mmh3's 0.55 s is in products, finish and norms, not attention.
+
 **FP16 products, tried and kept out.** [`decoder-144-f16-job.sh`](minimax-h3-cuda/decoder-144-f16-job.sh) at
 `2915d6f7` (job `top-ff79ae402131`, exit 1 from the same four contract failures) ran the bench on this commit, then with
 [`decoder-144-f16.patch`](minimax-h3-cuda/decoder-144-f16.patch) applied: the weights converted once to fp16, each
@@ -1012,6 +1044,46 @@ colours.](minimax-h3-cuda/int8-vs-fp4.png)
 
 `--fp4` stays **opt-in** (`H3_LINEAR=fp4` in the bench scripts): 19% faster warm than main's TMA int8 (10.7 s
 against 13.2 s), 13.5 GB less resident, and a different picture — never the default, which keeps episode 1's gates.
+
+### Card 186: FastH3's routed attention in the last steps — opt-in, the gates hold
+
+`tf-h3-image-cuda --routed-steps N` runs the last N of the six steps through the video engines' routing:
+`h3_pool`, `h3_tile_scores` and `h3_topk` (`contract_h3_topk.zig`, now also at the picture's 64 and 256 tiles) choose
+each picture tile's key tiles. Each tile keeps the prompt's tiles and the fifth of the picture's tiles that its
+pooled query scores best, which is FastH3's top 20%. The image checkpoint has no `attn.to_gate_compress`, so there is
+no pooled branch and no gate mix: the dropped tiles are dropped. The default is 0, which runs main's launches.
+
+[`bench-186-ab.sh`](minimax-h3-cuda/bench-186-ab.sh) at `d5968c7e` (job `top-e1cd6974b1da`, GB10, driver 580.173.02,
+int8 default, seed 42, 2048²) ran four passes, each with one resident server. Every pass rendered the pilot fox cold
+and then three prompts no earlier card used (`observatory`, `bakery`, `reef`) warm. The passes were dense and
+`--routed-steps 2` with CUDA graphs, then both again under `H3_PROFILE`. Every selftest passed on every pass. The
+dense latents are the same with graphs and with `H3_PROFILE`, and the fox's is sha256 `8d067d75…`, main's.
+
+| pass | cold s | warm wall s | warm transformer s | routed step s |
+|---|---:|---:|---:|---:|
+| dense, graphs | 149.8 | 14.45 / 14.22 / 14.25 | 11.00 / 10.79 / 10.78 | — (dense 1.77-1.85) |
+| routed 2, graphs | 147.2 | 13.86 / 13.91 / 13.97 | 10.42 / 10.50 / 10.50 | 1.61-1.63 |
+| dense, profiled | 150.3 | 14.18 / 14.24 / 14.26 | 10.77 / 10.82 / 10.79 | — (dense 1.77-1.79) |
+| routed 2, profiled | 147.4 | 13.85 / 14.04 / 13.99 | 10.43 / 10.60 / 10.51 | 1.62-1.65 |
+
+Across all six steps, the profiled warm runs spent 1.79 / 1.80 / 1.81 s on attention dense and 1.39 / 1.39 / 1.39 s
+routed, plus 0.10 s of routing. Every other stage held within 0.1 s. A dense step's attention is about 0.30 s. A
+routed step's attention is about 0.10 s, and routing adds 0.05 s, so attention plus routing is about 2x faster in
+those two steps. Attention is 1.8 s of a 10.8 s transformer, though, so the warm picture is only 0.40 s faster (14.31 s
+mean against 13.91 s, 2.8%).
+
+Gates, each routed picture against the dense picture of the same prompt (`gate.py`, in the job: TOP has no numpy):
+
+| prompt | latent cosine | PSNR dB | mean diff |
+|---|---:|---:|---:|
+| fox (pilot) | 0.9993 | 36.71 | 2.13 |
+| observatory | 0.9985 | 29.71 | 3.35 |
+| bakery | 0.9992 | 32.54 | 2.77 |
+| reef | 0.9993 | 33.00 | 3.15 |
+
+All four pass (0.99, 28.2 dB, 4.1), and the profiled pass's routed pictures match these figures. `--routed-steps 2`
+stays **opt-in**. It is a different picture, though a close one, for 2.8%, while `--fp4` gives 19%. Routing more steps
+or running at 4096 (four times the tiles, attention a larger share) was not measured.
 
 ### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
 

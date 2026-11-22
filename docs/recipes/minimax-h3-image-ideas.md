@@ -91,21 +91,36 @@ The linear layers are 62-87% of a step and row-independent. Unified memory lets 
 bf16 weights and activations with no copy, so each product's rows split in the measured throughput ratio. Every
 other runner leaves the CPU idle.
 
-- **Gain.** 1.05-1.07x at 4096 if SME2 sustains 1.5-2 TFLOP/s beside about 18 on the GPU (h3-image-mlx's rate)
-  [INFERENCE: unmeasured].
-- **Risk.** None beyond fp32 summation order; shared memory bandwidth and heat may eat the gain.
+- **Gain.** Measured on an M5 Ultra (card 174): 1.015x at most on fc2 at 4,120 rows and 1.008x at 16,384, the
+  CPU's rows bit-identical to the GPU's. The int8 GPU product runs at 123-140 TOPS, while SME2's bare `smopa` peak
+  is 10.4 TOPS and a real tile beside the GPU 2.2-3.4. Stopped under the 1.07x bar; numbers in the Metal recipe.
+- **Risk.** Shared memory bandwidth and contention: E-core threads slowed the GPU's own rows.
 - **Proof.** A 5,376 x 14,336 product at 16,384 rows split against the GPU alone, at least 1.07x; PSNR at least 50
   dB against GPU-only pictures; no slowdown over three back-to-back 4096 runs.
 
 ### Considered, not ranked
 
 - **FastH3's routed attention in the last steps.** The video engines already ship it, and it drops tiles where
-  pooled far-field keys keep them.
+  pooled far-field keys keep them. Card 186 measured it on the Spark as `--routed-steps N`, the video engines'
+  `h3_topk` with no pooled branch. At 2048² with the last two of six steps routed, attention plus routing is about
+  2x faster in those steps. The warm picture went from 14.31 s to 13.91 s (2.8%), and every gate holds against the
+  dense picture (latent cosine 0.9985 or better, PSNR 29.7-36.7 dB, mean diff 3.35 or less) on the fox and three
+  unseen prompts. It is kept, opt-in, for a different picture
+  ([minimax-h3-cuda.md](minimax-h3-cuda.md#card-186-fasth3s-routed-attention-in-the-last-steps--opt-in-the-gates-hold)).
+  Card 187 measured it on the Mac behind `--routed-steps N` (FastH3's top fifth of
+  picture tiles, no pooled branch, since the release weights were trained dense): at 2048, routing steps 5 and 6
+  saves about 0.2 s a step, but canal's picture misses the 28.2 dB floor by 1.6 dB (fast mode 3.3 dB), with pilot
+  and foundry passing. It stays opt-in and off by default
+  ([minimax-h3-image-metal.md](minimax-h3-image-metal.md#card-187-fasth3s-routed-attention-in-the-last-steps-measured-and-rejected-as-a-default)).
 - **The decoder in larger tiles on the tensor units.** About 1.7% of a 4096 run.
 - **Caching the prompt's rows, or keeping its encoder apart from the transformer.** SGLang and vLLM-Omni cache
   conditioning; h3-image-mlx and the maintainer's tools run the encoder and the transformer as separate processes.
 - **Reusing a step's residuals or an edit reference's rows across steps.** Six steps, each with its own head, and
-  the reference's hidden states move with the target rows: not exact, so opt-in at most.
+  the reference's hidden states move with the target rows: not exact, so opt-in at most. Card 180 measured two forms
+  behind a gate, and both lost: reusing the last step's velocity (best 21.76 dB against 28.2), and reusing blocks
+  1-49's residual when block 0's branch barely moves (FBCache): that branch moves 49-80% every step, and skipping
+  only the quietest step gives 19.8-25.4 dB. Both were reverted
+  ([minimax-h3-image-metal.md](minimax-h3-image-metal.md#card-180-step-caching-measured-and-reverted)).
 - **Merging similar picture rows.** Merged rows fall outside the 2 x 2 patch distribution the model learned.
 - **Streaming bf16 blocks from the SSD on 24-36 GB Macs.** A block is 0.69 GB; at 4096 a block's compute is fast
   enough that 5-7 GB/s of SSD cannot keep up, so it works but is not fast. Community MLX ports of the video model
@@ -124,8 +139,8 @@ The bar is h3-image-mlx's 356.84 s at 4096 x 4096 on an M5 Pro, at int8; these c
 3. **H3-Image: pooled far-field keys at 16,384 rows and above (`far=pool`).**
    - A kernel test that equal keys give dense attention's output; off below 8,192 rows; idea 2's gates hold.
 4. **H3-Image: GPU and SME2 row split for the linear layers.**
-   - At least 1.07x on idea 3's product with PSNR at least 50 dB.
-5. **H3-Image at 4096 x 4096 in at most 180 s on an M5 Pro, at least 1.98x faster than h3-image-mlx**, cards 2 to 4
+   - At least 1.07x on idea 3's product with PSNR at least 50 dB. Measured at 1.015x at most (card 174): stopped.
+5. **H3-Image at 4096 x 4096 in at most 180 s on an M5 Pro, at least 1.98x faster than h3-image-mlx**, cards 2 and 3
    together, every quality gate green; at 2048 x 2048 faster than the best published Mac figure at that size.
 
 ## The cascade's lift (started here)
@@ -146,5 +161,8 @@ The bar is h3-image-mlx's 356.84 s at 4096 x 4096 on an M5 Pro, at int8; these c
 variance, the bilinear taps on a ramp, the exact flow identity on two planes, the shifted noise's pools and kept
 detail, and refusals of odd grids, wrong lengths and out-of-range or NaN sigmas.
 
-Not done: the cascade is not wired into `tf-h3-image`, which is on the maintainer's unmerged branches, and no picture
-has been made with it (card 2).
+Wired as `--draft-steps M` (no `--renoise-sigma`) in `tf-h3-image` and `tf-h3-image-server`. Card 177
+measured M = 2 and 4 at warm 2048 on an M5 Ultra: steps 0.76x and 0.53x of six full ones, and **idea 1's gates fail**:
+top-octave energy 1.07-6.27 of the base (passes), LPIPS 0.41-0.73 (fails, every pair). The lift draws another picture,
+not a faster copy; it stays opt-in. Table and receipts in
+[minimax-h3-image-metal.md](minimax-h3-image-metal.md#card-177-the-resolution-cascade-cascadem-measured-against-six-full-steps).
