@@ -105,7 +105,10 @@ other runner leaves the CPU idle.
 - **Caching the prompt's rows, or keeping its encoder apart from the transformer.** SGLang and vLLM-Omni cache
   conditioning; h3-image-mlx and the maintainer's tools run the encoder and the transformer as separate processes.
 - **Reusing a step's residuals or an edit reference's rows across steps.** Six steps, each with its own head, and
-  the reference's hidden states move with the target rows: not exact, so opt-in at most.
+  the reference's hidden states move with the target rows: not exact, so opt-in at most. Card 180 measured the
+  cheapest form, reusing the last step's velocity behind a latent-change gate: about 1.6 s saved a skipped step at
+  2048, but no skip kept the picture (best 21.76 dB against 28.2), so it was reverted
+  ([minimax-h3-image-metal.md](minimax-h3-image-metal.md#card-180-step-caching-measured-and-reverted)).
 - **Merging similar picture rows.** Merged rows fall outside the 2 x 2 patch distribution the model learned.
 - **Streaming bf16 blocks from the SSD on 24-36 GB Macs.** A block is 0.69 GB; at 4096 a block's compute is fast
   enough that 5-7 GB/s of SSD cannot keep up, so it works but is not fast. Community MLX ports of the video model
