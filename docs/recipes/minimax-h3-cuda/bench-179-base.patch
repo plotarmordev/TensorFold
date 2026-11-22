@@ -1,5 +1,5 @@
 diff --git a/zig/kernels/cuda/h3.cu b/zig/kernels/cuda/h3.cu
-index 2b378e66a..55a0b9ee8 100644
+index 2b378e66a..349462e27 100644
 --- a/zig/kernels/cuda/h3.cu
 +++ b/zig/kernels/cuda/h3.cu
 @@ -1,6 +1,7 @@
@@ -10,15 +10,14 @@ index 2b378e66a..55a0b9ee8 100644
  #include "h3_int8_tma.cuh"
  #include "common/reduce.cuh"
  
-@@ -115,6 +116,69 @@ __global__ void __launch_bounds__(256) h3_heads(
+@@ -115,6 +116,58 @@ __global__ void __launch_bounds__(256) h3_heads(
      }
  }
  
-+// h3_heads' bf16 tiles as int8: q/k row absmax, v head-tile absmax, dim-major v. Grid [tiles,H], 128 threads.
++// h3_heads' bf16 tiles as int8: q/k row absmax, v tile/channel absmax, dim-major v. Grid [tiles,H], 128 threads.
 +__global__ void __launch_bounds__(128) h3_heads_quant(
 +        const __nv_bfloat16* TQ, const __nv_bfloat16* TK, const __nv_bfloat16* TV, const int* SIZES,
 +        int8_t* Q8, int8_t* K8, int8_t* V8, float* QS, float* KS, float* VS, int slots) {
-+    __shared__ float red[4];
 +    const int slot0 = blockIdx.x * 64;
 +    const size_t at = (static_cast<size_t>(blockIdx.y) * slots + slot0) * 128;
 +    // two threads a row, each half its 128 channels; adjacent lanes pair on the row's absmax
@@ -50,23 +49,13 @@ index 2b378e66a..55a0b9ee8 100644
 +            *reinterpret_cast<int4*>(dst + j) = q.v;
 +        }
 +    }
-+    // v's tile absmax over its live slots, then each thread one output dim's 64 key bytes
++    // Each output dim has its own live-key absmax, avoiding one outlier flattening the whole tile.
 +    const int live = SIZES[blockIdx.x];
-+    const int s = threadIdx.x & 63, d0 = (threadIdx.x >> 6) * 64;
-+    float most = 0.0f;
-+    if (s < live) {
-+        const __nv_bfloat16* src = TV + at + s * 128 + d0;
-+        for (int d = 0; d < 64; d += 4) {
-+            const uint2 u = *reinterpret_cast<const uint2*>(src + d);
-+            const __nv_bfloat162* h = reinterpret_cast<const __nv_bfloat162*>(&u);
-+            most = fmaxf(most, fmaxf(fmaxf(fabsf(f(h[0].x)), fabsf(f(h[0].y))), fmaxf(fabsf(f(h[1].x)), fabsf(f(h[1].y)))));
-+        }
-+    }
-+    most = tf_common::block_max_tree(most, red, 4);
-+    const float vscale = most * (1.0f / 127.0f);
-+    if (threadIdx.x == 0) VS[static_cast<size_t>(blockIdx.y) * (slots / 64) + blockIdx.x] = vscale;
-+    const float viscale = most > 0.0f ? 127.0f / most : 0.0f;
 +    const int d = threadIdx.x;
++    float most = 0.0f;
++    for (int t = 0; t < live; ++t) most = fmaxf(most, fabsf(f(TV[at + t * 128 + d])));
++    VS[(static_cast<size_t>(blockIdx.y) * (slots / 64) + blockIdx.x) * 128 + d] = most * (1.0f / 127.0f);
++    const float viscale = most > 0.0f ? 127.0f / most : 0.0f;
 +    int8_t* dst = V8 + at + d * 64;
 +    for (int t = 0; t < 64; t += 16) {
 +        union { int8_t b[16]; int4 v; } q;
@@ -80,7 +69,7 @@ index 2b378e66a..55a0b9ee8 100644
  // Each tile's mean q, k and v over its real rows, in fp32. QP, KP, VP: (H, tiles, 128). Grid [tiles, H], 32 threads.
  __global__ void h3_pool(const __nv_bfloat16* TQ, const __nv_bfloat16* TK, const __nv_bfloat16* TV, const int* SIZES,
                          float* QP, float* KP, float* VP, int slots, int tiles) {
-@@ -426,6 +490,14 @@ __global__ void __launch_bounds__(128) h3_attention(
+@@ -426,6 +479,14 @@ __global__ void __launch_bounds__(128) h3_attention(
      attention_body(Q, K, V, LIST, SIZES, ROWOF, Y, slots, heads, queries, keys, first_query, per_query, scale);
  }
  
@@ -97,10 +86,10 @@ index 2b378e66a..55a0b9ee8 100644
  __global__ void __launch_bounds__(256) h3_rows_in(const float* R, const float* W, const float* B, __nv_bfloat16* X,
 diff --git a/zig/kernels/cuda/h3_attention_int8.cuh b/zig/kernels/cuda/h3_attention_int8.cuh
 new file mode 100644
-index 000000000..adf4c316f
+index 000000000..1edbb9688
 --- /dev/null
 +++ b/zig/kernels/cuda/h3_attention_int8.cuh
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,212 @@
 +// Dense H3 attention: int8 QK and unsigned-P/signed-V m16n8k32 products, fp32 online softmax.
 +#pragma once
 +#include <cuda_bf16.h>
@@ -154,7 +143,7 @@ index 000000000..adf4c316f
 +    const int* list = LIST + (per_query ? (static_cast<size_t>(head) * queries + blockIdx.x) * keys : 0);
 +    const float* qsc = QS + hs;
 +    const float* kst = KS + hs;
-+    const float* vst = VS + static_cast<size_t>(head) * (slots / T);
++    const float* vst = VS + static_cast<size_t>(head) * (slots / T) * D;
 +    auto load_v = [&](int tile) {
 +        const int8_t* src = V8 + (hs + static_cast<size_t>(tile) * T) * D;
 +        for (int c = tid; c < D * 4; c += THREADS) cp16(vsm + vat(c >> 2, c & 3), src + c * 16);
@@ -262,8 +251,7 @@ index 000000000..adf4c316f
 +        wait<1>();
 +        __syncthreads();
 +
-+        // this tile's V scale / 255: the codes' product is p * 255 times v / vs
-+        const float vf = vst[tile] * (1.0f / 255.0f);
++        const float* vsc = vst + static_cast<size_t>(tile) * D;
 +        int acc[16][4];
 +#pragma unroll
 +        for (int j = 0; j < 16; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0;
@@ -295,10 +283,12 @@ index 000000000..adf4c316f
 +
 +#pragma unroll
 +        for (int j = 0; j < 16; ++j) {
-+            out[j][0] += float(acc[j][0]) * vf;
-+            out[j][1] += float(acc[j][1]) * vf;
-+            out[j][2] += float(acc[j][2]) * vf;
-+            out[j][3] += float(acc[j][3]) * vf;
++            const float vf0 = vsc[j * 8 + c0] * (1.0f / 255.0f);
++            const float vf1 = vsc[j * 8 + c0 + 1] * (1.0f / 255.0f);
++            out[j][0] += float(acc[j][0]) * vf0;
++            out[j][1] += float(acc[j][1]) * vf1;
++            out[j][2] += float(acc[j][2]) * vf0;
++            out[j][3] += float(acc[j][3]) * vf1;
 +        }
 +    }
 +    const int to0 = ROWOF[qt * T + r0], to1 = ROWOF[qt * T + r0 + 8];
@@ -434,7 +424,7 @@ index d2f055bd4..c7d8c0fd7 100644
      g.tiles = in.tiles;
      g.prefix = p.prefix;
 diff --git a/zig/src/families/h3/cuda_validation.zig b/zig/src/families/h3/cuda_validation.zig
-index e88c7e367..d93180611 100644
+index e88c7e367..e2aa36931 100644
 --- a/zig/src/families/h3/cuda_validation.zig
 +++ b/zig/src/families/h3/cuda_validation.zig
 @@ -7,7 +7,7 @@ pub const Plan = struct {
@@ -453,7 +443,7 @@ index e88c7e367..d93180611 100644
 +    // dense attention's int8 tiles (cuda_geometry's q8/k8/v8/qs/ks/vs): routed forwards skip them
 +    const codes: usize = if (keep == 0) try product(&.{ heads, tiles, 64, 128 }) else 0;
 +    const rowscales: usize = if (keep == 0) try product(&.{ heads, tiles, 64, 4 }) else 0;
-+    const tilescales: usize = if (keep == 0) try product(&.{ heads, tiles, 4 }) else 0;
++    const tilescales: usize = if (keep == 0) try product(&.{ heads, tiles, 128, 4 }) else 0;
      return .{ .count = count, .prefix = prefix, .keep = keep, .own0 = own0, .own1 = own1, .input = input, .buffers = .{
          input[0],                                  input[0],                                                            try product(&.{ rows, 4, i, 2 }), padded,                        padded,                             padded,                          means,                           means,    means,
          try product(&.{ heads, tiles, tiles, 4 }), try product(&.{ heads, @max(tiles - prefix, 1), prefix + keep, 4 }), means,                            try product(&.{ rows, i, 2 }), try product(&.{ rows, 2, mlp, 2 }), try product(&.{ rows, mlp, 2 }), try product(&.{ tiles, 64, 4 }), input[6],
@@ -512,7 +502,7 @@ index 0240bebef..6132ee8b3 100644
      }
  
 diff --git a/zig/tests/cuda/contract_h3_prep.zig b/zig/tests/cuda/contract_h3_prep.zig
-index aa2bd4a92..bd80908fc 100644
+index aa2bd4a92..e766cae71 100644
 --- a/zig/tests/cuda/contract_h3_prep.zig
 +++ b/zig/tests/cuda/contract_h3_prep.zig
 @@ -10,10 +10,14 @@ const g = contract.gates;
@@ -545,7 +535,7 @@ index aa2bd4a92..bd80908fc 100644
              self.outs = rows * heads * 128;
 +            if (self.which == .attention_i8) {
 +                // Quantized q/k/v and their row/tile scales occupy bufs 7..12.
-+                for ([_]usize{ n, n, n, heads * slots * 4, heads * slots * 4, heads * 16 * 4 }) |bytes| {
++                for ([_]usize{ n, n, n, heads * slots * 4, heads * slots * 4, heads * 16 * 128 * 4 }) |bytes| {
 +                    self.bufs[self.nbufs] = try self.rig.scratch(bytes);
 +                    self.nbufs += 1;
 +                }
@@ -572,10 +562,10 @@ index aa2bd4a92..bd80908fc 100644
      }
  }
 diff --git a/zig/tests/cuda/contract_h3_ref.zig b/zig/tests/cuda/contract_h3_ref.zig
-index 719a217d2..0bded726c 100644
+index 719a217d2..75b5e192b 100644
 --- a/zig/tests/cuda/contract_h3_ref.zig
 +++ b/zig/tests/cuda/contract_h3_ref.zig
-@@ -221,6 +221,125 @@ fn attendRow(in: In, s: Sum, scratch: []f64, h: usize, tq: usize, r: usize, ksel
+@@ -221,6 +221,120 @@ fn attendRow(in: In, s: Sum, scratch: []f64, h: usize, tq: usize, r: usize, ksel
      }
  }
  
@@ -645,23 +635,18 @@ index 719a217d2..0bded726c 100644
 +    for (list) |tile_i| {
 +        const tile: usize = @intCast(tile_i);
 +        const size: usize = @intCast(in.more[tile]);
-+        // this tile's k rows and its whole-tile v absmax, quantized as h3_heads_quant does
-+        var vamax: f32 = 0;
++        // This tile's k rows and each v channel's live-key absmax, as h3_heads_quant computes them.
++        var vamax: [128]f32 = @splat(0);
 +        for (0..size) |j| {
 +            const key = in.d[((h * in.slots) + tile * 64 + j) * 128 ..][0..128];
-+            for (key) |v| {
-+                const a = @abs(@as(f32, @floatCast(v)));
-+                if (a > vamax) vamax = a;
-+            }
++            for (key, &vamax) |v, *a| a.* = @max(a.*, @abs(@as(f32, @floatCast(v))));
 +        }
-+        const vscale: f64 = @as(f64, vamax) * (1.0 / 127.0);
-+        const viscale: f32 = if (vamax > 0) 127.0 / vamax else 0;
 +        var next = top;
 +        for (0..64) |j| {
 +            const key = in.b[((h * in.slots) + tile * 64 + j) * 128 ..][0..128];
 +            const kscale = quantizeRowI8(key, &kc[j]);
 +            const val = in.d[((h * in.slots) + tile * 64 + j) * 128 ..][0..128];
-+            for (0..128) |e| vc[j][e] = if (j < size) @intFromFloat(rne(@as(f32, @floatCast(val[e])) * viscale)) else 0;
++            for (0..128) |e| vc[j][e] = if (j < size) @intFromFloat(rne(@as(f32, @floatCast(val[e])) * (if (vamax[e] > 0) 127.0 / vamax[e] else 0))) else 0;
 +            if (j >= size) {
 +                sc[j] = -std.math.inf(f64);
 +                continue;
@@ -683,8 +668,8 @@ index 719a217d2..0bded726c 100644
 +            code.* = probCode(x.*);
 +        }
 +        total += s.of(w);
-+        const vf = vscale / 255.0;
 +        for (0..128) |i| {
++            const vf = @as(f64, vamax[i]) * (1.0 / 127.0) / 255.0;
 +            var si: i64 = 0;
 +            for (pc, 0..) |code, j| si += code * vc[j][i];
 +            for (terms, pc, 0..) |*v, code, j| v.* = @as(f64, @floatFromInt(code)) * @as(f64, @floatFromInt(vc[j][i])) * vf;

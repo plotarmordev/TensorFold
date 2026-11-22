@@ -51,7 +51,7 @@ __device__ __forceinline__ void attention_body_i8(
     const int* list = LIST + (per_query ? (static_cast<size_t>(head) * queries + blockIdx.x) * keys : 0);
     const float* qsc = QS + hs;
     const float* kst = KS + hs;
-    const float* vst = VS + static_cast<size_t>(head) * (slots / T);
+    const float* vst = VS + static_cast<size_t>(head) * (slots / T) * D;
     auto load_v = [&](int tile) {
         const int8_t* src = V8 + (hs + static_cast<size_t>(tile) * T) * D;
         for (int c = tid; c < D * 4; c += THREADS) cp16(vsm + vat(c >> 2, c & 3), src + c * 16);
@@ -159,8 +159,7 @@ __device__ __forceinline__ void attention_body_i8(
         wait<1>();
         __syncthreads();
 
-        // this tile's V scale / 255: the codes' product is p * 255 times v / vs
-        const float vf = vst[tile] * (1.0f / 255.0f);
+        const float* vsc = vst + static_cast<size_t>(tile) * D;
         int acc[16][4];
 #pragma unroll
         for (int j = 0; j < 16; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0;
@@ -192,10 +191,12 @@ __device__ __forceinline__ void attention_body_i8(
 
 #pragma unroll
         for (int j = 0; j < 16; ++j) {
-            out[j][0] += float(acc[j][0]) * vf;
-            out[j][1] += float(acc[j][1]) * vf;
-            out[j][2] += float(acc[j][2]) * vf;
-            out[j][3] += float(acc[j][3]) * vf;
+            const float vf0 = vsc[j * 8 + c0] * (1.0f / 255.0f);
+            const float vf1 = vsc[j * 8 + c0 + 1] * (1.0f / 255.0f);
+            out[j][0] += float(acc[j][0]) * vf0;
+            out[j][1] += float(acc[j][1]) * vf1;
+            out[j][2] += float(acc[j][2]) * vf0;
+            out[j][3] += float(acc[j][3]) * vf1;
         }
     }
     const int to0 = ROWOF[qt * T + r0], to1 = ROWOF[qt * T + r0 + 8];

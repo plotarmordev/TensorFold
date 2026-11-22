@@ -207,7 +207,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             self.outs = rows * heads * 128;
             if (self.which == .attention_i8) {
                 // Quantized q/k/v and their row/tile scales occupy bufs 7..12.
-                for ([_]usize{ n, n, n, heads * slots * 4, heads * slots * 4, heads * 16 * 4 }) |bytes| {
+                for ([_]usize{ n, n, n, heads * slots * 4, heads * slots * 4, heads * 16 * 128 * 4 }) |bytes| {
                     self.bufs[self.nbufs] = try self.rig.scratch(bytes);
                     self.nbufs += 1;
                 }

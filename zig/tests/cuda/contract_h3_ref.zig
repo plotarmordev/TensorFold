@@ -287,23 +287,18 @@ fn attendRowI8(in: In, s: Sum, scratch: []f64, h: usize, tq: usize, r: usize, ks
     for (list) |tile_i| {
         const tile: usize = @intCast(tile_i);
         const size: usize = @intCast(in.more[tile]);
-        // this tile's k rows and its whole-tile v absmax, quantized as h3_heads_quant does
-        var vamax: f32 = 0;
+        // This tile's k rows and each v channel's live-key absmax, as h3_heads_quant computes them.
+        var vamax: [128]f32 = @splat(0);
         for (0..size) |j| {
             const key = in.d[((h * in.slots) + tile * 64 + j) * 128 ..][0..128];
-            for (key) |v| {
-                const a = @abs(@as(f32, @floatCast(v)));
-                if (a > vamax) vamax = a;
-            }
+            for (key, &vamax) |v, *a| a.* = @max(a.*, @abs(@as(f32, @floatCast(v))));
         }
-        const vscale: f64 = @as(f64, vamax) * (1.0 / 127.0);
-        const viscale: f32 = if (vamax > 0) 127.0 / vamax else 0;
         var next = top;
         for (0..64) |j| {
             const key = in.b[((h * in.slots) + tile * 64 + j) * 128 ..][0..128];
             const kscale = quantizeRowI8(key, &kc[j]);
             const val = in.d[((h * in.slots) + tile * 64 + j) * 128 ..][0..128];
-            for (0..128) |e| vc[j][e] = if (j < size) @intFromFloat(rne(@as(f32, @floatCast(val[e])) * viscale)) else 0;
+            for (0..128) |e| vc[j][e] = if (j < size) @intFromFloat(rne(@as(f32, @floatCast(val[e])) * (if (vamax[e] > 0) 127.0 / vamax[e] else 0))) else 0;
             if (j >= size) {
                 sc[j] = -std.math.inf(f64);
                 continue;
@@ -325,8 +320,8 @@ fn attendRowI8(in: In, s: Sum, scratch: []f64, h: usize, tq: usize, r: usize, ks
             code.* = probCode(x.*);
         }
         total += s.of(w);
-        const vf = vscale / 255.0;
         for (0..128) |i| {
+            const vf = @as(f64, vamax[i]) * (1.0 / 127.0) / 255.0;
             var si: i64 = 0;
             for (pc, 0..) |code, j| si += code * vc[j][i];
             for (terms, pc, 0..) |*v, code, j| v.* = @as(f64, @floatFromInt(code)) * @as(f64, @floatFromInt(vc[j][i])) * vf;

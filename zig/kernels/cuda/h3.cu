@@ -116,11 +116,10 @@ __global__ void __launch_bounds__(256) h3_heads(
     }
 }
 
-// h3_heads' bf16 tiles as int8: q/k row absmax, v head-tile absmax, dim-major v. Grid [tiles,H], 128 threads.
+// h3_heads' bf16 tiles as int8: q/k row absmax, v tile/channel absmax, dim-major v. Grid [tiles,H], 128 threads.
 __global__ void __launch_bounds__(128) h3_heads_quant(
         const __nv_bfloat16* TQ, const __nv_bfloat16* TK, const __nv_bfloat16* TV, const int* SIZES,
         int8_t* Q8, int8_t* K8, int8_t* V8, float* QS, float* KS, float* VS, int slots) {
-    __shared__ float red[4];
     const int slot0 = blockIdx.x * 64;
     const size_t at = (static_cast<size_t>(blockIdx.y) * slots + slot0) * 128;
     // two threads a row, each half its 128 channels; adjacent lanes pair on the row's absmax
@@ -152,23 +151,13 @@ __global__ void __launch_bounds__(128) h3_heads_quant(
             *reinterpret_cast<int4*>(dst + j) = q.v;
         }
     }
-    // v's tile absmax over its live slots, then each thread one output dim's 64 key bytes
+    // Each output dim has its own live-key absmax, avoiding one outlier flattening the whole tile.
     const int live = SIZES[blockIdx.x];
-    const int s = threadIdx.x & 63, d0 = (threadIdx.x >> 6) * 64;
-    float most = 0.0f;
-    if (s < live) {
-        const __nv_bfloat16* src = TV + at + s * 128 + d0;
-        for (int d = 0; d < 64; d += 4) {
-            const uint2 u = *reinterpret_cast<const uint2*>(src + d);
-            const __nv_bfloat162* h = reinterpret_cast<const __nv_bfloat162*>(&u);
-            most = fmaxf(most, fmaxf(fmaxf(fabsf(f(h[0].x)), fabsf(f(h[0].y))), fmaxf(fabsf(f(h[1].x)), fabsf(f(h[1].y)))));
-        }
-    }
-    most = tf_common::block_max_tree(most, red, 4);
-    const float vscale = most * (1.0f / 127.0f);
-    if (threadIdx.x == 0) VS[static_cast<size_t>(blockIdx.y) * (slots / 64) + blockIdx.x] = vscale;
-    const float viscale = most > 0.0f ? 127.0f / most : 0.0f;
     const int d = threadIdx.x;
+    float most = 0.0f;
+    for (int t = 0; t < live; ++t) most = fmaxf(most, fabsf(f(TV[at + t * 128 + d])));
+    VS[(static_cast<size_t>(blockIdx.y) * (slots / 64) + blockIdx.x) * 128 + d] = most * (1.0f / 127.0f);
+    const float viscale = most > 0.0f ? 127.0f / most : 0.0f;
     int8_t* dst = V8 + at + d * 64;
     for (int t = 0; t < 64; t += 16) {
         union { int8_t b[16]; int4 v; } q;
