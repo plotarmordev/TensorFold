@@ -95,8 +95,7 @@ fn asF32(a: std.mem.Allocator, bytes: []const u8) ![]f32 {
 pub const Resident = struct {
     arena: cuda.DeviceBuffer,
     embed: u64,
-    /// One of the two is empty: bf16 layers (`--bf16`) or int8 ones.
-    layers: []rules.Layer(u64),
+    layers: []rules.Layer(u64), // one of layers and layers8 is empty: bf16 (`--bf16`) or int8
     layers8: []Layer8,
     cond_w: u64,
     cond_b: u64,
@@ -207,6 +206,7 @@ fn productShapes(g: rules.Text) [4][2]usize {
 
 /// Each text layer's products quantized into the arena at a scale per 128 of K, its norms beside them.
 fn loadLayers8(r: *Runner, a: std.mem.Allocator, g: rules.Text, at: *usize, arena: u64, layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet, ctx: *anyopaque, out: []Layer8) !void {
+    if (try r.ctx.capability() < 90) return error.H3Int8RequiresSm90; // the TMA images trap below sm_90
     const nk = productShapes(g);
     for (nk) |s| try int8.Groups.checkGeometry(s[0], s[1]);
     var staging = try cuda.DeviceBuffer.alloc(&r.driver, @max(nk[0][0], nk[2][0]) * g.hidden * 2);
@@ -326,7 +326,6 @@ pub const Runner = struct {
         try q.groups.gemm(r.function("h3p_gemm_int8_groups"), r.stream, q.xq, q.xs, w.q, w.s, y, q.rows, n, k);
     }
 
-    /// `product`, then its fp32 rows rounded into the bf16 `to`.
     fn projected(r: *const Runner, q: Quantized, x: u64, w: anytype, p: u64, to: u64, n: usize, k: usize) !void {
         try r.product(q, x, w, p, n, k);
         try r.round(p, to, q.rows * n);
