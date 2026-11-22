@@ -350,9 +350,9 @@ pub const Decoder = struct {
         d.passed = origins.len;
     }
 
-    /// y = bf16(x w^T + b): --tc asks cuBLASLt's bias epilogue for that one rounding straight into `y`
-    /// (no LayerScale) or into `wide`, where it waits for `resNorm` as the residual's u; a shape whose
-    /// algorithm won't fuse, and --exact's h3d_linear, keep the fp32 acc and h3d_finish's roundings.
+    /// y = bf16(x w^T + b): --tc asks cuBLASLt for an algorithm with the bias epilogue, that one rounding straight
+    /// into `y` (no LayerScale) or into `wide`, where it waits for `resNorm` as the residual's u; a shape with no
+    /// such algorithm, and --exact's h3d_linear, keep the fp32 acc and h3d_finish's roundings.
     /// Returns the residual's scale offset when the product is pending a `resNorm`.
     fn gemm(d: *Decoder, s: Shape, x: usize, w: usize, b: usize, scale: ?usize, y: usize, n: usize, k: usize) !?usize {
         // h3d_linear loads K eight at a time
@@ -363,7 +363,7 @@ pub const Decoder = struct {
         p.mode = @intFromBool(scale != null);
         if (d.fast) {
             const gemms = &d.gemms.?;
-            const plan = try gemms.plan(s.m, @intCast(n), @intCast(k), .bf16, .bias);
+            const plan = try gemms.planFused(s.m, n, k);
             if (plan.epilogue == .bias) {
                 try plan.runBias(d.dev(x), d.param(w), d.param(b), d.dev(if (scale == null) y else d.view.wide), gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
                 try d.lap("products");

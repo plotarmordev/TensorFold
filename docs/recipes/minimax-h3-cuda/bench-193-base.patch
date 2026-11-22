@@ -1,5 +1,64 @@
+diff --git a/zig/src/cuda/cublaslt.zig b/zig/src/cuda/cublaslt.zig
+index c3ba5c55e..bb81e18a2 100644
+--- a/zig/src/cuda/cublaslt.zig
++++ b/zig/src/cuda/cublaslt.zig
+@@ -198,6 +198,22 @@ pub const Linear = struct {
+         self.workspace_need = found[0].workspace_size;
+     }
+ 
++    /// When `fuse` left `epilogue` unfused, asks the heuristic again with it set: the shape's first algorithm that
++    /// runs it (another tile, often slower alone, but it spares a separate bias pass). Keeps the plan when none does.
++    pub fn repick(self: *Linear, epilogue: Epilogue) Error!void {
++        if (self.epilogue == epilogue) return;
++        const kept = .{ self.algo, self.workspace_need };
++        const e: u32 = @backingInt(epilogue);
++        try self.lt.check(self.lt.api.cublasLtMatmulDescSetAttribute(self.desc, desc_epilogue, &e, @sizeOf(u32)), "set epilogue");
++        if (self.pick()) |_| {
++            self.epilogue = epilogue;
++            return;
++        } else |err| if (err != error.NoAlgorithm) return err;
++        self.algo, self.workspace_need = kept;
++        const none: u32 = @backingInt(Epilogue.none);
++        try self.lt.check(self.lt.api.cublasLtMatmulDescSetAttribute(self.desc, desc_epilogue, &none, @sizeOf(u32)), "unset epilogue");
++    }
++
+     pub fn deinit(self: *Linear) void {
+         const api = self.lt.api;
+         _ = api.cublasLtMatmulPreferenceDestroy(self.pref);
+diff --git a/zig/src/cuda/vit.zig b/zig/src/cuda/vit.zig
+index 647cc23af..325bba3a0 100644
+--- a/zig/src/cuda/vit.zig
++++ b/zig/src/cuda/vit.zig
+@@ -220,7 +220,7 @@ pub const Gemms = struct {
+     }
+ 
+     pub fn plan(g: *Gemms, rows: usize, n: usize, k: usize, out: cublaslt.DataType, epilogue: cublaslt.Epilogue) !*const Linear {
+-        const key = [3]u64{ rows, n, k | @as(u64, @intCast(@backingInt(out))) << 40 | @as(u64, @backingInt(epilogue)) << 48 };
++        const key = planKey(rows, n, k, out, epilogue);
+         const got = try g.plans.getOrPut(g.gpa, key);
+         if (!got.found_existing) got.value_ptr.* = Linear.initEpilogue(&g.lt, rows, n, k, out, workspace_bytes, epilogue) catch |e| {
+             g.plans.removeByPtr(got.key_ptr);
+@@ -228,6 +228,18 @@ pub const Gemms = struct {
+         };
+         return got.value_ptr;
+     }
++
++    /// `plan(.bf16, .bias)` whose algorithm runs the bias epilogue whenever the shape has one that can: see `repick`.
++    pub fn planFused(g: *Gemms, rows: usize, n: usize, k: usize) !*const Linear {
++        _ = try g.plan(rows, n, k, .bf16, .bias);
++        const p = g.plans.getPtr(planKey(rows, n, k, .bf16, .bias)).?;
++        try p.repick(.bias);
++        return p;
++    }
++
++    fn planKey(rows: usize, n: usize, k: usize, out: cublaslt.DataType, epilogue: cublaslt.Epilogue) [3]u64 {
++        return .{ rows, n, k | @as(u64, @intCast(@backingInt(out))) << 40 | @as(u64, @backingInt(epilogue)) << 48 };
++    }
+ };
+ 
+ /// y [rows, n] = bf16(x . w^T + b), the bias in cuBLASLt's epilogue, or else through f32 `acc` and tf_vit_bias.
 diff --git a/zig/src/families/h3/image_decoder_cuda.zig b/zig/src/families/h3/image_decoder_cuda.zig
-index 96cef40f8..730140912 100644
+index 96cef40f8..1a7ec7127 100644
 --- a/zig/src/families/h3/image_decoder_cuda.zig
 +++ b/zig/src/families/h3/image_decoder_cuda.zig
 @@ -276,21 +276,51 @@ pub const Decoder = struct {
@@ -64,7 +123,7 @@ index 96cef40f8..730140912 100644
          if (d.profile) d.mark = seconds();
          const s: Shape = .{ .tiles = @intCast(origins.len), .h = @intCast(d.h), .w = @intCast(d.w), .tokens = @intCast(d.tokens), .rows = @intCast(d.rows), .cols = @intCast(d.cols), .m = @intCast(origins.len * d.tokens) };
          if (stages.embed) {
-@@ -314,11 +344,10 @@ pub const Decoder = struct {
+@@ -314,16 +344,15 @@ pub const Decoder = struct {
              try d.launch("h3d_layer_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
              try d.lap("norms");
              _ = try d.gemm(s, d.view.xn, d.plan.tail(.proj_w), d.plan.tail(.proj_b), null, d.view.out, host.patch, W);
@@ -77,7 +136,24 @@ index 96cef40f8..730140912 100644
 -        return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
      }
  
-     /// y = bf16(x w^T + b): --tc asks cuBLASLt's bias epilogue for that one rounding straight into `y`
+-    /// y = bf16(x w^T + b): --tc asks cuBLASLt's bias epilogue for that one rounding straight into `y`
+-    /// (no LayerScale) or into `wide`, where it waits for `resNorm` as the residual's u; a shape whose
+-    /// algorithm won't fuse, and --exact's h3d_linear, keep the fp32 acc and h3d_finish's roundings.
++    /// y = bf16(x w^T + b): --tc asks cuBLASLt for an algorithm with the bias epilogue, that one rounding straight
++    /// into `y` (no LayerScale) or into `wide`, where it waits for `resNorm` as the residual's u; a shape with no
++    /// such algorithm, and --exact's h3d_linear, keep the fp32 acc and h3d_finish's roundings.
+     /// Returns the residual's scale offset when the product is pending a `resNorm`.
+     fn gemm(d: *Decoder, s: Shape, x: usize, w: usize, b: usize, scale: ?usize, y: usize, n: usize, k: usize) !?usize {
+         // h3d_linear loads K eight at a time
+@@ -334,7 +363,7 @@ pub const Decoder = struct {
+         p.mode = @intFromBool(scale != null);
+         if (d.fast) {
+             const gemms = &d.gemms.?;
+-            const plan = try gemms.plan(s.m, @intCast(n), @intCast(k), .bf16, .bias);
++            const plan = try gemms.planFused(s.m, n, k);
+             if (plan.epilogue == .bias) {
+                 try plan.runBias(d.dev(x), d.param(w), d.param(b), d.dev(if (scale == null) y else d.view.wide), gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
+                 try d.lap("products");
 @@ -409,7 +438,8 @@ pub const Decoder = struct {
  
      /// The decoded picture [3, 16 rows, 16 cols] (normalised) of a raw latent: tiles in batches, blended in fp32.

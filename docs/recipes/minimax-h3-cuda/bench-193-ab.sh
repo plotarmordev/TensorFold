@@ -1,9 +1,10 @@
 #!/bin/sh
-# Card 193's same-job A/B: bench-script.sh on this commit (two banded passes in flight, the host placing one's tiles
-# from pinned rows while the GPU runs the next), then bench-193-base.patch reverse-applied (main's one pass at a time)
-# and the same runs again: the fox cold, then three unseen prompts warm, 2048², H3_PROFILE off. Per run: wall and the
-# decoder's passes, GPU and in-all seconds; then each picture's sha256 on both sides, which must match. The card's
-# side also runs the same-latent `reference` compare, and the job ends with tf-cuda-test's h3d_flash contract gates.
+# Card 193's same-job A/B: bench-script.sh on this commit (two banded passes in flight, and every decoder product on
+# a cuBLASLt algorithm that fuses the bias epilogue, so no h3d_finish pass), then bench-193-base.patch reverse-applied
+# (main's decoder) and the same runs again: the fox cold, then three unseen prompts warm, 2048², H3_PROFILE off. Per
+# run: wall and the decoder's passes, GPU and in-all seconds. Every latent must be byte-identical between the sides;
+# the PNGs differ by the products' accumulation order, gated by h3_image_compare.py on the fetched files (TOP has no
+# PIL). The card's side also runs the same-latent `reference` compare; the job ends with the h3d_flash contract gates.
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-193-ab.sh
 set -eu
 here=docs/recipes/minimax-h3-cuda
@@ -47,12 +48,11 @@ for side in card main; do
 done
 echo "=== same-latent reference (card) ==="
 tail -n 8 /work/out/h3-193-card/2048-reference.compare.log || true
-echo "=== pictures, card against main (sha256) ==="
+echo "=== latents and pictures, card against main ==="
 for run in 1 2 3 4; do
-    c=$(sha256sum </work/out/h3-193-card/2048-$run.png | cut -d' ' -f1)
-    m=$(sha256sum </work/out/h3-193-main/2048-$run.png | cut -d' ' -f1)
-    cmp -s /work/out/h3-193-card/2048-$run.latent.f32 /work/out/h3-193-main/2048-$run.latent.f32 && l=same || l=differs
-    [ "$c" = "$m" ] && echo "2048-$run identical $c (latent $l)" || { echo "2048-$run DIFFERS card $c main $m (latent $l)"; status=1; }
+    cmp -s /work/out/h3-193-card/2048-$run.latent.f32 /work/out/h3-193-main/2048-$run.latent.f32 && l=same || { l=DIFFERS; status=1; }
+    cmp -s /work/out/h3-193-card/2048-$run.png /work/out/h3-193-main/2048-$run.png && p=identical || p=differs
+    echo "2048-$run latent $l, png $p"
 done
 echo "=== tf-cuda-test kernel-contract h3d_flash ==="
 H3_BUILD=contract H3_CONTRACT=h3d_flash sh $here/cuda-build.sh >/work/out/contract-193.log 2>&1 || status=$?
