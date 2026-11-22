@@ -166,16 +166,18 @@ fn cudaProduct(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     return exe;
 }
 
-/// `compile-native-cuda-windows`: the Windows CUDA product checked by the compiler from any host, emitting nothing.
+/// `compile-native-cuda-windows`: the Windows CUDA products checked by the compiler from any host, emitting nothing.
 pub fn windowsCompile(b: *std.Build) *std.Build.Step {
-    const target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v4 } });
     const options = b.addOptions();
     options.addOption([]const u8, "version", @import("../../build.zig.zon").version);
     options.addOption(bool, "is_release", false);
     options.addOption(bool, "slide_test_hooks", false);
-    const exe = cudaProduct(b, target, .ReleaseSafe, null, null, options, "120");
-    const step = b.step("compile-native-cuda-windows", "Type-check the sm_120 Windows CUDA product (x86_64-windows-gnu), with empty kernel images");
-    step.dependOn(&exe.step); // nothing asks for the binary, so the compiler checks without emitting or linking
+    const step = b.step("compile-native-cuda-windows", "Type-check the Windows CUDA products (sm_120 x86_64, sm_121 N1X aarch64), with empty kernel images");
+    const x86 = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v4 } });
+    const arm = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .windows, .abi = .gnu });
+    // nothing asks for the binaries, so the compiler checks without emitting or linking
+    step.dependOn(&cudaProduct(b, x86, .ReleaseSafe, null, null, options, "120").step);
+    step.dependOn(&cudaProduct(b, arm, .ReleaseSafe, null, null, options, "121").step);
     return step;
 }
 
