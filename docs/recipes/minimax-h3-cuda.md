@@ -815,6 +815,37 @@ memory; mma.sync fragments in registers are its next step.
 The job exited 1 on four gate failures in kernels this card leaves unchanged: `h3d_embed` shapes 1.14, `h3d_rms_norm`
 shapes 1.11, `h3d_layer_norm` shapes 1.36 plus its stress sums, and `h3d_attention` shapes 1.81 plus its stress sums.
 
+**Card 175: `h3d_flash`'s tiles in registers.** The kernel keeps card 144's grid (one (tile, head) and 64 queries
+a block, 4 warps of 16 queries, 64-key chunks) and rounding points, but both products are now `mma.sync`
+m16n8k16 bf16 with fp32 sums: the queries load once into A fragments, the chunk's keys and values go to shared
+memory swizzled for `ldmatrix` (`.trans` for the values), and the scores' accumulators are rescaled, rounded to
+bf16 and packed straight into `p·v`'s A fragments, with no score or weight tile in shared memory. It takes
+**16 KiB of static shared memory** (was 40 KiB) and **130 registers on sm_80/86/89, 128 on sm_120/121** (was
+128–144; nvcc 13.0's RECORD). [`check-175.sh`](minimax-h3-cuda/check-175.sh) at `3af9220e` (job `top-7a02984238a5`,
+exit 0) passed all four gates (shapes worst 0.664 of the bound, nonfinite classes, repeat byte-identical, sums) and
+gate 5 live on sm_121.
+
+[`bench-175-ab.sh`](minimax-h3-cuda/bench-175-ab.sh) at `3af9220e` (job `top-6b195e022759`, 22 November, exit 0,
+`H3_PROFILE=1`) ran the bench on this commit, then with `bench-175-base.patch` reverse-applied (card 144's wmma
+kernel): the fox cold, then three prompts no job had used (`prompts/pier`, `kiln`, `dunes`). Every selftest passed
+on both sides, all four latents are byte-identical between them, and the same-latent `reference` held (56.43 dB,
+relative 3.26e-3 under 3e-2).
+
+| 2048² | wall s | decoder s (GPU) | decoder s (all) | attention |
+|---|---:|---:|---:|---:|
+| card, run 1 (cold) | 153.03 | 1.00 | 1.68 | 0.03 |
+| card, run 2 | 15.03 | 0.62 | 1.06 | 0.03 |
+| card, run 3 | 14.19 | 0.62 | 1.01 | 0.03 |
+| card, run 4 | 14.01 | 0.62 | 1.05 | 0.03 |
+| main, run 1 (cold) | 151.50 | 1.12 | 1.73 | 0.19 |
+| main, run 2 | 15.30 | 0.78 | 1.21 | 0.19 |
+| main, run 3 | 14.41 | 0.78 | 1.19 | 0.20 |
+| main, run 4 | 14.19 | 0.78 | 1.20 | 0.19 |
+
+Attention fell from 0.19–0.20 s to **0.03 s**, near mmh3's 27.6 ms, and the warm decode from 0.78 to 0.62 s on the
+GPU; the other stages are unchanged (products 0.33, finish 0.08, swiglu 0.08, heads 0.05, norms 0.04). The decoder's
+remaining distance to mmh3's 0.55 s is in products, finish and norms, not attention.
+
 **FP16 products, tried and kept out.** [`decoder-144-f16-job.sh`](minimax-h3-cuda/decoder-144-f16-job.sh) at
 `2915d6f7` (job `top-ff79ae402131`, exit 1 from the same four contract failures) ran the bench on this commit, then with
 [`decoder-144-f16.patch`](minimax-h3-cuda/decoder-144-f16.patch) applied: the weights converted once to fp16, each
