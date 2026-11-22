@@ -21,7 +21,7 @@ cases() { # cases DIR [--bf16]: the phase's freshly built prompt tool writes eac
     for prompt in $prompts; do
         run=$((run + 1))
         "$bin/tf-h3-image-prompt-cuda" ${2:-} "$model/text_encoder" "$model" "$prompt" "$1/2048-$run.safetensors" 2048x2048 42 \
-            >"$1/2048-$run.log" 2>&1 || status=1
+            >"$1/2048-$run.log" 2>&1 || { status=1; tail -n 5 "$1/2048-$run.log"; }
     done
 }
 echo "=== card: this commit $(git -c safe.directory='*' rev-parse --short HEAD), int8 prompt encoder ==="

@@ -249,7 +249,7 @@ index 28d748ca9..712685e8c 100644
 +const prompt_block = 64;
 +const prompt_shared = 2 * (64 + 64) * 128 + 1024 + 2 * 16;
 diff --git a/zig/src/families/h3/prompt_cuda.zig b/zig/src/families/h3/prompt_cuda.zig
-index d39d04997..1d2d1d8fe 100644
+index d39d04997..1adf5fdfb 100644
 --- a/zig/src/families/h3/prompt_cuda.zig
 +++ b/zig/src/families/h3/prompt_cuda.zig
 @@ -1,6 +1,7 @@
@@ -293,17 +293,17 @@ index d39d04997..1d2d1d8fe 100644
  const RefinePart = enum { x, xn, p, qkv, att, wide, act };
  
  fn Scratch(comptime Part: type) type {
-@@ -90,7 +95,9 @@ fn asF32(a: std.mem.Allocator, bytes: []const u8) ![]f32 {
+@@ -90,7 +95,8 @@ fn asF32(a: std.mem.Allocator, bytes: []const u8) ![]f32 {
  pub const Resident = struct {
      arena: cuda.DeviceBuffer,
      embed: u64,
-+    /// One of the two is empty: bf16 layers (`--bf16`) or int8 ones.
-     layers: []rules.Layer(u64),
+-    layers: []rules.Layer(u64),
++    layers: []rules.Layer(u64), // one of layers and layers8 is empty: bf16 (`--bf16`) or int8
 +    layers8: []Layer8,
      cond_w: u64,
      cond_b: u64,
      final_norm: u64,
-@@ -124,15 +131,16 @@ fn fill(r: *Runner, a: std.mem.Allocator, at: *usize, arena: u64, shape: rules.S
+@@ -124,15 +130,16 @@ fn fill(r: *Runner, a: std.mem.Allocator, at: *usize, arena: u64, shape: rules.S
      return ptr;
  }
  
@@ -324,7 +324,7 @@ index d39d04997..1d2d1d8fe 100644
      embed: Tensor,
      layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet,
      ctx: *anyopaque,
-@@ -146,7 +154,10 @@ pub fn loadResident(
+@@ -146,7 +153,10 @@ pub fn loadResident(
      const front_specs = rules.frontTensors(front);
      const block_specs = rules.blockTensors(front);
      var total = slotOf(.{ g.vocab, g.hidden });
@@ -336,7 +336,7 @@ index d39d04997..1d2d1d8fe 100644
      for (front_specs) |spec| total += slotOf(spec[2]);
      for (block_specs) |spec| total += slotOf(spec[2]) * front.blocks;
      var arena = try cuda.DeviceBuffer.alloc(&r.driver, total);
-@@ -157,7 +168,8 @@ pub fn loadResident(
+@@ -157,7 +167,8 @@ pub fn loadResident(
      var res: Resident = .{
          .arena = arena,
          .embed = undefined,
@@ -346,7 +346,7 @@ index d39d04997..1d2d1d8fe 100644
          .cond_w = undefined,
          .cond_b = undefined,
          .final_norm = undefined,
-@@ -165,11 +177,12 @@ pub fn loadResident(
+@@ -165,11 +176,12 @@ pub fn loadResident(
      };
      var at: usize = 0;
      res.embed = try fill(r, a, &at, res.arena.ptr, .{ g.vocab, g.hidden }, embed);
@@ -361,7 +361,7 @@ index d39d04997..1d2d1d8fe 100644
          }
      }
      const front_tensors: [3]Tensor = .{ cond_w, cond_b, final_norm };
-@@ -186,6 +199,30 @@ pub fn loadResident(
+@@ -186,6 +198,31 @@ pub fn loadResident(
      return res;
  }
  
@@ -373,6 +373,7 @@ index d39d04997..1d2d1d8fe 100644
 +
 +/// Each text layer's products quantized into the arena at a scale per 128 of K, its norms beside them.
 +fn loadLayers8(r: *Runner, a: std.mem.Allocator, g: rules.Text, at: *usize, arena: u64, layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet, ctx: *anyopaque, out: []Layer8) !void {
++    if (try r.ctx.capability() < 90) return error.H3Int8RequiresSm90; // the TMA images trap below sm_90
 +    const nk = productShapes(g);
 +    for (nk) |s| try int8.Groups.checkGeometry(s[0], s[1]);
 +    var staging = try cuda.DeviceBuffer.alloc(&r.driver, @max(nk[0][0], nk[2][0]) * g.hidden * 2);
@@ -392,7 +393,7 @@ index d39d04997..1d2d1d8fe 100644
  /// One product's plan: cuBLASLt bf16 in, fp32 sums, fp32 out. The bias variant's plan is separate so a
  /// fused fp32 epilogue is picked only where a bias exists; bf16 bias values convert exactly.
  const Products = struct {
-@@ -277,6 +314,24 @@ pub const Runner = struct {
+@@ -277,6 +314,23 @@ pub const Runner = struct {
          try cuda.launch.launch(r.function(name), .{ .grid = grid, .block = .{ .x = threads } }, r.stream, args);
      }
  
@@ -408,7 +409,6 @@ index d39d04997..1d2d1d8fe 100644
 +        try q.groups.gemm(r.function("h3p_gemm_int8_groups"), r.stream, q.xq, q.xs, w.q, w.s, y, q.rows, n, k);
 +    }
 +
-+    /// `product`, then its fp32 rows rounded into the bf16 `to`.
 +    fn projected(r: *const Runner, q: Quantized, x: u64, w: anytype, p: u64, to: u64, n: usize, k: usize) !void {
 +        try r.product(q, x, w, p, n, k);
 +        try r.round(p, to, q.rows * n);
@@ -417,7 +417,7 @@ index d39d04997..1d2d1d8fe 100644
      /// The driver, its primary context, the prompt kernels and the cuBLASLt plans; all freed by deinit.
      /// Heap-made: the stream, events and buffers each hold `&r.driver`, which a returned copy would move.
      pub fn init(gpa: std.mem.Allocator) !*Runner {
-@@ -312,7 +367,7 @@ pub const Runner = struct {
+@@ -312,7 +366,7 @@ pub const Runner = struct {
      /// `bytes` through the two pinned stages onto `dst` in 64 MiB windows, each stage waited only when
      /// its turn comes again, so a copy runs while the other window is filled; the uploads order ahead
      /// of later work on the runner's stream.
@@ -426,7 +426,7 @@ index d39d04997..1d2d1d8fe 100644
          var done: usize = 0;
          var turn: usize = 0;
          while (done < bytes.len) {
-@@ -388,22 +443,25 @@ pub const Runner = struct {
+@@ -388,22 +442,25 @@ pub const Runner = struct {
  
      /// The text model's rows leaving its last run layer [T, hidden] bf16 for `ids` at M-RoPE positions
      /// `pos`, vision rows spliced at the pads when given. `res` holds the weights on the device, so
@@ -458,7 +458,7 @@ index d39d04997..1d2d1d8fe 100644
          sizes.set(.ub, T * g.ffn * 2);
          sizes.set(.act, T * g.ffn * 2);
          sizes.set(.cos, T * 64 * 4);
-@@ -411,6 +469,8 @@ pub const Runner = struct {
+@@ -411,6 +468,8 @@ pub const Runner = struct {
          sizes.set(.idx, (T + n) * 4);
          sizes.set(.vision, n * H * 2);
          sizes.set(.deep, 3 * n * H * 2);
@@ -467,7 +467,7 @@ index d39d04997..1d2d1d8fe 100644
          var s = try Scratch(EncodePart).make(&r.driver, sizes);
          defer s.buf.free();
          errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt encode did not drain");
-@@ -444,29 +504,28 @@ pub const Runner = struct {
+@@ -444,29 +503,28 @@ pub const Runner = struct {
          defer ended.deinit();
          errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt timing did not drain");
          try begun.record(r.stream);
