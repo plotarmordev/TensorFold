@@ -725,6 +725,37 @@ style left the picture at 28.14 dB. Folding the same scales in registers changes
 sum that is otherwise exact, so it should give the same picture (inferred, not run). This card ran no picture
 for them.
 
+### Card 173: the prompt encoder in int8 at a scale per 128 of K, on our own TMA product — kept
+
+Qwen3-VL's 50 text layers run their q/k/v (one product), o, gate/up (one product) and down as int8 with one scale per
+128 of K on both operands: weights quantized once at load (`h3p_quantize_groups`, resident 26.35 against 48.35 GiB),
+each product's activation rows quantized the same way, and card 146's TMA kernel in its `GROUPED` mode
+(`h3p_gemm_int8_groups`, 64 × 64 tiles) folding each K block's exact int32 sums into fp32 at its two scales. Card
+143's per-row fold was the only one cuBLASLt's int32 C allows; finer groups need our own product. `--bf16` keeps
+main's encoder, and the selftest holds the int8 rows within cosine 0.999 of the float64 oracle and repeatable byte for byte.
+
+[`bench-173-ab.sh`](minimax-h3-cuda/bench-173-ab.sh) at `7b6a60a0` (job `top-35c84dfda642`, GB10, driver
+580.173.02, 22 November, `H3_PROFILE=1`) ran the bench on that commit, then on `bench-173-base.patch`
+reverse-applied (main's bf16 encoder): the pilot fox cold, then the unseen canal, orchard and foundry prompts (35,
+37 and 42 tokens) warm, seed 42, 2048², six steps. Every selftest passed on both sides, and `--bf16`'s four prompt
+cases were byte-identical to main's.
+
+| 2048², seed 42 | wall s | prompt s | encoder s (GPU) | transformer s | decoder s | peak MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| int8 groups, fox cold | 141.3 | 0.3 | 0.14 | 38.0 | 1.5 | 64,143 |
+| int8 groups, canal | 12.1 | 0.2 | 0.15 | 10.7 | 1.2 | 55,498 |
+| int8 groups, orchard | 12.2 | 0.2 | 0.15 | 10.9 | 1.2 | 55,497 |
+| int8 groups, foundry | 12.2 | 0.2 | 0.15 | 10.8 | 1.2 | 55,502 |
+| main (bf16), fox cold | 148.2 | 1.2 | 1.04 | 38.9 | 1.9 | 86,666 |
+| main (bf16), canal | 13.9 | 1.9 | 1.89 | 10.8 | 1.2 | 78,020 |
+| main (bf16), orchard | 14.2 | 2.0 | 1.94 | 10.8 | 1.4 | 78,018 |
+| main (bf16), foundry | 14.8 | 2.5 | 2.49 | 11.1 | 1.2 | 78,021 |
+
+The fox's `2048-1` against episode 1's Mac latent and PNG: **latent cosine 0.9954, PSNR 29.11 dB, mean diff 3.83**,
+all three gates cleared (0.99, 28.2 dB, 4.1); main's side of the same job measured 0.9952, 28.69 dB and 4.015. The
+warm prompt stage is 0.2 s on every unseen prompt, under the card's 0.5 s bar, against main's 1.9–2.5 s, so int8 groups
+are the encoder's default.
+
 ### Card 143: the prompt encoder resident in int8 per-row products — measured and reverted
 
 Qwen3-VL's 50 text layers went resident as int8 products through the cuBLASLt int8 path the transformer already
@@ -988,8 +1019,8 @@ The 3.4 s splits into three parts:
 - **Prompt, +1.8 s.** Our bf16 encoder takes 1.9–2.05 s at 35–42 tokens. The fox's 24 tokens took 1.05 s, and card
   132's 31–32 tokens took 1.23 s. mmh3's resident int8 encoder takes 0.2 s at any of these lengths. The jump above
   32 tokens looks like the 33–64-row band where card 154 found cuBLASLt refusing the canonical algorithm [INFERENCE,
-  not traced]. Card 143's int8 encoder would close this stage (0.16 s) but missed the picture gates, so it stays
-  reverted.
+  not traced]. Card 143's per-row int8 encoder (0.16 s) missed the picture gates; card 173's per-128-of-K int8
+  encoder closes this stage (0.2 s) and clears them.
 - **Transformer, +1.35 s.** 1.78 s a step against mmh3's 1.5 s. `out` and `fc2` are still bf16 (card 146), and
   attention is 1.8 s a picture (round 2 above).
 - **Decoder, +0.5 s.** 0.79 s on the GPU against mmh3's 0.6–0.7 s, plus 0.4 s outside the GPU (PNG and host)
