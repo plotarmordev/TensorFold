@@ -278,7 +278,7 @@ pub const H3 = struct {
         e.barrier();
         e.setPipeline(self.quant_pipe.?);
         e.setBuffer(xn.buf, xn.off, 0);
-        e.setValue([3]i32{ @intCast(s.rows), @intCast(s.n), 256 }, 1);
+        e.setValue([4]i32{ @intCast(s.rows), @intCast(s.n), 256, 0 }, 1);
         e.setBuffer(self.bufs[5].buf, self.bufs[5].off, 2);
         e.setBuffer(self.bufs[6].buf, self.bufs[6].off, 3);
         e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));
