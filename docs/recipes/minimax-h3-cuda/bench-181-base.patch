@@ -1,0 +1,375 @@
+diff --git a/zig/kernels/cuda/h3.cu b/zig/kernels/cuda/h3.cu
+index 2b378e66a..aa0acfd14 100644
+--- a/zig/kernels/cuda/h3.cu
++++ b/zig/kernels/cuda/h3.cu
+@@ -20,6 +20,29 @@ __device__ __forceinline__ float modulated(float x, float inv, float w, float sc
+     return bf(bf(bf(x * inv * w) * bf(1.0f + bf(scale))) + bf(shift));
+ }
+ 
++// Four bf16 values from 8-byte-aligned p in one load.
++__device__ __forceinline__ void load4(const __nv_bfloat16* p, float v[4]) {
++    const uint2 u = *reinterpret_cast<const uint2*>(p);
++    const float2 lo = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&u.x));
++    const float2 hi = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&u.y));
++    v[0] = lo.x;
++    v[1] = lo.y;
++    v[2] = hi.x;
++    v[3] = hi.y;
++}
++
++// A lane's four normed values at `base` rounded to bf16, as h3_norm writes them: the weight and tables in
++// 8-byte loads, x as the gated add left it.
++__device__ __forceinline__ void normed4(const __nv_bfloat16* x, const __nv_bfloat16* NW, const __nv_bfloat16* s,
++                                        const __nv_bfloat16* h, int base, float inv, float v[4]) {
++    float w[4], sc[4], sh[4];
++    load4(NW + base, w);
++    load4(s + base, sc);
++    load4(h + base, sh);
++#pragma unroll
++    for (int j = 0; j < 4; ++j) v[j] = bf(modulated(f(x[base + j]), inv, w[j], sc[j], sh[j]));
++}
++
+ } // namespace tf_h3
+ 
+ using namespace tf_h3;
+@@ -27,17 +50,17 @@ using namespace tf_h3;
+ extern "C" {
+ 
+ __global__ void __launch_bounds__(256) h3_norm(__nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
+-                                               const float* GT, const float* TAB, const int* LINE, __nv_bfloat16* O,
++                                               const __nv_bfloat16* GT, const __nv_bfloat16* TAB, const int* LINE, __nv_bfloat16* O,
+                                                int C, int gate, int scale, int shift, float eps) {
+     __shared__ float scratch[8];
+     const int row = blockIdx.x, line = LINE[row];
+     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
+     float sq = 0.0f;
+     if (gate >= 0) {
+-        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
++        const __nv_bfloat16* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
+         const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
+         for (int c = threadIdx.x; c < C; c += blockDim.x) {
+-            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
++            const float v = bf(f(x[c]) + f(y[c]) * f(g[c]));
+             x[c] = __float2bfloat16(v);
+             sq += v * v;
+         }
+@@ -45,20 +68,20 @@ __global__ void __launch_bounds__(256) h3_norm(__nv_bfloat16* X, const __nv_bflo
+         for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
+     }
+     const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
+-    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
+-    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
++    const __nv_bfloat16* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
++    const __nv_bfloat16* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
+     __nv_bfloat16* o = O + static_cast<size_t>(row) * C;
+-    for (int c = threadIdx.x; c < C; c += blockDim.x) o[c] = __float2bfloat16(modulated(f(x[c]), inv, f(NW[c]), s[c], h[c]));
++    for (int c = threadIdx.x; c < C; c += blockDim.x) o[c] = __float2bfloat16(modulated(f(x[c]), inv, f(NW[c]), f(s[c]), f(h[c])));
+ }
+ 
+ // X += GT[line, part] * Y in one rounding, as torch's addcmul: the last block's MLP branch. Grid [M], 256 threads.
+-__global__ void __launch_bounds__(256) h3_gate_add(__nv_bfloat16* X, const __nv_bfloat16* Y, const float* GT,
++__global__ void __launch_bounds__(256) h3_gate_add(__nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* GT,
+                                                    const int* LINE, int C, int part) {
+     const int row = blockIdx.x;
+-    const float* g = GT + (static_cast<size_t>(LINE[row]) * 6 + part) * C;
++    const __nv_bfloat16* g = GT + (static_cast<size_t>(LINE[row]) * 6 + part) * C;
+     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
+     const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
+-    for (int c = threadIdx.x; c < C; c += blockDim.x) x[c] = __float2bfloat16(f(x[c]) + f(y[c]) * bf(g[c]));
++    for (int c = threadIdx.x; c < C; c += blockDim.x) x[c] = __float2bfloat16(f(x[c]) + f(y[c]) * f(g[c]));
+ }
+ 
+ // q, k, v to bf16 in tile order: head RMSNorm, then split-half rotary rounded as the reference's bf16 tables round it.
+@@ -319,17 +342,17 @@ __global__ void __launch_bounds__(256) h3_quantize(const __nv_bfloat16* X, int8_
+ // only reader, so the unfused pair's bf16 round trip through a row buffer drops out. Grid [M], 256 threads.
+ __global__ void __launch_bounds__(256) h3_norm_quant(
+     __nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
+-    const float* GT, const float* TAB, const int* LINE,
++    const __nv_bfloat16* GT, const __nv_bfloat16* TAB, const int* LINE,
+     int8_t* Q, float* S, int C, int gate, int scale, int shift, float eps) {
+     __shared__ float scratch[32];
+     const int row = blockIdx.x, line = LINE[row];
+     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
+     float sq = 0.0f;
+     if (gate >= 0) {
+-        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
++        const __nv_bfloat16* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
+         const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
+         for (int c = threadIdx.x; c < C; c += blockDim.x) {
+-            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
++            const float v = bf(f(x[c]) + f(y[c]) * f(g[c]));
+             x[c] = __float2bfloat16(v);
+             sq += v * v;
+         }
+@@ -337,18 +360,15 @@ __global__ void __launch_bounds__(256) h3_norm_quant(
+         for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
+     }
+     const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
+-    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
+-    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
++    const __nv_bfloat16* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
++    const __nv_bfloat16* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
+     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = C >> 7;
+     float most = 0.f, v[quantize_chunks][4];
+ #pragma unroll
+     for (int i = 0; i < quantize_chunks; ++i) {
+         const int c = warp + 8 * i;
+         if (c < chunks) {
+-            const int base = c * 128 + lane * 4;
+-#pragma unroll
+-            for (int j = 0; j < 4; ++j)
+-                v[i][j] = f(__float2bfloat16(modulated(f(x[base + j]), inv, f(NW[base + j]), s[base + j], h[base + j])));
++            normed4(x, NW, s, h, c * 128 + lane * 4, inv, v[i]);
+             hadamard128(v[i]);
+             for (int j = 0; j < 4; ++j) most = fmaxf(most, fabsf(v[i][j]));
+         }
+@@ -388,17 +408,17 @@ __global__ void __launch_bounds__(256) h3_quantize_fp4(const __nv_bfloat16* X, u
+ // reads from h3_norm's output row. Grid [M], 256 threads.
+ __global__ void __launch_bounds__(256) h3_norm_quant_fp4(
+     __nv_bfloat16* X, const __nv_bfloat16* Y, const __nv_bfloat16* NW,
+-    const float* GT, const float* TAB, const int* LINE,
++    const __nv_bfloat16* GT, const __nv_bfloat16* TAB, const int* LINE,
+     uint8_t* Q, uint8_t* S, int C, int gate, int scale, int shift, float eps) {
+     __shared__ float scratch[32];
+     const int row = blockIdx.x, line = LINE[row];
+     __nv_bfloat16* x = X + static_cast<size_t>(row) * C;
+     float sq = 0.0f;
+     if (gate >= 0) {
+-        const float* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
++        const __nv_bfloat16* g = GT + (static_cast<size_t>(line) * 6 + gate) * C;
+         const __nv_bfloat16* y = Y + static_cast<size_t>(row) * C;
+         for (int c = threadIdx.x; c < C; c += blockDim.x) {
+-            const float v = bf(f(x[c]) + f(y[c]) * bf(g[c]));
++            const float v = bf(f(x[c]) + f(y[c]) * f(g[c]));
+             x[c] = __float2bfloat16(v);
+             sq += v * v;
+         }
+@@ -406,15 +426,12 @@ __global__ void __launch_bounds__(256) h3_norm_quant_fp4(
+         for (int c = threadIdx.x; c < C; c += blockDim.x) sq += f(x[c]) * f(x[c]);
+     }
+     const float inv = rsqrtf(block_sum_serial(sq, scratch) / float(C) + eps);
+-    const float* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
+-    const float* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
++    const __nv_bfloat16* s = TAB + (static_cast<size_t>(line) * 6 + scale) * C;
++    const __nv_bfloat16* h = TAB + (static_cast<size_t>(line) * 6 + shift) * C;
+     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = C >> 7;
+     for (int c = warp; c < chunks; c += 8) {
+-        const int base = c * 128 + lane * 4;
+         float v[4];
+-#pragma unroll
+-        for (int j = 0; j < 4; ++j)
+-            v[j] = f(__float2bfloat16(modulated(f(x[base + j]), inv, f(NW[base + j]), s[base + j], h[base + j])));
++        normed4(x, NW, s, h, c * 128 + lane * 4, inv, v);
+         hadamard128(v);
+         store_fp4(v, row, c, lane, C, Q, S);
+     }
+diff --git a/zig/kernels/cuda/h3_image_modulation.cu b/zig/kernels/cuda/h3_image_modulation.cu
+index 649d40e9b..d448b9369 100644
+--- a/zig/kernels/cuda/h3_image_modulation.cu
++++ b/zig/kernels/cuda/h3_image_modulation.cu
+@@ -30,9 +30,10 @@ extern "C" __global__ void __launch_bounds__(256) h3m_embed(
+     out[i] = v / (1.0f + expf(-v));
+ }
+ 
+-// One warp per output; the 32 partials meet in lane order, as rows_reference.modulation does.
++// One warp per output; the 32 partials meet in lane order, as rows_reference.modulation does. The tables are
++// bf16: the reference rounds every AdaLN value there.
+ extern "C" __global__ void __launch_bounds__(256) h3m_project(
+-        const float* x, const void* w, const void* b, float* out, int rows, int n, int k, int ww, int bw) {
++        const float* x, const void* w, const void* b, __nv_bfloat16* out, int rows, int n, int k, int ww, int bw) {
+     const int lane = threadIdx.x % 32;
+     const int c = blockIdx.x * 8 + threadIdx.x / 32;
+     const int r = blockIdx.y;
+@@ -44,5 +45,5 @@ extern "C" __global__ void __launch_bounds__(256) h3m_project(
+     }
+     float total = 0;
+     for (int j = 0; j < 32; ++j) total = __fadd_rn(total, __shfl_sync(0xffffffffu, sum, j));
+-    if (lane == 0) out[size_t(r) * n + c] = __bfloat162float(__float2bfloat16_rn(__fadd_rn(total, h3m_read(b, c, bw))));
++    if (lane == 0) out[size_t(r) * n + c] = __float2bfloat16_rn(__fadd_rn(total, h3m_read(b, c, bw)));
+ }
+diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
+index 58b16d656..0f2cf3e54 100644
+--- a/zig/src/families/h3/cuda.zig
++++ b/zig/src/families/h3/cuda.zig
+@@ -265,7 +265,7 @@ pub const Model = struct {
+     pub const Inputs = extern struct {
+         /// The packed stream, (rows, hidden) bf16, updated in place.
+         x: u64,
+-        /// Every block's modulation tables: (blocks, lines, 6, hidden) float.
++        /// Every block's modulation tables: (blocks, lines, 6, hidden) bf16, 8-byte aligned.
+         tables: u64,
+         /// Each row's line in the tables: (rows) int32.
+         line: u64,
+@@ -340,7 +340,7 @@ pub const Model = struct {
+         const heads = self.heads;
+         // the dense forward needs no routing gate: its product stops after q, k and v
+         const width = if (dense) 3 * inner else 4 * inner;
+-        const table_bytes = @as(usize, in.lines) * 6 * hidden * 4;
++        const table_bytes = @as(usize, in.lines) * 6 * hidden * 2;
+         const video_tiles = tiles - prefix;
+         const count = checked.count;
+         var mark = seconds();
+diff --git a/zig/src/families/h3/cuda_fused_test.zig b/zig/src/families/h3/cuda_fused_test.zig
+index 8226ca9ab..c1c3280e4 100644
+--- a/zig/src/families/h3/cuda_fused_test.zig
++++ b/zig/src/families/h3/cuda_fused_test.zig
+@@ -44,13 +44,13 @@ pub fn run(a: std.mem.Allocator) !void {
+     for (&y, 0..) |*v, i| v.* = bf.bits(@as(f32, @floatFromInt(@as(i32, @intCast(i * 40503 % 61)) - 30)) / 32);
+     var nw: [C]u16 = undefined;
+     for (&nw, 0..) |*v, i| v.* = bf.bits(1 + @as(f32, @floatFromInt(@as(i32, @intCast(i % 9)) - 4)) / 16);
+-    var tab: [lines * 6 * C]f32 = undefined;
++    var tab: [lines * 6 * C]u16 = undefined;
+     // the AdaLN parts h3_norm reads: gated add gate_m, then scale_a/shift_a modulation
+     const gate_m: c_int = 5;
+     const scale_a: c_int = 1;
+     const shift_a: c_int = 0;
+ 
+-    for (&tab, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(i32, @intCast(i * 97 % 41)) - 20)) / 32;
++    for (&tab, 0..) |*v, i| v.* = bf.bits(@as(f32, @floatFromInt(@as(i32, @intCast(i * 97 % 41)) - 20)) / 32);
+     var line: [rows]i32 = undefined;
+     for (&line, 0..) |*v, i| v.* = @intCast(i % lines);
+ 
+diff --git a/zig/src/families/h3/cuda_modulation.zig b/zig/src/families/h3/cuda_modulation.zig
+index 629c48442..af66cc0cc 100644
+--- a/zig/src/families/h3/cuda_modulation.zig
++++ b/zig/src/families/h3/cuda_modulation.zig
+@@ -1,10 +1,9 @@
+-//! GPU timestep embedding and AdaLN preparation; only the small final-norm table returns to the host.
++//! GPU timestep embedding and AdaLN preparation into bf16 tables; only the small final-norm table returns to the host.
+ const std = @import("std");
+ const cuda = @import("cuda");
+ const checkpoint = @import("checkpoint.zig");
+ const shape = @import("modulation_shape.zig");
+ const geometry = @import("geometry.zig");
+-const bf16 = @import("bf16_round");
+ const image align(16) = @embedFile("fatbin_h3_modulation").*;
+ 
+ pub const Tables = struct {
+@@ -98,9 +97,9 @@ pub fn prepare(a: std.mem.Allocator, d: *const cuda.Driver, stream: cuda.Stream,
+     defer middle.free();
+     var embedded = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ times.len, k, 4 }));
+     defer embedded.free();
+-    var blocks = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ count, 4 }));
++    var blocks = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ count, 2 }));
+     errdefer blocks.free();
+-    var last = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ final_count, 4 }));
++    var last = try cuda.DeviceBuffer.alloc(d, try geometry.product(&.{ final_count, 2 }));
+     defer last.free();
+     var args: cuda.Args = .{};
+     args.add(time.ptr);
+@@ -111,13 +110,10 @@ pub fn prepare(a: std.mem.Allocator, d: *const cuda.Driver, stream: cuda.Stream,
+     try project(module, &staging, stream, ck, "time_embedder.proj_in.", sinusoid.ptr, middle.ptr, times.len, ib.shape[0], dim, true);
+     try project(module, &staging, stream, ck, "time_embedder.proj_out.", middle.ptr, embedded.ptr, times.len, k, ib.shape[0], true);
+     var name: [128]u8 = undefined;
+-    for (0..layers) |i| try project(module, &staging, stream, ck, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.", .{i}), embedded.ptr, blocks.ptr + i * times.len * n * 4, times.len, n, k, false);
++    for (0..layers) |i| try project(module, &staging, stream, ck, try std.fmt.bufPrint(&name, "blocks.{d}.adaln_proj.linear.", .{i}), embedded.ptr, blocks.ptr + i * times.len * n * 2, times.len, n, k, false);
+     try project(module, &staging, stream, ck, "final_layer.adaln_proj.linear.", embedded.ptr, last.ptr, times.len, 2 * hidden, k, false);
+     const final = try a.alloc(u16, final_count);
+     errdefer a.free(final);
+-    const values = try a.alloc(f32, final_count);
+-    defer a.free(values);
+-    try last.download(0, std.mem.sliceAsBytes(values));
+-    for (final, values) |*to, from| to.* = bf16.bits(from);
++    try last.download(0, std.mem.sliceAsBytes(final));
+     return .{ .blocks = blocks, .final = final, .allocator = a };
+ }
+diff --git a/zig/src/families/h3/cuda_modulation_test.zig b/zig/src/families/h3/cuda_modulation_test.zig
+index c540a20b1..e4d6a8fb9 100644
+--- a/zig/src/families/h3/cuda_modulation_test.zig
++++ b/zig/src/families/h3/cuda_modulation_test.zig
+@@ -29,13 +29,13 @@ pub fn run(a: std.mem.Allocator) !void {
+     }
+     for (&w, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 31)) - 15)) / 32;
+     for (&b, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 7)) / 8;
+-    var expected: [t * n]f32 = undefined;
+-    try rows.modulation(f32, &xb, &w, &b, &expected, t, k, groups, parts, width);
++    var want: [t * n]u16 = undefined;
++    try rows.modulation(u16, &xb, &w, &b, &want, t, k, groups, parts, width);
+     var x_dev = try cuda.DeviceBuffer.fromHost(&driver, std.mem.sliceAsBytes(&x));
+     defer x_dev.free();
+-    var output = try cuda.DeviceBuffer.alloc(&driver, @sizeOf(@TypeOf(expected)));
++    var output = try cuda.DeviceBuffer.alloc(&driver, @sizeOf(@TypeOf(want)));
+     defer output.free();
+-    var actual: [t * n]f32 = undefined;
++    var actual: [t * n]u16 = undefined;
+     var wb: [n * k]u16 = undefined;
+     var bb: [n]u16 = undefined;
+     for (&wb, w) |*v, f| v.* = bf.bits(f);
+@@ -53,7 +53,7 @@ pub fn run(a: std.mem.Allocator) !void {
+             try cuda.launch.launch(try module.function("h3m_project"), .{ .grid = .{ .x = (n + 7) / 8, .y = t }, .block = .{ .x = 256 } }, stream, &args);
+             try stream.synchronize();
+             try output.download(0, std.mem.sliceAsBytes(&actual));
+-            if (!std.mem.eql(u8, std.mem.sliceAsBytes(&actual), std.mem.sliceAsBytes(&expected))) return error.H3ModulationMismatch;
++            if (!std.mem.eql(u16, &actual, &want)) return error.H3ModulationMismatch;
+         }
+     }
+     try embedCheck(a, &driver, module, stream);
+diff --git a/zig/src/families/h3/cuda_runtime_fake.zig b/zig/src/families/h3/cuda_runtime_fake.zig
+index a594cefaf..ce7469843 100644
+--- a/zig/src/families/h3/cuda_runtime_fake.zig
++++ b/zig/src/families/h3/cuda_runtime_fake.zig
+@@ -169,7 +169,7 @@ pub fn input() h3.Model.Inputs {
+     return .{ .x = @intFromPtr(&x), .tables = @intFromPtr(&tables), .line = @intFromPtr(&line), .cos = 0, .sin = 0, .slot = @intFromPtr(&slot), .sizes = @intFromPtr(&sizes), .rows = 2, .tiles = 1, .lines = 1, .rot = 0, .prefix_tiles = 0, .keep = 0 };
+ }
+ pub var x: [256]u16 = @splat(0);
+-pub var tables: [768]f32 = @splat(0);
++pub var tables: [768]u16 align(8) = @splat(0);
+ pub var line: [2]i32 = .{ 0, 0 };
+ pub var slot: [2]i32 = .{ 0, 1 };
+ pub var sizes: [1]i32 = .{2};
+diff --git a/zig/src/families/h3/cuda_validation.zig b/zig/src/families/h3/cuda_validation.zig
+index e88c7e367..787e941a1 100644
+--- a/zig/src/families/h3/cuda_validation.zig
++++ b/zig/src/families/h3/cuda_validation.zig
+@@ -44,12 +44,13 @@ pub fn read(m: anytype, in: anytype, own0: usize, own1: usize) !Plan {
+     const heads = m.heads;
+     const mlp = m.mlp;
+     const input = [8]usize{
+-        try product(&.{ rows, h, 2 }),      try product(&.{ count, in.lines, 6, h, 4 }),                     try product(&.{ rows, 4 }),
++        try product(&.{ rows, h, 2 }),      try product(&.{ count, in.lines, 6, h, 2 }),                     try product(&.{ rows, 4 }),
+         try product(&.{ rows, in.rot, 4 }), try product(&.{ rows, in.rot, 4 }),                              try product(&.{ rows, 4 }),
+         try product(&.{ tiles, 4 }),        if (in.attention_out == 0) 0 else try product(&.{ rows, i, 2 }),
+     };
+     const pointers = [8]u64{ in.x, in.tables, in.line, in.cos, in.sin, in.slot, in.sizes, in.attention_out };
+-    for (pointers, input, [_]usize{ 2, 4, 4, 4, 4, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
++    // the fused norms read the tables 8 bytes at a time
++    for (pointers, input, [_]usize{ 2, 8, 4, 4, 4, 4, 4, 2 }) |ptr, n, a| try address(ptr, n, a);
+     const padded = try product(&.{ heads, tiles, 64, 128, 2 });
+     const means = try product(&.{ heads, tiles, 128, 4 });
+     return .{ .count = count, .prefix = prefix, .keep = keep, .own0 = own0, .own1 = own1, .input = input, .buffers = .{
+diff --git a/zig/tests/cuda/contract_h3_image_modulation.zig b/zig/tests/cuda/contract_h3_image_modulation.zig
+index c431f5f46..347c43325 100644
+--- a/zig/tests/cuda/contract_h3_image_modulation.zig
++++ b/zig/tests/cuda/contract_h3_image_modulation.zig
+@@ -28,7 +28,7 @@ pub fn spec(w: Which) c.Spec {
+     return switch (w) {
+         .sinusoid => .{ .name = "cuda h3 image modulation h3m_sinusoid", .accum = .none, .depth = none, .ops = 4, .out = .f32, .served = &.{ .{ .rows = 8, .n = 256, .k = 1 }, .{ .rows = 77, .n = 512, .k = 1 } } },
+         .embed => .{ .name = "cuda h3 image modulation h3m_embed", .accum = .f32, .depth = dotK, .ops = 4, .out = .f32, .served = &.{ .{ .rows = 8, .n = 64, .k = 256 }, .{ .rows = 8, .n = 128, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the kernel sums in binary64: a bf16 or f16 sum's error is a few f32 output ulps" } },
+-        .project => .{ .name = "cuda h3 image modulation h3m_project", .accum = .f32, .depth = laneChain, .ops = 2, .out = .f32, .store = .bf16, .served = &.{ .{ .rows = 8, .n = 64, .k = 256 }, .{ .rows = 8, .n = 128, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the bf16-in-f32 output hides a bf16 sum's error" } },
++        .project => .{ .name = "cuda h3 image modulation h3m_project", .accum = .f32, .depth = laneChain, .ops = 2, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 64, .k = 256 }, .{ .rows = 8, .n = 128, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "the bf16 output hides a bf16 sum's error" } },
+     };
+ }
+ 
+@@ -136,7 +136,7 @@ pub const Mod = struct {
+                 _ = try self.upload(x, false);
+                 _ = try self.upload(w, true);
+                 _ = try self.upload(b, true);
+-                _ = try self.output(s.rows * s.n * 4);
++                _ = try self.output(s.rows * s.n * @as(usize, if (self.which == .project) 2 else 4));
+                 self.outs = s.rows * s.n;
+             },
+         }
+@@ -171,13 +171,6 @@ pub const Mod = struct {
+             },
+         }
+         try self.rig.s.synchronize();
+-        if (self.which == .project) try self.bf16Words();
+-    }
+-
+-    /// project stores bf16 values in fp32 words: every word's low half must be zero.
+-    fn bf16Words(self: *Mod) !void {
+-        const words = std.mem.bytesAsSlice(u32, try self.rig.outputBytes());
+-        for (words) |w| if (w & 0xffff != 0) return error.NotBf16Valued;
+     }
+ 
+     fn go(self: *Mod, grid: cuda.Dim3, args: *cuda.Args) !void {
