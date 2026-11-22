@@ -1,6 +1,7 @@
 // MiniMax H3 / FastH3's transformer blocks on CUDA in the checkpoint's bf16: the row, routing and attention kernels.
 #include "nvfp4q.cuh"
 #include "h3_attention.cuh"
+#include "h3_attention_int8.cuh"
 #include "h3_int8_tma.cuh"
 #include "common/reduce.cuh"
 
@@ -114,6 +115,65 @@ __global__ void __launch_bounds__(256) h3_heads(
         }
     }
 }
+
+// h3_heads' tile-order bf16 output as int8 for h3_attention_i8: q and k at each slot's absmax / 127
+// (the dequant factor lands in QS / KS), v at the head tile's absmax / 127 into dim-major rows of
+// 64 key bytes (VS one factor a tile). Dead slots write zero codes and a zero factor. Grid
+// [tiles, H], 128 threads.
+__global__ void __launch_bounds__(128) h3_heads_quant(
+        const __nv_bfloat16* TQ, const __nv_bfloat16* TK, const __nv_bfloat16* TV, const int* SIZES,
+        int8_t* Q8, int8_t* K8, int8_t* V8, float* QS, float* KS, float* VS, int slots) {
+    __shared__ float red[4];
+    const int slot0 = blockIdx.x * 64;
+    const size_t at = (static_cast<size_t>(blockIdx.y) * slots + slot0) * 128;
+    // two threads a row, each half its 128 channels; adjacent lanes pair on the row's absmax
+    const int r = threadIdx.x >> 1, c0 = (threadIdx.x & 1) * 64;
+    for (int field = 0; field < 2; ++field) {
+        const __nv_bfloat16* src = (field == 0 ? TQ : TK) + at + r * 128 + c0;
+        int8_t* dst = (field == 0 ? Q8 : K8) + at + r * 128 + c0;
+        float v[64];
+        float amax = 0.0f;
+#pragma unroll
+        for (int j = 0; j < 64; j += 4) {
+            const uint2 u = *reinterpret_cast<const uint2*>(src + j);
+            const __nv_bfloat162* h = reinterpret_cast<const __nv_bfloat162*>(&u);
+            v[j] = f(h[0].x);
+            v[j + 1] = f(h[0].y);
+            v[j + 2] = f(h[1].x);
+            v[j + 3] = f(h[1].y);
+            amax = fmaxf(amax, fmaxf(fmaxf(fabsf(v[j]), fabsf(v[j + 1])), fmaxf(fabsf(v[j + 2]), fabsf(v[j + 3]))));
+        }
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1));
+        const float factor = amax * (1.0f / 127.0f);
+        if ((threadIdx.x & 1) == 0) (field == 0 ? QS : KS)[static_cast<size_t>(blockIdx.y) * slots + slot0 + r] = factor;
+        const float iscale = amax > 0.0f ? 127.0f / amax : 0.0f;
+#pragma unroll
+        for (int j = 0; j < 64; j += 4) {
+            const char4 q = make_char4(__float2int_rn(v[j] * iscale), __float2int_rn(v[j + 1] * iscale), __float2int_rn(v[j + 2] * iscale), __float2int_rn(v[j + 3] * iscale));
+            *reinterpret_cast<char4*>(dst + j) = q;
+        }
+    }
+    // v's tile absmax over its live slots, then each thread one output dim's 64 key bytes
+    const int live = SIZES[blockIdx.x];
+    const int s = threadIdx.x & 63, d0 = (threadIdx.x >> 6) * 64;
+    float most = 0.0f;
+    if (s < live) {
+        const __nv_bfloat16* src = TV + at + s * 128 + d0;
+        for (int d = 0; d < 64; d += 4) {
+            const uint2 u = *reinterpret_cast<const uint2*>(src + d);
+            const __nv_bfloat162* h = reinterpret_cast<const __nv_bfloat162*>(&u);
+            most = fmaxf(most, fmaxf(fmaxf(fabsf(f(h[0].x)), fabsf(f(h[0].y))), fmaxf(fabsf(f(h[1].x)), fabsf(f(h[1].y)))));
+        }
+    }
+    most = tf_common::block_max_tree(most, red, 4);
+    const float vscale = most * (1.0f / 127.0f);
+    if (threadIdx.x == 0) VS[static_cast<size_t>(blockIdx.y) * (slots / 64) + blockIdx.x] = vscale;
+    const float viscale = most > 0.0f ? 127.0f / most : 0.0f;
+    const int d = threadIdx.x;
+    int8_t* dst = V8 + at + d * 64;
+    for (int t = 0; t < 64; ++t) dst[t] = static_cast<int8_t>(__float2int_rn(t < live ? f(TV[at + t * 128 + d]) * viscale : 0.0f));
+}
+
 
 // Each tile's mean q, k and v over its real rows, in fp32. QP, KP, VP: (H, tiles, 128). Grid [tiles, H], 32 threads.
 __global__ void h3_pool(const __nv_bfloat16* TQ, const __nv_bfloat16* TK, const __nv_bfloat16* TV, const int* SIZES,
@@ -424,6 +484,14 @@ __global__ void __launch_bounds__(128) h3_attention(
         const int* ROWOF, __nv_bfloat16* Y, int slots, int heads, int queries, int keys, int first_query, int per_query,
         float scale) {
     attention_body(Q, K, V, LIST, SIZES, ROWOF, Y, slots, heads, queries, keys, first_query, per_query, scale);
+}
+
+// The dense image's attention on the int8 tiles h3_heads_quant wrote (h3_attention_int8.cuh).
+__global__ void __launch_bounds__(128) h3_attention_i8(
+        const int8_t* Q8, const int8_t* K8, const int8_t* V8, const float* QS, const float* KS,
+        const float* VS, const int* LIST, const int* SIZES, const int* ROWOF, __nv_bfloat16* Y,
+        int slots, int heads, int queries, int keys, int first_query, int per_query, float scale) {
+    attention_body_i8(Q8, K8, V8, QS, KS, VS, LIST, SIZES, ROWOF, Y, slots, heads, queries, keys, first_query, per_query, scale);
 }
 
 // The stream's rows FIRST.. from (rows, width) f32 rows R: bf16(sum over k of R[r, k] W[n, k] + B[n]), summed one k at

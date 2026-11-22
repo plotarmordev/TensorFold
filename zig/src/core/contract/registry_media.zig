@@ -70,6 +70,9 @@ pub const cuda = [_]CudaRecord{
 pub const cuda_pending = [_]CudaRecord{
     .{ .launch = .{ .name = "drama3 d3_router_compact", .symbol = "d3_router_compact", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
     .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
+    // the dense image's int8 attention (h3_attention_int8.cuh): unmeasured until the limits job compiles it
+    .{ .launch = .{ .name = "h3 h3_heads_quant", .symbol = "h3_heads_quant", .image = "h3", .threads = 128 }, .usage = @import("registry.zig").none },
+    .{ .launch = .{ .name = "h3 h3_attention_i8", .symbol = "h3_attention_i8", .image = "h3", .threads = 128, .dynamic = 24576 }, .usage = @import("registry.zig").none },
 };
 
 /// The picture's TMA products (h3_int8_tma.cuh): sm_121's usage from GB10's live check; sm_120's

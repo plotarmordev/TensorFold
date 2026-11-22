@@ -221,6 +221,130 @@ fn attendRow(in: In, s: Sum, scratch: []f64, h: usize, tq: usize, r: usize, ksel
     }
 }
 
+/// The nearest-even integer of `x`, as the kernels' float2int / float2uint rn read it.
+fn rne(x: f64) f64 {
+    const f = @floor(x);
+    const d = x - f;
+    if (d > 0.5) return f + 1;
+    if (d < 0.5) return f;
+    return if (@rem(f, 2.0) == 0.0) f else f + 1;
+}
+
+/// h3_heads_quant's row quantization in the kernel's own fp32: the bf16 row's absmax, its amax/127
+/// dequant factor, and each value's nearest-even code of value * (127 / amax); a dead or all-zero
+/// row takes the kernel's zero codes.
+fn quantizeRowI8(x: []const f64, codes: []i32) f64 {
+    var amax: f32 = 0;
+    // fmaxf's NaN-ignoring reduce, as the kernel's absmax reads it
+    for (x) |v| {
+        const a = @abs(@as(f32, @floatCast(v)));
+        if (a > amax) amax = a;
+    }
+    const iscale: f32 = if (amax > 0) 127.0 / amax else 0;
+    for (codes, x) |*o, v| o.* = @intFromFloat(rne(@as(f32, @floatCast(v)) * iscale));
+    return amax * (1.0 / 127.0);
+}
+
+/// The u8 code the kernel's probability lands in: round(w * 255), with a NaN's zero and an
+/// overflowing one's saturation as the float-to-uint conversion reads them.
+fn probCode(w: f64) i32 {
+    if (std.math.isNan(w)) return 0;
+    if (w >= 1.0) return 255;
+    if (w <= 0.0) return 0;
+    return @intFromFloat(rne(w * 255.0));
+}
+
+/// h3_heads_quant + h3_attention_i8: the dense softmax over int8 products, attendRow's online
+/// order kept. The score and value sums are int32-exact; the reference quantizes q/k rows and each
+/// key tile's v in the kernel's fp32 so its codes match, then weighs them into u8 codes.
+pub fn attentionI8(in: In, s: Sum, scratch: []f64, want: []f64, mag: []f64) void {
+    const T = in.rows;
+    const ksel = in.k / 64;
+    const H = in.heads;
+    var row: usize = 0;
+    for (0..T) |tq| {
+        const size: usize = @intCast(in.more[tq]);
+        for (0..size) |r| {
+            for (0..H) |h| attendRowI8(in, s, scratch, h, tq, r, ksel, want[(row * H + h) * 128 ..][0..128], mag[(row * H + h) * 128 ..][0..128]);
+            row += 1;
+        }
+    }
+}
+
+fn attendRowI8(in: In, s: Sum, scratch: []f64, h: usize, tq: usize, r: usize, ksel: usize, want: []f64, mag: []f64) void {
+    const q = in.a[((h * in.slots) + tq * 64 + r) * 128 ..][0..128];
+    const list = in.ints[(h * in.rows + tq) * ksel ..][0..ksel];
+    const sl = in.scale * std.math.log2e;
+    var qc: [128]i32 = undefined;
+    const qscale = quantizeRowI8(q, &qc);
+    var top = -std.math.inf(f64);
+    var total: f64 = 0;
+    const acc = scratch[0..128];
+    const accm = scratch[128..256];
+    @memset(acc, 0);
+    @memset(accm, 0);
+    const w = scratch[256..320];
+    const terms = scratch[320..384];
+    var sc: [64]f64 = undefined;
+    var kc: [64][128]i32 = undefined;
+    var vc: [64][128]i32 = undefined;
+    var pc: [64]i32 = undefined;
+    for (list) |tile_i| {
+        const tile: usize = @intCast(tile_i);
+        const size: usize = @intCast(in.more[tile]);
+        // this tile's k rows and its whole-tile v absmax, quantized as h3_heads_quant does
+        var vamax: f32 = 0;
+        for (0..size) |j| {
+            const key = in.d[((h * in.slots) + tile * 64 + j) * 128 ..][0..128];
+            for (key) |v| {
+                const a = @abs(@as(f32, @floatCast(v)));
+                if (a > vamax) vamax = a;
+            }
+        }
+        const vscale: f64 = @as(f64, vamax) * (1.0 / 127.0);
+        const viscale: f32 = if (vamax > 0) 127.0 / vamax else 0;
+        var next = top;
+        for (0..64) |j| {
+            const key = in.b[((h * in.slots) + tile * 64 + j) * 128 ..][0..128];
+            const kscale = quantizeRowI8(key, &kc[j]);
+            const val = in.d[((h * in.slots) + tile * 64 + j) * 128 ..][0..128];
+            for (0..128) |e| vc[j][e] = if (j < size) @intFromFloat(rne(@as(f32, @floatCast(val[e])) * viscale)) else 0;
+            if (j >= size) {
+                sc[j] = -std.math.inf(f64);
+                continue;
+            }
+            var si: i64 = 0;
+            for (qc, kc[j]) |a, b| si += a * b;
+            sc[j] = @as(f64, @floatFromInt(si)) * qscale * kscale * sl;
+            next = @max(next, sc[j]);
+        }
+        const shrink = if (next == -std.math.inf(f64)) 1 else @exp2(top - next);
+        total *= shrink;
+        for (acc, accm) |*o, *m| {
+            o.* *= shrink;
+            m.* *= shrink;
+        }
+        top = next;
+        for (w, sc, &pc) |*x, v, *code| {
+            x.* = if (next == -std.math.inf(f64)) 0 else @exp2(v - next);
+            code.* = probCode(x.*);
+        }
+        total += s.of(w);
+        const vf = vscale / 255.0;
+        for (0..128) |i| {
+            var si: i64 = 0;
+            for (pc, 0..) |code, j| si += code * vc[j][i];
+            for (terms, pc, 0..) |*v, code, j| v.* = @as(f64, @floatFromInt(code)) * @as(f64, @floatFromInt(vc[j][i])) * vf;
+            acc[i] += @as(f64, @floatFromInt(si)) * vf;
+            accm[i] += absSum(terms);
+        }
+    }
+    for (want, mag, acc, accm) |*o, *m, a, b| {
+        o.* = a / total;
+        m.* = b / total;
+    }
+}
+
 /// h3_swiglu: silu(gate) * value from the first projection's rows [gate | value]. a the rows.
 pub fn swiglu(in: In, want: []f64, mag: []f64) void {
     const N = in.n;

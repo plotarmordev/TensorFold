@@ -10,7 +10,7 @@ const contract = core.contract;
 const c = contract.spec;
 const g = contract.gates;
 
-pub const Which = enum { norm, gate_add, gate_mix, swiglu, heads, pool, tile_scores, coarse, attention };
+pub const Which = enum { norm, gate_add, gate_mix, swiglu, heads, pool, tile_scores, coarse, attention, attention_i8 };
 
 /// The geometry the tests run: two heads, up to 16 tiles of 64 slots.
 pub const heads = 2;
@@ -58,6 +58,7 @@ pub fn spec(w: Which) c.Spec {
         .tile_scores => .{ .name = "cuda h3 tile scores h3_tile_scores", .accum = .f32, .depth = laneChain, .ops = 1, .out = .f32, .tiles = .{ .{}, .{ .size = 8 }, .{} }, .served = &.{.{ .rows = tiles, .n = tiles, .k = 128 }} },
         .coarse => .{ .name = "cuda h3 pooled branch h3_coarse", .accum = .f32, .depth = tileChain, .ops = 6, .out = .f32, .tiles = .{ .{ .size = 32 }, .{}, .{} }, .served = &.{.{ .rows = tiles, .n = 128, .k = tiles }}, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = soft_why } },
         .attention => .{ .name = "cuda h3 routed attention h3_attention", .accum = .f32, .depth = attnChain, .ops = 8, .mids = 1, .out = .bf16, .tiles = .{ .{}, .{}, .{ .size = 256, .step = 64, .min = 64 } }, .served = &.{ .{ .rows = tiles, .n = 128, .k = tiles * 64 }, .{ .rows = tiles, .n = 128, .k = 6 * 64 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = soft_why } },
+        .attention_i8 => .{ .name = "cuda h3 dense int8 attention h3_heads_quant + h3_attention_i8", .accum = .f32, .depth = attnChain, .ops = 10, .mids = 1, .out = .bf16, .tiles = .{ .{}, .{}, .{ .size = 256, .step = 64, .min = 64 } }, .served = &.{ .{ .rows = tiles, .n = 128, .k = tiles * 64 }, .{ .rows = tiles, .n = 128, .k = 6 * 64 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "q/k codes at absmax / 127 and p codes at round(p * 255): the reference quantizes identically and the int32 sums are exact" } },
     };
 }
 
@@ -73,6 +74,7 @@ pub fn symbol(w: Which) [:0]const u8 {
         .tile_scores => "h3_tile_scores",
         .coarse => "h3_coarse",
         .attention => "h3_attention",
+        .attention_i8 => "h3_attention_i8",
     };
 }
 
@@ -80,10 +82,12 @@ pub const H3 = struct {
     rig: rig_.Rig,
     which: Which,
     f: cuda.Function,
+    /// attention_i8's h3_heads_quant, launched before h3_attention_i8; `f` everywhere else.
+    f2: cuda.Function = undefined,
     shape: c.Shape = undefined,
     arena: std.heap.ArenaAllocator,
     in: ref.In = .{ .rows = 0, .n = 0, .k = 0 },
-    bufs: [12]u64 = undefined,
+    bufs: [16]u64 = undefined,
     nbufs: usize = 0,
     /// The in-place buffer's starting bytes, copied in before every launch.
     fresh: []const u8 = &.{},
@@ -188,6 +192,7 @@ pub const H3 = struct {
             .tile_scores => ref.scores(self.in, s, scratch, want, mag),
             .coarse => ref.coarse(self.in, s, scratch, want, mag),
             .attention => ref.attention(self.in, s, scratch, want, mag),
+            .attention_i8 => ref.attentionI8(self.in, s, scratch, want, mag),
         }
     }
 
