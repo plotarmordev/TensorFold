@@ -1,0 +1,481 @@
+diff --git a/zig/kernels/cuda/h3.cu b/zig/kernels/cuda/h3.cu
+index 2b378e66a..3d7185873 100644
+--- a/zig/kernels/cuda/h3.cu
++++ b/zig/kernels/cuda/h3.cu
+@@ -490,13 +490,39 @@ __global__ void __launch_bounds__(256) h3_euler(float* X, const float* V, float
+ __global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma(
+         const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
+         const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
+-    h3_int8::gemm_kernel<h3_int8::TallTile, false>(map_a, map_b, XS, WS, C, M, N, K);
++    h3_int8::gemm_kernel<h3_int8::TallTile, h3_int8::Epilogue::rows>(map_a, map_b, XS, WS, C, M, N, K);
+ }
+ 
+ __global__ void __launch_bounds__(256, 1) h3_swiglu_int8_tma(
+         const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
+         const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
+-    h3_int8::gemm_kernel<h3_int8::TallTile, true>(map_a, map_b, XS, WS, C, M, N, K);
++    h3_int8::gemm_kernel<h3_int8::TallTile, h3_int8::Epilogue::swiglu>(map_a, map_b, XS, WS, C, M, N, K);
++}
++
++// The TMA product at a scale per 128-deep K block on both operands (h3_quantize_blocks' layout), on
++// 128x128 tiles: out and fc2, whose picture needs scales finer than a row's.
++__global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma_blocks(
++        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
++        const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
++    h3_int8::gemm_kernel<h3_int8::SquareTile, h3_int8::Epilogue::blocks>(map_a, map_b, XS, WS, C, M, N, K);
++}
++
++// h3_quantize at a scale per 128-wide chunk instead of per row: chunk c of row r scales by its own
++// rotated absmax / 127 at S[c * M + r] (block-major, as h3_gemm_int8_tma_blocks reads it), M =
++// gridDim.x. One warp a chunk, so the absmax is a warp max; an infinity scales its chunk by +inf
++// and a NaN quantizes to zero, h3_quantize's rules a chunk at a time. Grid [M], 256 threads.
++__global__ void __launch_bounds__(256) h3_quantize_blocks(const __nv_bfloat16* X, int8_t* Q, float* S, int K) {
++    const size_t row = blockIdx.x;
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, chunks = K >> 7;
++    for (int c = warp; c < chunks; c += 8) {
++        float v[4];
++        rotated_chunk(X + row * K, c, v);
++        const float most = tf_common::warp_max(fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3]))));
++        const float scale = most > 0.f ? most / 127.f : 1.f;
++        if (lane == 0) S[static_cast<size_t>(c) * gridDim.x + row] = scale;
++        *reinterpret_cast<char4*>(Q + row * K + c * 128 + lane * 4) =
++            make_char4(__float2int_rn(v[0] / scale), __float2int_rn(v[1] / scale), __float2int_rn(v[2] / scale), __float2int_rn(v[3] / scale));
++    }
+ }
+ 
+ // Interleaves an fc1's int8 weight rows and fp32 scales pairwise for the swiglu epilogue: product
+diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
+index b9d9198cc..2c4fcc8dd 100644
+--- a/zig/kernels/cuda/h3_int8_tma.cuh
++++ b/zig/kernels/cuda/h3_int8_tma.cuh
+@@ -6,6 +6,8 @@
+ // With SWIGLU the epilogue writes silu(gate) * up, [m, n / 2], for weights whose rows interleave a
+ // feature's gate and up rows pairwise (h3_swiglu_rows); h3_swiglu_int8's rounding: the scaled sums
+ // round to bf16 first, silu's value rounds to bf16, then the product rounds to bf16.
++// With BLOCKS both operands carry a scale per 128-deep K block (h3_quantize_blocks, block-major):
++// each block's int32 sums fold into fp32 at that block's two scales before the next block's MMAs.
+ //
+ // Dropped from the port: the cp.async fallback (the picture tools run only where TMA exists), the
+ // low-rank adapter, the bias and the column-maxima tracking — no H3 picture projection uses them.
+@@ -29,6 +31,8 @@ constexpr int tma_stages = 2;
+ constexpr int tma_warps = 8;
+ constexpr int tma_group_m = 8; // tile rows a band walks before moving right (mmh3's default)
+ 
++enum class Epilogue { rows, swiglu, blocks };
++
+ __device__ __forceinline__ uint32_t h3_shared_address(const void *pointer) {
+     return static_cast<uint32_t>(__cvta_generic_to_shared(pointer));
+ }
+@@ -237,13 +241,14 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
+ }
+ 
+ // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
+-// silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
+-// produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
+-// the tiles; the warp that releases a ring stage last issues the TMA copies that refill it, so no
+-// producer warp costs every warp its registers. The tensor maps bind by reference so their
+-// addresses stay in parameter space — a by-value copy would land in local space, which
+-// cp.async.bulk.tensor refuses.
+-template <typename Config, bool SWIGLU>
++// silu(gate) * up at [m, n / 2] for Epilogue::swiglu — the same products h3_dequantize and
++// h3_swiglu_int8 produce from the int32 sums, without the sums' round trip through memory — or for
++// Epilogue::blocks the fp32 sum over K blocks b of acc_b[m, n] * xs[b * m + m'] * ws[b * n + n'].
++// One CTA per SM walks the tiles; the warp that releases a ring stage last issues the TMA copies
++// that refill it, so no producer warp costs every warp its registers. The tensor maps bind by
++// reference so their addresses stay in parameter space — a by-value copy would land in local space,
++// which cp.async.bulk.tensor refuses.
++template <typename Config, Epilogue E>
+ __device__ __forceinline__ void
+     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
+                 const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
+@@ -299,34 +304,15 @@ __device__ __forceinline__ void
+         ring.advance();
+     };
+ 
+-    for (int tile = blockIdx.x; tile < grid.tiles; tile += gridDim.x) {
+-        int tile_m, tile_n;
+-        grid.coordinates(tile, tile_m, tile_n);
+-        int32_t accumulators[Config::m_tiles][Config::n_tiles][4];
+-        #pragma unroll
+-        for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+-            #pragma unroll
+-            for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
+-                #pragma unroll
+-                for (int index = 0; index < 4; index++) {
+-                    accumulators[m_tile][n_tile][index] = 0;
+-                }
+-            }
+-        }
+-        for (int k_block = 0; k_block < grid.k_blocks; k_block++) {
+-            consume(accumulators);
+-        }
+-
+-        // Scale the int32 products. Slot j of each quad of n-tiles holds output columns 2((j + t) %
+-        // 4) and the one after among the lane's eight.
+-        float values[Config::m_tiles][Config::n_tiles][4];
+-        float row_scales[Config::m_tiles][2];
++    // The lane's scales: two rows an m-tile, and per n-tile slot j of each quad the column pair
++    // 2((j + t) % 4) among the lane's eight.
++    auto load_scales = [&](int tile_m, int tile_n, const float *xs, const float *ws, float (&rows)[Config::m_tiles][2], float2 (&columns)[Config::n_tiles]) {
+         #pragma unroll
+         for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+             #pragma unroll
+             for (int half = 0; half < 2; half++) {
+                 const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
+-                row_scales[m_tile][half] = row < m ? activation_scales[row] : 0.0f;
++                rows[m_tile][half] = row < m ? xs[row] : 0.0f;
+             }
+         }
+         #pragma unroll
+@@ -334,19 +320,60 @@ __device__ __forceinline__ void
+             const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
+             #pragma unroll
+             for (int slot = 0; slot < 4; slot++) {
+-                const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
++                columns[quad * 4 + slot] = *reinterpret_cast<const float2 *>(ws + column + ((slot + quad_lane) & 3) * 2);
++            }
++        }
++    };
++
++    // Scales the int32 products into `values` (added to them for Epilogue::blocks) and restarts the
++    // sums at zero.
++    auto fold = [&](int32_t (&accumulators)[Config::m_tiles][Config::n_tiles][4], float (&values)[Config::m_tiles][Config::n_tiles][4],
++                    const float (&rows)[Config::m_tiles][2], const float2 (&columns)[Config::n_tiles]) {
++        #pragma unroll
++        for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
++            #pragma unroll
++            for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
+                 #pragma unroll
+-                for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
+-                    #pragma unroll
+-                    for (int half = 0; half < 2; half++) {
+-                        const int32_t *products = accumulators[m_tile][quad * 4 + slot] + half * 2;
+-                        float *scaled = values[m_tile][quad * 4 + slot] + half * 2;
+-                        scaled[0] = static_cast<float>(products[0]) * row_scales[m_tile][half] * column_scale.x;
+-                        scaled[1] = static_cast<float>(products[1]) * row_scales[m_tile][half] * column_scale.y;
++                for (int half = 0; half < 2; half++) {
++                    int32_t *products = accumulators[m_tile][n_tile] + half * 2;
++                    float *scaled = values[m_tile][n_tile] + half * 2;
++                    const float low = static_cast<float>(products[0]) * rows[m_tile][half] * columns[n_tile].x;
++                    const float high = static_cast<float>(products[1]) * rows[m_tile][half] * columns[n_tile].y;
++                    if constexpr (E == Epilogue::blocks) {
++                        scaled[0] += low;
++                        scaled[1] += high;
++                    } else {
++                        scaled[0] = low;
++                        scaled[1] = high;
+                     }
++                    products[0] = 0;
++                    products[1] = 0;
+                 }
+             }
+         }
++    };
++
++    int32_t accumulators[Config::m_tiles][Config::n_tiles][4] = {};
++    for (int tile = blockIdx.x; tile < grid.tiles; tile += gridDim.x) {
++        int tile_m, tile_n;
++        grid.coordinates(tile, tile_m, tile_n);
++        float values[Config::m_tiles][Config::n_tiles][4] = {};
++        float row_scales[Config::m_tiles][2];
++        float2 column_scales[Config::n_tiles];
++        if constexpr (E == Epilogue::blocks) {
++            for (int k_block = 0; k_block < grid.k_blocks; k_block++) {
++                // the block's scales load before its MMAs, so their latency hides behind them
++                load_scales(tile_m, tile_n, activation_scales + static_cast<size_t>(k_block) * m, weight_scales + static_cast<size_t>(k_block) * n, row_scales, column_scales);
++                consume(accumulators);
++                fold(accumulators, values, row_scales, column_scales);
++            }
++        } else {
++            for (int k_block = 0; k_block < grid.k_blocks; k_block++) {
++                consume(accumulators);
++            }
++            load_scales(tile_m, tile_n, activation_scales, weight_scales, row_scales, column_scales);
++            fold(accumulators, values, row_scales, column_scales);
++        }
+ 
+         #pragma unroll
+         for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
+@@ -379,7 +406,7 @@ __device__ __forceinline__ void
+                     }
+                     const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
+                     if (row < m) {
+-                        if constexpr (SWIGLU) {
++                        if constexpr (E == Epilogue::swiglu) {
+                             // The lane's eight columns hold the (gate, up) pairs of features
+                             // column / 2 to column / 2 + 3 (the weights' rows interleave pairwise).
+                             *reinterpret_cast<uint2 *>(output + static_cast<size_t>(row) * (n / 2) + column / 2) =
+@@ -397,5 +424,7 @@ __device__ __forceinline__ void
+ }
+ 
+ using TallTile = GemmConfig<256, 128, 4>;
++// Epilogue::blocks keeps an fp32 sum beside every int32 one: 128 x 128 halves both against TallTile.
++using SquareTile = GemmConfig<128, 128, 2>;
+ 
+ } // namespace h3_int8
+diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
+index 58b16d656..a8f7aa5b6 100644
+--- a/zig/src/families/h3/cuda.zig
++++ b/zig/src/families/h3/cuda.zig
+@@ -28,7 +28,7 @@ const scale_m = 4;
+ const gate_m = 5;
+ 
+ const image align(16) = @embedFile("fatbin_h3").*;
+-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
++const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_blocks", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_gemm_int8_tma_blocks", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
+ 
+ pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
+ 
+@@ -148,6 +148,7 @@ pub const Model = struct {
+         // no launch needs the attribute raced against the stream
+         try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
+         try self.function("h3_swiglu_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
++        try self.function("h3_gemm_int8_tma_blocks").allowDynamicShared(@import("cuda_int8.zig").blocks_shared);
+         // the legacy default stream: work queued by the caller's framework comes first
+         self.stream = .{ .d = d, .handle = null };
+         self.gemms = try Gemms.init(gpa, d);
+@@ -312,13 +313,9 @@ pub const Model = struct {
+     pub fn warm(self: *Model, rows: usize) !void {
+         const inner = self.inner;
+         if (self.fp4) |t| return t.warm(self, rows);
+-        if (self.int8) |t| {
+-            try t.warm(self, rows);
+-        } else {
+-            _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
+-            _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
+-        }
+-        // `out` and `fc2` keep their bf16 weights in both modes
++        if (self.int8) |t| return t.warm(self, rows);
++        _ = try self.gemms.plan(rows, 3 * inner, self.hidden);
++        _ = try self.gemms.plan(rows, 2 * self.mlp, self.hidden);
+         _ = try self.gemms.plan(rows, self.hidden, inner);
+         _ = try self.gemms.plan(rows, self.hidden, self.mlp);
+     }
+@@ -407,7 +404,7 @@ pub const Model = struct {
+                 try self.launch("h3_gate_mix", .{ .x = @intCast(rows) }, 256, 0, &args);
+                 try self.lap("gate mix", &mark);
+             }
+-            if (self.fp4) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
++            if (self.int8) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else if (self.fp4) |t| try t.linear(self, g.ya, t.blocks[index].out, g.y, rows) else try self.gemms.run(self.stream, g.ya, b.out.ptr, g.y, rows, hidden, inner);
+             try self.lap("attention out", &mark);
+             try self.norm(in.x, b.norms.ptr + hidden * 2, tab, tab, in.line, gate_a, scale_m, shift_m, iq, is);
+             try self.lap("norms", &mark);
+@@ -421,7 +418,7 @@ pub const Model = struct {
+                 try self.launch("h3_swiglu", .{ .x = 1024 }, 256, 0, &args);
+             }
+             try self.lap("mlp in", &mark);
+-            if (self.fp4) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
++            if (self.int8) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else if (self.fp4) |t| try t.linear(self, g.act, t.blocks[index].fc2, g.y, rows) else try self.gemms.run(self.stream, g.act, b.fc2.ptr, g.y, rows, hidden, self.mlp);
+             try self.lap("mlp out", &mark);
+         }
+         {
+diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
+index 28d748ca9..cff6edf26 100644
+--- a/zig/src/families/h3/cuda_int8.zig
++++ b/zig/src/families/h3/cuda_int8.zig
+@@ -1,15 +1,14 @@
+ //! mmh3's INT8 linear layers on the H3 CUDA blocks, on its own TMA product (h3_int8_tma.cuh): each
+ //! projection's weight rows and each activation row Hadamard-rotated in 128-wide chunks (ConvRot's
+-//! outlier spreading), quantized to int8 at its absmax, summed exactly in int32 by mma.sync
+-//! m16n8k32.s8, and scaled in registers to bf16 rows from the tile — no int32 round trip, and the
+-//! same products and roundings h3_dequantize and h3_swiglu_int8 computed, so the path's latents stay
+-//! bit-identical to the cuBLASLt + dequantize path it replaces. The bf16 weights are freed once
+-//! quantized.
++//! outlier spreading), quantized to int8, summed exactly in int32 by mma.sync m16n8k32.s8, and
++//! scaled in registers to bf16 rows from the tile — no int32 round trip. The bf16 weights are freed
++//! once quantized.
+ //!
+-//! Only `qkvc` and `fc1` run it: `out` and `fc2` keep their bf16 weights. Their int8 products
+-//! measured faster (286 TFLOP a picture saved 0.6 s warm at 2048²) but fail the episode-1 picture
+-//! gates (28.15 dB, mean 4.23 against 28.2 dB and 4.1) at per-row scales; the finer scales need
+-//! per-256-of-K groups this product does not fold (card 139).
++//! `qkvc` and `fc1` scale each row by its absmax: the same products and roundings h3_dequantize and
++//! h3_swiglu_int8 computed, so their latents stay bit-identical to the cuBLASLt path they replaced.
++//! `out` and `fc2` failed the episode-1 picture gates at a row's scale (card 129: 28.15 dB, mean 4.23
++//! against 28.2 dB and 4.1), so both of their operands scale each 128-wide chunk by its own absmax
++//! and the product folds every 128-deep K block's sums into fp32 at that block's scales (card 176).
+ const std = @import("std");
+ const cuda = @import("cuda");
+ const report = @import("report.zig");
+@@ -26,18 +25,21 @@ fn encoder(d: *cuda.Driver) !Encode {
+ }
+ 
+ /// TallTile's Config::shared_bytes: 2 stages of (256 + 128) * 128 bytes, the 1 KiB alignment slack
+-/// and the barriers.
++/// and the barriers; SquareTile's for the per-block product.
+ pub const gemm_shared = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
+-const block_m = 256;
++pub const blocks_shared = 2 * (128 + 128) * 128 + 1024 + 2 * 16;
+ const block_n = 128;
+ 
+-/// A projection (N, K): its int8 rows, then N fp32 row scales; `swiglu` marks fc1's
+-/// pairwise-interleaved rows.
++/// How a projection's int8 rows scale: one scale a row, fc1's rows interleaved for the swiglu
++/// epilogue, or a scale per 128-wide chunk of K (h3_quantize_blocks' block-major layout).
++pub const Epilogue = enum { rows, swiglu, blocks };
++
++/// A projection (N, K): its int8 rows, then its fp32 scales.
+ pub const Weight = struct {
+     q: cuda.DeviceBuffer,
+     n: usize,
+     k: usize,
+-    swiglu: bool = false,
++    epilogue: Epilogue = .rows,
+ 
+     pub fn scales(w: Weight) u64 {
+         return w.q.ptr + w.n * w.k;
+@@ -52,15 +54,15 @@ pub fn checkGeometry(n: usize, k: usize) !void {
+ 
+ /// One block's quantized projections; fc1's rows and scales interleave gate/up pairs for the
+ /// swiglu epilogue (h3_swiglu_rows).
+-pub const Block = struct { qkvc: Weight, fc1: Weight };
++pub const Block = struct { qkvc: Weight, out: Weight, fc1: Weight, fc2: Weight };
+ 
+-/// The buffers a product's input rows use: `norm` writes q/s before `gemm` reads them.
++/// The buffers a product's input rows use: `norm` or `linear` writes q/s before `gemm` reads them.
+ pub const Scratch = struct { xq: u64, xs: u64 };
+ 
+ pub const Int8 = struct {
+     blocks: []Block,
+     enc: Encode,
+-    /// int8 rows (rows, hidden), then the rows' fp32 scales; no int32 sums any more.
++    /// int8 rows (rows, widest input), then their fp32 scales: a row's, or a row's per 128-wide chunk.
+     scratch: cuda.DeviceBuffer,
+     rows: usize = 0,
+ 
+@@ -78,30 +80,35 @@ pub const Int8 = struct {
+         self.int8 = t; // the model's deinit frees what a failed quantize already made
+         const none: Weight = .{ .q = .{ .d = &self.driver, .ptr = 0, .len = 0 }, .n = 0, .k = 0 };
+         t.blocks = try self.gpa.alloc(Block, self.blocks.len);
+-        @memset(t.blocks, .{ .qkvc = none, .fc1 = none });
++        @memset(t.blocks, .{ .qkvc = none, .out = none, .fc1 = none, .fc2 = none });
+         for (self.blocks, t.blocks) |*b, *q| {
+-            q.qkvc = try weight(self, &b.qkvc, 3 * self.inner, self.hidden, false);
+-            q.fc1 = try weight(self, &b.fc1, 2 * self.mlp, self.hidden, true);
++            q.qkvc = try weight(self, &b.qkvc, 3 * self.inner, self.hidden, .rows);
++            q.out = try weight(self, &b.out, self.hidden, self.inner, .blocks);
++            q.fc1 = try weight(self, &b.fc1, 2 * self.mlp, self.hidden, .swiglu);
++            q.fc2 = try weight(self, &b.fc2, self.hidden, self.mlp, .blocks);
+         }
+     }
+ 
+-    /// The bf16 (n, k) rows to int8 at h3_quantize's per-row scales; `swiglu` interleaves the
+-    /// result pairwise (gate rows' first half against the up rows' second) for the fc1 epilogue.
+-    fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize, swiglu: bool) !Weight {
++    /// The bf16 (n, k) rows to int8 at `epilogue`'s scales; `.swiglu` interleaves the result
++    /// pairwise (gate rows' first half against the up rows' second) for the fc1 epilogue.
++    fn weight(self: *Model, bf16: *cuda.DeviceBuffer, n: usize, k: usize, epilogue: Epilogue) !Weight {
+         try checkGeometry(n, k);
+-        var w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + n * 4), .n = n, .k = k, .swiglu = swiglu };
++        const scale_count = if (epilogue == .blocks) n * (k / 128) else n;
++        var w: Weight = .{ .q = try cuda.DeviceBuffer.alloc(&self.driver, n * k + scale_count * 4), .n = n, .k = k, .epilogue = epilogue };
+         errdefer release(self, &w.q);
+         var tmp: cuda.DeviceBuffer = .{ .d = &self.driver, .ptr = 0, .len = 0 };
+         defer release(self, &tmp);
+-        if (swiglu) {
+-            tmp = try cuda.DeviceBuffer.alloc(&self.driver, w.q.len);
+-            try launchQuantize(self, bf16.ptr, tmp.ptr, tmp.ptr + n * k, n, k);
+-            var args: cuda.Args = .{};
+-            for ([_]u64{ tmp.ptr, tmp.ptr + n * k, w.q.ptr, w.scales() }) |a| args.add(a);
+-            args.add(@as(c_int, @intCast(k)));
+-            try self.launch("h3_swiglu_rows", .{ .x = @intCast(n / 2) }, 256, 0, &args);
+-        } else {
+-            try launchQuantize(self, bf16.ptr, w.q.ptr, w.scales(), n, k);
++        switch (epilogue) {
++            .rows => try launchQuantize(self, "h3_quantize", bf16.ptr, w.q.ptr, w.scales(), n, k),
++            .blocks => try launchQuantize(self, "h3_quantize_blocks", bf16.ptr, w.q.ptr, w.scales(), n, k),
++            .swiglu => {
++                tmp = try cuda.DeviceBuffer.alloc(&self.driver, w.q.len);
++                try launchQuantize(self, "h3_quantize", bf16.ptr, tmp.ptr, tmp.ptr + n * k, n, k);
++                var args: cuda.Args = .{};
++                for ([_]u64{ tmp.ptr, tmp.ptr + n * k, w.q.ptr, w.scales() }) |a| args.add(a);
++                args.add(@as(c_int, @intCast(k)));
++                try self.launch("h3_swiglu_rows", .{ .x = @intCast(n / 2) }, 256, 0, &args);
++            },
+         }
+         try self.stream.synchronize();
+         bf16.free();
+@@ -121,25 +128,26 @@ pub const Int8 = struct {
+     }
+ 
+     pub fn deinit(t: *Int8, self: *Model) void {
+-        for (t.blocks) |*b| for ([_]*Weight{ &b.qkvc, &b.fc1 }) |w| w.q.free();
++        for (t.blocks) |*b| for ([_]*Weight{ &b.qkvc, &b.out, &b.fc1, &b.fc2 }) |w| w.q.free();
+         self.gpa.free(t.blocks);
+         t.scratch.free();
+         self.gpa.destroy(t);
+     }
+ 
+-    /// The row buffers the fused launches share, as Scratch.
++    /// The row buffers the launches share, as Scratch: room for the widest input's rows and their
++    /// chunks' scales.
+     pub fn layout(t: *Int8, self: *Model, rows: usize) !Scratch {
+         try t.reserve(self, rows);
+         const xq = t.scratch.ptr;
+-        const xs = xq + rows * self.hidden;
+-        return .{ .xq = xq, .xs = xs };
++        return .{ .xq = xq, .xs = xq + rows * self.mlp };
+     }
+ 
+-    /// x's rows (already quantized at lay.xq by h3_norm_quant) against w: bf16 rows at `out`, or
+-    /// silu(gate) * up at (rows, w.n / 2) when w.swiglu interleaved the weights.
++    /// x's rows (already quantized at lay.xq) against w: bf16 rows at `out`, or silu(gate) * up at
++    /// (rows, w.n / 2) when w's epilogue is `.swiglu`.
+     pub fn gemm(t: *Int8, self: *Model, lay: Scratch, w: Weight, out: u64, rows: usize) !void {
++        const block_m: usize = if (w.epilogue == .blocks) 128 else 256;
+         var maps: [2]TensorMap = undefined;
+-        try encode(t.enc, &maps[0], lay.xq, rows, w.k, block_m);
++        try encode(t.enc, &maps[0], lay.xq, rows, w.k, @intCast(block_m));
+         try encode(t.enc, &maps[1], w.q.ptr, w.n, w.k, block_n);
+         var args: cuda.Args = .{};
+         args.add(maps[0]);
+@@ -149,8 +157,20 @@ pub const Int8 = struct {
+         const sm: usize = @intCast(try self.ctx.attribute(.multiprocessor_count));
+         const tiles = (rows + block_m - 1) / block_m * (w.n / block_n);
+         const blocks: u32 = @intCast(@min(sm, tiles));
+-        const name = if (w.swiglu) Model.functionIndex("h3_swiglu_int8_tma") else Model.functionIndex("h3_gemm_int8_tma");
+-        try self.launchShared(name, blocks, 256, gemm_shared, &args);
++        const name, const shared: u32 = switch (w.epilogue) {
++            .rows => .{ Model.functionIndex("h3_gemm_int8_tma"), gemm_shared },
++            .swiglu => .{ Model.functionIndex("h3_swiglu_int8_tma"), gemm_shared },
++            .blocks => .{ Model.functionIndex("h3_gemm_int8_tma_blocks"), blocks_shared },
++        };
++        try self.launchShared(name, blocks, 256, shared, &args);
++    }
++
++    /// y (rows, w.n) bf16 = x (rows, w.k) bf16 . w^T for a `.blocks` weight: x's rows quantized a
++    /// scale per 128-wide chunk into the scratch, then the product.
++    pub fn linear(t: *Int8, self: *Model, x: u64, w: Weight, y: u64, rows: usize) !void {
++        const lay = try t.layout(self, rows);
++        try launchQuantize(self, "h3_quantize_blocks", x, lay.xq, lay.xs, rows, w.k);
++        try t.gemm(self, lay, w, y, rows);
+     }
+ 
+     /// Room for `rows` before a step is captured: `layout` then only hands out buffers.
+@@ -158,11 +178,12 @@ pub const Int8 = struct {
+         try t.reserve(self, rows);
+     }
+ 
++    /// fc2's input is the widest: mlp int8 codes a row and a scale for each of its 128-wide chunks.
+     fn reserve(t: *Int8, self: *Model, rows: usize) !void {
+         if (rows <= t.rows) return;
+         try self.stream.synchronize();
+         t.scratch.free();
+-        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, rows * (self.hidden + 4));
++        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, rows * (self.mlp + self.mlp / 128 * 4));
+         t.rows = rows;
+     }
+ };
+@@ -179,9 +200,10 @@ fn encode(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, box_row
+     if (res != cuda.abi.success) return error.CudaFailed;
+ }
+ 
+-fn launchQuantize(self: *Model, x: u64, q: u64, s: u64, rows: usize, k: usize) !void {
++/// `kernel` (h3_quantize or h3_quantize_blocks) over the rows of x (rows, k) into q and s.
++fn launchQuantize(self: *Model, comptime kernel: []const u8, x: u64, q: u64, s: u64, rows: usize, k: usize) !void {
+     var args: cuda.Args = .{};
+     for ([_]u64{ x, q, s }) |a| args.add(a);
+     args.add(@as(c_int, @intCast(k)));
+-    try self.launch("h3_quantize", .{ .x = @intCast(rows) }, 256, 0, &args);
++    try self.launch(kernel, .{ .x = @intCast(rows) }, 256, 0, &args);
+ }
