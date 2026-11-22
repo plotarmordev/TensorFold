@@ -16,10 +16,10 @@ index 2b378e66a..fa140f6bc 100644
          const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
          const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
 diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
-index b9d9198cc..a29d419dc 100644
+index b9d9198cc..f1265a9c7 100644
 --- a/zig/kernels/cuda/h3_int8_tma.cuh
 +++ b/zig/kernels/cuda/h3_int8_tma.cuh
-@@ -236,6 +236,62 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
+@@ -236,6 +236,74 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
      return silu * gv.y;
  }
  
@@ -33,7 +33,7 @@ index b9d9198cc..a29d419dc 100644
 +};
 +
 +// One q or k head from the product's shared tile, in h3_heads' exact sum and rounding order.
-+__device__ __forceinline__ void h3_head_epilogue(const __nv_bfloat16 *tile, const HeadEpilogue &heads,
++__device__ __forceinline__ void h3_head_epilogue(__nv_bfloat16 *tile, const HeadEpilogue &heads,
 +                                                 bool query, int head, int m, int tile_m) {
 +    __syncthreads();
 +    const int s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32;
@@ -41,7 +41,7 @@ index b9d9198cc..a29d419dc 100644
 +    __nv_bfloat16 *out = query ? heads.tq : heads.tk;
 +    for (int first = 0; first < 256; first += 64) {
 +        const int local = first + s, row = tile_m * 256 + local;
-+        const __nv_bfloat16 *x = tile + local * 128;
++        __nv_bfloat16 *x = tile + local * 128;
 +        float sq = 0.0f;
 +        #pragma unroll
 +        for (int j = 0; j < 32; ++j) {
@@ -50,8 +50,21 @@ index b9d9198cc..a29d419dc 100644
 +        }
 +        sq += __shfl_xor_sync(0xffffffffu, sq, 1);
 +        sq += __shfl_xor_sync(0xffffffffu, sq, 2);
++        if (row < m) {
++            const float inv = rsqrtf(sq / 128.0f + heads.eps);
++            #pragma unroll
++            for (int j = 0; j < 32; j += 2) {
++                float a[2];
++                #pragma unroll
++                for (int e = 0; e < 2; ++e) {
++                    const int c = c0 + j + e;
++                    a[e] = __bfloat162float(__float2bfloat16(__bfloat162float(x[c]) * inv * __bfloat162float(nw[c])));
++                }
++                *reinterpret_cast<uint32_t *>(x + c0 + j) = h3_pack_bf16(a[0], a[1]);
++            }
++        }
++        __syncwarp();
 +        if (row >= m) continue;
-+        const float inv = rsqrtf(sq / 128.0f + heads.eps);
 +        const int slot = heads.slot[row];
 +        const size_t at = (static_cast<size_t>(head) * heads.slots + slot) * 128 + c0;
 +        #pragma unroll
@@ -60,15 +73,14 @@ index b9d9198cc..a29d419dc 100644
 +            #pragma unroll
 +            for (int e = 0; e < 2; ++e) {
 +                const int c = c0 + j + e;
-+                a[e] = __bfloat162float(__float2bfloat16(__bfloat162float(x[c]) * inv * __bfloat162float(nw[c])));
++                a[e] = __bfloat162float(x[c]);
 +                if (c < 2 * heads.rot) {
 +                    const bool low = c < heads.rot;
 +                    const int p = low ? c + heads.rot : c - heads.rot, t = low ? c : c - heads.rot;
 +                    const float sign = low ? -1.0f : 1.0f;
 +                    const float co = __bfloat162float(__float2bfloat16(heads.cos[row * heads.rot + t]));
 +                    const float si = __bfloat162float(__float2bfloat16(heads.sin[row * heads.rot + t]));
-+                    const float partner = __bfloat162float(__float2bfloat16(
-+                        __bfloat162float(x[p]) * inv * __bfloat162float(nw[p])));
++                    const float partner = __bfloat162float(x[p]);
 +                    a[e] = __bfloat162float(__float2bfloat16(a[e] * co)) +
 +                           __bfloat162float(__float2bfloat16(sign * partner * si));
 +                }
@@ -82,7 +94,7 @@ index b9d9198cc..a29d419dc 100644
  // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
  // silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
  // produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
-@@ -243,15 +299,17 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
+@@ -243,15 +311,17 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
  // producer warp costs every warp its registers. The tensor maps bind by reference so their
  // addresses stay in parameter space — a by-value copy would land in local space, which
  // cp.async.bulk.tensor refuses.
@@ -102,7 +114,7 @@ index b9d9198cc..a29d419dc 100644
  
      TileGrid grid;
      grid.tiles_m = (m + Config::block_m - 1) / Config::block_m;
-@@ -278,6 +336,7 @@ __device__ __forceinline__ void
+@@ -278,6 +348,7 @@ __device__ __forceinline__ void
      // Position of the lane in the MMA accumulator layout.
      const int group_id = lane / 4;
      const int quad_lane = lane % 4;
@@ -110,7 +122,7 @@ index b9d9198cc..a29d419dc 100644
  
      // Waits for the ring's current stage, multiplies it and releases it; the warp that releases it
      // last refills it.
-@@ -293,14 +352,19 @@ __device__ __forceinline__ void
+@@ -293,14 +364,19 @@ __device__ __forceinline__ void
              if (atomicAdd(release_counts + ring.stage, 1) == tma_warps - 1) {
                  release_counts[ring.stage] = 0;
                  h3_async_proxy_fence();
@@ -132,7 +144,7 @@ index b9d9198cc..a29d419dc 100644
          grid.coordinates(tile, tile_m, tile_n);
          int32_t accumulators[Config::m_tiles][Config::n_tiles][4];
          #pragma unroll
-@@ -348,6 +412,10 @@ __device__ __forceinline__ void
+@@ -348,6 +424,10 @@ __device__ __forceinline__ void
              }
          }
  
@@ -143,7 +155,7 @@ index b9d9198cc..a29d419dc 100644
          #pragma unroll
          for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
              const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
-@@ -385,6 +453,18 @@ __device__ __forceinline__ void
+@@ -385,6 +465,18 @@ __device__ __forceinline__ void
                              *reinterpret_cast<uint2 *>(output + static_cast<size_t>(row) * (n / 2) + column / 2) =
                                  make_uint2(h3_pack_bf16(h3_swiglu_value(words[0]), h3_swiglu_value(words[1])),
                                             h3_pack_bf16(h3_swiglu_value(words[2]), h3_swiglu_value(words[3])));
@@ -162,7 +174,7 @@ index b9d9198cc..a29d419dc 100644
                          } else {
                              *reinterpret_cast<uint4 *>(output + static_cast<size_t>(row) * n + column) =
                                  make_uint4(words[0], words[1], words[2], words[3]);
-@@ -393,6 +473,24 @@ __device__ __forceinline__ void
+@@ -393,6 +485,24 @@ __device__ __forceinline__ void
                  }
              }
          }
