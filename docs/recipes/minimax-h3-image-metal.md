@@ -1448,11 +1448,31 @@ steps, cold then the three warm (total in brackets):
 The last pair is the one quiet start the day gave: main began at load 5.6 and drew 8.95-9.33 s, card 148's 9.20 s;
 another job came in during it, so head, straight after, began at 20 and still drew 7.71-7.81 s, 1.2-1.6 s a picture
 faster on a busier host. Across all seven sessions head's warm six steps are 7.56-8.77 s and main's 8.94-10.70 s.
-No head session started under load 8 (the host stayed at 28-69 for the rest of the window), so head's quiet figure is
-not taken; the busier host only favours main. The packed byte writes cost bind 0.2 s (0.90-1.34 s against
-0.62-1.25 s), which a warm picture that rebinds still more than earns back. Receipts (`bench.py`,
-`bench-load92.log`, `bench.log`, `session.sh`, `contract.log`, the sessions' server output and `loads.txt`) are in
-`h3-image-runs/184`, outside the repo.
+The packed byte writes cost bind 0.2 s (0.90-1.34 s against 0.62-1.25 s), which a warm picture that rebinds still
+more than earns back. Receipts (`bench.py`, `bench-load92.log`, `bench.log`, `session.sh`, `contract.log`, the
+sessions' server output and `loads.txt`) are in `h3-image-runs/184`, outside the repo.
+
+Card 197 repeated the served A/B in a quiet window with the same builds and session method on three prompts none of
+them had seen (a lighthouse, a fish market, a glacier cave). Three pairs alternated main and head, and each session
+started only once no TensorFold build or model run was going and the 1-minute load was under 8. All 24 latents and
+PNGs are sha1-identical between the builds, the pilot's still `776b443a…` / `85098fa9…`, and every step is
+`timing_valid=true`. Seconds of the six steps, cold then the three warm (total in brackets):
+
+| Session | Load | pilot (cold) | lighthouse | market | glacier |
+|---|---|---|---|---|---|
+| main | 4.5 → 5.0 | 9.23 (11.00) | 9.33 (10.80) | 9.33 (10.82) | 9.35 (10.84) |
+| head | 4.9 → 5.5 | 7.67 (9.65) | 7.63 (9.31) | 7.63 (9.32) | 7.66 (9.46) |
+| main | 5.5 → 9.8 | 9.69 (11.80) | 9.34 (10.91) | 9.33 (10.83) | 9.69 (11.84) |
+| head | 7.3 → 6.0 | 8.13 (10.11) | 7.63 (9.32) | 7.63 (9.33) | 7.63 (9.34) |
+| main | 5.6 → 4.1 | 9.22 (11.14) | 9.34 (10.87) | 9.34 (10.89) | 9.35 (10.90) |
+| head | 4.1 → 7.0 | 8.37 (12.96) | 7.71 (9.96) | 7.64 (9.57) | 8.03 (9.97) |
+
+Over the nine warm pictures a side, head's six steps take a median of 7.63 s (7.63-8.03) against main's 9.34 s
+(9.33-9.69), and the warm total takes 9.34 s (9.31-9.97) against 10.87 s (10.80-11.84). The 1.71 s step gain is over
+four times either side's spread. Bind takes 0.85 s (0.84-1.01) against 0.66 s (0.62-0.71), and the decoder takes
+0.62 s on both. Head's last cold took 2.98 s to bind as load rose, and its pilot's steps ran 8.37 s. Receipts
+(`gate.sh`, `session.sh`, the prompts, server output, latents, PNGs and `loads.txt`) are in `h3-image-runs/197`,
+outside the repo. Pair 1 there is left out: main started at load 9.4.
 
 ### Card 151: a faster `h3_attention`, measured and reverted
 
