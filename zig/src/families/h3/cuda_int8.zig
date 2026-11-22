@@ -7,8 +7,10 @@
 //! `qkvc` and `fc1` scale each row by its absmax: the same products and roundings h3_dequantize and
 //! h3_swiglu_int8 computed, so their latents stay bit-identical to the cuBLASLt path they replaced.
 //! `out` and `fc2` failed the episode-1 picture gates at a row's scale (card 129: 28.15 dB, mean 4.23
-//! against 28.2 dB and 4.1), so both of their operands scale each 128-wide chunk by its own absmax
-//! and the product folds every 128-deep K block's sums into fp32 at that block's scales (card 176).
+//! against 28.2 dB and 4.1). Their opt-in path (`--int8-blocks`) scales each 128-wide chunk of both
+//! operands by its own absmax and folds every 128-deep K block's sums into fp32 at that block's
+//! scales; it is 0.77 s faster warm at 2048², but its fox still misses the gates (card 176: 26.26 dB,
+//! mean 5.17), so the default keeps them bf16.
 const std = @import("std");
 const cuda = @import("cuda");
 const report = @import("report.zig");
@@ -53,8 +55,8 @@ pub fn checkGeometry(n: usize, k: usize) !void {
 }
 
 /// One block's quantized projections; fc1's rows and scales interleave gate/up pairs for the
-/// swiglu epilogue (h3_swiglu_rows).
-pub const Block = struct { qkvc: Weight, out: Weight, fc1: Weight, fc2: Weight };
+/// swiglu epilogue (h3_swiglu_rows). `out` and `fc2` are int8 only under `quantize(.., true)`.
+pub const Block = struct { qkvc: Weight, out: ?Weight = null, fc1: Weight, fc2: ?Weight = null };
 
 /// The buffers a product's input rows use: `norm` or `linear` writes q/s before `gemm` reads them.
 pub const Scratch = struct { xq: u64, xs: u64 };
@@ -66,9 +68,10 @@ pub const Int8 = struct {
     scratch: cuda.DeviceBuffer,
     rows: usize = 0,
 
-    /// Replaces every block's bf16 projections with int8 ones, freeing each bf16 buffer once it is
-    /// quantized.
-    pub fn quantize(self: *Model) !void {
+    /// Replaces every block's bf16 `qkvc` and `fc1` with int8 ones, and `out` and `fc2` too when
+    /// `blocks` (a scale per 128-wide chunk; opt-in, as the fox misses episode 1's gates at it),
+    /// freeing each bf16 buffer once it is quantized.
+    pub fn quantize(self: *Model, blocks: bool) !void {
         if (self.gated) return error.H3NotPictureModel; // the dense forward's three of q, k, v only
         if (self.fp4 != null) return error.Quantized;
         try self.ctx.makeCurrent();
@@ -80,11 +83,12 @@ pub const Int8 = struct {
         self.int8 = t; // the model's deinit frees what a failed quantize already made
         const none: Weight = .{ .q = .{ .d = &self.driver, .ptr = 0, .len = 0 }, .n = 0, .k = 0 };
         t.blocks = try self.gpa.alloc(Block, self.blocks.len);
-        @memset(t.blocks, .{ .qkvc = none, .out = none, .fc1 = none, .fc2 = none });
+        @memset(t.blocks, .{ .qkvc = none, .fc1 = none });
         for (self.blocks, t.blocks) |*b, *q| {
             q.qkvc = try weight(self, &b.qkvc, 3 * self.inner, self.hidden, .rows);
-            q.out = try weight(self, &b.out, self.hidden, self.inner, .blocks);
             q.fc1 = try weight(self, &b.fc1, 2 * self.mlp, self.hidden, .swiglu);
+            if (!blocks) continue;
+            q.out = try weight(self, &b.out, self.hidden, self.inner, .blocks);
             q.fc2 = try weight(self, &b.fc2, self.hidden, self.mlp, .blocks);
         }
     }
@@ -128,18 +132,23 @@ pub const Int8 = struct {
     }
 
     pub fn deinit(t: *Int8, self: *Model) void {
-        for (t.blocks) |*b| for ([_]*Weight{ &b.qkvc, &b.out, &b.fc1, &b.fc2 }) |w| w.q.free();
+        for (t.blocks) |*b| {
+            b.qkvc.q.free();
+            b.fc1.q.free();
+            if (b.out) |*w| w.q.free();
+            if (b.fc2) |*w| w.q.free();
+        }
         self.gpa.free(t.blocks);
         t.scratch.free();
         self.gpa.destroy(t);
     }
 
-    /// The row buffers the launches share, as Scratch: room for the widest input's rows and their
-    /// chunks' scales.
+    /// The row buffers the launches share, as Scratch: the widest input's int8 rows, then a scale
+    /// for each of its 128-wide chunks (a row's scale fits in its first).
     pub fn layout(t: *Int8, self: *Model, rows: usize) !Scratch {
         try t.reserve(self, rows);
         const xq = t.scratch.ptr;
-        return .{ .xq = xq, .xs = xq + rows * self.mlp };
+        return .{ .xq = xq, .xs = xq + rows * widest(self) };
     }
 
     /// x's rows (already quantized at lay.xq) against w: bf16 rows at `out`, or silu(gate) * up at
@@ -178,15 +187,19 @@ pub const Int8 = struct {
         try t.reserve(self, rows);
     }
 
-    /// fc2's input is the widest: mlp int8 codes a row and a scale for each of its 128-wide chunks.
     fn reserve(t: *Int8, self: *Model, rows: usize) !void {
         if (rows <= t.rows) return;
         try self.stream.synchronize();
         t.scratch.free();
-        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, rows * (self.mlp + self.mlp / 128 * 4));
+        t.scratch = try cuda.DeviceBuffer.alloc(&self.driver, rows * (widest(self) + widest(self) / 128 * 4));
         t.rows = rows;
     }
 };
+
+/// Every projection's input width: h3_norm_quant's `hidden`, `out`'s `inner`, `fc2`'s `mlp`.
+fn widest(self: *const Model) usize {
+    return @max(self.hidden, self.inner, self.mlp);
+}
 
 /// TMA's UINT8 map of a [rows, k] int8 matrix: boxes of `box_rows` by 128 bytes, the K block, L2
 /// 256B promotion and zero fill past the end.
