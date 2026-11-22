@@ -22,8 +22,8 @@ const usage =
     \\               the next step's sigma (or to --renoise-sigma X) and redrawn at full size for the rest.
     \\               It draws a different picture, not a faster copy of the six-step one; an off-grid
     \\               renoise writes OUT_PREFIX.renoise.h3case.safetensors, the run schedule's case.
-    \\  --far-pool   pools the target's distant keys and values 2 x 2 at 4096-wide canvases of 8,192 rows and
-    \\               more (picture.far): a faster, close but not identical picture; off by default.
+    \\  --far-pool   pools the target's distant keys and values 2 x 2 on a 4096 x 4096 canvas, the one size its
+    \\               picture gates passed at (picture.far): a faster, close but not identical picture; off by default.
     \\Exit 0: every gate passed (or a free run had none); 1: a gate failed; 2: no reference to gate (inconclusive).
     \\Between transformer blocks it waits while the speech server speaks. Exclude timing_valid=false steps
     \\from benchmarks, even when their wait is 0: speech can start and finish between polls.
@@ -98,7 +98,7 @@ pub const Folder = struct {
     layers: usize,
     /// Every model bound from the folder gives way to live speech between blocks.
     turn: h3.gpu_turn.Turn,
-    /// --far-pool: bind pictures of 8,192 rows and more with pooled far-field keys (picture.far).
+    /// --far-pool: bind 4096 x 4096 pictures with pooled far-field keys (picture.far); other sizes say so and stay dense.
     far_pool: bool = false,
     /// --routed-steps: the last steps' target tiles see their best fifth of target tiles (FastH3's top 20%).
     routed_steps: usize = 0,
@@ -124,6 +124,8 @@ pub const Folder = struct {
     pub fn bind(f: *const Folder, gpa: std.mem.Allocator, a: std.mem.Allocator, case: *const Case, run: ?picture.Pdd) !*h3.Model {
         const sched = run orelse f.pdd;
         const far = if (f.far_pool) try picture.far(a, case.layout) else null;
+        const g = case.layout.target;
+        if (f.far_pool and far == null) std.debug.print("far-pool: off at {d}x{d}, not gated\n", .{ g.columns * picture.cell_pixels, g.rows * picture.cell_pixels });
         const model = try h3.Model.bind(gpa, f.ck, case.file, .{ .give_way = f.turn, .far = far });
         errdefer model.release();
         if (!model.base or model.step_heads != sched.steps() or model.audio != 0) return error.H3NotPictureModel;
