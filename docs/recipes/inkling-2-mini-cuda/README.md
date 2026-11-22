@@ -1,8 +1,8 @@
 # Inkling 2 Mini on TOP's GB10
 
 `run-script.sh` runs thinkingmachines/Inkling-2-Mini (revision `ed40e7da62`) whole on TOP's Spark through the Desk's
-GPU door. The job has no network, so the checkpoint must already sit in the pilot folder as
-`models/Inkling-2-Mini`; the script refuses and lists what `/assets` holds when it does not.
+GPU door. The job has no network, so the checkpoint must already sit in the pilot folder as `Inkling-2-Mini` (or
+`models/Inkling-2-Mini`); the script refuses and lists the Inkling configs under `/assets` when it does not.
 
 The server is #4387's engine (`inkling2.native`, model type `inkling2_loop`) with jschmied's three load and
 attention fixes from his #4387 comments; #4441's engine (`inkling2.mini_native`) rides along for its float64
