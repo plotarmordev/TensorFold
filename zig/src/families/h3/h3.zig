@@ -34,8 +34,8 @@ pub const Block = struct { q: Ref, k: Ref, v: Ref, compress: Ref, out: Ref, fc1:
 pub const Int8 = struct { w: Ref, s: Ref };
 pub const Int8s = struct { q: Int8, out: Int8, fc1: Int8, fc2: Int8 };
 
-/// Shader overrides and optional per-block yielding to live speech.
-pub const Options = struct { defines: []const u8 = "", give_way: ?gpu_turn.Turn = null };
+/// Shader overrides, optional per-block yielding to live speech, and a picture's pooled far-field key tiles.
+pub const Options = struct { defines: []const u8 = "", give_way: ?gpu_turn.Turn = null, far: ?picture.Far = null };
 
 /// A timing is valid only with a working speech signal and no speech or waiting anywhere in the forward.
 pub const Timing = struct { wall: f64, gpu: f64, paused: f64, timing_valid: bool };
@@ -97,6 +97,12 @@ pub const Model = struct {
     sizes: Ref,
     row_of: mtl.Buffer,
     all_tiles: mtl.Buffer,
+    /// --far-pool: each target query tile's key tiles (picture.Far's list) and its pooled rows; 0 rows when off.
+    /// `far_on`: this step pools (from picture.far_from_step on).
+    far_list: mtl.Buffer,
+    far_per_query: usize,
+    far_pooled: usize,
+    far_on: bool,
     line: mtl.Buffer,
     time: mtl.Buffer,
     // the stream and a branch's rows, the normed rows, the projections at the attention width, the MLP's rows
@@ -149,8 +155,9 @@ pub const Model = struct {
         @compileError("no kernel " ++ name);
     }
 
+    /// Key and value slots: the case's tiles, then a far-field binding's pooled tiles.
     fn slots(self: *const Model) usize {
-        return self.tiles * slot_tile;
+        return (self.tiles + self.far_pooled) * slot_tile;
     }
 
     /// `checkpoint_dir`: the FastH3 transformer folder of `shards` files. `case`: tools/zig/h3_case.py's output.
@@ -201,7 +208,11 @@ pub const Model = struct {
         const heads = self.heads;
         const times = admitted.times;
 
-        const defines = try std.fmt.allocPrint(gpa, "#define H3_HIDDEN {d}\n{s}", .{ hidden, options.defines });
+        if (options.far) |f| {
+            self.far_per_query = f.per_query;
+            self.far_pooled = f.pooled;
+        }
+        const defines = try std.fmt.allocPrint(gpa, "#define H3_HIDDEN {d}\n{s}{s}", .{ hidden, if (options.far != null) "#define H3_FAR 1\n" else "", options.defines });
         defer gpa.free(defines);
         const all = try @import("source.zig").library(gpa, heads, self.slots(), self.tiles, defines);
         defer gpa.free(all);
@@ -240,6 +251,8 @@ pub const Model = struct {
         for (self.slot.buffer.slice(i32, rows), 0..) |at, row| self.row_of.slice(i32, total)[@intCast(at)] = @intCast(row);
         self.all_tiles = try device.buffer(self.tiles * 4, shared);
         for (self.all_tiles.slice(i32, self.tiles), 0..) |*t, i| t.* = @intCast(i);
+        self.far_list = try device.buffer(if (options.far) |f| f.list.len * 4 else 4, shared);
+        if (options.far) |f| @memcpy(self.far_list.slice(i32, f.list.len), f.list);
         self.line = try device.buffer(rows * 4, shared);
         self.time = try device.buffer(rows * 4, shared);
         inline for (.{ "x", "y", "xn" }) |f| @field(self, f) = try device.buffer(rows * hidden * 2, shared);
@@ -300,7 +313,7 @@ pub const Model = struct {
         for (self.blocks) |b| b.tables.buffer.deinit();
         inline for (.{ "final_table", "final_norm", "w_video_in", "b_video_in", "w_video_out", "b_video_out", "cos", "sin", "slot", "sizes" }) |f| @field(self, f).buffer.deinit();
         if (self.audio > 0) inline for (.{ "w_audio_in", "b_audio_in", "w_audio_out", "b_audio_out" }) |f| @field(self, f).buffer.deinit();
-        inline for (.{ "row_of", "all_tiles", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
+        inline for (.{ "row_of", "all_tiles", "far_list", "line", "time", "x", "y", "xn", "qr", "kr", "vr", "cr", "qkv", "wide", "act", "tq", "tk", "tv", "qp", "kp", "vp", "coarse", "tile_scores", "chosen", "condition_latents", "video_latents", "audio_latents", "video_velocity", "audio_velocity" }) |f| @field(self, f).deinit();
         if (self.base) inline for (.{ "wq", "ws", "xq", "xs" }) |f| @field(self, f).deinit();
         if (self.stamps) |s| {
             s.pass.deinit();
@@ -491,6 +504,7 @@ pub const Model = struct {
         const hidden = self.hidden;
         // each row's line in the blocks' tables and in the final layer's, for this step
         @memcpy(self.line.slice(i32, rows), self.adaln[step * rows ..][0..rows]);
+        self.far_on = self.far_pooled > 0 and step >= picture.far_from_step;
         @memcpy(self.time.slice(i32, rows), self.times[step * rows ..][0..rows]);
         @memcpy(self.x.slice(u16, self.prompt.len), self.prompt);
         if (video.len > 0) @memcpy(self.video_latents.slice(f32, video.len), video);
