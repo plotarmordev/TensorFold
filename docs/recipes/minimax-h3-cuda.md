@@ -724,7 +724,70 @@ byte-identical too.
 scales on them at 28.02 dB and 4.27, below the gates, and `160c5d8b`'s 256-wide rotation in mmh3's ConvRot
 style left the picture at 28.14 dB. Folding the same scales in registers changes only the fp32 order of a
 sum that is otherwise exact, so it should give the same picture (inferred, not run). This card ran no picture
-for them.
+for them; card 176 below does, at a scale per 128 of K, and reverts it.
+
+### Card 176: `out` and `fc2` int8 on the TMA product at a scale per 128 of K — measured and reverted
+
+The card ran `out` and `fc2` on card 146's product too, beside the default's int8 `qkvc` and `fc1`.
+`h3_quantize_blocks` quantized each 128-wide rotated chunk of K at that chunk's own absmax, one warp per chunk,
+and wrote the scales block-major (`S[c·M + row]`). The weights got the same layout. `h3_gemm_int8_tma_blocks`
+(`Epilogue::blocks`) folded every K block's exact int32 sums into fp32 at that block's two scales, held per lane
+in registers, before the next block's MMAs, on a 128×128 tile to stay under the register limit. No int32 plane
+left the registers, which was card 139's cost. The code is at `8027eb54` (behind `--int8-blocks`) for a retry.
+
+Contract and stop rule: `bench-146-contract.sh` at `095874ff` on TOP (GB10, driver 580.173.02). All five int8
+kernels passed gates 1-4, and the planted control went red at shapes. The per-block product's sums stayed within
+the fp32 fold's bound at K = 14,336, where fp16 sums would miss 3× and bf16 sums 26.3×. Gate 5's live sm_121
+limits read 236 registers for the product and 28 for `h3_quantize_blocks`. The same job's microbench timed the
+per-row `h3_gemm_int8_tma` on these shapes: `out` 1.68 ms against cuBLASLt's 2.09 ms (1.24×) and `fc2` 3.66 ms
+against 4.22 ms (1.15×).
+
+The picture A/B ran at `095874ff` with the per-block path as the default (job `top-639918032e5e`,
+22 November, `H3_PROFILE=1`): "this card" against "main" (`out`/`fc2` in bf16), with `--bf16` as the
+reference. Each side ran the fox cold and three prompts no earlier job used warm (glacier, bakery, orchard).
+Every selftest passed.
+
+| 2048² | wall s | transformer s | `attention out` s | `mlp out` s |
+|---|---:|---:|---:|---:|
+| this card, fox (cold) | 152.67 | 38.01 | 0.83 | 1.74 |
+| this card, glacier | 13.36 | 10.09 | 0.85 | 1.78 |
+| this card, bakery | 13.40 | 10.02 | 0.85 | 1.76 |
+| this card, orchard | 13.36 | 10.01 | 0.85 | 1.76 |
+| main, fox (cold) | 150.81 | 38.54 | 1.16 | 2.27 |
+| main, glacier | 14.07 | 10.77 | 1.16 | 2.28 |
+| main, bakery | 14.25 | 10.87 | 1.15 | 2.29 |
+| main, orchard | 14.11 | 10.80 | 1.16 | 2.27 |
+| `--bf16`, fox (cold) | 156.27 | 43.46 | 1.14 | 2.27 |
+| `--bf16`, glacier | 18.39 | 15.03 | 1.15 | 2.49 |
+| `--bf16`, bakery | 18.45 | 15.03 | 1.16 | 2.42 |
+| `--bf16`, orchard | 18.51 | 15.12 | 1.15 | 2.42 |
+
+Warm runs are 0.77 s faster (13.37 against 14.14 s), and so is the transformer (10.04 against 10.81 s).
+Every other stage stays within 0.04 s. Gates against the same job's `--bf16` picture (latent cosine ≥ 0.99,
+≥ 28.2 dB, mean ≤ 4.1):
+
+| picture | this card | main |
+|---|---|---|
+| glacier | 0.9974, 32.55 dB, 3.49 — pass | 0.9964, 30.48 dB, 3.78 — pass |
+| bakery | 0.9824, 23.42 dB, 7.77 — fail | 0.9825, 23.25 dB, 7.91 — fail |
+| orchard | 0.9861, 23.17 dB, 8.17 — fail | 0.9824, 22.37 dB, 8.40 — fail |
+| fox, against episode 1's Mac latent and PNG | 0.9910, 26.26 dB, 5.17 — fail | 0.9952, 28.69 dB, 4.01 — pass |
+
+Measured, not kept: per-128 scales fail the gates on bakery and orchard. In job `top-639918032e5e` I read
+bakery at 0.9824, 23.42 dB, 7.77 and orchard at 0.9861, 23.17 dB, 8.17, and the fox fails too.
+
+I measured the fox locally on the fetched pictures with `h3_image_compare.py` against
+`h3-image-runs/34/t2i-2048.latent.f32` and `fox-2048-seed42.png`. The same job's `--bf16` fox measured 0.9958,
+28.71 dB and 3.61 there. On the unseen prompts the card's PSNR and mean diff are at or above main's, and its
+cosine is within 0.0001 of main's on bakery. The two failures are main's too: per-row int8 on `qkvc`/`fc1`
+already moves those pictures past the gates. The fox is the exception. It misses episode 1's gates where main
+holds them, as card 139's per-256 scales did (28.02 dB, 4.27). By the recipe's rule since cards 129 and 139,
+0.77 s does not buy a default below the gates. An opt-in that fails the gates has no use either, so the code
+is reverted and `out` and `fc2` stay bf16.
+
+The review's rerun at `8027eb54` (per-block behind `--int8-blocks`, same three phases) did not complete: the
+`--bf16` reference hit `CUDA_ERROR_OUT_OF_MEMORY` after its cold run and the job exited 1. No speed or quality
+figure here rests on it. A scale per 64 or 32 of K would need a fold inside the 128-deep K block; it stays untried.
 
 ### Card 173: the prompt encoder in int8 at a scale per 128 of K, on our own TMA product — kept
 
