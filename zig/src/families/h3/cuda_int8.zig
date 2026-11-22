@@ -28,8 +28,24 @@ fn encoder(d: *cuda.Driver) !Encode {
 /// TallTile's Config::shared_bytes: 2 stages of (256 + 128) * 128 bytes, the 1 KiB alignment slack
 /// and the barriers.
 pub const gemm_shared = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
+pub const heads_shared = gemm_shared;
 const block_m = 256;
 const block_n = 128;
+
+pub const Heads = extern struct {
+    nq: u64,
+    nk: u64,
+    cos: u64,
+    sin: u64,
+    slot: u64,
+    tq: u64,
+    tk: u64,
+    tv: u64,
+    heads: c_int,
+    slots: c_int,
+    rot: c_int,
+    eps: f32,
+};
 
 /// A projection (N, K): its int8 rows, then N fp32 row scales; `swiglu` marks fc1's
 /// pairwise-interleaved rows.
@@ -151,6 +167,23 @@ pub const Int8 = struct {
         const blocks: u32 = @intCast(@min(sm, tiles));
         const name = if (w.swiglu) Model.functionIndex("h3_swiglu_int8_tma") else Model.functionIndex("h3_gemm_int8_tma");
         try self.launchShared(name, blocks, 256, gemm_shared, &args);
+    }
+
+    /// qkvc's product, with each 128-column head normalized, rotated and written in tile order.
+    pub fn gemmHeads(t: *Int8, self: *Model, lay: Scratch, w: Weight, rows: usize, heads: Heads) !void {
+        var maps: [2]TensorMap = undefined;
+        try encode(t.enc, &maps[0], lay.xq, rows, w.k, block_m);
+        try encode(t.enc, &maps[1], w.q.ptr, w.n, w.k, block_n);
+        var args: cuda.Args = .{};
+        args.add(maps[0]);
+        args.add(maps[1]);
+        for ([_]u64{ lay.xs, w.scales() }) |a| args.add(a);
+        for ([_]usize{ rows, w.n, w.k }) |v| args.add(@as(c_int, @intCast(v)));
+        args.add(heads);
+        const sm: usize = @intCast(try self.ctx.attribute(.multiprocessor_count));
+        const tiles = (rows + block_m - 1) / block_m * (w.n / block_n);
+        const blocks: u32 = @intCast(@min(sm, tiles));
+        try self.launchShared(Model.functionIndex("h3_heads_int8_tma"), blocks, 256, heads_shared, &args);
     }
 
     /// Room for `rows` before a step is captured: `layout` then only hands out buffers.

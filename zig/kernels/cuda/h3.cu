@@ -493,6 +493,12 @@ __global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma(
     h3_int8::gemm_kernel<h3_int8::TallTile, false>(map_a, map_b, XS, WS, C, M, N, K);
 }
 
+__global__ void __launch_bounds__(256, 1) h3_heads_int8_tma(
+        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
+        const float* XS, const float* WS, int M, int N, int K, h3_int8::HeadEpilogue heads) {
+    h3_int8::gemm_kernel<h3_int8::TallTile, false, true>(map_a, map_b, XS, WS, heads.tq, M, N, K, &heads);
+}
+
 __global__ void __launch_bounds__(256, 1) h3_swiglu_int8_tma(
         const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
         const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
