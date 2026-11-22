@@ -1892,6 +1892,58 @@ moving that pass to the GPU would buy at most 1.5 s for a picture that fails. It
 design and under main's 10.18 s here, is one request with a failed picture, so it is claimed as nothing. The code is
 reverted.
 
+### Card 187: FastH3's routed attention in the last steps, measured and rejected as a default
+
+`tf-h3-image-server --routed-steps N` runs the last N steps' attention the FastH3 way on the dense picture model: the
+prefix's query tiles still see every tile, and each picture tile sees the whole prefix and its best fifth of the
+picture's tiles, chosen per head from the tiles' means by `h3_tile_scores` and `h3_topk` (13 of 64 at 2048). There is no
+pooled branch: the release weights were trained dense. Without the flag the model takes the old dense path, so the
+default draws main's bytes. `test-h3-image-server` holds a routed run that keeps every picture tile to the dense latent
+bit for bit, and the tile top-k contract (`tf-kernel-contract --only "h3 tile top-k"`) now serves the 64-keeping-13
+shape. `--routed-steps 2` was measured: steps 5 and 6 of 6.
+
+Main `bc1012c35` with this change, one ReleaseFast server a session, warm 2048x2048 at seed 42 on card 34's pilot and
+the canal, foundry and greenhouse prompts (unseen by earlier cards), each session holding `/tmp/tensorfold-model.lock`
+for 38-119 s. Load was 21-57 through these sessions, with other builds on the CPU. Every request, seconds (prompt / 6
+steps / decoder / total; `F` marks a step reporting `timing_valid=false`):
+
+| Request | dense | `--routed-steps 2` | fast (`--draft-steps 3`) | fast, `--routed-steps 2` |
+|---|---|---|---|---|
+| cold pilot | 1.13 / 13.93 / 2.99 / 30.03 | 0.70 / 10.37 / 2.42 / 19.10 | 0.61 / 16.88 / 2.17 / 21.48 | 0.35 / 9.23 / 0.73 / 11.25 |
+| canal | 0.72 / 12.66 / 5.28 / 23.26 | 0.59 / 10.11 / 3.70 / 16.31 | 0.48 / 9.06 / 0.67 / 11.91 F | 0.27 / 8.15 / 1.85 / 11.26 |
+| foundry | 1.14 / 11.83 / 6.85 / 21.72 | 0.58 / 11.01 / 2.32 / 15.89 F | 0.22 / 8.65 / 0.67 / 10.51 | 0.32 / 8.46 / 0.98 / 10.86 |
+| greenhouse | 0.61 / 11.31 / 5.91 / 20.22 | | | |
+
+The totals swing with the load; the steps themselves are steadier. A routed step 5 or 6 took 1.36-1.42 s of wall time
+against 1.54-1.69 s dense, so routing saves about 0.2 s a step, 0.4 s a picture, in both modes.
+
+The attention pass, with `profile` on greenhouse: each launch on the GPU's timestamp counters, one request a session
+of 13-24 s at load 10-22, every step `timing_valid=true`. Seconds of attention launches summed over the profiled
+steps (a fast run's three half-size draft steps are not profiled), then the whole picture as above:
+
+| Mode | dense attention | routed attention (+ routing) | dense picture | routed picture |
+|---|---|---|---|---|
+| normal, 6 steps | 1.649 | 1.206 (+0.025) | 0.23 / 14.13 / 0.73 / 15.75 | 0.28 / 12.00 / 0.63 / 13.86 |
+| fast, 3 full-size steps | 0.763 | 0.435 (+0.025) | 0.28 / 8.33 / 0.61 / 10.05 | 0.23 / 9.21 / 0.63 / 10.68 |
+
+Two routed steps take attention down by 0.44 s in normal mode (27%) and 0.33 s in fast mode (43%), 4-7% of the
+profiled steps' GPU time. The whole-picture times move more than that either way (the
+profile serialises launches and other work shared the CPU), so the steady per-step walls above are the better
+measure of the gain. An earlier profile pair at load 37-93 (3.72 s dense, 2.47 s routed over six steps) is in the
+receipts and not counted.
+
+The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.2 dB, mean pixel difference at most
+4.1) on one prompt of three, against the dense picture of the same mode:
+
+| Prompt | normal: cosine / PSNR / mean | fast: cosine / PSNR / mean |
+|---|---|---|
+| pilot | 0.999335 / 36.769 dB / 2.106 pass | 0.998664 / 33.622 dB / 3.220 pass |
+| canal | 0.997565 / 26.564 dB / 6.398 **fail** | 0.996870 / 24.944 dB / 8.055 **fail** |
+| foundry | 0.999182 / 32.549 dB / 3.144 pass | 0.998478 / 31.260 dB / 3.358 pass |
+
+Canal misses the floor by 1.64 dB in normal mode and 3.26 dB in fast mode, so routing stays off by default: about 0.4 s
+of a 10-12 s warm picture does not pay for a gate that fails. Receipts are in `h3-image-runs/187`, outside the repo.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
