@@ -351,7 +351,13 @@ __device__ __forceinline__ void
             if (atomicAdd(release_counts + ring.stage, 1) == tma_warps - 1) {
                 release_counts[ring.stage] = 0;
                 h3_async_proxy_fence();
-                fill_stage<Config>(grid, ring.sequence + tma_stages, stage_a, barrier, &map_a, &map_b);
+                const int future = ring.sequence + tma_stages;
+                bool refill = true;
+                if constexpr (HEADS) {
+                    // q/k reuse the ring for their head tile, so its next-tile copies must wait.
+                    if (tile_n < 2 * heads->heads && future / grid.k_blocks > ring.sequence / grid.k_blocks) refill = false;
+                }
+                if (refill) fill_stage<Config>(grid, future, stage_a, barrier, &map_a, &map_b);
             }
         }
         ring.advance();
@@ -472,6 +478,17 @@ __device__ __forceinline__ void
                 const bool query = tile_n < heads->heads;
                 const int head = query ? tile_n : tile_n - heads->heads;
                 h3_head_epilogue(head_tile, *heads, query, head, m, tile_m);
+                if (threadIdx.x == 0) {
+                    for (int stage = 0; stage < tma_stages; stage++) h3_barrier_init(barriers + stage * 8, 1);
+                    h3_barrier_init_fence();
+                    for (int stage = 0; stage < tma_stages; stage++) {
+                        fill_stage<Config>(grid, ring.sequence + stage, shared_base + stage * Config::stage_bytes, barriers + stage * 8, &map_a, &map_b);
+                    }
+                }
+                __syncthreads();
+                const int sequence = ring.sequence;
+                ring = Ring{};
+                ring.sequence = sequence;
             }
         }
     }

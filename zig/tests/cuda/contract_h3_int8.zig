@@ -267,6 +267,7 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
             .{ .rows = 16, .n = 384, .k = 128 },
             .{ .rows = 300, .n = 384, .k = 256 },
             .{ .rows = 64, .n = 768, .k = 384 },
+            .{ .rows = 300, .n = 21504, .k = 5376 }, // full head tiles and multiple tiles per CTA
             .{ .rows = 16, .n = 21504, .k = 5376 },
         },
         .control => &.{.{ .rows = 16, .n = 392, .k = 128 }}, // n % 8 keeps the epilogue's 16-byte stores aligned
