@@ -1,0 +1,618 @@
+diff --git a/zig/kernels/cuda/h3_image_prompt.cu b/zig/kernels/cuda/h3_image_prompt.cu
+index c6a94a8c6..6956fec5d 100644
+--- a/zig/kernels/cuda/h3_image_prompt.cu
++++ b/zig/kernels/cuda/h3_image_prompt.cu
+@@ -1,9 +1,12 @@
+ // MiniMax-H3-Image's prompt stage on CUDA: the glue between the checkpoint's bf16 cuBLASLt products,
+ // rounding exactly as the Metal kernels (zig/kernels/metal/h3/h3_prompt.metal) and the host reference
+ // (zig/src/families/h3/prompt_reference.zig) do: bf16 in, fp32 sums, every output rounded once to bf16.
++// The default text encoder runs its products int8 at a scale per 128 of K (h3p_quantize_groups, then
++// h3p_gemm_int8_groups); the bf16 h3p_linear is --bf16's.
+ #include <cuda_bf16.h>
+ #include <math.h>
+ #include <stddef.h>
++#include "h3_int8_tma.cuh"
+ 
+ typedef __nv_bfloat16 bf16;
+ 
+@@ -214,3 +217,29 @@ extern "C" __global__ void __launch_bounds__(256) h3p_round(const float* x, bf16
+     const int i = blockIdx.x * 256 + threadIdx.x;
+     if (i < n) y[i] = h(x[i]);
+ }
++
++// Each bf16 row of X (M, K) to int8 Q at a scale per 128 of K: one warp a 128-wide group, quantized at
++// its absmax / 127, the scale at S[group * ld + row] — group-major, the layout h3p_gemm_int8_groups reads
++// (`ld` the operand's rows; a weight's row offset is folded into S). Grid [M], 256 threads.
++extern "C" __global__ void __launch_bounds__(256) h3p_quantize_groups(const bf16* X, signed char* Q, float* S, int K, int ld) {
++    const size_t row = blockIdx.x;
++    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
++    for (int g = warp; g < K >> 7; g += 8) {
++        const size_t at = row * K + g * 128 + lane * 4;
++        const __nv_bfloat162* p = reinterpret_cast<const __nv_bfloat162*>(X + at);
++        const float2 lo = __bfloat1622float2(p[0]), hi = __bfloat1622float2(p[1]);
++        float most = fmaxf(fmaxf(fabsf(lo.x), fabsf(lo.y)), fmaxf(fabsf(hi.x), fabsf(hi.y)));
++        for (int o = 16; o; o >>= 1) most = fmaxf(most, __shfl_xor_sync(0xffffffffu, most, o));
++        const float scale = most > 0.0f ? most / 127.0f : 1.0f;
++        *reinterpret_cast<char4*>(Q + at) = make_char4(__float2int_rn(lo.x / scale), __float2int_rn(lo.y / scale), __float2int_rn(hi.x / scale), __float2int_rn(hi.y / scale));
++        if (lane == 0) S[static_cast<size_t>(g) * ld + row] = scale;
++    }
++}
++
++// C (M, N) fp32 = Σ_g (XQ · WQᵀ over K group g) · XS[g · M + row] · WS[g · N + column]: the TMA int8 product
++// on 64 × 64 tiles, each K block's exact int32 sums folded at its group's scales. N a multiple of 64.
++extern "C" __global__ void __launch_bounds__(256) h3p_gemm_int8_groups(
++        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
++        const float* XS, const float* WS, float* C, int M, int N, int K) {
++    h3_int8::gemm_kernel<h3_int8::PromptTile, false, true>(map_a, map_b, XS, WS, C, M, N, K);
++}
+diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
+index b9d9198cc..06c1131d2 100644
+--- a/zig/kernels/cuda/h3_int8_tma.cuh
++++ b/zig/kernels/cuda/h3_int8_tma.cuh
+@@ -17,6 +17,7 @@
+ #include <cudaTypedefs.h>
+ #include <cuda_bf16.h>
+ #include <cuda_runtime.h>
++#include <type_traits>
+ 
+ namespace h3_int8 {
+ 
+@@ -236,6 +237,54 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
+     return silu * gv.y;
+ }
+ 
++// GROUPED's tile: after each K block g the warp's int32 sums (exact: 127² · 128 < 2²⁴, so their
++// float is too) fold into fp32 at xs[g * m + row] · ws[g * n + column] and restart; the fp32 sums
++// land at output[row, column]. `row0` is the lane's first row, `column0` its first column.
++template <typename Config, typename Consume>
++__device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumulators)[Config::m_tiles][Config::n_tiles][4], int k_blocks,
++                                             const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
++                                             float *__restrict__ output, int m, int n, int row0, int column0) {
++    float sums[Config::m_tiles][Config::n_tiles][4] = {};
++    for (int g = 0; g < k_blocks; g++) {
++        consume(accumulators);
++        #pragma unroll
++        for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
++            #pragma unroll
++            for (int half = 0; half < 2; half++) {
++                const int row = row0 + m_tile * 16 + half * 8;
++                const float row_scale = row < m ? activation_scales[static_cast<size_t>(g) * m + row] : 0.0f;
++                #pragma unroll
++                for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
++                    const int column = column0 + n_tile / 4 * 32 + ((n_tile % 4 + threadIdx.x % 4) & 3) * 2;
++                    const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + static_cast<size_t>(g) * n + column);
++                    int32_t *products = accumulators[m_tile][n_tile] + half * 2;
++                    float *sum = sums[m_tile][n_tile] + half * 2;
++                    sum[0] += static_cast<float>(products[0]) * row_scale * column_scale.x;
++                    sum[1] += static_cast<float>(products[1]) * row_scale * column_scale.y;
++                    products[0] = 0;
++                    products[1] = 0;
++                }
++            }
++        }
++    }
++    #pragma unroll
++    for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
++        #pragma unroll
++        for (int half = 0; half < 2; half++) {
++            const int row = row0 + m_tile * 16 + half * 8;
++            if (row >= m) {
++                continue;
++            }
++            #pragma unroll
++            for (int n_tile = 0; n_tile < Config::n_tiles; n_tile++) {
++                const int column = column0 + n_tile / 4 * 32 + ((n_tile % 4 + threadIdx.x % 4) & 3) * 2;
++                const float *sum = sums[m_tile][n_tile] + half * 2;
++                *reinterpret_cast<float2 *>(output + static_cast<size_t>(row) * n + column) = make_float2(sum[0], sum[1]);
++            }
++        }
++    }
++}
++
+ // output[m, n] = bf16(acc[m, n] * xs[m] * ws[n]) where acc holds the exact int32 sums, or
+ // silu(gate) * up at [m, n / 2] when SWIGLU — the same products h3_dequantize and h3_swiglu_int8
+ // produce from the int32 sums, without the sums' round trip through memory. One CTA per SM walks
+@@ -243,11 +292,14 @@ __device__ __forceinline__ float h3_swiglu_value(uint32_t word) {
+ // producer warp costs every warp its registers. The tensor maps bind by reference so their
+ // addresses stay in parameter space — a by-value copy would land in local space, which
+ // cp.async.bulk.tensor refuses.
+-template <typename Config, bool SWIGLU>
++// GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
++// ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
++// fp32 rows are written unrounded.
++template <typename Config, bool SWIGLU, bool GROUPED = false, typename Out = std::conditional_t<GROUPED, float, __nv_bfloat16>>
+ __device__ __forceinline__ void
+     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
+                 const float *__restrict__ activation_scales, const float *__restrict__ weight_scales,
+-                __nv_bfloat16 *__restrict__ output, int m, int n, int k) {
++                Out *__restrict__ output, int m, int n, int k) {
+     extern __shared__ __align__(1024) uint8_t shared_memory[];
+     const uint32_t shared_base = (h3_shared_address(shared_memory) + 1023) & ~1023u;
+     const uint32_t barriers = shared_base + tma_stages * Config::stage_bytes;
+@@ -313,6 +365,12 @@ __device__ __forceinline__ void
+                 }
+             }
+         }
++        if constexpr (GROUPED) {
++            grouped_tile<Config>(consume, accumulators, grid.k_blocks, activation_scales, weight_scales, output, m, n,
++                                 tile_m * Config::block_m + warp_row + group_id,
++                                 tile_n * Config::block_n + warp_column + quad_lane * 8);
++            continue; // what follows is the per-row epilogue
++        }
+         for (int k_block = 0; k_block < grid.k_blocks; k_block++) {
+             consume(accumulators);
+         }
+@@ -397,5 +455,7 @@ __device__ __forceinline__ void
+ }
+ 
+ using TallTile = GemmConfig<256, 128, 4>;
++// The prompt encoder's few rows: 64 × 64 tiles, so even a 40-row prompt spreads N over every SM.
++using PromptTile = GemmConfig<64, 64, 4>;
+ 
+ } // namespace h3_int8
+diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
+index 28d748ca9..712685e8c 100644
+--- a/zig/src/families/h3/cuda_int8.zig
++++ b/zig/src/families/h3/cuda_int8.zig
+@@ -18,10 +18,10 @@ const Model = h3.Model;
+ 
+ /// The driver encodes a [rows, columns] matrix with 128-byte rows into a CUtensorMap whose TMA box
+ /// is `box_rows` by 128 bytes: one K block of one operand tile.
+-const TensorMap = extern struct { bytes: [128]u8 align(64) };
+-const Encode = *const fn (*TensorMap, c_uint, c_uint, ?*anyopaque, *const [2]u64, *const u64, *const [2]u32, *const [2]u32, c_uint, c_uint, c_uint, c_uint) callconv(.c) cuda.abi.Result;
++pub const TensorMap = extern struct { bytes: [128]u8 align(64) };
++pub const Encode = *const fn (*TensorMap, c_uint, c_uint, ?*anyopaque, *const [2]u64, *const u64, *const [2]u32, *const [2]u32, c_uint, c_uint, c_uint, c_uint) callconv(.c) cuda.abi.Result;
+ 
+-fn encoder(d: *cuda.Driver) !Encode {
++pub fn encoder(d: *cuda.Driver) !Encode {
+     return d.lib.lookup(Encode, "cuTensorMapEncodeTiled") orelse error.MissingSymbol;
+ }
+ 
+@@ -169,7 +169,7 @@ pub const Int8 = struct {
+ 
+ /// TMA's UINT8 map of a [rows, k] int8 matrix: boxes of `box_rows` by 128 bytes, the K block, L2
+ /// 256B promotion and zero fill past the end.
+-fn encode(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, box_rows: u32) !void {
++pub fn encode(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, box_rows: u32) !void {
+     const dims: [2]u64 = .{ k, rows };
+     const strides: u64 = k; // bytes between rows; dimension 0's stride is the contiguous row
+     const box: [2]u32 = .{ 128, box_rows };
+@@ -185,3 +185,70 @@ fn launchQuantize(self: *Model, x: u64, q: u64, s: u64, rows: usize, k: usize) !
+     args.add(@as(c_int, @intCast(k)));
+     try self.launch("h3_quantize", .{ .x = @intCast(rows) }, 256, 0, &args);
+ }
++
++/// An int8 product resident: its (n, k) rows at `q`, then the k / 128 group-major scales at `s`.
++pub const Product = struct { q: u64, s: u64 };
++
++/// The prompt encoder's int8 products at a scale per 128 of K on both operands (h3p_quantize_groups,
++/// h3p_gemm_int8_groups): per-row scales moved its picture past the episode-1 gates (card 143), and
++/// a scale a K block is folded in registers, so only an own product carries it.
++pub const Groups = struct {
++    enc: Encode,
++    sms: u32,
++
++    /// PromptTile's whole N tiles; K whole groups.
++    pub fn checkGeometry(n: usize, k: usize) !void {
++        if (k % 128 != 0 or n % prompt_block != 0) return error.BadGeometry;
++    }
++
++    /// The bf16 `parts`, stacked row-wise into one (n, k) product, each staged through `staging` by
++    /// `r.copy` and quantized by `f` into the next 256-aligned slot of `arena` at `at`.
++    pub fn load(f: cuda.Function, r: anytype, staging: u64, arena: u64, at: *usize, nk: [2]usize, parts: anytype) !Product {
++        const p: Product = .{ .q = arena + at.*, .s = arena + at.* + nk[0] * nk[1] };
++        at.* += std.mem.alignForward(usize, bytes(nk[0], nk[1]), 256);
++        var row: usize = 0;
++        inline for (parts) |t| {
++            const rows = t.len / (2 * nk[1]);
++            if (t.len != rows * nk[1] * 2 or row + rows > nk[0]) return error.H3UnexpectedTensor;
++            try r.copy(t, staging);
++            try quantize(f, r.stream, staging, p.q + row * nk[1], p.s + row * 4, rows, nk[1], nk[0]);
++            row += rows;
++        }
++        return if (row == nk[0]) p else error.H3UnexpectedTensor;
++    }
++
++    /// Bytes of an (n, k) int8 operand and its k / 128 scales a row.
++    pub fn bytes(n: usize, k: usize) usize {
++        return n * k + n * (k / 128) * 4;
++    }
++
++    /// x's bf16 (rows, k) rows to int8 at `q`, the scales group-major at `s` with `ld` rows a group;
++    /// a weight quantized in parts passes its first row's scale address and the whole matrix's rows.
++    pub fn quantize(f: cuda.Function, stream: cuda.Stream, x: u64, q: u64, s: u64, rows: usize, k: usize, ld: usize) !void {
++        var args: cuda.Args = .{};
++        for ([_]u64{ x, q, s }) |a| args.add(a);
++        for ([_]usize{ k, ld }) |v| args.add(@as(c_int, @intCast(v)));
++        try cuda.launch.launch(f, .{ .grid = .{ .x = @intCast(rows) }, .block = .{ .x = 256 } }, stream, &args);
++    }
++
++    /// y (rows, n) fp32 = x (rows, k) int8 · w (n, k) int8ᵀ, each K group at xs[g · rows + row] ·
++    /// ws[g · n + column].
++    pub fn gemm(t: Groups, f: cuda.Function, stream: cuda.Stream, xq: u64, xs: u64, wq: u64, ws: u64, y: u64, rows: usize, n: usize, k: usize) !void {
++        var maps: [2]TensorMap = undefined;
++        try encode(t.enc, &maps[0], xq, rows, k, prompt_block);
++        try encode(t.enc, &maps[1], wq, n, k, prompt_block);
++        var args: cuda.Args = .{};
++        args.add(maps[0]);
++        args.add(maps[1]);
++        for ([_]u64{ xs, ws, y }) |a| args.add(a);
++        for ([_]usize{ rows, n, k }) |v| args.add(@as(c_int, @intCast(v)));
++        const tiles = (rows + prompt_block - 1) / prompt_block * (n / prompt_block);
++        const blocks: u32 = @intCast(@min(2 * t.sms, tiles));
++        try cuda.launch.launch(f, .{ .grid = .{ .x = blocks }, .block = .{ .x = 256 }, .shared = prompt_shared }, stream, &args);
++    }
++};
++
++/// PromptTile's square tile and its Config::shared_bytes: 2 stages of (64 + 64) * 128 bytes, the
++/// slack and barriers — under the 48 KiB default, so two CTAs share an SM without an opt-in.
++const prompt_block = 64;
++const prompt_shared = 2 * (64 + 64) * 128 + 1024 + 2 * 16;
+diff --git a/zig/src/families/h3/prompt_cuda.zig b/zig/src/families/h3/prompt_cuda.zig
+index d39d04997..1d2d1d8fe 100644
+--- a/zig/src/families/h3/prompt_cuda.zig
++++ b/zig/src/families/h3/prompt_cuda.zig
+@@ -1,6 +1,7 @@
+ //! MiniMax-H3-Image's prompt stage on CUDA: Qwen3-VL's text model to layer 50, then condition_proj and
+-//! the refiner, all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products sum K in reference
+-//! order; refiner products use cuBLASLt with FP32 sums. Every value the reference stores in bf16 is rounded to bf16
++//! the refiner, all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products
++//! run int8 at a scale per 128 of K on our TMA product by default, or (`--bf16`) sum K in reference order;
++//! refiner products use cuBLASLt with FP32 sums. Every value the reference stores in bf16 is rounded to bf16
+ //! by a kernel before the next step reads it.
+ //! The text model's layer weights and the refiner's tensors live in one resident device arena, loaded
+ //! once by `loadResident`; a warm prompt moves no weights at all.
+@@ -15,13 +16,14 @@ pub const checkpoint = @import("checkpoint.zig");
+ pub const cache = @import("prompt_cache.zig");
+ const report = @import("report.zig");
+ const bf16_round = @import("bf16_round");
++const int8 = @import("cuda_int8.zig");
+ 
+ const D = rules.head_dim;
+ const mode_qwen: c_int = 0;
+ const mode_h3: c_int = 1;
+ 
+ const image align(16) = @embedFile("fatbin_h3_image_prompt").*;
+-const kernel_names = [_][:0]const u8{ "h3p_norm", "h3p_heads", "h3p_attention", "h3p_glu", "h3p_add", "h3p_scatter_add", "h3p_embed", "h3p_splice", "h3p_linear", "h3p_round" };
++const kernel_names = [_][:0]const u8{ "h3p_norm", "h3p_heads", "h3p_attention", "h3p_glu", "h3p_add", "h3p_scatter_add", "h3p_embed", "h3p_splice", "h3p_linear", "h3p_round", "h3p_quantize_groups", "h3p_gemm_int8_groups" };
+ 
+ /// A presentation's vision rows, as prompt.Vision: the tower's merged rows at its image pads in bf16,
+ /// and DeepStack's three blocks added after encoder layers 0 to 2.
+@@ -46,10 +48,13 @@ pub const LayerSet = rules.Layer(Tensor);
+ /// A refiner block's tensors in rules.Block field order.
+ pub const BlockSet = rules.Block(Tensor);
+ 
++/// A text layer's int8 products — q/k/v as one, gate/up as one — beside its fp32 norms.
++const Layer8 = struct { qkv: int8.Product, o: int8.Product, gu: int8.Product, down: int8.Product, norm1: u64, norm2: u64, q_norm: u64, k_norm: u64 };
++
+ /// The parts of the one device scratch a pass draws from, each part aligned to 256 bytes. Products
+ /// all write the shared fp32 `p` (they run one at a time on one stream), then `h3p_round` moves the
+ /// value to its bf16 buffer — out of place, so a round never writes what another thread still reads.
+-const EncodePart = enum { x, xn, p, qb, kb, vb, att, gb, ub, act, cos, sin, idx, vision, deep };
++const EncodePart = enum { x, xn, p, qb, kb, vb, att, gb, ub, act, cos, sin, idx, vision, deep, xq, xs };
+ const RefinePart = enum { x, xn, p, qkv, att, wide, act };
+ 
+ fn Scratch(comptime Part: type) type {
+@@ -90,7 +95,9 @@ fn asF32(a: std.mem.Allocator, bytes: []const u8) ![]f32 {
+ pub const Resident = struct {
+     arena: cuda.DeviceBuffer,
+     embed: u64,
++    /// One of the two is empty: bf16 layers (`--bf16`) or int8 ones.
+     layers: []rules.Layer(u64),
++    layers8: []Layer8,
+     cond_w: u64,
+     cond_b: u64,
+     final_norm: u64,
+@@ -124,15 +131,16 @@ fn fill(r: *Runner, a: std.mem.Allocator, at: *usize, arena: u64, shape: rules.S
+     return ptr;
+ }
+ 
+-/// Every tensor of the prompt stage onto the device once: `embed`, each layer's set from `layer`,
+-/// condition_proj's weight and bias, the final norm and each block's set from `block`, in one
+-/// arena whose slots the returned Resident names. The copies queue on the runner's stream ahead of
+-/// any encode or refine; the caller's mapped bytes may be dropped once the call returns.
++/// Every tensor of the prompt stage onto the device once: `embed`, each layer's set from `layer`
++/// (int8 products when `quantized`), condition_proj's pair, the final norm and each block's set from
++/// `block`, in one arena the returned Resident names. The copies queue on the runner's stream ahead
++/// of any encode; the caller's mapped bytes may be dropped once the call returns.
+ pub fn loadResident(
+     r: *Runner,
+     a: std.mem.Allocator,
+     g: rules.Text,
+     front: rules.Refiner,
++    quantized: bool,
+     embed: Tensor,
+     layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet,
+     ctx: *anyopaque,
+@@ -146,7 +154,10 @@ pub fn loadResident(
+     const front_specs = rules.frontTensors(front);
+     const block_specs = rules.blockTensors(front);
+     var total = slotOf(.{ g.vocab, g.hidden });
+-    for (layer_specs) |spec| total += slotOf(spec[2]) * g.layers;
++    if (quantized) {
++        for (productShapes(g)) |nk| total += std.mem.alignForward(usize, int8.Groups.bytes(nk[0], nk[1]), 256) * g.layers;
++        total += (2 * slotOf(.{ g.hidden, 0 }) + 2 * slotOf(.{ D, 0 })) * g.layers;
++    } else for (layer_specs) |spec| total += slotOf(spec[2]) * g.layers;
+     for (front_specs) |spec| total += slotOf(spec[2]);
+     for (block_specs) |spec| total += slotOf(spec[2]) * front.blocks;
+     var arena = try cuda.DeviceBuffer.alloc(&r.driver, total);
+@@ -157,7 +168,8 @@ pub fn loadResident(
+     var res: Resident = .{
+         .arena = arena,
+         .embed = undefined,
+-        .layers = try a.alloc(rules.Layer(u64), g.layers),
++        .layers = try a.alloc(rules.Layer(u64), if (quantized) 0 else g.layers),
++        .layers8 = try a.alloc(Layer8, if (quantized) g.layers else 0),
+         .cond_w = undefined,
+         .cond_b = undefined,
+         .final_norm = undefined,
+@@ -165,11 +177,12 @@ pub fn loadResident(
+     };
+     var at: usize = 0;
+     res.embed = try fill(r, a, &at, res.arena.ptr, .{ g.vocab, g.hidden }, embed);
+-    for (0..g.layers) |li| {
++    if (quantized) try loadLayers8(r, a, g, &at, res.arena.ptr, layer, ctx, res.layers8);
++    for (res.layers, 0..) |*l, li| {
+         const set = try layer(ctx, li);
+         inline for (comptime std.meta.fieldNames(LayerSet), layer_specs) |field, spec| {
+             std.debug.assert(std.mem.eql(u8, field, spec[0]));
+-            @field(res.layers[li], field) = try fill(r, a, &at, res.arena.ptr, spec[2], @field(set, field));
++            @field(l, field) = try fill(r, a, &at, res.arena.ptr, spec[2], @field(set, field));
+         }
+     }
+     const front_tensors: [3]Tensor = .{ cond_w, cond_b, final_norm };
+@@ -186,6 +199,30 @@ pub fn loadResident(
+     return res;
+ }
+ 
++/// The int8 products' (n, k): q/k/v fused, o, gate/up fused, down.
++fn productShapes(g: rules.Text) [4][2]usize {
++    const qh = g.heads * D;
++    return .{ .{ qh + 2 * g.kv_heads * D, g.hidden }, .{ g.hidden, qh }, .{ 2 * g.ffn, g.hidden }, .{ g.hidden, g.ffn } };
++}
++
++/// Each text layer's products quantized into the arena at a scale per 128 of K, its norms beside them.
++fn loadLayers8(r: *Runner, a: std.mem.Allocator, g: rules.Text, at: *usize, arena: u64, layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet, ctx: *anyopaque, out: []Layer8) !void {
++    const nk = productShapes(g);
++    for (nk) |s| try int8.Groups.checkGeometry(s[0], s[1]);
++    var staging = try cuda.DeviceBuffer.alloc(&r.driver, @max(nk[0][0], nk[2][0]) * g.hidden * 2);
++    defer {
++        cuda.completion.drain(&r.driver, r.stream, "h3 prompt cuda: a quantize did not drain");
++        staging.free();
++    }
++    const f = r.function("h3p_quantize_groups");
++    for (out, 0..) |*l, li| {
++        const set = try layer(ctx, li);
++        var p: [4]int8.Product = undefined;
++        inline for (&p, nk, .{ .{ set.q, set.k, set.v }, .{set.o}, .{ set.gate, set.up }, .{set.down} }) |*to, s, parts| to.* = try int8.Groups.load(f, r, staging.ptr, arena, at, s, parts);
++        l.* = .{ .qkv = p[0], .o = p[1], .gu = p[2], .down = p[3], .norm1 = try fill(r, a, at, arena, .{ g.hidden, 0 }, set.norm1), .norm2 = try fill(r, a, at, arena, .{ g.hidden, 0 }, set.norm2), .q_norm = try fill(r, a, at, arena, .{ D, 0 }, set.q_norm), .k_norm = try fill(r, a, at, arena, .{ D, 0 }, set.k_norm) };
++    }
++}
++
+ /// One product's plan: cuBLASLt bf16 in, fp32 sums, fp32 out. The bias variant's plan is separate so a
+ /// fused fp32 epilogue is picked only where a bias exists; bf16 bias values convert exactly.
+ const Products = struct {
+@@ -277,6 +314,24 @@ pub const Runner = struct {
+         try cuda.launch.launch(r.function(name), .{ .grid = grid, .block = .{ .x = threads } }, r.stream, args);
+     }
+ 
++    /// The int8 layer's input-row scratch: `rows` quantized into `xq`, their group scales at `xs`.
++    const Quantized = struct { groups: int8.Groups, xq: u64, xs: u64, rows: usize };
++
++    /// y (rows, n) fp32 = x (rows, k) bf16 · wᵀ: an int8 `w` quantizes x at a scale per 128 of K for
++    /// the TMA product; a bf16 one (a device pointer) runs h3p_linear.
++    fn product(r: *const Runner, q: Quantized, x: u64, w: anytype, y: u64, n: usize, k: usize) !void {
++        if (@TypeOf(w) == u64) return r.linear(x, w, y, q.rows, n, k);
++        errdefer cuda.completion.drain(&r.driver, r.stream, "h3 prompt cuda: an int8 product did not drain");
++        try int8.Groups.quantize(r.function("h3p_quantize_groups"), r.stream, x, q.xq, q.xs, q.rows, k, q.rows);
++        try q.groups.gemm(r.function("h3p_gemm_int8_groups"), r.stream, q.xq, q.xs, w.q, w.s, y, q.rows, n, k);
++    }
++
++    /// `product`, then its fp32 rows rounded into the bf16 `to`.
++    fn projected(r: *const Runner, q: Quantized, x: u64, w: anytype, p: u64, to: u64, n: usize, k: usize) !void {
++        try r.product(q, x, w, p, n, k);
++        try r.round(p, to, q.rows * n);
++    }
++
+     /// The driver, its primary context, the prompt kernels and the cuBLASLt plans; all freed by deinit.
+     /// Heap-made: the stream, events and buffers each hold `&r.driver`, which a returned copy would move.
+     pub fn init(gpa: std.mem.Allocator) !*Runner {
+@@ -312,7 +367,7 @@ pub const Runner = struct {
+     /// `bytes` through the two pinned stages onto `dst` in 64 MiB windows, each stage waited only when
+     /// its turn comes again, so a copy runs while the other window is filled; the uploads order ahead
+     /// of later work on the runner's stream.
+-    fn copy(r: *Runner, bytes: []const u8, dst: u64) !void {
++    pub fn copy(r: *Runner, bytes: []const u8, dst: u64) !void {
+         var done: usize = 0;
+         var turn: usize = 0;
+         while (done < bytes.len) {
+@@ -388,22 +443,25 @@ pub const Runner = struct {
+ 
+     /// The text model's rows leaving its last run layer [T, hidden] bf16 for `ids` at M-RoPE positions
+     /// `pos`, vision rows spliced at the pads when given. `res` holds the weights on the device, so
+-    /// a warm call moves none — only the rotary tables, ids and vision rows cross.
++    /// a warm call moves none — only the rotary tables, ids and vision rows cross. Its int8 layers run
++    /// q/k/v and gate/up as one product each; every product's fp32 rows round as the bf16 path's do.
+     pub fn encode(r: *Runner, a: std.mem.Allocator, g: rules.Text, res: *const Resident, ids: []const u32, pos: []const [3]i32, vision: ?Vision, out: []u16) !void {
+         const T = ids.len;
+         const H = g.hidden;
+         const qh = g.heads * D;
+         const kvh = g.kv_heads * D;
+-        if (T == 0 or pos.len != T or out.len != T * H or g.layers == 0 or res.layers.len < g.layers) return error.H3PromptRows;
++        if (T == 0 or pos.len != T or out.len != T * H or g.layers == 0 or @max(res.layers.len, res.layers8.len) < g.layers) return error.H3PromptRows;
+         const n = if (vision) |v| try v.check(T, H) else 0;
++        const qkv_n = qh + 2 * kvh;
+         var sizes = std.enums.EnumArray(EncodePart, usize).initFill(T * H * 2);
+-        // `p` holds one product's fp32 rows at a time; the rest are bf16 buffers at their width
+-        sizes.set(.p, T * @max(H, @max(qh, g.ffn)) * 4);
+-        sizes.set(.qb, T * qh * 2);
++        // `p` holds one product's fp32 rows at a time; the rest are bf16 buffers at their width,
++        // `qb` and `gb` wide enough for the int8 layer's fused q/k/v and gate/up rows
++        sizes.set(.p, T * @max(H, @max(qkv_n, 2 * g.ffn)) * 4);
++        sizes.set(.qb, T * qkv_n * 2);
+         sizes.set(.kb, T * kvh * 2);
+         sizes.set(.vb, T * kvh * 2);
+         sizes.set(.att, T * qh * 2);
+-        sizes.set(.gb, T * g.ffn * 2);
++        sizes.set(.gb, T * 2 * g.ffn * 2);
+         sizes.set(.ub, T * g.ffn * 2);
+         sizes.set(.act, T * g.ffn * 2);
+         sizes.set(.cos, T * 64 * 4);
+@@ -411,6 +469,8 @@ pub const Runner = struct {
+         sizes.set(.idx, (T + n) * 4);
+         sizes.set(.vision, n * H * 2);
+         sizes.set(.deep, 3 * n * H * 2);
++        sizes.set(.xq, T * @max(H, @max(qh, g.ffn)));
++        sizes.set(.xs, T * @max(H, @max(qh, g.ffn)) / 128 * 4);
+         var s = try Scratch(EncodePart).make(&r.driver, sizes);
+         defer s.buf.free();
+         errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt encode did not drain");
+@@ -444,29 +504,28 @@ pub const Runner = struct {
+         defer ended.deinit();
+         errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt timing did not drain");
+         try begun.record(r.stream);
+-        for (0..g.layers) |li| {
+-            const w = res.layers[li];
++        const groups: int8.Groups = if (res.layers8.len > 0) .{ .enc = try int8.encoder(&r.driver), .sms = @intCast(try r.ctx.attribute(.multiprocessor_count)) } else undefined;
++        const q: Quantized = .{ .groups = groups, .xq = s.at(.xq), .xs = s.at(.xs), .rows = T };
++        inline for (.{ res.layers8, res.layers }) |layers| for (layers[0..@min(layers.len, g.layers)], 0..) |w, li| {
++            // int8 layers project q/k/v and gate/up as one fused product each, so their rows interleave
++            const fused = @TypeOf(w) == Layer8;
++            const row: [3]usize = if (fused) .{ qkv_n, qkv_n, qkv_n } else .{ qh, kvh, kvh };
++            const kv: [2]u64 = if (fused) .{ s.at(.qb) + qh * 2, s.at(.qb) + (qh + kvh) * 2 } else .{ s.at(.kb), s.at(.vb) };
++            const up = if (fused) s.at(.gb) + g.ffn * 2 else s.at(.ub);
++            const gu_row = if (fused) 2 * g.ffn else g.ffn;
+             try r.norm(s.at(.x), w.norm1, s.at(.xn), T, H, g.eps, mode_qwen);
+-            try r.linear(s.at(.xn), w.q, s.at(.p), T, qh, H);
+-            try r.round(s.at(.p), s.at(.qb), T * qh);
+-            try r.linear(s.at(.xn), w.k, s.at(.p), T, kvh, H);
+-            try r.round(s.at(.p), s.at(.kb), T * kvh);
+-            try r.linear(s.at(.xn), w.v, s.at(.p), T, kvh, H);
+-            try r.round(s.at(.p), s.at(.vb), T * kvh);
+-            try r.heads(s.at(.qb), s.at(.kb), w.q_norm, w.k_norm, .{ s.at(.cos), s.at(.sin) }, g.heads, g.kv_heads, qh, kvh, D, T, g.eps, mode_qwen);
+-            try r.attention(s.at(.qb), s.at(.kb), s.at(.vb), s.at(.att), T, g.heads, g.kv_heads, qh, kvh, kvh, D, true);
+-            try r.linear(s.at(.att), w.o, s.at(.p), T, H, qh);
++            if (fused) try r.projected(q, s.at(.xn), w.qkv, s.at(.p), s.at(.qb), qkv_n, H) else inline for (.{ w.q, w.k, w.v }, .{ s.at(.qb), kv[0], kv[1] }, row) |m, to, width| try r.projected(q, s.at(.xn), m, s.at(.p), to, width, H);
++            try r.heads(s.at(.qb), kv[0], w.q_norm, w.k_norm, .{ s.at(.cos), s.at(.sin) }, g.heads, g.kv_heads, row[0], row[1], D, T, g.eps, mode_qwen);
++            try r.attention(s.at(.qb), kv[0], kv[1], s.at(.att), T, g.heads, g.kv_heads, row[0], row[1], row[2], D, true);
++            try r.product(q, s.at(.att), w.o, s.at(.p), H, qh);
+             try r.add(s.at(.x), s.at(.p), T * H);
+             try r.norm(s.at(.x), w.norm2, s.at(.xn), T, H, g.eps, mode_qwen);
+-            try r.linear(s.at(.xn), w.gate, s.at(.p), T, g.ffn, H);
+-            try r.round(s.at(.p), s.at(.gb), T * g.ffn);
+-            try r.linear(s.at(.xn), w.up, s.at(.p), T, g.ffn, H);
+-            try r.round(s.at(.p), s.at(.ub), T * g.ffn);
+-            try r.glu(s.at(.gb), s.at(.ub), s.at(.act), T, g.ffn, g.ffn, g.ffn, mode_qwen);
+-            try r.linear(s.at(.act), w.down, s.at(.p), T, H, g.ffn);
++            if (fused) try r.projected(q, s.at(.xn), w.gu, s.at(.p), s.at(.gb), 2 * g.ffn, H) else inline for (.{ w.gate, w.up }, .{ s.at(.gb), up }) |m, to| try r.projected(q, s.at(.xn), m, s.at(.p), to, g.ffn, H);
++            try r.glu(s.at(.gb), up, s.at(.act), T, g.ffn, gu_row, gu_row, mode_qwen);
++            try r.product(q, s.at(.act), w.down, s.at(.p), H, g.ffn);
+             try r.add(s.at(.x), s.at(.p), T * H);
+             if (n > 0 and li < 3) try r.indexed("h3p_scatter_add", s.at(.x), s.at(.deep) + li * n * H * 2, s.at(.idx) + T * 4, n, H);
+-        }
++        };
+         try ended.record(r.stream);
+         try ended.synchronize();
+         r.gpu = @as(f64, try cuda.Event.elapsedMs(begun, ended)) / 1000;
+diff --git a/zig/tests/h3_image_prompt_cuda.zig b/zig/tests/h3_image_prompt_cuda.zig
+index 04d58dcd4..9e99ebf0f 100644
+--- a/zig/tests/h3_image_prompt_cuda.zig
++++ b/zig/tests/h3_image_prompt_cuda.zig
+@@ -1,6 +1,6 @@
+ //! tf-h3-image-prompt-cuda: MiniMax-H3-Image's prompt stage on CUDA, the same case
+-//! tf-h3-image-prompt(-host) writes — Qwen3-VL's text to layer 50 and the two-block refiner on the
+-//! GPU, or its synthetic selftest against the float64 host reference.
++//! tf-h3-image-prompt(-host) writes — Qwen3-VL's text to layer 50 (int8 products, bf16 with --bf16)
++//! and the two-block refiner on the GPU, or its synthetic selftest against the float64 host reference.
+ const std = @import("std");
+ const hp = @import("h3_prompt_cuda");
+ const tokenizer = @import("tokenizer");
+@@ -18,8 +18,8 @@ const match = @import("h3_image_match.zig");
+ const prompt_cache = hp.cache;
+ 
+ const usage =
+-    \\usage: tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
+-    \\       tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR --serve
++    \\usage: tf-h3-image-prompt-cuda [--bf16] TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
++    \\       tf-h3-image-prompt-cuda [--bf16] TEXT_ENCODER_DIR MODEL_DIR --serve
+     \\       tf-h3-image-prompt-cuda selftest [WORK_DIR]
+     \\  TEXT_ENCODER_DIR  MiniMax-H3's text_encoder/ (Qwen3-VL): config.json, its index and shards
+     \\  MODEL_DIR         the MiniMax-H3-Image folder: model_index.json, tokenizer/, transformer/
+@@ -33,6 +33,8 @@ const usage =
+     \\                    of stdin per picture, each answered `done OUT` or `failed OUT` on stdout;
+     \\                    a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256); with H3_PROMPT_CHECK=1
+     \\                    each encode's refiner rows must reach cosine 0.999 against the host reference, else failed
++    \\  --bf16            the text encoder's products in bf16, summed in reference order, instead of int8 at a
++    \\                    scale per 128 of K
+     \\  selftest          the GPU kernels on a tiny synthetic checkpoint against the float64 host reference;
+     \\                    WORK_DIR (default under TMPDIR) holds a new folder with the checkpoint while it runs
+     \\Exit 0: done or every gate passed; 1: a gate failed.
+@@ -41,7 +43,9 @@ const usage =
+ pub fn main(init: std.process.Init) !u8 {
+     const a = init.arena.allocator();
+     const gpa = init.gpa;
+-    const args = try init.minimal.args.toSlice(a);
++    const all = try init.minimal.args.toSlice(a);
++    const bf16 = all.len >= 2 and std.mem.eql(u8, all[1], "--bf16");
++    const args = if (bf16) try std.mem.concat(a, [:0]const u8, &.{ all[0..1], all[2..] }) else all;
+     if (args.len >= 2 and std.mem.eql(u8, args[1], "selftest") and args.len <= 3) {
+         const tmp = init.environ_map.get("TMPDIR") orelse "/tmp";
+         const dir = if (args.len == 3) args[2] else try std.fs.path.join(a, &.{ tmp, "tf-h3-image-prompt-cuda-selftest" });
+@@ -52,7 +56,7 @@ pub fn main(init: std.process.Init) !u8 {
+         std.debug.print("{s}", .{usage});
+         return 2;
+     }
+-    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, args[1], args[2]);
++    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, args[1], args[2], !bf16);
+     defer loaded.deinit(gpa);
+     if (serving) return serve(init, gpa, &loaded);
+     try pictureRun(init.io, a, &loaded, args[3], args[4], args[5..]);
+@@ -74,7 +78,7 @@ const Loaded = struct {
+     cache: prompt_cache.Cache,
+     /// H3_PROMPT_CHECK=1: each encode's refiner rows checked against the host reference (`checkRefine`).
+     check: bool,
+-    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
++    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8, quantized: bool) !Loaded {
+         // the folder and its tokenizer, checked as the host prompt path checks them
+         const enc = try rules.checkEncoder(a, try read(io, a, &.{ encoder_dir, "config.json" }));
+         _ = try picture.checkIndex(a, try read(io, a, &.{ model_dir, "model_index.json" }));
+@@ -98,8 +102,8 @@ const Loaded = struct {
+         const started = seconds();
+         var layer_ctx: LayerCtx = .{ .shards = &shards, .g = enc.text, .prefix = prefix };
+         var block_ctx: BlockCtx = .{ .shards = &front_shards, .g = front };
+-        const res = try hp.loadResident(runner, a, enc.text, front, embed, layerOf, &layer_ctx, blockOf, &block_ctx, front_w.cond_w, front_w.cond_b, front_w.final_norm);
+-        std.debug.print("{d:.2} GiB of prompt weights resident in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), seconds() - started });
++        const res = try hp.loadResident(runner, a, enc.text, front, quantized, embed, layerOf, &layer_ctx, blockOf, &block_ctx, front_w.cond_w, front_w.cond_b, front_w.final_norm);
++        std.debug.print("{d:.2} GiB of prompt weights resident ({s}) in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), if (quantized) "int8" else "bf16", seconds() - started });
+         for (shards.folder.files.values()) |*file| file.evict();
+         for (front_shards.folder.files.values()) |*file| file.evict();
+         const cache = prompt_cache.Cache.init(gpa, prompt_cache.Cache.budgetOf(env.get("H3_PROMPT_CACHE")));
+@@ -449,7 +453,9 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
+     const prefix = "model.language_model.";
+     var bits_layer: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
+     var bits_front: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
+-    var res = try hp.loadResident(runner, a, g, f, try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})), bitsLayer, &bits_layer, bitsBlock, &bits_front, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"));
++    const front_bits: [3]hp.Tensor = .{ try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight") };
++    const embed_bits = try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix}));
++    var res = try hp.loadResident(runner, a, g, f, false, embed_bits, bitsLayer, &bits_layer, bitsBlock, &bits_front, front_bits[0], front_bits[1], front_bits[2]);
+     defer res.deinit();
+     const enc = try a.alloc(u16, T * g.hidden);
+     const started = seconds();
+@@ -485,6 +491,17 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
+     std.debug.print("encoded in {d:.3} s; again, byte for byte the same: {}\n", .{ enc_s, same });
+     failed = failed or !same;
+ 
++    // the default int8 products, at a scale per 128 of K: near the oracle's rows, and repeatable
++    var res8 = try hp.loadResident(runner, a, g, f, true, embed_bits, bitsLayer, &bits_layer, bitsBlock, &bits_front, front_bits[0], front_bits[1], front_bits[2]);
++    defer res8.deinit();
++    const enc8 = try a.alloc(u16, enc.len);
++    try runner.encode(a, g, &res8, ids, pos, null, enc8);
++    const m8 = match.match(enc8, enc_ref, g.hidden);
++    match.report("text encoder rows, int8 products at a scale per 128 of K", m8, m8.cosine >= 0.999);
++    try runner.encode(a, g, &res8, ids, pos, null, again);
++    std.debug.print("the int8 encode again, byte for byte the same: {}\n", .{std.mem.eql(u16, enc8, again)});
++    failed = failed or m8.cosine < 0.999 or !std.mem.eql(u16, enc8, again);
++
+     // an edit's rows: a 6-pad vision block spliced at the marks, DeepStack's blocks scattered after
+     // layers 0 to 2 — the full run, then each part alone so a failure names splice, scatter or layer growth
+     failed = !try withPicture(runner, &res, a, rand, &tiny) or failed;
