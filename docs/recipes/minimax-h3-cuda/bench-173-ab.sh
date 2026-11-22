@@ -13,7 +13,8 @@ here=docs/recipes/minimax-h3-cuda
 patch_file=$here/bench-173-base.patch
 model=/assets/drama3-pilot/models/MiniMax-H3-Image
 bin=/work/out/tensorfold-cuda-$(git -c safe.directory='*' rev-parse HEAD) # each phase's build overwrites it
-prompts="/assets/drama3-pilot/h3-image-pilot/prompt.txt $here/prompts/harbour.txt $here/prompts/meadow.txt $here/prompts/steam.txt"
+prompts="/assets/drama3-pilot/h3-image-pilot/prompt.txt $here/prompts/greenhouse.txt $here/prompts/tram.txt $here/prompts/trench.txt"
+export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} # --bf16's cuBLASLt
 status=0
 cases() { # cases DIR [--bf16]: the phase's freshly built prompt tool writes each prompt's case, one process each
     mkdir -p "$1"
