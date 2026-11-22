@@ -372,8 +372,8 @@ __device__ __forceinline__ void h3_head_store(const uint32_t (&words)[4][4], con
 // ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
 // fp32 rows are written unrounded.
 // HEADS is the qkv product whose N holds q, then k, then v in 128-column heads: each head tile's
-// warp stages its row's head in shared memory, reads back its own quarter and applies h3_heads'
-// norm and rotary, so the separate heads pass is gone.
+// warp gathers its row's head by shuffles and applies h3_heads' norm and rotary in registers, so
+// the separate heads pass is gone.
 template <typename Config, bool SWIGLU, bool GROUPED = false, bool HEADS = false, typename Out = std::conditional_t<GROUPED, float, __nv_bfloat16>>
 __device__ __forceinline__ void
     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
