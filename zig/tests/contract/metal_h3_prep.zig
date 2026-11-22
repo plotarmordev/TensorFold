@@ -244,6 +244,19 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
             self.outs = rows * heads * 128;
             return true;
         },
+        .far_pool => {
+            // K then V, each [heads, far_slots, 128], in one output pooled in place past `far_tiles`
+            const n = heads * t.far_slots * 128;
+            const lo: f64 = if (stress) -16 else -2;
+            const kv = try self.values(2 * n, lo, -lo, fill, rng, true, true);
+            const fresh = try al.alloc(u16, kv.len);
+            for (fresh, kv) |*o, v| o.* = c.toBf16(@floatCast(v));
+            self.in = .{ .a = kv, .ints = &[_]i32{ t.far_first, t.far_tiles }, .rows = s.rows, .n = s.n, .k = s.k, .heads = heads, .slots = t.far_slots };
+            try self.output(kv.len * 2);
+            self.fresh = std.mem.sliceAsBytes(fresh);
+            self.outs = kv.len;
+            return true;
+        },
     }
     self.outs = switch (self.which) {
         .rows_in, .head_norm, .swiglu, .swiglu_gate_first, .modulation => s.rows * s.n,
@@ -254,7 +267,7 @@ pub fn prepare(self: *H3, s: c.Shape, fill: g.Fill, rng: std.Random) !bool {
         .pool => 3 * heads * s.rows * 128,
         .tile_scores => heads * s.rows * s.rows,
         .coarse => heads * s.rows * 128,
-        .attention => unreachable,
+        .attention, .far_pool => unreachable,
     };
     return true;
 }
@@ -352,6 +365,14 @@ pub fn launch(self: *H3, e: mtl.ComputeEncoder) !void {
             e.setValue([1]f32{@floatCast(self.in.scale)}, 7);
             bind(self, e, 6, 8);
             e.dispatchGroups(mtl.Size.of(s.rows, heads, 1), mtl.Size.of(256, 1, 1));
+        },
+        .far_pool => {
+            // V's byte offset: K's bf16 values are half of `a`'s count, two bytes each
+            const v_at = self.in.a.len;
+            e.setBuffer(self.bufs[0].buf, self.bufs[0].off, 0);
+            e.setBuffer(self.bufs[0].buf, self.bufs[0].off + v_at, 1);
+            e.setValue([1]i32{t.far_first}, 2);
+            e.dispatchGroups(mtl.Size.of(s.rows, heads, 1), mtl.Size.of(64, 1, 1));
         },
     }
 }

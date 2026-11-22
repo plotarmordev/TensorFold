@@ -15,7 +15,8 @@ fn noSums(_: c.Shape) usize {
 
 const rule = "a NaN score ranks as -inf, ties go to the lower tile, so every row keeps exactly n tiles";
 
-/// Rows: query video tiles; n: tiles kept a row; k: video tiles; FastH3's 280 video tiles at 864x480 served.
+/// Rows: query video tiles; n: tiles kept a row; k: video tiles. FastH3's 280 video tiles at 864x480 served, and
+/// MiniMax-H3-Image's `--routed-steps` fifth of its 64 picture tiles at 2048x2048 and 256 at 4096x4096.
 pub fn spec() c.Spec {
     return .{
         .name = "cuda h3 tile top-k h3_topk",
@@ -24,7 +25,7 @@ pub fn spec() c.Spec {
         .out = .raw,
         .nan = .{ .stated = rule },
         .tiles = .{ .{}, .{}, .{ .size = 32 } },
-        .served = &.{ .{ .rows = 280, .n = 56, .k = 280 }, .{ .rows = 8, .n = 3, .k = 12 } },
+        .served = &.{ .{ .rows = 280, .n = 56, .k = 280 }, .{ .rows = 64, .n = 13, .k = 64 }, .{ .rows = 256, .n = 52, .k = 256 }, .{ .rows = 8, .n = 3, .k = 12 } },
     };
 }
 

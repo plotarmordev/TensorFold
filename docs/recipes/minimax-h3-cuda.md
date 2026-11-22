@@ -50,8 +50,9 @@ MiniMax-H3-Image's `transformer/` uses the clip model's base block names, and th
 `attn.to_gate_compress` from it (`h3.zig` `baseBlock`): its attention is dense, so no routing gate is needed.
 `tf_h3_open` loads such a checkpoint with q, k and v alone in each block's first product (`tf_h3_shape` is
 unchanged). The release fuses each head's q, k and v rows (`block.zig`); the load stacks them as `h3_heads` reads
-them, all heads' q, then k, then v. A forward with `keep` set is refused with `BadH3Ungated` and
-`tf_h3_set_weight` of the gate with `NoGate`, so neither reads past the smaller buffer.
+them, all heads' q, then k, then v. A forward with `keep` set routes without the pooled branch: each video tile
+attends the prefix and its `keep` top-k tiles and the rest are dropped (card 186's `--routed-steps`);
+`tf_h3_set_weight` of the gate is refused with `NoGate`, so nothing reads past the smaller buffer.
 
 The block arithmetic is the clip model's. Three tools build a picture on a Spark with no Metal and no PyTorch, each
 writing the file the matching Metal tool writes (docs/recipes/minimax-h3-image-metal.md), so any stage swaps:
@@ -723,7 +724,101 @@ byte-identical too.
 scales on them at 28.02 dB and 4.27, below the gates, and `160c5d8b`'s 256-wide rotation in mmh3's ConvRot
 style left the picture at 28.14 dB. Folding the same scales in registers changes only the fp32 order of a
 sum that is otherwise exact, so it should give the same picture (inferred, not run). This card ran no picture
-for them.
+for them; card 176 below does, at a scale per 128 of K, and reverts it.
+
+### Card 176: `out` and `fc2` int8 on the TMA product at a scale per 128 of K — measured and reverted
+
+The card ran `out` and `fc2` on card 146's product too, beside the default's int8 `qkvc` and `fc1`.
+`h3_quantize_blocks` quantized each 128-wide rotated chunk of K at that chunk's own absmax, one warp per chunk,
+and wrote the scales block-major (`S[c·M + row]`). The weights got the same layout. `h3_gemm_int8_tma_blocks`
+(`Epilogue::blocks`) folded every K block's exact int32 sums into fp32 at that block's two scales, held per lane
+in registers, before the next block's MMAs, on a 128×128 tile to stay under the register limit. No int32 plane
+left the registers, which was card 139's cost. The code is at `8027eb54` (behind `--int8-blocks`) for a retry.
+
+Contract and stop rule: `bench-146-contract.sh` at `095874ff` on TOP (GB10, driver 580.173.02). All five int8
+kernels passed gates 1-4, and the planted control went red at shapes. The per-block product's sums stayed within
+the fp32 fold's bound at K = 14,336, where fp16 sums would miss 3× and bf16 sums 26.3×. Gate 5's live sm_121
+limits read 236 registers for the product and 28 for `h3_quantize_blocks`. The same job's microbench timed the
+per-row `h3_gemm_int8_tma` on these shapes: `out` 1.68 ms against cuBLASLt's 2.09 ms (1.24×) and `fc2` 3.66 ms
+against 4.22 ms (1.15×).
+
+The picture A/B ran at `095874ff` with the per-block path as the default (job `top-639918032e5e`,
+22 November, `H3_PROFILE=1`): "this card" against "main" (`out`/`fc2` in bf16), with `--bf16` as the
+reference. Each side ran the fox cold and three prompts no earlier job used warm (glacier, bakery, orchard).
+Every selftest passed.
+
+| 2048² | wall s | transformer s | `attention out` s | `mlp out` s |
+|---|---:|---:|---:|---:|
+| this card, fox (cold) | 152.67 | 38.01 | 0.83 | 1.74 |
+| this card, glacier | 13.36 | 10.09 | 0.85 | 1.78 |
+| this card, bakery | 13.40 | 10.02 | 0.85 | 1.76 |
+| this card, orchard | 13.36 | 10.01 | 0.85 | 1.76 |
+| main, fox (cold) | 150.81 | 38.54 | 1.16 | 2.27 |
+| main, glacier | 14.07 | 10.77 | 1.16 | 2.28 |
+| main, bakery | 14.25 | 10.87 | 1.15 | 2.29 |
+| main, orchard | 14.11 | 10.80 | 1.16 | 2.27 |
+| `--bf16`, fox (cold) | 156.27 | 43.46 | 1.14 | 2.27 |
+| `--bf16`, glacier | 18.39 | 15.03 | 1.15 | 2.49 |
+| `--bf16`, bakery | 18.45 | 15.03 | 1.16 | 2.42 |
+| `--bf16`, orchard | 18.51 | 15.12 | 1.15 | 2.42 |
+
+Warm runs are 0.77 s faster (13.37 against 14.14 s), and so is the transformer (10.04 against 10.81 s).
+Every other stage stays within 0.04 s. Gates against the same job's `--bf16` picture (latent cosine ≥ 0.99,
+≥ 28.2 dB, mean ≤ 4.1):
+
+| picture | this card | main |
+|---|---|---|
+| glacier | 0.9974, 32.55 dB, 3.49 — pass | 0.9964, 30.48 dB, 3.78 — pass |
+| bakery | 0.9824, 23.42 dB, 7.77 — fail | 0.9825, 23.25 dB, 7.91 — fail |
+| orchard | 0.9861, 23.17 dB, 8.17 — fail | 0.9824, 22.37 dB, 8.40 — fail |
+| fox, against episode 1's Mac latent and PNG | 0.9910, 26.26 dB, 5.17 — fail | 0.9952, 28.69 dB, 4.01 — pass |
+
+Measured, not kept: per-128 scales fail the gates on bakery and orchard. In job `top-639918032e5e` I read
+bakery at 0.9824, 23.42 dB, 7.77 and orchard at 0.9861, 23.17 dB, 8.17, and the fox fails too.
+
+I measured the fox locally on the fetched pictures with `h3_image_compare.py` against
+`h3-image-runs/34/t2i-2048.latent.f32` and `fox-2048-seed42.png`. The same job's `--bf16` fox measured 0.9958,
+28.71 dB and 3.61 there. On the unseen prompts the card's PSNR and mean diff are at or above main's, and its
+cosine is within 0.0001 of main's on bakery. The two failures are main's too: per-row int8 on `qkvc`/`fc1`
+already moves those pictures past the gates. The fox is the exception. It misses episode 1's gates where main
+holds them, as card 139's per-256 scales did (28.02 dB, 4.27). By the recipe's rule since cards 129 and 139,
+0.77 s does not buy a default below the gates. An opt-in that fails the gates has no use either, so the code
+is reverted and `out` and `fc2` stay bf16.
+
+The review's rerun at `8027eb54` (per-block behind `--int8-blocks`, same three phases) did not complete: the
+`--bf16` reference hit `CUDA_ERROR_OUT_OF_MEMORY` after its cold run and the job exited 1. No speed or quality
+figure here rests on it. A scale per 64 or 32 of K would need a fold inside the 128-deep K block; it stays untried.
+
+### Card 173: the prompt encoder in int8 at a scale per 128 of K, on our own TMA product — kept
+
+Qwen3-VL's 50 text layers run their q/k/v (one product), o, gate/up (one product) and down as int8 with one scale per
+128 of K on both operands: weights quantized once at load (`h3p_quantize_groups`, resident 26.35 against 48.35 GiB),
+each product's activation rows quantized the same way, and card 146's TMA kernel in its `GROUPED` mode
+(`h3p_gemm_int8_groups`, 64 × 64 tiles) folding each K block's exact int32 sums into fp32 at its two scales. Card
+143's per-row fold was the only one cuBLASLt's int32 C allows; finer groups need our own product. `--bf16` keeps
+main's encoder, and the selftest holds the int8 rows within cosine 0.999 of the float64 oracle and repeatable byte for byte.
+
+[`bench-173-ab.sh`](minimax-h3-cuda/bench-173-ab.sh) at `7b6a60a0` (job `top-35c84dfda642`, GB10, driver
+580.173.02, 22 November, `H3_PROFILE=1`) ran the bench on that commit, then on `bench-173-base.patch`
+reverse-applied (main's bf16 encoder): the pilot fox cold, then the unseen canal, orchard and foundry prompts (35,
+37 and 42 tokens) warm, seed 42, 2048², six steps. Every selftest passed on both sides, and `--bf16`'s four prompt
+cases were byte-identical to main's.
+
+| 2048², seed 42 | wall s | prompt s | encoder s (GPU) | transformer s | decoder s | peak MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| int8 groups, fox cold | 141.3 | 0.3 | 0.14 | 38.0 | 1.5 | 64,143 |
+| int8 groups, canal | 12.1 | 0.2 | 0.15 | 10.7 | 1.2 | 55,498 |
+| int8 groups, orchard | 12.2 | 0.2 | 0.15 | 10.9 | 1.2 | 55,497 |
+| int8 groups, foundry | 12.2 | 0.2 | 0.15 | 10.8 | 1.2 | 55,502 |
+| main (bf16), fox cold | 148.2 | 1.2 | 1.04 | 38.9 | 1.9 | 86,666 |
+| main (bf16), canal | 13.9 | 1.9 | 1.89 | 10.8 | 1.2 | 78,020 |
+| main (bf16), orchard | 14.2 | 2.0 | 1.94 | 10.8 | 1.4 | 78,018 |
+| main (bf16), foundry | 14.8 | 2.5 | 2.49 | 11.1 | 1.2 | 78,021 |
+
+The fox's `2048-1` against episode 1's Mac latent and PNG: **latent cosine 0.9954, PSNR 29.11 dB, mean diff 3.83**,
+all three gates cleared (0.99, 28.2 dB, 4.1); main's side of the same job measured 0.9952, 28.69 dB and 4.015. The
+warm prompt stage is 0.2 s on every unseen prompt, under the card's 0.5 s bar, against main's 1.9–2.5 s, so int8 groups
+are the encoder's default.
 
 ### Card 143: the prompt encoder resident in int8 per-row products — measured and reverted
 
@@ -815,6 +910,37 @@ memory; mma.sync fragments in registers are its next step.
 The job exited 1 on four gate failures in kernels this card leaves unchanged: `h3d_embed` shapes 1.14, `h3d_rms_norm`
 shapes 1.11, `h3d_layer_norm` shapes 1.36 plus its stress sums, and `h3d_attention` shapes 1.81 plus its stress sums.
 
+**Card 175: `h3d_flash`'s tiles in registers.** The kernel keeps card 144's grid (one (tile, head) and 64 queries
+a block, 4 warps of 16 queries, 64-key chunks) and rounding points, but both products are now `mma.sync`
+m16n8k16 bf16 with fp32 sums: the queries load once into A fragments, the chunk's keys and values go to shared
+memory swizzled for `ldmatrix` (`.trans` for the values), and the scores' accumulators are rescaled, rounded to
+bf16 and packed straight into `p·v`'s A fragments, with no score or weight tile in shared memory. It takes
+**16 KiB of static shared memory** (was 40 KiB) and **130 registers on sm_80/86/89, 128 on sm_120/121** (was
+128–144; nvcc 13.0's RECORD). [`check-175.sh`](minimax-h3-cuda/check-175.sh) at `3af9220e` (job `top-7a02984238a5`,
+exit 0) passed all four gates (shapes worst 0.664 of the bound, nonfinite classes, repeat byte-identical, sums) and
+gate 5 live on sm_121.
+
+[`bench-175-ab.sh`](minimax-h3-cuda/bench-175-ab.sh) at `3af9220e` (job `top-6b195e022759`, 22 November, exit 0,
+`H3_PROFILE=1`) ran the bench on this commit, then with `bench-175-base.patch` reverse-applied (card 144's wmma
+kernel): the fox cold, then three prompts no job had used (`prompts/pier`, `kiln`, `dunes`). Every selftest passed
+on both sides, all four latents are byte-identical between them, and the same-latent `reference` held (56.43 dB,
+relative 3.26e-3 under 3e-2).
+
+| 2048² | wall s | decoder s (GPU) | decoder s (all) | attention |
+|---|---:|---:|---:|---:|
+| card, run 1 (cold) | 153.03 | 1.00 | 1.68 | 0.03 |
+| card, run 2 | 15.03 | 0.62 | 1.06 | 0.03 |
+| card, run 3 | 14.19 | 0.62 | 1.01 | 0.03 |
+| card, run 4 | 14.01 | 0.62 | 1.05 | 0.03 |
+| main, run 1 (cold) | 151.50 | 1.12 | 1.73 | 0.19 |
+| main, run 2 | 15.30 | 0.78 | 1.21 | 0.19 |
+| main, run 3 | 14.41 | 0.78 | 1.19 | 0.20 |
+| main, run 4 | 14.19 | 0.78 | 1.20 | 0.19 |
+
+Attention fell from 0.19–0.20 s to **0.03 s**, near mmh3's 27.6 ms, and the warm decode from 0.78 to 0.62 s on the
+GPU; the other stages are unchanged (products 0.33, finish 0.08, swiglu 0.08, heads 0.05, norms 0.04). The decoder's
+remaining distance to mmh3's 0.55 s is in products, finish and norms, not attention.
+
 **FP16 products, tried and kept out.** [`decoder-144-f16-job.sh`](minimax-h3-cuda/decoder-144-f16-job.sh) at
 `2915d6f7` (job `top-ff79ae402131`, exit 1 from the same four contract failures) ran the bench on this commit, then with
 [`decoder-144-f16.patch`](minimax-h3-cuda/decoder-144-f16.patch) applied: the weights converted once to fp16, each
@@ -834,6 +960,73 @@ against bf16's 0.33 s with its bias epilogue. cuBLASLt's fp16 bias epilogue woul
 which rounds each product to fp16 instead of the Metal reference's bf16. So fp16 adds the casts and an unfused
 `h3d_finish` per product and saves nothing. bf16 products stay. The remaining 22 ms to mmh3's 307.6 ms comes from
 CUTLASS's kernel choice on these shapes, not from the operand type.
+
+### Card 185: the PNG written band by band while the GPU decodes the next tile row — kept
+
+At the canvas's size `tf-h3-image-decoder-cuda` (one-shot and `--serve`) now decodes a tile row a pass, the way the
+Metal decoder does since card 170: once a row's tiles are blended, `image_decoder_host.zig`'s `Bands` turns the
+final rows to RGB bytes and deflates them into one `png.Stream` on a CPU thread while the GPU runs the next row. A
+resized request (`WIDTHxHEIGHT` other than the canvas) and `reference` keep one whole-picture pass and
+`png.encode` after LANCZOS. The selftest decodes its 2 x 2-tile case banded too: bit-identical to the staged tiles,
+the streamed PNG `png.encode`'s bytes.
+
+[`bench-185-ab.sh`](minimax-h3-cuda/bench-185-ab.sh) ran this card and main (`bench-185-base.patch` reversed) in
+one TOP job (`top-b20e9be30f8b` at `d3de0451`, 22 November, every selftest PASS), 2048², the pilot prompt cold then
+three unseen prompts warm, `H3_PROFILE` off. The decoder's host side is its in-all time less its passes' wall:
+
+| 2048² run | card wall s | card decoder s (passes / in all / host) | main wall s | main decoder s (passes / in all / host) |
+|---|---:|---:|---:|---:|
+| cold | 150.56 | 1.28 / 1.63 / 0.35 | 145.97 | 1.15 / 1.69 / 0.54 |
+| warm 1 | 14.19 | 0.93 / 1.05 / 0.12 | 14.32 | 0.78 / 1.18 / 0.40 |
+| warm 2 | 13.86 | 0.93 / 1.05 / 0.12 | 14.04 | 0.78 / 1.20 / 0.42 |
+| warm 3 | 14.03 | 0.93 / 1.05 / 0.12 | 14.16 | 0.78 / 1.19 / 0.41 |
+
+The host side fell from 0.40-0.42 s to 0.12 s warm; eleven passes of eleven tiles cost the GPU 0.15 s over one of
+121, so the decoder stage nets 1.05 s against 1.18-1.20 s. All four PNGs are sha256-identical to main's on the same
+latents. The cold wall ran 4.6 s longer on the card's side, outside the decoder (cold decoder 1.63 s against 1.69 s).
+
+### Card 193: every decoder product fuses its bias, two passes in flight — kept
+
+The decoder has no convolutions to move onto tensor cores: H3's VAE decoder is a 2D ViT whose products already run on
+cuBLASLt's bf16 tensor-core algorithms. [`decoder-193-trace-job.sh`](minimax-h3-cuda/decoder-193-trace-job.sh) traced
+main's warm 2048² decode under the CUPTI preload (job `top-bec0983c41cc` at `b5ce1956`, 22 November): 3,212 launches
+in a 0.812 s span, 0.754 s in kernels and 0.058 s idle between them.
+
+| stage | launches | ms |
+|---|---:|---:|
+| products (cuBLASLt: three nvjet tiles 176.2 + 80.2 + 68.6, CUTLASS 22.1) | 1,067 | 347.1 |
+| `h3d_finish` (bias and LayerScale after an unfused product) | 792 | 236.2 |
+| `h3d_swiglu` | 264 | 80.0 |
+| `h3d_heads` (q k norm, rope) | 264 | 35.1 |
+| norms (`h3d_res_norm` 22.3, `h3d_rms_norm` 7.2, `h3d_layer_norm` 0.3) | 539 | 29.8 |
+| `h3d_flash` | 264 | 23.9 |
+| embedding | 22 | 1.3 |
+
+mmh3's VAE takes ~0.55 s of kernels (card 144). The gap was `h3d_finish`: at 11 tiles a pass (2,871 rows) cuBLASLt's
+first pick for three of the four products is an nvjet tile that refuses the bias epilogue, so `fuse` left them
+unfused and each paid an fp32 round trip and a separate pass. `Linear.repick` asks the heuristic again with the
+epilogue set, and the decoder's products (`Gemms.planFused`) take its first algorithm that fuses; no other engine's
+picks change. The decode also keeps two banded passes in flight, the host placing one pass's tiles from pinned rows
+while the GPU runs the next.
+
+[`bench-193-ab.sh`](minimax-h3-cuda/bench-193-ab.sh) ran this card and main (`bench-193-base.patch` reversed) in one
+TOP job (`top-dba6bd470f74` at `a95f05c4`, 22 November, every selftest PASS), 2048², the fox cold then three unseen
+prompts warm, `H3_PROFILE` off:
+
+| 2048² run | card wall s | card decoder s (passes / GPU / in all) | main wall s | main decoder s (passes / GPU / in all) |
+|---|---:|---:|---:|---:|
+| cold (fox) | 146.74 | 0.74 / 0.73 / 1.01 | 140.57 | 1.06 / 1.06 / 1.22 |
+| warm 1 (lighthouse) | 11.48 | 0.52 / 0.52 / 0.59 | 11.81 | 0.76 / 0.76 / 0.88 |
+| warm 2 (market) | 11.52 | 0.52 / 0.52 / 0.59 | 11.81 | 0.76 / 0.76 / 0.88 |
+| warm 3 (observatory) | 11.53 | 0.52 / 0.52 / 0.60 | 11.84 | 0.76 / 0.76 / 0.88 |
+
+The warm decoder stage fell from 0.88 s to 0.59 s (−33%), now under mmh3's ~0.7 s. The GPU's 0.24 s drop is
+`h3d_finish`'s 236 ms. Every latent and every PNG, the fox's and the three unseen prompts', is byte-identical to
+main's, so the fused epilogue rounds as `h3d_finish` did and the fox keeps main's gates (latent cosine 0.9952,
+28.69 dB, mean diff 4.015 against episode 1's Mac picture). The same-latent `reference` passed (85.566% of bytes
+identical, 99.894% within 1, at most 6 apart, PSNR 56.43 dB, relative error 3.26e-3 under 3e-2), and the same job's
+`h3d_flash` contract gates 1-4 and live limits passed. The cold wall ran 6.2 s longer on the card's side, outside the
+decoder (cold decoder 1.01 s against 1.22 s).
 
 ### Card 154: unseen prompts of every length draw again
 
@@ -952,6 +1145,46 @@ colours.](minimax-h3-cuda/int8-vs-fp4.png)
 `--fp4` stays **opt-in** (`H3_LINEAR=fp4` in the bench scripts): 19% faster warm than main's TMA int8 (10.7 s
 against 13.2 s), 13.5 GB less resident, and a different picture — never the default, which keeps episode 1's gates.
 
+### Card 186: FastH3's routed attention in the last steps — opt-in, the gates hold
+
+`tf-h3-image-cuda --routed-steps N` runs the last N of the six steps through the video engines' routing:
+`h3_pool`, `h3_tile_scores` and `h3_topk` (`contract_h3_topk.zig`, now also at the picture's 64 and 256 tiles) choose
+each picture tile's key tiles. Each tile keeps the prompt's tiles and the fifth of the picture's tiles that its
+pooled query scores best, which is FastH3's top 20%. The image checkpoint has no `attn.to_gate_compress`, so there is
+no pooled branch and no gate mix: the dropped tiles are dropped. The default is 0, which runs main's launches.
+
+[`bench-186-ab.sh`](minimax-h3-cuda/bench-186-ab.sh) at `d5968c7e` (job `top-e1cd6974b1da`, GB10, driver 580.173.02,
+int8 default, seed 42, 2048²) ran four passes, each with one resident server. Every pass rendered the pilot fox cold
+and then three prompts no earlier card used (`observatory`, `bakery`, `reef`) warm. The passes were dense and
+`--routed-steps 2` with CUDA graphs, then both again under `H3_PROFILE`. Every selftest passed on every pass. The
+dense latents are the same with graphs and with `H3_PROFILE`, and the fox's is sha256 `8d067d75…`, main's.
+
+| pass | cold s | warm wall s | warm transformer s | routed step s |
+|---|---:|---:|---:|---:|
+| dense, graphs | 149.8 | 14.45 / 14.22 / 14.25 | 11.00 / 10.79 / 10.78 | — (dense 1.77-1.85) |
+| routed 2, graphs | 147.2 | 13.86 / 13.91 / 13.97 | 10.42 / 10.50 / 10.50 | 1.61-1.63 |
+| dense, profiled | 150.3 | 14.18 / 14.24 / 14.26 | 10.77 / 10.82 / 10.79 | — (dense 1.77-1.79) |
+| routed 2, profiled | 147.4 | 13.85 / 14.04 / 13.99 | 10.43 / 10.60 / 10.51 | 1.62-1.65 |
+
+Across all six steps, the profiled warm runs spent 1.79 / 1.80 / 1.81 s on attention dense and 1.39 / 1.39 / 1.39 s
+routed, plus 0.10 s of routing. Every other stage held within 0.1 s. A dense step's attention is about 0.30 s. A
+routed step's attention is about 0.10 s, and routing adds 0.05 s, so attention plus routing is about 2x faster in
+those two steps. Attention is 1.8 s of a 10.8 s transformer, though, so the warm picture is only 0.40 s faster (14.31 s
+mean against 13.91 s, 2.8%).
+
+Gates, each routed picture against the dense picture of the same prompt (`gate.py`, in the job: TOP has no numpy):
+
+| prompt | latent cosine | PSNR dB | mean diff |
+|---|---:|---:|---:|
+| fox (pilot) | 0.9993 | 36.71 | 2.13 |
+| observatory | 0.9985 | 29.71 | 3.35 |
+| bakery | 0.9992 | 32.54 | 2.77 |
+| reef | 0.9993 | 33.00 | 3.15 |
+
+All four pass (0.99, 28.2 dB, 4.1), and the profiled pass's routed pictures match these figures. `--routed-steps 2`
+stays **opt-in**. It is a different picture, though a close one, for 2.8%, while `--fp4` gives 19%. Routing more steps
+or running at 4096 (four times the tiles, attention a larger share) was not measured.
+
 ### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
 
 I ran [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) again at `99c900f5` (job `top-a84c94b49c92`, GB10,
@@ -988,8 +1221,8 @@ The 3.4 s splits into three parts:
 - **Prompt, +1.8 s.** Our bf16 encoder takes 1.9–2.05 s at 35–42 tokens. The fox's 24 tokens took 1.05 s, and card
   132's 31–32 tokens took 1.23 s. mmh3's resident int8 encoder takes 0.2 s at any of these lengths. The jump above
   32 tokens looks like the 33–64-row band where card 154 found cuBLASLt refusing the canonical algorithm [INFERENCE,
-  not traced]. Card 143's int8 encoder would close this stage (0.16 s) but missed the picture gates, so it stays
-  reverted.
+  not traced]. Card 143's per-row int8 encoder (0.16 s) missed the picture gates; card 173's per-128-of-K int8
+  encoder closes this stage (0.2 s) and clears them.
 - **Transformer, +1.35 s.** 1.78 s a step against mmh3's 1.5 s. `out` and `fc2` are still bf16 (card 146), and
   attention is 1.8 s a picture (round 2 above).
 - **Decoder, +0.5 s.** 0.79 s on the GPU against mmh3's 0.6–0.7 s, plus 0.4 s outside the GPU (PNG and host)
@@ -1335,3 +1568,24 @@ so it did not meet the faster-warm-total gate and was reverted. The final warm r
 
 Removing `heads` moved essentially all of its 0.94 s into `q k v gate`; sharing normalized partners did not create
 a net saving. The branch therefore retains only this measurement, not the kernel or routing change.
+
+### Card 181: the norms' AdaLN tables in bf16, read a lane's four values at once — measured, no gain shown
+
+I stored the AdaLN tables as bf16 (`h3m_project` already rounded every value to bf16 before writing it to an f32
+word) and had `h3_norm_quant` and `h3_norm_quant_fp4` read each lane's four norm weights, scales and shifts as one
+vector load each (`uint2`, four bf16), on fork branch `feat/181-minimax-h3-image-on-the-spark-the-0-61-s` at head
+`d95d750d`. The fp32 sums and their order were unchanged, and in every job all four latents and PNGs were byte for
+byte main's. It shows no measurable gain on the GB10, so none of its code is on main.
+
+`bench-181-ab.sh` on that branch ran the A/B in four jobs (driver 580.173.02,
+`H3_PROFILE=1`): one at `d9f9f4fa` whose log I fetched without its job id, `top-d7a9943165b5` at `d9f9f4fa`,
+`top-b16f3abdffbd` at `66fb51ee` and `top-563acf5a3365` at `bba8b760`. Each ran the branch, then main's `zig/` tree,
+one cold pilot fox and three warm 2048² prompts a side.
+
+- **Warm wall:** over the twelve warm runs the branch's median is 14.14 s, main's 14.17 s. Run against run the
+  branch is faster in six, tied in two and slower in four; the outliers (main's 14.94 s, the branch's 15.47 s) sit in
+  the prompt stage, not the transformer.
+- **`norms`:** 0.62 → 0.60 s. The kernel is bound by its reads and writes of the bf16 row, not by the tables.
+
+The full fold of the norms into the qkvc and fc1 products was not attempted: it needs a product kernel that reads
+the whole bf16 row, which main does not have, and it would save at most `norms`' 0.6 s.

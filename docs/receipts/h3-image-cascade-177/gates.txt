@@ -1,0 +1,8 @@
+2-text.png: top-octave energy 6.266, LPIPS 0.583, fail
+2-faces.png: top-octave energy 1.764, LPIPS 0.727, fail
+2-texture.png: top-octave energy 1.079, LPIPS 0.407, fail
+2-architecture.png: top-octave energy 2.165, LPIPS 0.557, fail
+4-text.png: top-octave energy 5.205, LPIPS 0.619, fail
+4-faces.png: top-octave energy 1.069, LPIPS 0.720, fail
+4-texture.png: top-octave energy 1.094, LPIPS 0.507, fail
+4-architecture.png: top-octave energy 2.000, LPIPS 0.604, fail
