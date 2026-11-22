@@ -952,6 +952,35 @@ colours.](minimax-h3-cuda/int8-vs-fp4.png)
 `--fp4` stays **opt-in** (`H3_LINEAR=fp4` in the bench scripts): 19% faster warm than main's TMA int8 (10.7 s
 against 13.2 s), 13.5 GB less resident, and a different picture — never the default, which keeps episode 1's gates.
 
+### Card 181: the norms' AdaLN tables in bf16, read 8 bytes a lane — kept, the norms row near unchanged
+
+The lead's rescope dropped folding the norms into the product epilogues: at most it would save `norms`' 0.61 s, too
+little to justify a new full-row bf16 GEMM. What was built instead: `h3m_project` writes the AdaLN tables as bf16 (it
+already rounded every value to bf16 before storing it in f32), so `Inputs.tables` holds half the bytes, and
+`h3_norm_quant` and `h3_norm_quant_fp4` read each lane's four norm weights, scales and shifts as one 8-byte load
+(`load4`, `normed4`). The fp32 sums and their order are unchanged. `Inputs.tables` must now be 8-byte aligned
+(`cuda_validation`). `fused_test` still checks both fused launches against `h3_norm` then the quantizers byte for byte.
+
+[`bench-181-ab.sh`](minimax-h3-cuda/bench-181-ab.sh) at `d9f9f4fa` ran in two jobs on GB10 (driver 580.173.02,
+`H3_PROFILE=1`). Each job ran this commit, then `bench-181-base.patch` reverse-applied (main's `zig/` tree
+`e9864453`), each side rendering the pilot fox cold and then three prompts warm that neither server had seen
+(`greenhouse`, `tram`, `trench`). Every selftest passed on both sides. In both jobs all four latents and PNGs were
+byte for byte main's, so every picture gate main passes holds unchanged.
+
+| job | side | cold s | warm 1 / 2 / 3 s | transformer warm s | norms warm s |
+|---|---|---:|---:|---:|---:|
+| first | this commit | — | 14.05 / 14.00 / 14.18 | 10.75 / 10.70 / 10.80 | 0.60 / 0.60 / 0.61 |
+| first | main | 151.2 | 14.05 / 14.07 / 14.18 | 10.75 / 10.74 / 10.80 | 0.63 / 0.62 / 0.62 |
+| `top-d7a9943165b5` | this commit | 145.0 | 14.10 / 14.17 / 14.20 | 10.79 / 10.85 / 10.80 | 0.60 / 0.61 / 0.60 |
+| `top-d7a9943165b5` | main | 150.6 | 14.94 / 14.40 / 14.43 | 10.93 / 10.78 / 10.82 | 0.62 / 0.62 / 0.62 |
+
+In the first job the card side's cold run was cut off the log I fetched. The other stages match main's to within
+0.03 s. The narrower reads save **0.01–0.03 s** of `norms`' 0.61 s: the kernel is bound by its reads and writes of
+the bf16 row, not by the tables. The warm walls overlap main's except for main's first warm run in the second job
+(14.94 s), which is a 2.82 s prompt, not the transformer. The warm picture is faster than main's by noise only. It
+stays because it is bit-identical, has fewer table bytes and needs no extra code path. A real gain in `norms` needs
+the fold into the products' epilogues that the rescope ruled out.
+
 ### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
 
 I ran [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) again at `99c900f5` (job `top-a84c94b49c92`, GB10,
@@ -1280,6 +1309,11 @@ latent cosine 0.9952 against episode 1's Mac latent, the same PNG as main's, sel
 `reference` at 56.42 dB, relative error 3.27e-3 under 3e-2.
 Timing only pays once a pick outlives its shape, and card 141 below found no cold-start gain from keeping picks on
 disk either.
+
+`d9f9f4fa` (job `top-d7a9943165b5`, 22 November, exit 0; [card 181](#card-181-the-norms-adaln-tables-in-bf16-read-8-bytes-a-lane--kept-the-norms-row-near-unchanged))
+stores the AdaLN tables as bf16 and makes the fused norms' table and weight reads 8 bytes per lane. `norms` dropped
+from 0.62 to 0.60–0.61 s, and every latent and PNG is byte-identical to main's. The lever is spent. What remains of
+`norms` is the bf16 row's own traffic, which only a fold into the qkvc and fc1 products' prologue could remove.
 
 ### Card 141: cuBLASLt's picks and INT8 tilings kept on disk — measured, no saving shown
 
