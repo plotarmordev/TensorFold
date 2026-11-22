@@ -114,7 +114,6 @@ pub const Mix = struct {
         if (shape.rows == 0 or shape.n != C or shape.k < 1 or shape.k > ops.max_blocks + 1) return false;
         self.free(a);
         self.shape = shape;
-        const C = self.shape.n;
         const rows = self.shape.rows;
         const nb = shape.k - 1;
         const q = nq(self.form);
