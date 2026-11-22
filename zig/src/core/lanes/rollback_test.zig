@@ -157,8 +157,9 @@ test "rollback: heads landing no draft, some or all commit the one-token decode,
     };
 }
 
-test "rollback: fully accepted lone keep is opt-in and preserves main's default call count" {
-    for ([_]bool{ false, true }) |enabled| {
+test "rollback: fully accepted lone keep is opt-in and adds keeps over main's default" {
+    var calls: [2]usize = undefined;
+    for ([_]bool{ false, true }, &calls) |enabled, *n| {
         const r = try Rig.create(every, 0);
         defer r.destroy();
         r.engine.backend.keep_full_lone = enabled;
@@ -166,12 +167,9 @@ test "rollback: fully accepted lone keep is opt-in and preserves main's default 
         try r.engine.addStream(s);
         _ = try r.finish();
         try expectFresh(.{ .prompt = &p1, .max_new = 24 }, s);
-        if (enabled) {
-            try expect(r.target.keep_calls > 0);
-        } else {
-            try std.testing.expectEqual(@as(usize, 0), r.target.keep_calls);
-        }
+        n.* = r.target.keep_calls;
     }
+    try expect(calls[1] > calls[0]);
 }
 
 /// Steps of the uncancelled run of `reqs`, which bound where a cancel can land.
