@@ -201,7 +201,8 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
     ok = final.report("norm_out and proj_out", bounds.product_ulps, bounds.product_same, 1) and ok;
     ok = chain.report("output after 2 blocks", bounds.chain_ulps, 0, bounds.chain_relative) and ok;
 
-    // decode in passes of c.batch and of every tile: both equal the staged tiles assembled, bit for bit
+    // decode in passes of c.batch, of every tile and of a tile row with its bands streamed to a PNG: each equals the
+    // staged tiles assembled, bit for bit, and the streamed PNG `png.encode`'s bytes of that picture
     const height = c.rows * side;
     const width = c.cols * side;
     const staged = try assemble(a, t, gpu_tiles, 3 * height * width);
@@ -209,11 +210,12 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const 
     const decoded = try a.alloc(f32, staged.len);
     for ([_]usize{ c.batch, tiles }, 0..) |b, i| {
         if (i == 1 and b == c.batch) continue;
-        _ = try d.decode(a, config, latent, c.rows, c.cols, checked, b, decoded);
+        _ = try d.decode(a, config, latent, c.rows, c.cols, checked, b, decoded, null);
         const same = std.mem.eql(u32, @ptrCast(staged), @ptrCast(decoded));
         std.debug.print("  decode in passes of {d}: {s} the staged tiles assembled\n", .{ b, if (same) "bit-identical to" else "DIFFERENT from" });
         ok = ok and same;
     }
+    ok = try banded(a, d, config, latent, c, staged) and ok;
     const ours = try a.alloc(u8, 3 * height * width);
     const theirs = try a.alloc(u8, ours.len);
     try vae.pixels(decoded, height, width, ours);
@@ -243,6 +245,24 @@ fn assemble(a: std.mem.Allocator, t: host.Tiles, tiles: []const f32, len: usize)
     return out;
 }
 
+/// `latent` decoded a tile row a pass, each row's band streamed to a PNG: the picture `staged`, the PNG its encoding.
+fn banded(a: std.mem.Allocator, d: *dec.Decoder, config: *const vae.Config, latent: []const f32, c: Case, staged: []const f32) !bool {
+    const height = c.rows * side;
+    const width = c.cols * side;
+    const decoded = try a.alloc(f32, staged.len);
+    var bands = try dec.host_decoder.Bands.init(a, decoded, height, width);
+    defer bands.deinit();
+    _ = try d.decode(a, config, latent, c.rows, c.cols, checked, c.batch, decoded, &bands);
+    const streamed = try bands.finish(a);
+    const rgb = try a.alloc(u8, staged.len);
+    try vae.pixels(staged, height, width, rgb);
+    const whole = try dec.host_decoder.writer.png.encode(a, rgb, width, height);
+    const same = std.mem.eql(u32, @ptrCast(staged), @ptrCast(decoded));
+    const png_same = std.mem.eql(u8, whole, streamed);
+    std.debug.print("  decode a tile row a pass, bands streamed: {s} the staged tiles assembled; the PNG {s} the whole one's bytes\n", .{ if (same) "bit-identical to" else "DIFFERENT from", if (png_same) "has" else "DIFFERS from" });
+    return same and png_same;
+}
+
 /// All 24 blocks chained, the GPU from the latent in one pass and the reference beside it.
 fn deep(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, latent: []const f32, c: Case, t: host.Tiles, origins: []const [2]u32, cos: []const u16, sin: []const u16, scratch: ref.Scratch) !bool {
     try d.prepare(latent, c.rows, c.cols, t.h, t.w, t.total());
@@ -269,6 +289,6 @@ fn timing(a: std.mem.Allocator, d: *dec.Decoder, config: *const vae.Config) !voi
     const latent = try synthetic(a, cells, cells);
     const out = try a.alloc(f32, 3 * cells * cells * side * side);
     const tiles = (try host.tiles(a, config, cells, cells)).total();
-    const took = try d.decode(a, config, latent, cells, cells, vae.layers, 16, out);
+    const took = try d.decode(a, config, latent, cells, cells, vae.layers, 16, out, null);
     std.debug.print("timing: {d} tiles of 16 x 16, 24 blocks: {d:.2} s in passes, {d:.2} s on the GPU, {d:.1} ms a tile\n", .{ tiles, took.wall, took.gpu, 1000 * took.gpu / @as(f64, @floatFromInt(tiles)) });
 }

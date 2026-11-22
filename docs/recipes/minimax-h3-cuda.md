@@ -898,6 +898,30 @@ which rounds each product to fp16 instead of the Metal reference's bf16. So fp16
 `h3d_finish` per product and saves nothing. bf16 products stay. The remaining 22 ms to mmh3's 307.6 ms comes from
 CUTLASS's kernel choice on these shapes, not from the operand type.
 
+### Card 185: the PNG written band by band while the GPU decodes the next tile row — kept
+
+At the canvas's size `tf-h3-image-decoder-cuda` (one-shot and `--serve`) now decodes a tile row a pass, the way the
+Metal decoder does since card 170: once a row's tiles are blended, `image_decoder_host.zig`'s `Bands` turns the
+final rows to RGB bytes and deflates them into one `png.Stream` on a CPU thread while the GPU runs the next row. A
+resized request (`WIDTHxHEIGHT` other than the canvas) and `reference` keep one whole-picture pass and
+`png.encode` after LANCZOS. The selftest decodes its 2 x 2-tile case banded too: bit-identical to the staged tiles,
+the streamed PNG `png.encode`'s bytes.
+
+[`bench-185-ab.sh`](minimax-h3-cuda/bench-185-ab.sh) ran this card and main (`bench-185-base.patch` reversed) in
+one TOP job (`top-b20e9be30f8b` at `d3de0451`, 22 November, every selftest PASS), 2048², the pilot prompt cold then
+three unseen prompts warm, `H3_PROFILE` off. The decoder's host side is its in-all time less its passes' wall:
+
+| 2048² run | card wall s | card decoder s (passes / in all / host) | main wall s | main decoder s (passes / in all / host) |
+|---|---:|---:|---:|---:|
+| cold | 150.56 | 1.28 / 1.63 / 0.35 | 145.97 | 1.15 / 1.69 / 0.54 |
+| warm 1 | 14.19 | 0.93 / 1.05 / 0.12 | 14.32 | 0.78 / 1.18 / 0.40 |
+| warm 2 | 13.86 | 0.93 / 1.05 / 0.12 | 14.04 | 0.78 / 1.20 / 0.42 |
+| warm 3 | 14.03 | 0.93 / 1.05 / 0.12 | 14.16 | 0.78 / 1.19 / 0.41 |
+
+The host side fell from 0.40-0.42 s to 0.12 s warm; eleven passes of eleven tiles cost the GPU 0.15 s over one of
+121, so the decoder stage nets 1.05 s against 1.18-1.20 s. All four PNGs are sha256-identical to main's on the same
+latents. The cold wall ran 4.6 s longer on the card's side, outside the decoder (cold decoder 1.63 s against 1.69 s).
+
 ### Card 154: unseen prompts of every length draw again
 
 An unseen 55-token prompt (the lighthouse, job `top-6f13211c7306`) failed with `NoAlgorithm` on both sides of that
@@ -1407,3 +1431,24 @@ the file absent then present, one cold 2048² picture each way plus three warm).
 
 The int8 handle leak its review found (a plan stored before its pick was recorded) lived only in that cache code:
 main's int8 products no longer plan through cuBLASLt, so no fix lands here.
+
+### Card 181: the norms' AdaLN tables in bf16, read a lane's four values at once — measured, no gain shown
+
+I stored the AdaLN tables as bf16 (`h3m_project` already rounded every value to bf16 before writing it to an f32
+word) and had `h3_norm_quant` and `h3_norm_quant_fp4` read each lane's four norm weights, scales and shifts as one
+vector load each (`uint2`, four bf16), on fork branch `feat/181-minimax-h3-image-on-the-spark-the-0-61-s` at head
+`d95d750d`. The fp32 sums and their order were unchanged, and in every job all four latents and PNGs were byte for
+byte main's. It shows no measurable gain on the GB10, so none of its code is on main.
+
+`bench-181-ab.sh` on that branch ran the A/B in four jobs (driver 580.173.02,
+`H3_PROFILE=1`): one at `d9f9f4fa` whose log I fetched without its job id, `top-d7a9943165b5` at `d9f9f4fa`,
+`top-b16f3abdffbd` at `66fb51ee` and `top-563acf5a3365` at `bba8b760`. Each ran the branch, then main's `zig/` tree,
+one cold pilot fox and three warm 2048² prompts a side.
+
+- **Warm wall:** over the twelve warm runs the branch's median is 14.14 s, main's 14.17 s. Run against run the
+  branch is faster in six, tied in two and slower in four; the outliers (main's 14.94 s, the branch's 15.47 s) sit in
+  the prompt stage, not the transformer.
+- **`norms`:** 0.62 → 0.60 s. The kernel is bound by its reads and writes of the bf16 row, not by the tables.
+
+The full fold of the norms into the qkvc and fc1 products was not attempted: it needs a product kernel that reads
+the whole bf16 row, which main does not have, and it would save at most `norms`' 0.6 s.

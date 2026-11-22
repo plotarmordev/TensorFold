@@ -2027,6 +2027,51 @@ red as planted, with no limit problems. The attention bound's denominator is now
 Its control (staging drops the last key) goes red at shapes. `tf-h3-image-decoder selftest` passes.
 The script (`ab.sh`), its log and the PNGs are in `h3-image-runs/191`, outside the repo.
 
+### Card 192: the prompt encoder in int8 at a scale per 128 of K, measured and reverted
+
+This ported CUDA card 173 to Metal. Qwen3-VL's 50 text layers ran q/k/v (one product), o, gate/up (one product) and
+down as int8 with one scale per 128 of K on both operands. The weights were quantized once at load into private
+buffers, about 24 GiB beside the mapped bf16 layers. Each product's input rows were quantized by `h3_quantize_rows`,
+then summed by `h3_gemm_32x64_i8` with its K block made a template parameter (128 here, 256 for the picture). A
+`--bf16` flag kept main's encoder. On the tiny synthetic checkpoint the selftest held the int8 rows at cosine
+0.99977 (text) and 0.99980 (a reference's rows) against float64, and a second run was byte for byte the same.
+`--bf16`'s cases for canal and orchard were byte-identical to main's.
+
+The A/B ran main `35ff44def` against the card, one ReleaseFast server per side, each session holding
+`/tmp/tensorfold-model.lock` (66 s main, 114 s card). Each session ran card 34's pilot fox cold, then the canal, orchard
+and foundry prompts (unseen; 35, 37 and 42 tokens), all at seed 42, 2048x2048. Load was 83-112 through main's
+session and 48-89 through the card's, and live speech shared the GPU during the card's. Every request, in seconds
+(prompt / 6 steps / decoder / total):
+
+| Request | main (bf16) | card (int8) |
+|---|---|---|
+| cold fox | 0.29 / 11.33 / 0.64 / 13.55 | 0.50 / 28.92 / 4.17 / 47.76 |
+| canal | 0.22 / 10.76 / 0.66 / 12.47 | 5.58 / 14.96 / 2.23 / 25.06 |
+| orchard | 0.22 / 9.36 / 0.67 / 11.19 | 0.78 / 10.75 / 2.42 / 15.89 |
+| foundry | 0.22 / 10.67 / 0.81 / 12.75 | 1.11 / 11.03 / 2.59 / 17.01 |
+
+The card's walls carry the load and the speech: 0.58 s of canal's prompt waited for speech, and its fox took 14.15 s to
+bind the transformer. The encoder's own GPU time is the steadier measure. In the served runs it was 0.21 s for main
+on every unseen prompt against 0.26-0.34 s for the card. In a quiet one-shot `tf-h3-image-prompt` run (canal and
+orchard, one locked session) it was 0.29-0.30 s for main and `--bf16` against 0.18 s for int8. At 35-42 rows the bf16
+encoder already costs about 0.2 s of a 10-12 s warm picture. The Spark's 1.9-2.5 s, which card 173 cut, has no
+counterpart here, so the best case is about 0.1 s.
+
+The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.2 dB, mean pixel difference at most
+4.1) against main on every prompt:
+
+| Prompt | latent cosine | PSNR | mean |
+|---|---|---|---|
+| fox | 0.994437 | 27.129 dB | 4.031 |
+| canal | 0.858195 | 13.135 dB | 36.057 |
+| orchard | 0.989453 | 23.222 dB | 7.307 |
+| foundry | 0.977522 | 21.206 dB | 11.750 |
+
+The refined rows themselves stay close: cosine 0.999885 (canal) and 0.999820 (orchard) against main's, with the worst
+rows at 0.999645 and 0.998905. Six distilled steps carry that 1e-4 into a different picture, worst on canal, the same
+prompt that failed card 187's routing. With no speed to win on the Mac and the gate lost on all four prompts, the
+code is reverted. Receipts are in `h3-image-runs/192`, outside the repo.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
