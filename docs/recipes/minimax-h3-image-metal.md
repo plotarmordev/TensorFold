@@ -1429,28 +1429,13 @@ under `/tmp/tensorfold-model.lock`; every output byte-identical to main's on all
 Set 1 ran at load 92-95, set 2 at 26-41 while another card's resident server shared the GPU, so neither is a quiet
 rate; within a set, head beats main on every shape and every one of the three runs.
 
-Served warm A/B, ReleaseFast `tf-h3-image-server`, main `bc1012c35` against this card's head, one resident server a
-session holding the lock for its own 39-68 s: card 34's pilot cold, then harbour, meadow and steam warm and unseen (seed
-42, 2048x2048). Every step of all seven sessions is `timing_valid=true`, and every latent and PNG is sha1-identical
-between the builds: the pilot's latent is `776b443a…` (card 135's pin) and its PNG `85098fa9…`. Seconds of the six
-steps, cold then the three warm (total in brackets):
-
-| Session | Load | pilot (cold) | harbour | meadow | steam |
-|---|---|---|---|---|---|
-| head | 39.0 → 28.4 | 8.22 (10.23) | 7.60 (9.37) | 7.70 (9.54) | 7.69 (8.53) |
-| main | 17.9 → 12.8 | 9.25 (11.29) | 8.94 (10.51) | 9.25 (10.81) | 9.22 (10.07) |
-| head | 12.1 → 9.8 | 7.68 (9.48) | 7.56 (9.33) | 7.70 (9.51) | 7.68 (8.55) |
-| main | 13.1 → 13.2 | 10.70 (13.36) | 9.08 (10.89) | 10.63 (13.00) | 9.27 (10.23) |
-| head | 13.1 → 16.9 | 8.04 (10.29) | 8.72 (10.85) | 8.77 (11.18) | 7.75 (8.74) |
-| main, quiet | 5.6 → 20.0 | 9.23 (10.96) | 8.95 (10.40) | 9.25 (10.74) | 9.33 (10.22) |
-| head, after it | 20.0 → 40.8 | 7.77 (9.90) | 7.71 (9.47) | 7.81 (9.62) | 7.71 (8.58) |
-
-The last pair is the one quiet start the day gave: main began at load 5.6 and drew 8.95-9.33 s, card 148's 9.20 s;
-another job came in during it, so head, straight after, began at 20 and still drew 7.71-7.81 s, 1.2-1.6 s a picture
-faster on a busier host. Across all seven sessions head's warm six steps are 7.56-8.77 s and main's 8.94-10.70 s.
-The packed byte writes cost bind 0.2 s (0.90-1.34 s against 0.62-1.25 s), which a warm picture that rebinds still
-more than earns back. Receipts (`bench.py`, `bench-load92.log`, `bench.log`, `session.sh`, `contract.log`, the
-sessions' server output and `loads.txt`) are in `h3-image-runs/184`, outside the repo.
+Card 184's own served A/B (ReleaseFast `tf-h3-image-server`, main `bc1012c35` against this card's head, card 34's
+pilot cold then harbour, meadow and steam warm and unseen) found no window where both sides started under load 8:
+seven sessions ran at load 5.6-40.8, and the one quiet main start was followed by head at 20. Its latents and PNGs
+were sha1-identical between the builds, the pilot's latent `776b443a…` (card 135's pin) and PNG `85098fa9…`, but its
+timings are not counted. The kept decision rests on card 197's quiet pairs below. Receipts for the isolated replays
+and the loaded sessions (`bench.py`, `bench-load92.log`, `bench.log`, `session.sh`, `contract.log`, the sessions'
+server output and `loads.txt`) are in `h3-image-runs/184`, outside the repo.
 
 Card 197 repeated the served A/B in a quiet window with the same builds and session method on three prompts none of
 them had seen (a lighthouse, a fish market, a glacier cave). Three pairs alternated main and head, and each session
