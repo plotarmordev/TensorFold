@@ -246,7 +246,7 @@ struct HeadEpilogue {
 };
 
 // One q or k head from the product's shared tile, in h3_heads' exact sum and rounding order.
-__device__ __forceinline__ void h3_head_epilogue(const __nv_bfloat16 *tile, const HeadEpilogue &heads,
+__device__ __forceinline__ void h3_head_epilogue(__nv_bfloat16 *tile, const HeadEpilogue &heads,
                                                  bool query, int head, int m, int tile_m) {
     __syncthreads();
     const int s = threadIdx.x >> 2, c0 = (threadIdx.x & 3) * 32;
@@ -254,7 +254,7 @@ __device__ __forceinline__ void h3_head_epilogue(const __nv_bfloat16 *tile, cons
     __nv_bfloat16 *out = query ? heads.tq : heads.tk;
     for (int first = 0; first < 256; first += 64) {
         const int local = first + s, row = tile_m * 256 + local;
-        const __nv_bfloat16 *x = tile + local * 128;
+        __nv_bfloat16 *x = tile + local * 128;
         float sq = 0.0f;
         #pragma unroll
         for (int j = 0; j < 32; ++j) {
@@ -263,8 +263,21 @@ __device__ __forceinline__ void h3_head_epilogue(const __nv_bfloat16 *tile, cons
         }
         sq += __shfl_xor_sync(0xffffffffu, sq, 1);
         sq += __shfl_xor_sync(0xffffffffu, sq, 2);
+        if (row < m) {
+            const float inv = rsqrtf(sq / 128.0f + heads.eps);
+            #pragma unroll
+            for (int j = 0; j < 32; j += 2) {
+                float a[2];
+                #pragma unroll
+                for (int e = 0; e < 2; ++e) {
+                    const int c = c0 + j + e;
+                    a[e] = __bfloat162float(__float2bfloat16(__bfloat162float(x[c]) * inv * __bfloat162float(nw[c])));
+                }
+                *reinterpret_cast<uint32_t *>(x + c0 + j) = h3_pack_bf16(a[0], a[1]);
+            }
+        }
+        __syncwarp();
         if (row >= m) continue;
-        const float inv = rsqrtf(sq / 128.0f + heads.eps);
         const int slot = heads.slot[row];
         const size_t at = (static_cast<size_t>(head) * heads.slots + slot) * 128 + c0;
         #pragma unroll
@@ -273,15 +286,14 @@ __device__ __forceinline__ void h3_head_epilogue(const __nv_bfloat16 *tile, cons
             #pragma unroll
             for (int e = 0; e < 2; ++e) {
                 const int c = c0 + j + e;
-                a[e] = __bfloat162float(__float2bfloat16(__bfloat162float(x[c]) * inv * __bfloat162float(nw[c])));
+                a[e] = __bfloat162float(x[c]);
                 if (c < 2 * heads.rot) {
                     const bool low = c < heads.rot;
                     const int p = low ? c + heads.rot : c - heads.rot, t = low ? c : c - heads.rot;
                     const float sign = low ? -1.0f : 1.0f;
                     const float co = __bfloat162float(__float2bfloat16(heads.cos[row * heads.rot + t]));
                     const float si = __bfloat162float(__float2bfloat16(heads.sin[row * heads.rot + t]));
-                    const float partner = __bfloat162float(__float2bfloat16(
-                        __bfloat162float(x[p]) * inv * __bfloat162float(nw[p])));
+                    const float partner = __bfloat162float(x[p]);
                     a[e] = __bfloat162float(__float2bfloat16(a[e] * co)) +
                            __bfloat162float(__float2bfloat16(sign * partner * si));
                 }
