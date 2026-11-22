@@ -922,6 +922,49 @@ The host side fell from 0.40-0.42 s to 0.12 s warm; eleven passes of eleven tile
 121, so the decoder stage nets 1.05 s against 1.18-1.20 s. All four PNGs are sha256-identical to main's on the same
 latents. The cold wall ran 4.6 s longer on the card's side, outside the decoder (cold decoder 1.63 s against 1.69 s).
 
+### Card 193: every decoder product fuses its bias, two passes in flight — kept
+
+The decoder has no convolutions to move onto tensor cores: H3's VAE decoder is a 2D ViT whose products already run on
+cuBLASLt's bf16 tensor-core algorithms. [`decoder-193-trace-job.sh`](minimax-h3-cuda/decoder-193-trace-job.sh) traced
+main's warm 2048² decode under the CUPTI preload (job `top-bec0983c41cc` at `b5ce1956`, 22 November): 3,212 launches
+in a 0.812 s span, 0.754 s in kernels and 0.058 s idle between them.
+
+| stage | launches | ms |
+|---|---:|---:|
+| products (cuBLASLt: three nvjet tiles 176.2 + 80.2 + 68.6, CUTLASS 22.1) | 1,067 | 347.1 |
+| `h3d_finish` (bias and LayerScale after an unfused product) | 792 | 236.2 |
+| `h3d_swiglu` | 264 | 80.0 |
+| `h3d_heads` (q k norm, rope) | 264 | 35.1 |
+| norms (`h3d_res_norm` 22.3, `h3d_rms_norm` 7.2, `h3d_layer_norm` 0.3) | 539 | 29.8 |
+| `h3d_flash` | 264 | 23.9 |
+| embedding | 22 | 1.3 |
+
+mmh3's VAE takes ~0.55 s of kernels (card 144). The gap was `h3d_finish`: at 11 tiles a pass (2,871 rows) cuBLASLt's
+first pick for three of the four products is an nvjet tile that refuses the bias epilogue, so `fuse` left them
+unfused and each paid an fp32 round trip and a separate pass. `Linear.repick` asks the heuristic again with the
+epilogue set, and the decoder's products (`Gemms.planFused`) take its first algorithm that fuses; no other engine's
+picks change. The decode also keeps two banded passes in flight, the host placing one pass's tiles from pinned rows
+while the GPU runs the next.
+
+[`bench-193-ab.sh`](minimax-h3-cuda/bench-193-ab.sh) ran this card and main (`bench-193-base.patch` reversed) in one
+TOP job (`top-dba6bd470f74` at `a95f05c4`, 22 November, every selftest PASS), 2048², the fox cold then three unseen
+prompts warm, `H3_PROFILE` off:
+
+| 2048² run | card wall s | card decoder s (passes / GPU / in all) | main wall s | main decoder s (passes / GPU / in all) |
+|---|---:|---:|---:|---:|
+| cold (fox) | 146.74 | 0.74 / 0.73 / 1.01 | 140.57 | 1.06 / 1.06 / 1.22 |
+| warm 1 (lighthouse) | 11.48 | 0.52 / 0.52 / 0.59 | 11.81 | 0.76 / 0.76 / 0.88 |
+| warm 2 (market) | 11.52 | 0.52 / 0.52 / 0.59 | 11.81 | 0.76 / 0.76 / 0.88 |
+| warm 3 (observatory) | 11.53 | 0.52 / 0.52 / 0.60 | 11.84 | 0.76 / 0.76 / 0.88 |
+
+The warm decoder stage fell from 0.88 s to 0.59 s (−33%), now under mmh3's ~0.7 s. The GPU's 0.24 s drop is
+`h3d_finish`'s 236 ms. Every latent and every PNG, the fox's and the three unseen prompts', is byte-identical to
+main's, so the fused epilogue rounds as `h3d_finish` did and the fox keeps main's gates (latent cosine 0.9952,
+28.69 dB, mean diff 4.015 against episode 1's Mac picture). The same-latent `reference` passed (85.566% of bytes
+identical, 99.894% within 1, at most 6 apart, PSNR 56.43 dB, relative error 3.26e-3 under 3e-2), and the same job's
+`h3d_flash` contract gates 1-4 and live limits passed. The cold wall ran 6.2 s longer on the card's side, outside the
+decoder (cold decoder 1.01 s against 1.22 s).
+
 ### Card 154: unseen prompts of every length draw again
 
 An unseen 55-token prompt (the lighthouse, job `top-6f13211c7306`) failed with `NoAlgorithm` on both sides of that
