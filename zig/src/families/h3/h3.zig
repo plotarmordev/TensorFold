@@ -98,9 +98,11 @@ pub const Model = struct {
     row_of: mtl.Buffer,
     all_tiles: mtl.Buffer,
     /// --far-pool: each target query tile's key tiles (picture.Far's list) and its pooled rows; 0 rows when off.
+    /// `far_on`: this step pools (from picture.far_from_step on).
     far_list: mtl.Buffer,
     far_per_query: usize,
     far_pooled: usize,
+    far_on: bool,
     line: mtl.Buffer,
     time: mtl.Buffer,
     // the stream and a branch's rows, the normed rows, the projections at the attention width, the MLP's rows
@@ -494,6 +496,7 @@ pub const Model = struct {
         const hidden = self.hidden;
         // each row's line in the blocks' tables and in the final layer's, for this step
         @memcpy(self.line.slice(i32, rows), self.adaln[step * rows ..][0..rows]);
+        self.far_on = self.far_pooled > 0 and step >= picture.far_from_step;
         @memcpy(self.time.slice(i32, rows), self.times[step * rows ..][0..rows]);
         @memcpy(self.x.slice(u16, self.prompt.len), self.prompt);
         if (video.len > 0) @memcpy(self.video_latents.slice(f32, video.len), video);

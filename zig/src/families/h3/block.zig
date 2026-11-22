@@ -157,7 +157,7 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) !void {
     enc.dispatchGroups(mtl.Size.of(m.rows, heads, 1), mtl.Size.of(32, 1, 1));
     try m.lap(pass, "heads");
     if (m.dense) {
-        if (m.far_pooled > 0) attendFar(m, enc.*) else attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, false);
+        if (m.far_on) attendFar(m, enc.*) else attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, false);
         try m.lap(pass, "attention");
     } else {
         enc.setPipeline(m.pipeline("h3_pool"));

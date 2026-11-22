@@ -290,9 +290,12 @@ pub fn tiles(a: std.mem.Allocator, prefix_rows: usize, target_rows: usize) !Tile
 
 /// Pooled far-field keys (`--far-pool`): each target query tile attends the prefix, full keys in a band of
 /// `far_band` pooled rows around its own, and outside it the target's keys and values 2 x 2 mean-pooled, each
-/// pooled logit lifted by ln 4. Off below `far_min_rows` target rows, where attention is a small part of a step.
+/// pooled logit lifted by ln 4. Off below `far_min_rows` target rows, where attention is a small part of a step,
+/// and before step `far_from_step`: pooled from the first step, the early steps lay the picture out differently
+/// (card 182: cosine 0.70; from step 3, PSNR 27.9 dB; from step 4 every gate holds).
 pub const far_min_rows = 8192;
 pub const far_band = 8;
+pub const far_from_step = 4;
 
 /// A far-field binding's key tiles: `list` holds `per_query` tile indices for each target query tile in order;
 /// indices from `tiles` up are pooled tiles, pooled row r at `tiles + r`.
