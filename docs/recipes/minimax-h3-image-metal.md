@@ -246,6 +246,8 @@ distilled heads their sigma span covers, as ComfyUI's step_heads does) and redra
 It draws a different picture, not a faster copy of the six-step one, so the teacher-forced and latent gates don't
 apply: drafts only run the free pass (`once` with `--draft-steps` is an error), and cases with reference rows
 refuse. It also writes `out/case.draft.h3case.safetensors`, the half-size draft's case.
+With no `--renoise-sigma`, `--draft-steps M` is the resolution cascade `cascade=M` of the ideas recipe; card 177
+below measures M = 2 and 4 and finds it fails idea 1's picture gates, so it stays opt-in.
 
 Warm on this Mac (M5 Ultra, 2048x2048, the seed-42 fox prompt): six timing-valid steps take 10.4 s; the same six
 steps with `--draft-steps 3` take 6.3 s — three half-size steps at 0.5 s each plus three full-size ones. The draft
@@ -1772,6 +1774,58 @@ stretches to 0.87-3.82 s, its single-threaded deflate after the pass, while the 
 GPU (round 9 loaded both). Rounds 4 (this card only), 5 and 7 (main only, load 57-99) lost their partner session to the
 load and are left out.
 
+### Card 177: the resolution cascade, `cascade=M`, measured against six full steps
+
+Idea 1 of [minimax-h3-image-ideas.md](minimax-h3-image-ideas.md) is `--draft-steps M` with no `--renoise-sigma`,
+on `tf-h3-image ... free` and `tf-h3-image-server`. The first M steps run on the half grid from `cascade.pool` of the
+seed's draw, the last of them keeps its velocity, then `cascade.lift` from sigma[M-1] to sigma[M], then the rest at
+full size. `draftSchedule` with no renoise keeps the checkpoint's sigmas, timesteps and deltas for every M
+(`picture_test.zig`), so every step keeps its own head. Without the flag no cascade code runs: the output is today's.
+**It stays opt-in.**
+
+**Run.** 22 Nov, M5 Ultra, this card's ReleaseFast `tf-h3-image-server` (SHA-256 `e57755c5…`). One resident session
+a schedule, each holding `/tmp/tensorfold-model.lock` for its 56-69 s: a cold warm-up, then four fixed prompts warm at
+2048x2048, seed 7. The prompts cover small text (a chalkboard menu), faces and hands, texture (knitted wool on oak) and
+architecture (a Gothic facade). Every step was `timing_valid=true`; speech was quiet. Other workers' builds held the
+one-minute load at 30-34, so wall totals carry CPU noise. Compare the steps' GPU seconds instead.
+Receipts: [`docs/receipts/h3-image-cascade-177`](../receipts/h3-image-cascade-177/): the session and gate scripts,
+prompts, server logs, loads, gate lines and PNG and latent SHA-256s.
+
+Every run, the six steps' GPU seconds / wall total, seconds:
+
+| Request | uncascaded | `cascade=2` | `cascade=4` |
+|---|---|---|---|
+| warm-up (cold bind, text prompt) | 9.35 / 11.23 | 7.26 / 10.74 | 5.17 / 11.45 |
+| text (same layout, reused) | 9.33 / 9.98 | 7.22 / 7.89 | 5.11 / 5.94 |
+| faces | 9.48 / 11.04 | 7.25 / 10.54 | 5.15 / 10.17 |
+| texture | 9.53 / 11.16 | 7.26 / 11.34 | 5.13 / 10.63 |
+| architecture | 9.45 / 11.09 | 6.89 / 10.91 | 4.82 / 9.34 |
+| steps, mean of the four warm | 9.45 | 7.16 (0.76x, 1.32x faster) | 5.05 (0.53x, 1.87x faster) |
+
+A half step takes 0.45-0.56 s of GPU against 1.48-1.75 s for a full one, a third, where the ideas recipe's 2.07x for
+m = 4 at 2048 implies 1/4.4. The steps come out 1.32x and 1.87x faster against the predicted 1.35x and 2.07x, and m = 4's 0.53x
+misses the 0.50x transformer gate. The warm text request is the clean wall-time A/B: 9.98 → 7.89 → 5.94 s. Each other
+prompt changes the layout's text rows, so it rebinds and its first step pays a cold start.
+
+**Gates: fail.** Each cascaded PNG was checked against the uncascaded PNG of the same prompt with
+[`gates.py`](../receipts/h3-image-cascade-177/gates.py): luma power with radial frequency between a quarter and half
+a cycle a pixel, over the base's (at least 0.90), and LPIPS (AlexNet; at most 0.08).
+
+| Prompt | `cascade=2` top-octave / LPIPS | `cascade=4` top-octave / LPIPS |
+|---|---|---|
+| text | 6.266 / 0.583 | 5.205 / 0.619 |
+| faces | 1.764 / 0.727 | 1.069 / 0.720 |
+| texture | 1.079 / 0.407 | 1.094 / 0.507 |
+| architecture | 2.165 / 0.557 | 2.000 / 0.604 |
+
+The energy gate passes everywhere; LPIPS fails all eight pairs by 5-9x. The cascade draws another picture from the
+same seed, as fast mode always has (latent cosine 0.70 above): a different layout, the menu's prices moved and its
+words misspelled differently, the faces' people rearranged. Top-octave energy rises because `cascade=4` leaves
+visible high-frequency hatching on faces and cloth, so that gate passing is no sign of kept detail. Idea 1's
+criteria (same picture, finer detail kept) do not hold on this lift: keep it opt-in as a speed mode and judge it on
+its own pictures, not as a copy of the six-step one. These are four prompts at one seed, against the ideas recipe's
+32 at two seeds; the GPU limit on this Mac allows only short sessions, and a 5-9x LPIPS miss on every pair would not
+turn into a pass with more prompts.
 ### Card 174: fc2's rows split between the GPU and SME2, measured and stopped
 
 The ideas page's idea 3: the CPU's SME2 units take a product's last rows while `h3_gemm_32x64_i8` runs the rest,
@@ -1891,6 +1945,58 @@ values widened, compared and kept each step) costs 0.1-0.4 s on every run step, 
 moving that pass to the GPU would buy at most 1.5 s for a picture that fails. Its 9.98 s total, the best of either
 design and under main's 10.18 s here, is one request with a failed picture, so it is claimed as nothing. The code is
 reverted.
+
+### Card 187: FastH3's routed attention in the last steps, measured and rejected as a default
+
+`tf-h3-image-server --routed-steps N` runs the last N steps' attention the FastH3 way on the dense picture model: the
+prefix's query tiles still see every tile, and each picture tile sees the whole prefix and its best fifth of the
+picture's tiles, chosen per head from the tiles' means by `h3_tile_scores` and `h3_topk` (13 of 64 at 2048). There is no
+pooled branch: the release weights were trained dense. Without the flag the model takes the old dense path, so the
+default draws main's bytes. `test-h3-image-server` holds a routed run that keeps every picture tile to the dense latent
+bit for bit, and the tile top-k contract (`tf-kernel-contract --only "h3 tile top-k"`) now serves the 64-keeping-13
+shape. `--routed-steps 2` was measured: steps 5 and 6 of 6.
+
+Main `bc1012c35` with this change, one ReleaseFast server a session, warm 2048x2048 at seed 42 on card 34's pilot and
+the canal, foundry and greenhouse prompts (unseen by earlier cards), each session holding `/tmp/tensorfold-model.lock`
+for 38-119 s. Load was 21-57 through these sessions, with other builds on the CPU. Every request, seconds (prompt / 6
+steps / decoder / total; `F` marks a step reporting `timing_valid=false`):
+
+| Request | dense | `--routed-steps 2` | fast (`--draft-steps 3`) | fast, `--routed-steps 2` |
+|---|---|---|---|---|
+| cold pilot | 1.13 / 13.93 / 2.99 / 30.03 | 0.70 / 10.37 / 2.42 / 19.10 | 0.61 / 16.88 / 2.17 / 21.48 | 0.35 / 9.23 / 0.73 / 11.25 |
+| canal | 0.72 / 12.66 / 5.28 / 23.26 | 0.59 / 10.11 / 3.70 / 16.31 | 0.48 / 9.06 / 0.67 / 11.91 F | 0.27 / 8.15 / 1.85 / 11.26 |
+| foundry | 1.14 / 11.83 / 6.85 / 21.72 | 0.58 / 11.01 / 2.32 / 15.89 F | 0.22 / 8.65 / 0.67 / 10.51 | 0.32 / 8.46 / 0.98 / 10.86 |
+| greenhouse | 0.61 / 11.31 / 5.91 / 20.22 | | | |
+
+The totals swing with the load; the steps themselves are steadier. A routed step 5 or 6 took 1.36-1.42 s of wall time
+against 1.54-1.69 s dense, so routing saves about 0.2 s a step, 0.4 s a picture, in both modes.
+
+The attention pass, with `profile` on greenhouse: each launch on the GPU's timestamp counters, one request a session
+of 13-24 s at load 10-22, every step `timing_valid=true`. Seconds of attention launches summed over the profiled
+steps (a fast run's three half-size draft steps are not profiled), then the whole picture as above:
+
+| Mode | dense attention | routed attention (+ routing) | dense picture | routed picture |
+|---|---|---|---|---|
+| normal, 6 steps | 1.649 | 1.206 (+0.025) | 0.23 / 14.13 / 0.73 / 15.75 | 0.28 / 12.00 / 0.63 / 13.86 |
+| fast, 3 full-size steps | 0.763 | 0.435 (+0.025) | 0.28 / 8.33 / 0.61 / 10.05 | 0.23 / 9.21 / 0.63 / 10.68 |
+
+Two routed steps take attention down by 0.44 s in normal mode (27%) and 0.33 s in fast mode (43%), 4-7% of the
+profiled steps' GPU time. The whole-picture times move more than that either way (the
+profile serialises launches and other work shared the CPU), so the steady per-step walls above are the better
+measure of the gain. An earlier profile pair at load 37-93 (3.72 s dense, 2.47 s routed over six steps) is in the
+receipts and not counted.
+
+The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.2 dB, mean pixel difference at most
+4.1) on one prompt of three, against the dense picture of the same mode:
+
+| Prompt | normal: cosine / PSNR / mean | fast: cosine / PSNR / mean |
+|---|---|---|
+| pilot | 0.999335 / 36.769 dB / 2.106 pass | 0.998664 / 33.622 dB / 3.220 pass |
+| canal | 0.997565 / 26.564 dB / 6.398 **fail** | 0.996870 / 24.944 dB / 8.055 **fail** |
+| foundry | 0.999182 / 32.549 dB / 3.144 pass | 0.998478 / 31.260 dB / 3.358 pass |
+
+Canal misses the floor by 1.64 dB in normal mode and 3.26 dB in fast mode, so routing stays off by default: about 0.4 s
+of a 10-12 s warm picture does not pay for a gate that fails. Receipts are in `h3-image-runs/187`, outside the repo.
 
 ### Next, ranked
 
