@@ -4,6 +4,12 @@
 GPU door. The job has no network, so the checkpoint must already sit in the pilot folder as
 `models/Inkling-2-Mini`; the script refuses and lists what `/assets` holds when it does not.
 
+The server is #4387's engine (`inkling2.native`, model type `inkling2_loop`) with jschmied's three load and
+attention fixes from his #4387 comments; #4441's engine (`inkling2.mini_native`) rides along for its float64
+reference. The script fails on any of: `tf-cuda-test inkling2-serving` (#4387's checks), `tf-cuda-test
+inkling2-mini-ref` (32 greedy tokens equal to the float64 host reference), that reference's planted control staying
+green, or a failed stream in `tools/bench_concurrent.py` at 1 and 4 streams.
+
 ## RTX Spark (N1X): what differs and what must change
 
 I see the same chip and memory model as the GB10: sm_121 and one unified pool, so the `-Dsm=121` kernel images are
