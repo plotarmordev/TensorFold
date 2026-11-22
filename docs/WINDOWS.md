@@ -203,3 +203,29 @@ WSL admission change above:
 The GPU ran at about 2.1 GHz and 42-49 W (the laptop's power cap; in Windows' power-saving mode it runs near 1.4 GHz).
 The same laptop serving the same model through exllamav3 (vcruz305's EXL3 recipe, Cyber Frost 3.87 bpw) gave 38.6 /
 34.5 / 27.8 tok/s, a first token in 0.74-0.80 s, and 36.2 tok/s aggregate at four streams.
+
+## RTX Spark N1X: what the 1.3.3 build lacked, and what Inkling 2 Mini still needs (2026-11-22)
+
+A second N1X laptop (Windows 11 ARM64, driver 621.01 / CUDA 13.5, 48 SMs, 51,816 MiB of GPU memory as its firmware
+shares it) with Zig 0.17.0 and the CUDA 13.5.0 `windows-arm64` redistributables failed
+`zig build native install -Dsm=121 -Dstrip=true` at `1f68cdb4b`. Fixed since:
+
+- 11 errors in `tf-muse` (`std.c` has no `pollfd` in `ws2_32`, `void` parameters under `aarch64_aapcs_win`, POSIX
+  `pthread_mutex_t`, `MSG.NOSIGNAL` and null-handle types in `zig/src/fabric/tp`): its rank 1 follows over the POSIX TP
+  session, so Windows builds skip it, as they skip the TP tests.
+- `tensorfold-native`: `gpu_turn.zig` set POSIX file modes (`Permissions.fromMode`), and DXGI's COM calls cast untyped
+  vtable entries to aarch64 function pointers without `@alignCast`.
+- `zig build compile-native-cuda-windows` now type-checks the `aarch64-windows-gnu` sm_121 product too.
+
+Inkling 2 Mini is not served on any OS yet: `zig/src/families/inkling2` has kernels, ops and the host-side config,
+names, plan and prompt, which `tf-cuda-test`'s contracts use (they compile for `aarch64-windows-gnu`). For Windows it
+needs:
+
+1. A native family (`open`, weights, forward, admission) registered in `zig/build/cuda_engines.zig` and
+   `zig/src/native/cuda_families.zig`, so `compile-native-cuda-windows` checks it for both Windows targets.
+2. No serving path through `cuda.tp_watch`, `cuda.tp_group` or `cuda.carveout` (sockets, `fork`, DRM `ioctl`), which
+   do not compile for Windows.
+3. `test-inkling2-host` built for `b.graph.host`, not `-Dtarget` (`zig/build/inkling2_host.zig`), as the other host
+   packages are, so a cross-target `zig build test` does not try to run a Windows binary.
+4. Admission against the WDDM pool: the 20.2 GB checkpoint leaves about 20 GiB of this laptop's 40 GiB CUDA share for
+   the cache and streams.
