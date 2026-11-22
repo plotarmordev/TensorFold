@@ -255,11 +255,11 @@ __device__ __forceinline__ void h3_head_epilogue(const __nv_bfloat16 *tile, cons
     for (int first = 0; first < 256; first += 64) {
         const int local = first + s, row = tile_m * 256 + local;
         const __nv_bfloat16 *x = tile + local * 128;
-        float v[32], sq = 0.0f;
+        float sq = 0.0f;
         #pragma unroll
         for (int j = 0; j < 32; ++j) {
-            v[j] = __bfloat162float(x[c0 + j]);
-            sq += v[j] * v[j];
+            const float v = __bfloat162float(x[c0 + j]);
+            sq += v * v;
         }
         sq += __shfl_xor_sync(0xffffffffu, sq, 1);
         sq += __shfl_xor_sync(0xffffffffu, sq, 2);
@@ -273,7 +273,7 @@ __device__ __forceinline__ void h3_head_epilogue(const __nv_bfloat16 *tile, cons
             #pragma unroll
             for (int e = 0; e < 2; ++e) {
                 const int c = c0 + j + e;
-                a[e] = __bfloat162float(__float2bfloat16(v[j + e] * inv * __bfloat162float(nw[c])));
+                a[e] = __bfloat162float(__float2bfloat16(__bfloat162float(x[c]) * inv * __bfloat162float(nw[c])));
                 if (c < 2 * heads.rot) {
                     const bool low = c < heads.rot;
                     const int p = low ? c + heads.rot : c - heads.rot, t = low ? c : c - heads.rot;
