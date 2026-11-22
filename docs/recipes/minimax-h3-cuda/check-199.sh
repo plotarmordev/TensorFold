@@ -1,12 +1,28 @@
 #!/bin/sh
-# Card 199's kernel check on TOP's Spark: every H3 kernel's contract gates 1-4 and live gate 5 on sm_121
-# (`kernel-contract h3`: the h3, decoder, prompt and modulation names) into /work/out/contract.log, its
-# failures and SUMMARY past the Desk's 200 log lines; registers and shared bytes in the launch lines.
+# Card 199's kernel check on TOP's Spark: each H3 kernel suite's contract gates 1-4 and live gate 5 on sm_121 in
+# its own tf-cuda-test process (an abort in one leaves the others' results), then the five-SM limits audit of the
+# H3 images; failures, SUMMARY lines and the H3 RECORD lines past the Desk's 200 log lines.
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/check-199.sh
 set -eu
+out=/work/out
 status=0
-H3_BUILD=contract H3_CONTRACT=h3 sh docs/recipes/minimax-h3-cuda/cuda-build.sh >/work/out/contract.log 2>&1 || status=$?
-grep -E "FAIL|SUMMARY|panic|double free|error|Segmentation|Aborted|limits live" /work/out/contract.log | grep -v "warning" | tail -n 120
-tail -n 15 /work/out/contract.log
-echo "contract exit $status"
+for suite in h3_ h3d_ h3p_ h3m_; do
+    s=0
+    # the first suite's job builds tf-cuda-test (cuda-build.sh's contract mode); the others reuse it
+    if [ -x /work/contract/bin/tf-cuda-test ]; then
+        /work/contract/bin/tf-cuda-test kernel-contract "$suite" >"$out/contract-$suite.log" 2>&1 || s=$?
+    else
+        H3_BUILD=contract H3_CONTRACT=$suite sh docs/recipes/minimax-h3-cuda/cuda-build.sh >"$out/contract-$suite.log" 2>&1 || s=$?
+    fi
+    grep -E "^FAIL|SUMMARY|panic|corrupted|double free|Segmentation|Aborted|error:" "$out/contract-$suite.log" | sort -u
+    echo "suite $suite exit $s"
+    [ "$s" = 0 ] || status=1
+done
+s=0
+H3_BUILD=limits sh docs/recipes/minimax-h3-cuda/cuda-build.sh >"$out/audit.log" 2>&1 || s=$?
+grep -E "^(FAIL limits|RECORD) (h3 |h3_image )" "$out/limits.log" || tail -n 20 "$out/audit.log"
+tail -n 1 "$out/limits.log"
+echo "limits audit exit $s"
+[ "$s" = 0 ] || status=1
+echo "check-199 exit $status"
 exit "$status"
