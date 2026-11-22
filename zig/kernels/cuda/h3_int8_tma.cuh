@@ -245,8 +245,6 @@ struct HeadEpilogue {
     float eps;
 };
 
-constexpr int head_tile_bytes = 256 * 128 * sizeof(__nv_bfloat16);
-
 // One q or k head from the product's shared tile, in h3_heads' exact sum and rounding order.
 __device__ __forceinline__ void h3_head_epilogue(const __nv_bfloat16 *tile, const HeadEpilogue &heads,
                                                  bool query, int head, int m, int tile_m) {
@@ -462,6 +460,9 @@ __device__ __forceinline__ void
                                 *reinterpret_cast<uint4 *>(heads->tv + at) = make_uint4(words[0], words[1], words[2], words[3]);
                             }
                         } else {
+                            *reinterpret_cast<uint4 *>(output + static_cast<size_t>(row) * n + column) =
+                                make_uint4(words[0], words[1], words[2], words[3]);
+                        }
                     }
                 }
             }
