@@ -146,12 +146,13 @@ pub const Heads = struct {
 
 // --- h3d_attention: softmax(q k^T / 8) v over a tile's tokens, fp32 scores, softmax and sums ---------------------
 
-/// Keys the kernel holds a query: 9 a lane.
+/// Keys the kernel holds a query: 9 blocks of 32.
 const slots = 9 * 32;
 
-/// The kernel's fp32 steps: a 64-deep score, precise exp, a lane's 9 keys and a tree, a chain over the keys, division.
+/// The kernel's fp32 steps: a 64-deep score, precise exp, a lane's 72 weights and two shuffles, the simdgroup products'
+/// chain over the keys, division.
 fn form(tokens: usize) ar.Form {
-    return .{ .score = D + 1, .fast_exp = false, .chunk_exp = false, .p_rel = 0, .num = @floatFromInt(tokens + 1), .den = 9 + 5 + 1, .div = 2 * parts.div_ulps, .exp_ulps = .{ parts.exp_ulps, 0 } };
+    return .{ .score = D + 1, .fast_exp = false, .chunk_exp = false, .p_rel = 0, .num = @floatFromInt(tokens + 1), .den = 72 + 2 + 1, .div = 2 * parts.div_ulps, .exp_ulps = .{ parts.exp_ulps, 0 } };
 }
 
 pub const Attention = struct {
@@ -220,12 +221,12 @@ pub const Attention = struct {
         return if (key < half) big else @as(i32, if (at < 8 and at % 2 == 0) 1 else 0) - big;
     }
 
-    /// A block's attention: groups of 8 queries (256 threads) by 16 heads by tiles.
+    /// A block's attention: groups of 32 queries (128 threads) by 16 heads by tiles.
     pub fn launch(_: *Attention, t: anytype, e: mtl.ComputeEncoder) void {
         const s = t.shape;
         for (0..4) |i| t.bind(e, i, i);
         e.setValue(parts.Shape{ .tiles = @intCast(s.rows), .tokens = @intCast(s.k), .m = @intCast(s.rows * s.k) }, 4);
-        e.dispatchGroups(mtl.Size.of((s.k + 7) / 8, H, s.rows), mtl.Size.of(256, 1, 1));
+        e.dispatchGroups(mtl.Size.of((s.k + 31) / 32, H, s.rows), mtl.Size.of(128, 1, 1));
     }
 
     pub fn count(_: *Attention, s: c.Shape) usize {

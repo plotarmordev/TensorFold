@@ -1,6 +1,6 @@
 //! tf-h3-image-prompt-cuda: MiniMax-H3-Image's prompt stage on CUDA, the same case
-//! tf-h3-image-prompt(-host) writes — Qwen3-VL's text to layer 50 and the two-block refiner on the
-//! GPU, or its synthetic selftest against the float64 host reference.
+//! tf-h3-image-prompt(-host) writes — Qwen3-VL's text to layer 50 (int8 products, bf16 with --bf16)
+//! and the two-block refiner on the GPU, or its synthetic selftest against the float64 host reference.
 const std = @import("std");
 const hp = @import("h3_prompt_cuda");
 const tokenizer = @import("tokenizer");
@@ -18,8 +18,8 @@ const match = @import("h3_image_match.zig");
 const prompt_cache = hp.cache;
 
 const usage =
-    \\usage: tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
-    \\       tf-h3-image-prompt-cuda TEXT_ENCODER_DIR MODEL_DIR --serve
+    \\usage: tf-h3-image-prompt-cuda [--bf16] TEXT_ENCODER_DIR MODEL_DIR prompt.txt out.safetensors [WIDTHxHEIGHT [SEED [MIN_AREA]]]
+    \\       tf-h3-image-prompt-cuda [--bf16] TEXT_ENCODER_DIR MODEL_DIR --serve
     \\       tf-h3-image-prompt-cuda selftest [WORK_DIR]
     \\  TEXT_ENCODER_DIR  MiniMax-H3's text_encoder/ (Qwen3-VL): config.json, its index and shards
     \\  MODEL_DIR         the MiniMax-H3-Image folder: model_index.json, tokenizer/, transformer/
@@ -33,6 +33,8 @@ const usage =
     \\                    of stdin per picture, each answered `done OUT` or `failed OUT` on stdout;
     \\                    a prompt's states are kept for its repeats (H3_PROMPT_CACHE MiB, 256); with H3_PROMPT_CHECK=1
     \\                    each encode's refiner rows must reach cosine 0.999 against the host reference, else failed
+    \\  --bf16            the text encoder's products in bf16, summed in reference order, instead of int8 at a
+    \\                    scale per 128 of K
     \\  selftest          the GPU kernels on a tiny synthetic checkpoint against the float64 host reference;
     \\                    WORK_DIR (default under TMPDIR) holds a new folder with the checkpoint while it runs
     \\Exit 0: done or every gate passed; 1: a gate failed.
@@ -41,7 +43,9 @@ const usage =
 pub fn main(init: std.process.Init) !u8 {
     const a = init.arena.allocator();
     const gpa = init.gpa;
-    const args = try init.minimal.args.toSlice(a);
+    const all = try init.minimal.args.toSlice(a);
+    const bf16 = all.len >= 2 and std.mem.eql(u8, all[1], "--bf16");
+    const args = if (bf16) try std.mem.concat(a, [:0]const u8, &.{ all[0..1], all[2..] }) else all;
     if (args.len >= 2 and std.mem.eql(u8, args[1], "selftest") and args.len <= 3) {
         const tmp = init.environ_map.get("TMPDIR") orelse "/tmp";
         const dir = if (args.len == 3) args[2] else try std.fs.path.join(a, &.{ tmp, "tf-h3-image-prompt-cuda-selftest" });
@@ -52,7 +56,7 @@ pub fn main(init: std.process.Init) !u8 {
         std.debug.print("{s}", .{usage});
         return 2;
     }
-    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, args[1], args[2]);
+    var loaded = try Loaded.open(init.io, init.environ_map, a, gpa, args[1], args[2], !bf16);
     defer loaded.deinit(gpa);
     if (serving) return serve(init, gpa, &loaded);
     try pictureRun(init.io, a, &loaded, args[3], args[4], args[5..]);
@@ -74,7 +78,7 @@ const Loaded = struct {
     cache: prompt_cache.Cache,
     /// H3_PROMPT_CHECK=1: each encode's refiner rows checked against the host reference (`checkRefine`).
     check: bool,
-    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8) !Loaded {
+    fn open(io: std.Io, env: *const std.process.Environ.Map, a: std.mem.Allocator, gpa: std.mem.Allocator, encoder_dir: []const u8, model_dir: []const u8, quantized: bool) !Loaded {
         // the folder and its tokenizer, checked as the host prompt path checks them
         const enc = try rules.checkEncoder(a, try read(io, a, &.{ encoder_dir, "config.json" }));
         _ = try picture.checkIndex(a, try read(io, a, &.{ model_dir, "model_index.json" }));
@@ -98,8 +102,8 @@ const Loaded = struct {
         const started = seconds();
         var layer_ctx: LayerCtx = .{ .shards = &shards, .g = enc.text, .prefix = prefix };
         var block_ctx: BlockCtx = .{ .shards = &front_shards, .g = front };
-        const res = try hp.loadResident(runner, a, enc.text, front, embed, layerOf, &layer_ctx, blockOf, &block_ctx, front_w.cond_w, front_w.cond_b, front_w.final_norm);
-        std.debug.print("{d:.2} GiB of prompt weights resident in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), seconds() - started });
+        const res = try hp.loadResident(runner, a, enc.text, front, quantized, embed, layerOf, &layer_ctx, blockOf, &block_ctx, front_w.cond_w, front_w.cond_b, front_w.final_norm);
+        std.debug.print("{d:.2} GiB of prompt weights resident ({s}) in {d:.2} s\n", .{ @as(f64, @floatFromInt(res.arena.len)) / (1 << 30), if (quantized) "int8" else "bf16", seconds() - started });
         for (shards.folder.files.values()) |*file| file.evict();
         for (front_shards.folder.files.values()) |*file| file.evict();
         const cache = prompt_cache.Cache.init(gpa, prompt_cache.Cache.budgetOf(env.get("H3_PROMPT_CACHE")));
@@ -449,7 +453,9 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
     const prefix = "model.language_model.";
     var bits_layer: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
     var bits_front: Ctx = .{ .tiny = &tiny, .a = a, .g = g };
-    var res = try hp.loadResident(runner, a, g, f, try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix})), bitsLayer, &bits_layer, bitsBlock, &bits_front, try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight"));
+    const front_bits: [3]hp.Tensor = .{ try bitsOf(&tiny, "condition_proj.weight"), try bitsOf(&tiny, "condition_proj.bias"), try bitsOf(&tiny, "token_refiner.final_norm.weight") };
+    const embed_bits = try bitsOf(&tiny, try std.fmt.allocPrint(a, "{s}embed_tokens.weight", .{prefix}));
+    var res = try hp.loadResident(runner, a, g, f, false, embed_bits, bitsLayer, &bits_layer, bitsBlock, &bits_front, front_bits[0], front_bits[1], front_bits[2]);
     defer res.deinit();
     const enc = try a.alloc(u16, T * g.hidden);
     const started = seconds();
@@ -484,6 +490,17 @@ fn selftest(init: std.process.Init, a: std.mem.Allocator, gpa: std.mem.Allocator
     const same = std.mem.eql(u16, enc, again) and std.mem.eql(u16, out, out_again);
     std.debug.print("encoded in {d:.3} s; again, byte for byte the same: {}\n", .{ enc_s, same });
     failed = failed or !same;
+
+    // the default int8 products, at a scale per 128 of K: near the oracle's rows, and repeatable
+    var res8 = try hp.loadResident(runner, a, g, f, true, embed_bits, bitsLayer, &bits_layer, bitsBlock, &bits_front, front_bits[0], front_bits[1], front_bits[2]);
+    defer res8.deinit();
+    const enc8 = try a.alloc(u16, enc.len);
+    try runner.encode(a, g, &res8, ids, pos, null, enc8);
+    const m8 = match.match(enc8, enc_ref, g.hidden);
+    match.report("text encoder rows, int8 products at a scale per 128 of K", m8, m8.cosine >= 0.999);
+    try runner.encode(a, g, &res8, ids, pos, null, again);
+    std.debug.print("the int8 encode again, byte for byte the same: {}\n", .{std.mem.eql(u16, enc8, again)});
+    failed = failed or m8.cosine < 0.999 or !std.mem.eql(u16, enc8, again);
 
     // an edit's rows: a 6-pad vision block spliced at the marks, DeepStack's blocks scattered after
     // layers 0 to 2 — the full run, then each part alone so a failure names splice, scatter or layer growth
