@@ -898,6 +898,30 @@ which rounds each product to fp16 instead of the Metal reference's bf16. So fp16
 `h3d_finish` per product and saves nothing. bf16 products stay. The remaining 22 ms to mmh3's 307.6 ms comes from
 CUTLASS's kernel choice on these shapes, not from the operand type.
 
+### Card 185: the PNG written band by band while the GPU decodes the next tile row — kept
+
+At the canvas's size `tf-h3-image-decoder-cuda` (one-shot and `--serve`) now decodes a tile row a pass, the way the
+Metal decoder does since card 170: once a row's tiles are blended, `image_decoder_host.zig`'s `Bands` turns the
+final rows to RGB bytes and deflates them into one `png.Stream` on a CPU thread while the GPU runs the next row. A
+resized request (`WIDTHxHEIGHT` other than the canvas) and `reference` keep one whole-picture pass and
+`png.encode` after LANCZOS. The selftest decodes its 2 x 2-tile case banded too: bit-identical to the staged tiles,
+the streamed PNG `png.encode`'s bytes.
+
+[`bench-185-ab.sh`](minimax-h3-cuda/bench-185-ab.sh) ran this card and main (`bench-185-base.patch` reversed) in
+one TOP job (`top-b20e9be30f8b` at `d3de0451`, 22 November, every selftest PASS), 2048², the pilot prompt cold then
+three unseen prompts warm, `H3_PROFILE` off. The decoder's host side is its in-all time less its passes' wall:
+
+| 2048² run | card wall s | card decoder s (passes / in all / host) | main wall s | main decoder s (passes / in all / host) |
+|---|---:|---:|---:|---:|
+| cold | 150.56 | 1.28 / 1.63 / 0.35 | 145.97 | 1.15 / 1.69 / 0.54 |
+| warm 1 | 14.19 | 0.93 / 1.05 / 0.12 | 14.32 | 0.78 / 1.18 / 0.40 |
+| warm 2 | 13.86 | 0.93 / 1.05 / 0.12 | 14.04 | 0.78 / 1.20 / 0.42 |
+| warm 3 | 14.03 | 0.93 / 1.05 / 0.12 | 14.16 | 0.78 / 1.19 / 0.41 |
+
+The host side fell from 0.40-0.42 s to 0.12 s warm; eleven passes of eleven tiles cost the GPU 0.15 s over one of
+121, so the decoder stage nets 1.05 s against 1.18-1.20 s. All four PNGs are sha256-identical to main's on the same
+latents. The cold wall ran 4.6 s longer on the card's side, outside the decoder (cold decoder 1.63 s against 1.69 s).
+
 ### Card 154: unseen prompts of every length draw again
 
 An unseen 55-token prompt (the lighthouse, job `top-6f13211c7306`) failed with `NoAlgorithm` on both sides of that
