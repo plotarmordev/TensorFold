@@ -124,8 +124,28 @@ fn attendFar(m: *const Model, enc: mtl.ComputeEncoder) void {
     attend(m, enc, m.far_list, m.tiles - m.prefix_tiles, m.far_per_query, m.prefix_tiles, true);
 }
 
+/// The tiles' means of q, k and v, the routing pass's input.
+fn means(m: *const Model, enc: mtl.ComputeEncoder) void {
+    enc.setPipeline(m.pipeline("h3_pool"));
+    enc.setBuffer(m.tq, 0, 0);
+    enc.setBuffer(m.tk, 0, 1);
+    enc.setBuffer(m.tv, 0, 2);
+    enc.setBuffer(m.sizes.buffer, m.sizes.offset, 3);
+    enc.setBuffer(m.qp, 0, 4);
+    enc.setBuffer(m.kp, 0, 5);
+    enc.setBuffer(m.vp, 0, 6);
+    enc.dispatchGroups(mtl.Size.of(m.tiles, m.heads, 1), mtl.Size.of(32, 1, 1));
+}
+
+/// The prefix's query tiles see every tile; a target tile sees the prefix and its chosen tiles.
+fn attendRouted(m: *const Model, enc: mtl.ComputeEncoder) void {
+    attend(m, enc, m.all_tiles, m.prefix_tiles, m.tiles, 0, false);
+    attend(m, enc, m.chosen, m.tiles - m.prefix_tiles, m.prefix_tiles + m.keep, m.prefix_tiles, true);
+}
+
 /// Block `index` of a forward; the block before left its MLP's rows in y, added here with this block's first norm.
-pub fn run(m: *Model, pass: *h3.Pass, index: usize) !void {
+/// `routed`: a dense model's step routes its target tiles (Model.routed_steps).
+pub fn run(m: *Model, pass: *h3.Pass, index: usize, routed: bool) !void {
     const b = &m.blocks[index];
     const enc = &pass.enc;
     const heads = m.heads;
@@ -157,23 +177,22 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize) !void {
     enc.dispatchGroups(mtl.Size.of(m.rows, heads, 1), mtl.Size.of(32, 1, 1));
     try m.lap(pass, "heads");
     if (m.dense) {
-        if (m.far_on) attendFar(m, enc.*) else attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, false);
+        if (m.far_on) {
+            attendFar(m, enc.*);
+        } else if (routed) {
+            means(m, enc.*);
+            m.choose(enc.*);
+            try m.lap(pass, "routing");
+            attendRouted(m, enc.*);
+        } else {
+            attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, false);
+        }
         try m.lap(pass, "attention");
     } else {
-        enc.setPipeline(m.pipeline("h3_pool"));
-        enc.setBuffer(m.tq, 0, 0);
-        enc.setBuffer(m.tk, 0, 1);
-        enc.setBuffer(m.tv, 0, 2);
-        enc.setBuffer(m.sizes.buffer, m.sizes.offset, 3);
-        enc.setBuffer(m.qp, 0, 4);
-        enc.setBuffer(m.kp, 0, 5);
-        enc.setBuffer(m.vp, 0, 6);
-        enc.dispatchGroups(mtl.Size.of(m.tiles, heads, 1), mtl.Size.of(32, 1, 1));
+        means(m, enc.*);
         m.route(enc.*);
         try m.lap(pass, "routing");
-        // the prefix's query tiles see every tile; a video tile sees the prefix and its chosen tiles
-        attend(m, enc.*, m.all_tiles, m.prefix_tiles, m.tiles, 0, false);
-        attend(m, enc.*, m.chosen, m.tiles - m.prefix_tiles, m.prefix_tiles + m.keep, m.prefix_tiles, true);
+        attendRouted(m, enc.*);
         try m.lap(pass, "attention");
         // the pooled branch gated into the attention rows in place
         enc.setPipeline(m.pipeline("h3_gate_mix"));

@@ -1857,6 +1857,140 @@ pixel difference at most 4.1):
 | 4096 s42 | 0.999089 | 31.32 dB | 3.63 | pass |
 | 4096 s7 | 0.999096 | 30.97 dB | 3.78 | pass |
 | 2048 s42, s7 | 1 | identical | 0 | pass, PNG byte-identical |
+### Card 180: step caching, measured and reverted
+
+A `--step-cache X` option on `tf-h3-image-server` skipped a step's transformer pass and stepped the resident latent
+on the last run step's velocity (x += delta v on the host), with a gate on the latent's change deciding when.
+`--step-cache 0` ran every step and drew main's bytes (every latent and PNG `cmp`-identical on all four prompts), and a
+synthetic-checkpoint test held the cached run bit for bit to a host loop at every gate between the measured moves. No
+gate kept card 80's picture rule, so the code is reverted.
+
+Two gates were tried, each against main `e0c33d47b` on card 34's pilot cold, then the harbour, meadow and steam
+prompts warm and unseen (seed 42, 2048x2048). Each build ran as one resident ReleaseFast server, holding
+`/tmp/tensorfold-model.lock` for its own 66-143 s session:
+
+- **The latent's own move since the last run step** (relative L2). Step by step the latent moves 0.044-0.046, then
+  0.11, 0.20, 0.35 and 0.51-0.53, the same on all four prompts. A gate of 0.08 reuses step 1's velocity for step 2
+  only, and that one skip broke every picture: latent cosine 0.902-0.967, PSNR 15.9-20.6 dB, mean pixel difference
+  15.8-23.0. Each step has its own distilled head, so step 1's velocity is not step 2's.
+- **The clean picture the last two run steps predict** (x + sigma v, relative L2), reusing the last velocity for every
+  later step once it settles. It never settles: it still moves 0.39-0.48 at step 3, 0.24-0.28 at 4, 0.16-0.20 at 5 and
+  0.15-0.19 at 6. A gate of 0.2 skips steps 5 and 6 (pilot, harbour, steam) or step 6 alone (meadow). The meadow
+  picture comes closest, at cosine 0.9946 but PSNR 21.76 dB and mean 13.7. The others reach 0.974-0.977, 19.9-23.8 dB
+  and 10.3-14.9.
+
+Every warm request, seconds (prompt / 6 steps / decoder / total; `F` marks a request with a step reporting
+`timing_valid=false`). Main's session ran with no speech. Speech interrupted most of the branch's, and my own
+`test-h3-image-server` run, outside the lock, overlapped the 0.2 session's harbour and meadow:
+
+| Request | main | `--step-cache 0` | `--step-cache 0.2` | Load, main / 0 / 0.2 |
+|---|---|---|---|---|
+| cold pilot | 0.38 / 10.29 / 0.70 / 14.50 | 0.65 / 10.41 / 0.68 / 15.01 F | 0.45 / 9.84 / 13.81 / 27.45 F | 109 / 114 / 111 |
+| harbour | 0.22 / 9.00 / 1.55 / 11.86 | 0.25 / 10.41 / 0.68 / 13.02 F | 5.00 / 19.36 / 7.21 / 36.19 F | 147 / 114 / 82 |
+| meadow | 0.22 / 9.30 / 0.68 / 11.28 | 0.38 / 10.05 / 0.68 / 12.28 F | 10.75 / 34.66 / 6.51 / 55.68 F | 138 / 111 / 60 |
+| steam | 0.22 / 9.29 / 0.67 / 10.19 | 0.22 / 9.93 / 0.81 / 10.98 | 4.18 / 6.68 / 1.05 / 11.93 | 134 / 113 / 96 |
+
+Steam is the one clean pair: its two skipped steps took the six steps from 9.93 to 6.68 s, about 1.6 s a skip, while
+the prompt's 4.18 s at load 96 cost the total more than that. With the speed in reach but no skip keeping the
+picture, the bar is closed by quality, not time.
+
+A first round of the latent-move gate at 0.08 measured warm totals of 23.65, 10.92 and 8.66 s, with six steps of 13.60,
+8.50 and 7.72 s against `--step-cache 0`'s 11.89, 12.09 and 10.98 s, under the same quality failure. Its logs were
+overwritten by the second round, so its `timing_valid` lines were never checked and these times are not a receipt.
+
+#### Second attempt: the first block's residual (FBCache)
+
+The untried form above: run block 0 every step and compare its MLP branch, relative L1 over the picture rows, with the
+last fully run step's. Under the gate, skip blocks 1-49 and add that step's residual (the stream after the last gate
+add minus the stream after block 0) to this step's stream, then run this step's own final norm and distilled head.
+The per-step AdaLN of block 0 and the head stay live, so only the 49 blocks' work is reused. Same main `e0c33d47b`,
+prompts and lock as above; one session a build, 69-104 s each, every request listed (receipts in
+`h3-image-runs/180`, outside the repo):
+
+- **`--step-cache 0`** ran every block and drew main's bytes: all four latents identical to main's, PSNR infinite.
+- **The probe never settles.** Block 0's branch moves 0.49-0.52 at step 2, 0.49 at 3, 0.55-0.57 at 4, 0.68-0.72 at 5
+  and 0.75-0.80 at 6, the same on all four prompts. FBCache's published gates are 0.08-0.12 on 20-50-step models;
+  here every step moves four to ten times that.
+- **`--step-cache 0.5`** skips step 3 alone, the quietest, on every prompt. That one skip breaks every picture:
+
+| Prompt | latent cosine | PSNR | mean pixel diff |
+|---|---|---|---|
+| pilot | 0.983510 | 23.510 dB | 9.489 |
+| harbour | 0.973617 | 19.755 dB | 11.760 |
+| meadow | 0.991200 | 24.489 dB | 9.434 |
+| steam | 0.988035 | 25.447 dB | 7.268 |
+
+Better than reusing a velocity (15.9-20.6 dB for one skip), still 2.8-8.4 dB under card 80's 28.2 floor. Any
+gate that skips more steps or later ones reuses an older residual against a larger move, so no gate in reach passes.
+
+Seconds (prompt / 6 steps / decoder / total; `F` marks a request with a step reporting `timing_valid=false`):
+
+| Request | main | `--step-cache 0` | `--step-cache 0.5` |
+|---|---|---|---|
+| cold pilot | 0.39 / 10.31 / 0.68 / 12.74 | 0.29 / 9.89 / 1.37 / 12.44 F | 1.09 / 14.29 / 2.61 / 19.97 F |
+| harbour | 0.22 / 9.78 / 0.66 / 12.18 | 0.32 / 13.97 / 1.95 / 17.53 | 0.80 / 21.08 / 2.62 / 27.03 F |
+| meadow | 0.22 / 9.27 / 0.67 / 11.13 | 0.53 / 15.78 / 2.91 / 21.72 | 2.12 / 17.50 / 5.30 / 29.90 F |
+| steam | 0.22 / 9.27 / 0.68 / 10.18 | 0.91 / 16.49 / 2.91 / 20.40 | 0.34 / 8.93 / 0.69 / 9.98 |
+
+Load was 63-71 through main's session and 35-71 through the branch's, with other builds on the CPU. Steam's steps under
+0.5 are the one all-valid pair: 1.68, 1.66, **0.14** (skipped), 1.71, 1.94 and 1.78 s against main's 1.54 s each,
+8.93 s against 9.27 s. A skip saves its 49 blocks, but the host's pass over the stream (block 0 drained, its 22M bf16
+values widened, compared and kept each step) costs 0.1-0.4 s on every run step, so one skip nets about 0.3 s, and
+moving that pass to the GPU would buy at most 1.5 s for a picture that fails. Its 9.98 s total, the best of either
+design and under main's 10.18 s here, is one request with a failed picture, so it is claimed as nothing. The code is
+reverted.
+
+### Card 187: FastH3's routed attention in the last steps, measured and rejected as a default
+
+`tf-h3-image-server --routed-steps N` runs the last N steps' attention the FastH3 way on the dense picture model: the
+prefix's query tiles still see every tile, and each picture tile sees the whole prefix and its best fifth of the
+picture's tiles, chosen per head from the tiles' means by `h3_tile_scores` and `h3_topk` (13 of 64 at 2048). There is no
+pooled branch: the release weights were trained dense. Without the flag the model takes the old dense path, so the
+default draws main's bytes. `test-h3-image-server` holds a routed run that keeps every picture tile to the dense latent
+bit for bit, and the tile top-k contract (`tf-kernel-contract --only "h3 tile top-k"`) now serves the 64-keeping-13
+shape. `--routed-steps 2` was measured: steps 5 and 6 of 6.
+
+Main `bc1012c35` with this change, one ReleaseFast server a session, warm 2048x2048 at seed 42 on card 34's pilot and
+the canal, foundry and greenhouse prompts (unseen by earlier cards), each session holding `/tmp/tensorfold-model.lock`
+for 38-119 s. Load was 21-57 through these sessions, with other builds on the CPU. Every request, seconds (prompt / 6
+steps / decoder / total; `F` marks a step reporting `timing_valid=false`):
+
+| Request | dense | `--routed-steps 2` | fast (`--draft-steps 3`) | fast, `--routed-steps 2` |
+|---|---|---|---|---|
+| cold pilot | 1.13 / 13.93 / 2.99 / 30.03 | 0.70 / 10.37 / 2.42 / 19.10 | 0.61 / 16.88 / 2.17 / 21.48 | 0.35 / 9.23 / 0.73 / 11.25 |
+| canal | 0.72 / 12.66 / 5.28 / 23.26 | 0.59 / 10.11 / 3.70 / 16.31 | 0.48 / 9.06 / 0.67 / 11.91 F | 0.27 / 8.15 / 1.85 / 11.26 |
+| foundry | 1.14 / 11.83 / 6.85 / 21.72 | 0.58 / 11.01 / 2.32 / 15.89 F | 0.22 / 8.65 / 0.67 / 10.51 | 0.32 / 8.46 / 0.98 / 10.86 |
+| greenhouse | 0.61 / 11.31 / 5.91 / 20.22 | | | |
+
+The totals swing with the load; the steps themselves are steadier. A routed step 5 or 6 took 1.36-1.42 s of wall time
+against 1.54-1.69 s dense, so routing saves about 0.2 s a step, 0.4 s a picture, in both modes.
+
+The attention pass, with `profile` on greenhouse: each launch on the GPU's timestamp counters, one request a session
+of 13-24 s at load 10-22, every step `timing_valid=true`. Seconds of attention launches summed over the profiled
+steps (a fast run's three half-size draft steps are not profiled), then the whole picture as above:
+
+| Mode | dense attention | routed attention (+ routing) | dense picture | routed picture |
+|---|---|---|---|---|
+| normal, 6 steps | 1.649 | 1.206 (+0.025) | 0.23 / 14.13 / 0.73 / 15.75 | 0.28 / 12.00 / 0.63 / 13.86 |
+| fast, 3 full-size steps | 0.763 | 0.435 (+0.025) | 0.28 / 8.33 / 0.61 / 10.05 | 0.23 / 9.21 / 0.63 / 10.68 |
+
+Two routed steps take attention down by 0.44 s in normal mode (27%) and 0.33 s in fast mode (43%), 4-7% of the
+profiled steps' GPU time. The whole-picture times move more than that either way (the
+profile serialises launches and other work shared the CPU), so the steady per-step walls above are the better
+measure of the gain. An earlier profile pair at load 37-93 (3.72 s dense, 2.47 s routed over six steps) is in the
+receipts and not counted.
+
+The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.2 dB, mean pixel difference at most
+4.1) on one prompt of three, against the dense picture of the same mode:
+
+| Prompt | normal: cosine / PSNR / mean | fast: cosine / PSNR / mean |
+|---|---|---|
+| pilot | 0.999335 / 36.769 dB / 2.106 pass | 0.998664 / 33.622 dB / 3.220 pass |
+| canal | 0.997565 / 26.564 dB / 6.398 **fail** | 0.996870 / 24.944 dB / 8.055 **fail** |
+| foundry | 0.999182 / 32.549 dB / 3.144 pass | 0.998478 / 31.260 dB / 3.358 pass |
+
+Canal misses the floor by 1.64 dB in normal mode and 3.26 dB in fast mode, so routing stays off by default: about 0.4 s
+of a 10-12 s warm picture does not pay for a gate that fails. Receipts are in `h3-image-runs/187`, outside the repo.
 
 ### Next, ranked
 
@@ -1867,6 +2001,8 @@ pixel difference at most 4.1):
 | 3 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps at 4096 | The steps are compute-bound: a 2048 step is about 183 TFLOP in 1.83 s, a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs. ComfyUI's int8 here shows the other half: dequantized before each product, its steps are 1.7-1.9x slower than our bf16, so int8 weights alone buy only bytes. Not bit-identical; it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000: -32% at 2048, -22% at 4K. |
 | 4 | Attention | `--far-pool` landed opt-in (card 182): -6 s of 4096's 55-59 s of steps; dense attention still up to -15 s | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. Card 182's pooled far field passes the gates only on the last two steps (pooled from step 0 it was -15 s but moved the layout, cosine 0.70); next is a cheaper early step that keeps long-range keys, such as a wider band or 4 x 4 pooling only beyond it. |
 | 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step at 4096 | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones; SGLang's recipe runs all six steps. Each skip is a sixth of the steps; it needs a gate against the six-step latent. |
+| 4 | Attention | up to -15 s at 4096 | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. |
+| 5 | Step caching (TeaCache, FBCache, cache-dit) | measured, lost twice (card 180) | Neither form keeps card 80's rule. Reusing the last velocity: one skip at step 2 gives 15.9-20.6 dB, step 6 alone 21.76 dB. Reusing blocks 1-49's residual behind a first-block gate (FBCache): block 0's branch moves 49-80% a step, four to ten times FBCache's gates, and skipping step 3 alone gives 19.8-25.4 dB against the 28.2 floor. Six distilled steps leave no step close enough to its neighbour to reuse; closed. |
 | 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU; SGLang batches its tiles the same way. |
 
 ## On an M5 Ultra with the release weights

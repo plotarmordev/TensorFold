@@ -138,6 +138,9 @@ pub const Model = struct {
     audio_velocity: mtl.Buffer,
     /// Every query tile attends to every tile and the pooled branch is left out (not how the checkpoint was trained).
     dense: bool = false,
+    /// With `dense`, the last `routed_steps` steps route each target query tile to its `keep` best-scoring target
+    /// tiles (FastH3's top-k) beside the whole prefix, with no pooled branch; 0 keeps every step dense.
+    routed_steps: usize = 0,
     /// The released MiniMax-H3 layout: dense attention without routing gates, the fused q/k/v rows in `qkv`.
     base: bool = false,
     qkv: mtl.Buffer,
@@ -417,8 +420,8 @@ pub const Model = struct {
         try self.next(pass);
     }
 
-    /// After the tiles' means: tile scores, each video tile's chosen key tiles and the pooled branch.
-    pub fn route(self: *const Model, enc: mtl.ComputeEncoder) void {
+    /// After the tiles' means: tile scores and each video tile's chosen key tiles.
+    pub fn choose(self: *const Model, enc: mtl.ComputeEncoder) void {
         const heads = self.heads;
         enc.barrier();
         enc.setPipeline(self.pipeline("h3_tile_scores"));
@@ -433,12 +436,17 @@ pub const Model = struct {
         enc.setValue([3]i32{ @intCast(self.tiles), @intCast(self.prefix_tiles), @intCast(self.keep) }, 1);
         enc.setBuffer(self.chosen, 0, 2);
         enc.dispatchGroups(mtl.Size.of(self.tiles - self.prefix_tiles, heads, 1), mtl.Size.of(32, 1, 1));
+    }
+
+    /// `choose`, then the pooled branch.
+    pub fn route(self: *const Model, enc: mtl.ComputeEncoder) void {
+        self.choose(enc);
         enc.setPipeline(self.pipeline("h3_coarse"));
         enc.setBuffer(self.tile_scores, 0, 0);
         enc.setBuffer(self.vp, 0, 1);
         enc.setValue([1]i32{@intCast(self.tiles)}, 2);
         enc.setBuffer(self.coarse, 0, 3);
-        enc.dispatchGroups(mtl.Size.of(self.tiles, heads, 1), mtl.Size.of(32, 1, 1));
+        enc.dispatchGroups(mtl.Size.of(self.tiles, self.heads, 1), mtl.Size.of(32, 1, 1));
     }
 
     fn rowsIn(self: *const Model, enc: mtl.ComputeEncoder, from: mtl.Buffer, w: Ref, b: Ref, count: usize, width: usize, first: usize) void {
@@ -523,8 +531,9 @@ pub const Model = struct {
         // Keep blocks queued to hide host wake-up latency without submitting the entire forward ahead of speech.
         var queued: [3]mtl.CommandBuffer = undefined;
         var n: usize = 0;
+        const routed = step + self.routed_steps >= self.adaln.len / self.rows;
         for (0..self.blocks.len) |index| {
-            try block.run(self, &pass, index);
+            try block.run(self, &pass, index, routed);
             const t = self.give_way orelse continue;
             pass.enc.end();
             pass.cb.commit();
