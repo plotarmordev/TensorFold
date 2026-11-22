@@ -300,7 +300,7 @@ pub const Prm = struct {
                 const x = try self.values(s.k * s.n, -2, 2, fill, rng, true, true);
                 const y = try self.values(s.rows * s.n, -2, 2, .random, rng, true, false);
                 const idx = try al.alloc(u32, s.rows);
-                for (idx, 0..) |*v, i| v.* = @intCast(i * 2);
+                for (idx, 0..) |*v, i| v.* = @intCast((i * s.k) / s.rows);
                 rng.shuffle(u32, idx);
                 self.in = .{ .a = x, .b = y, .ints = idx, .rows = s.k, .n = s.n, .k = s.rows };
                 _ = try self.inPlace(x, true);
@@ -326,7 +326,7 @@ pub const Prm = struct {
                 const x = try self.values(s.k * s.n, -2, 2, fill, rng, true, true);
                 const rows_ = try self.values(s.rows * s.n, -2, 2, .random, rng, true, false);
                 const pads = try al.alloc(u32, s.rows);
-                for (pads, 0..) |*v, i| v.* = @intCast(i * 2);
+                for (pads, 0..) |*v, i| v.* = @intCast((i * s.k) / s.rows);
                 rng.shuffle(u32, pads);
                 self.in = .{ .a = x, .b = rows_, .ints = pads, .rows = s.k, .n = s.n, .k = s.rows };
                 _ = try self.inPlace(x, true);

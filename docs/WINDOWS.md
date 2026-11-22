@@ -240,8 +240,8 @@ Then, from a clean checkout of `8365021a7` on the same laptop, run by its only o
   - Seven `shapes` lines are one to four bf16 steps from float64, at 1.01 to 1.81 of their bound: `h3d_embed`,
     `h3d_rms_norm`, `h3d_layer_norm`, `h3d_attention`, `h3p_norm` (qwen and h3) and `h3p_heads rotary`. Two `sums`
     lines (`h3d_layer_norm`, `h3d_attention`) leave the bound. These kernels pass their nonfinite and repeat gates.
-    The four `h3d` misses are not Windows': Linux sm_121 on TOP gave the same ratios (1.14, 1.11, 1.36, 1.81) and the
-    same two `sums` lines at `2915d6f7` (`docs/recipes/minimax-h3-cuda.md`, card 144).
+    None of the nine is Windows': Linux sm_121 on TOP gave the same lines and ratios at `137959df8` (and the `h3d`
+    ones at `2915d6f7`, `docs/recipes/minimax-h3-cuda.md`, card 144).
   - Two `sums` lines, `h3p_attention` causal and all rows, said "refused a served shape" on any OS: gate 4 cuts the
     77-row shape to 4 rows, and their `prepare` refused fewer rows than K. The kernel's keys are its rows, so
     `prepare` no longer reads K and the depth bound counts rows.
@@ -267,5 +267,8 @@ needs:
    the cache and streams.
 5. Its CUDA sources in CUDA's qualifiers (`__noinline__`, `__forceinline__`), not GCC attributes: only a build with
    nvcc and cl.exe, such as this laptop's, rejects them.
-6. The kernel contract finished on this laptop, the only run that qualifies its kernels there: what ends the run
-   with exit code 5 before its SUMMARY, and the `h3d` and `h3p` shape bounds that miss on Linux sm_121 too.
+6. The kernel contract finished on this laptop, the only run that qualifies its kernels there, and the `h3d` and
+   `h3p` shape bounds above, which Linux sm_121 misses the same way. The exit code 5 before SUMMARY was the test's
+   heap: TOP's run at `137959df8` died the same way ("double free or corruption") after `h3p_add`. Gate 1 grows
+   `h3p_scatter_add` and `h3p_splice`'s 4-row shape to 5 rows, and their indices `2i` then wrote past the 8-row
+   buffer; they now spread over its rows.

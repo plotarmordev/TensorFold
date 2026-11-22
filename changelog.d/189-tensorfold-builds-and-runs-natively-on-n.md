@@ -13,3 +13,5 @@
   Inkling 2 Mini still needs there.
 - The kernel contract's `h3p_attention` takes gate 4's 4-row cut of its 77-row shape (its keys are its rows; it
   refused fewer rows than K on every OS), and MLP128's N/A line names its sm_120-only tile, not the sm_90 cluster.
+- `h3p_scatter_add` and `h3p_splice`'s contract rows stay inside their buffer: gate 1's 5-row shape wrote past it
+  and ended `kernel-contract` before its SUMMARY ("double free or corruption" on Linux, exit code 5 on Windows).
