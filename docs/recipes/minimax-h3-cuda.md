@@ -1079,6 +1079,26 @@ All four pass (0.99, 28.2 dB, 4.1), and the profiled pass's routed pictures matc
 stays **opt-in**. It is a different picture, though a close one, for 2.8%, while `--fp4` gives 19%. Routing more steps
 or running at 4096 (four times the tiles, attention a larger share) was not measured.
 
+### Card 179: dense attention's QK and PV on the INT8 tensor cores
+
+`h3_attention_int8.cuh` is the image transformer's dense attention with both products on the integer tensor cores:
+QK^T on `mma.sync.aligned.m16n8k32.s8.s8.s32` and P·V on `m16n8k32.u8.s8.s32` (unsigned probabilities against
+signed values), the online softmax in fp32 and its int32 sums exact. The scales are mmh3's: Q and K rows at their
+absmax/127, V per tile and channel at its live keys' absmax/127 (one outlier cannot flatten a tile), and the
+probabilities as `round(p * 255)` codes staged through shared memory at 80-byte rows, so the PV fragment loads
+read 8 bytes a lane instead of a register-resident fp32 tile. `h3_heads_quant` writes those codes and scales from
+`h3_heads`' bf16 tiles once a parity a block, so the attention stage carries the quantization. The tile loop,
+lists and output are `h3_attention`'s: `h3_attention_i8` replaces it on the dense path, and the routed path keeps
+`h3_attention`.
+
+`h3_attention_i8` takes **168 registers** a thread on all five recorded SMs against `h3_attention`'s 217 on
+sm_120/121 (168 on sm_80/86/89), and `h3_heads_quant` takes 80 (86 on sm_120/121): the u8 codes in shared memory
+are what the fp32 probability tile cost in registers. Both records are measured. [`check-179.sh`](minimax-h3-cuda/check-179.sh)
+at `3bc944e1` (job `top-afbef35083c5`) passed the kernel contract's gates 1-4 on the pair — non-finite classes,
+five byte-identical repeats, six shapes within the float64 bound (worst 0.975 of it), and its sum classes at
+k 1024 — and the limits audit's five SMs match the records; its other 59 problems are main's stale records
+(`h3_norm`, `h3_quantize`, the fp4 pair, GLM's BF16 images and exl3's controls), not this card's launches.
+
 ### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
 
 I ran [`side-by-side-job.sh`](minimax-h3-cuda/side-by-side-job.sh) again at `99c900f5` (job `top-a84c94b49c92`, GB10,
