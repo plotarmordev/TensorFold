@@ -1809,6 +1809,45 @@ warm A/B were not built. One build note for any later SME2 work here: Apple clan
 non-streaming SVE (`cntd`) into the streaming prologue, and the M5 traps it (SIGILL); `-march=armv8.6-a+sme2` builds
 and runs.
 
+### Card 182: pooled far-field keys at 4096, opt-in (`--far-pool`)
+
+The ideas page's idea 2, behind `--far-pool` on `tf-h3-image` and `tf-h3-image-server`. Without the flag nothing
+changes: `h3_attention` compiles to the same code (its far branch sits under `H3_FAR`, defined only with the flag), and
+the only new kernel, `h3_far_pool`, is never dispatched.
+
+With the flag, a text-to-image target 128 rows wide (a 4096-pixel canvas width) of 8,192 rows or more binds
+`picture.far`. After `h3_heads`, `h3_far_pool` averages each 2 x 2 block of the target's keys and values (fp32 sums,
+rounded to bf16) into tiles past the case's own, one pooled row of 64 a tile. The prefix's query tile attends every
+tile as before. A target query tile attends the prefix, a band of `far_band` = 8 pooled rows (16 picture rows) at full
+resolution around its own, and the other pooled rows as one tile each, with ln 4 added to a pooled logit. Other
+sizes, and pictures with references, stay dense. At 4096 x 4096 with 24 text rows a target tile reads 89 key tiles
+in place of 257: 0.35x the dense attention's work. A step is about 38% attention, so a step should take about 0.75x
+[INFERENCE: from the work, not timed].
+
+Two tests, no weights: `test-h3-geometry` checks that every target key is read once, full inside the query's band and
+pooled outside it, and that 2048, a 4096 x 2048 canvas and a picture with references stay dense. `test-h3-gemm`
+checks that attention with pooled far keys matches dense attention when each 2 x 2 block's keys and values are equal:
+1.95e-3 worst against outputs up to 0.4375, one bf16 step. Without the ln 4 the same check misses by 0.26.
+
+Not measured yet: warm times and the picture gates. Every run on this Mac is capped at about two minutes, one run at a
+time, while the Mac's GPU also serves live speech. A warm A/B needs one server session a side at both sizes, several
+minutes, and `swarm gpu-run` reaches the Spark, which cannot run Metal. The A/B for a Mac GPU window, at this branch's
+head, ReleaseFast, `tf-h3-image-server` one session a side under `/tmp/tensorfold-model.lock`:
+
+```sh
+M=/Users/agents/models/MiniMax-H3-Image; R=/Users/agents/projects/tensorfold/h3-image-runs/34
+for flag in "" --far-pool; do
+  printf '2048x2048 42 out/w%s-2048 %s\n2048x2048 7 out/a%s-2048 %s\n4096x4096 42 out/w%s-4096 %s\n4096x4096 7 out/a%s-4096 %s\n' \
+    "$flag" $R/prompt.txt "$flag" $R/prompt.txt "$flag" $R/prompt.txt "$flag" $R/prompt.txt |
+    lockf /tmp/tensorfold-model.lock zig-out/bin/tf-h3-image-server $M/text_encoder $M $flag
+done
+```
+
+Seed 42 warms each size; seed 7's timing line is the warm figure, every run listed. The gates compare each
+`--far-pool` picture with the same seed's dense one: latent cosine at least 0.99, PSNR at least 28.2 dB and mean
+pixel difference at most 4.1 (card 80's rule, `h3-image-runs/180/gates.py`). At 2048 the flag must leave the picture
+byte-identical, since that size stays dense.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
@@ -1816,7 +1855,7 @@ and runs.
 | 1 | SGLang's conditioning cache | under -2 s at warm 2048 | Residency landed with card 50: warm 2048 went from 27 s to 16.4-16.6 s, more than the 6.3 s of loader logs the projection counted, since each one-shot tool also re-reads its files and rebuilds its kernels. A conditioning cache would skip only the prompt (1.2-2.0 s warm); it needs separate accounting and cannot omit prompt work in an uncached comparison. |
 | 2 | PNG writing | landed overlapped (card 170, -0.13 s at 2048); upper estimate -18 s at 4096, -4 s at 2048 in parallel bands | Card 170 streams each tile row's band into one `flate.Compress` while the GPU decodes the next: the bytes stay main's. Parallel bands could remove much more but change compressed bytes, so they do not satisfy the PNG byte-identity gate; a decoded-pixel gate in its place needs explicit approval before runs. |
 | 3 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps at 4096 | The steps are compute-bound: a 2048 step is about 183 TFLOP in 1.83 s, a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs. ComfyUI's int8 here shows the other half: dequantized before each product, its steps are 1.7-1.9x slower than our bf16, so int8 weights alone buy only bytes. Not bit-identical; it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000: -32% at 2048, -22% at 4K. |
-| 4 | Attention | up to -15 s at 4096 | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. |
+| 4 | Attention | up to -15 s at 4096; `--far-pool` (card 182) built, untimed | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. Card 182's pooled far field cuts 4096's attention work to 0.35x (about -15 s of 60 s of steps, projected); its warm A/B and picture gates wait for a Mac GPU window longer than the two-minute cap. |
 | 5 | Step caching (TeaCache, FBCache, cache-dit) | -10 s per skipped step at 4096 | vLLM-Omni quotes 1.5-2.0x for many-step models and less for few-step ones; SGLang's recipe runs all six steps. Each skip is a sixth of the steps; it needs a gate against the six-step latent. |
 | 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU; SGLang batches its tiles the same way. |
 
