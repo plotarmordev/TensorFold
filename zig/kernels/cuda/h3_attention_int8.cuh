@@ -19,10 +19,11 @@ __device__ __forceinline__ void mma_u8(int (&d)[4], const uint32_t (&a)[4], uint
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
-// Q, K and V each occupy one 8 KiB shared tile.
+// Q, K and V each occupy one 8 KiB shared tile; P's padded rows avoid fragment-load bank conflicts.
 constexpr int i8_tile_bytes = tile_rows * head_dim;
-constexpr int i8_attention_shared = 3 * i8_tile_bytes;
-static_assert(i8_attention_shared == 24576, "int8 attention's shared bytes");
+constexpr int i8_probability_row = 80;
+constexpr int i8_attention_shared = 3 * i8_tile_bytes + tile_rows * i8_probability_row;
+static_assert(i8_attention_shared == 29696, "int8 attention's shared bytes");
 
 // Dense int8 tiles and scales with h3_attention's online softmax and grid [query tiles,H] of 128.
 __device__ __forceinline__ void attention_body_i8(
@@ -36,6 +37,7 @@ __device__ __forceinline__ void attention_body_i8(
     unsigned char* const qsm = buf;
     unsigned char* const ksm = buf + i8_tile_bytes;
     unsigned char* const vsm = buf + 2 * i8_tile_bytes;
+    unsigned char* const psm = buf + 3 * i8_tile_bytes;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const int head = blockIdx.y, qt = first_query + blockIdx.x;
     const size_t hs = static_cast<size_t>(head) * slots;
@@ -66,8 +68,6 @@ __device__ __forceinline__ void attention_body_i8(
     commit();
 
     const int r0 = warp * 16 + (lane >> 2), c0 = (lane & 3) * 2, p = (lane & 3) * 4;
-    // A m16n8k32 u32s hold rows r0 / r0 + 8 and key quads p, p + 16 of each 32-key chunk
-    const int sa = (lane & ~3) + 2 * (lane & 1), sb = sa + 1;
     const float sl = scale * 1.4426950408889634f;
     float out[16][4];
 #pragma unroll
@@ -130,16 +130,16 @@ __device__ __forceinline__ void attention_body_i8(
         const float f0 = exp2f(top0 - n0), f1 = exp2f(top1 - n1);
         // Keep exact fp32 mass while u8 codes round(p*255) feed the value product.
         float l0 = 0.0f, l1 = 0.0f;
-        uint32_t wlo[8], whi[8];
 #pragma unroll
         for (int j = 0; j < 8; ++j) {
             const float p0 = exp2f(s[j][0] - n0), p1 = exp2f(s[j][1] - n0);
             const float p2 = exp2f(s[j][2] - n1), p3 = exp2f(s[j][3] - n1);
             l0 += p0 + p1;
             l1 += p2 + p3;
-            // two consecutive keys' codes byte-packed: the gather below reads them as u16 pairs
-            wlo[j] = __float2uint_rn(p0 * 255.0f) | (__float2uint_rn(p1 * 255.0f) << 8);
-            whi[j] = __float2uint_rn(p2 * 255.0f) | (__float2uint_rn(p3 * 255.0f) << 8);
+            *reinterpret_cast<uint16_t*>(psm + r0 * i8_probability_row + j * 8 + c0) =
+                uint16_t(__float2uint_rn(p0 * 255.0f) | (__float2uint_rn(p1 * 255.0f) << 8));
+            *reinterpret_cast<uint16_t*>(psm + (r0 + 8) * i8_probability_row + j * 8 + c0) =
+                uint16_t(__float2uint_rn(p2 * 255.0f) | (__float2uint_rn(p3 * 255.0f) << 8));
         }
         l0 += __shfl_xor_sync(0xffffffffu, l0, 1);
         l0 += __shfl_xor_sync(0xffffffffu, l0, 2);
@@ -165,19 +165,12 @@ __device__ __forceinline__ void attention_body_i8(
         for (int j = 0; j < 16; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0;
 #pragma unroll
         for (int kk = 0; kk < 2; ++kk) {
-            // Gather each key quad's four codes from the two lanes holding its u16 pairs.
-            const uint32_t pair[4] = {
-                (wlo[kk * 4] & 0xffffu) | (wlo[kk * 4 + 1] << 16),
-                (whi[kk * 4] & 0xffffu) | (whi[kk * 4 + 1] << 16),
-                (wlo[kk * 4 + 2] & 0xffffu) | (wlo[kk * 4 + 3] << 16),
-                (whi[kk * 4 + 2] & 0xffffu) | (whi[kk * 4 + 3] << 16),
-            };
-            const int sh16 = (lane & 2) << 3;
+            const int pc = kk * 32 + p;
             const uint32_t pa[4] = {
-                uint32_t(uint16_t(__shfl_sync(0xffffffffu, pair[0], sa) >> sh16)) | (uint32_t(uint16_t(__shfl_sync(0xffffffffu, pair[0], sb) >> sh16)) << 16),
-                uint32_t(uint16_t(__shfl_sync(0xffffffffu, pair[1], sa) >> sh16)) | (uint32_t(uint16_t(__shfl_sync(0xffffffffu, pair[1], sb) >> sh16)) << 16),
-                uint32_t(uint16_t(__shfl_sync(0xffffffffu, pair[2], sa) >> sh16)) | (uint32_t(uint16_t(__shfl_sync(0xffffffffu, pair[2], sb) >> sh16)) << 16),
-                uint32_t(uint16_t(__shfl_sync(0xffffffffu, pair[3], sa) >> sh16)) | (uint32_t(uint16_t(__shfl_sync(0xffffffffu, pair[3], sb) >> sh16)) << 16),
+                *reinterpret_cast<const uint32_t*>(psm + r0 * i8_probability_row + pc),
+                *reinterpret_cast<const uint32_t*>(psm + (r0 + 8) * i8_probability_row + pc),
+                *reinterpret_cast<const uint32_t*>(psm + r0 * i8_probability_row + pc + 16),
+                *reinterpret_cast<const uint32_t*>(psm + (r0 + 8) * i8_probability_row + pc + 16),
             };
             // PV: b regs hold dim n = j * 8 + lane >> 2's key quads p (b0) and p + 16 (b1) of chunk kk
 #pragma unroll

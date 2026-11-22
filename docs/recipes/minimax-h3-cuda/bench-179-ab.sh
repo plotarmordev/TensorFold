@@ -22,6 +22,6 @@ phase main
 git -c safe.directory='*' apply "$patch_file"
 for side in card main; do
     echo "=== $side stage times ==="
-    grep -h '^attention ' /work/out/h3-179-$side/2048-*.image.log || :
+    grep -h '^  attention ' /work/out/h3-179-$side/2048-*.image.log || :
 done
 exit "$status"
