@@ -190,6 +190,7 @@ pub fn load(gpa: std.mem.Allocator, d: *const cuda.Driver, ck: *core.Checkpoint,
             .v_conv = undefined,
             .norms = undefined,
         };
+        const sliding_norm: ?u64 = if (config.isGlobal(i)) null else try A.put(&l, ck, "model.llm.layers.{d}.attn_norm.weight", L, &.{h});
         inline for ([2][]const u8{ "k", "v" }, 0..) |kind, j| {
             const conv = if (config.isGlobal(i))
                 try A.put(&l, ck, "model.llm.layers.{d}.attn." ++ kind ++ "_sconv.static_w", L, &.{ config.conv_taps, kv })
@@ -203,7 +204,7 @@ pub fn load(gpa: std.mem.Allocator, d: *const cuda.Driver, ck: *core.Checkpoint,
             const norm = if (config.isGlobal(i))
                 try A.put(&l, ck, "model.llm.layers.{d}." ++ kind ++ "_input_norm.weight", L, &.{h})
             else
-                try A.put(&l, ck, "model.llm.layers.{d}.attn_norm.weight", L, &.{h});
+                sliding_norm.?;
             layer.attn.norms[j + 1] = norm;
         }
         layer.attn.norms[0] = if (config.isGlobal(i))
