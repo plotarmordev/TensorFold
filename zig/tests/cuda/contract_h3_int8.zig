@@ -219,18 +219,34 @@ fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, bo
 
 /// TallTile's ring (the only tile the picture uses): 2 stages of (256 + 128) x 128 bytes.
 const tma_shared_bytes = 2 * (256 + 128) * 128 + 1024 + 2 * 16;
+const heads_shared_bytes = tma_shared_bytes;
+
+const HeadEpilogue = extern struct {
+    nq: u64,
+    nk: u64,
+    cos: u64,
+    sin: u64,
+    slot: u64,
+    tq: u64,
+    tk: u64,
+    tv: u64,
+    heads: c_int,
+    slots: c_int,
+    rot: c_int,
+    eps: f32,
+};
 
 /// A TMA product kernel with its ring's dynamic shared memory allowed (past the 48 KiB default).
 pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8) !cuda.Function {
     const f = try mod.function(name);
-    try f.allowDynamicShared(tma_shared_bytes);
+    try f.allowDynamicShared(heads_shared_bytes);
     return f;
 }
 
 /// What a GemmTma registration launches: the plain product, fc1's SwiGLU epilogue on interleaved
 /// rows, or the control - the plain product at a width cuBLASLt took (n % 4) but the TMA grid,
 /// whole 128-column tiles only, leaves partly unwritten.
-pub const Mode = enum { plain, swiglu, control };
+pub const Mode = enum { plain, swiglu, heads, control };
 
 /// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact; SwiGLU's
 /// is h3_swiglu's on the plain product's [gate | up] halves, bit for bit.
@@ -247,26 +263,39 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
             .{ .rows = 300, .n = 512, .k = 256 }, // a partial M tile, two tiles and K blocks
             .{ .rows = 256, .n = 2 * mlp, .k = hidden }, // fc1's real fan-out
         },
+        .heads => &.{
+            .{ .rows = 16, .n = 384, .k = 128 },
+            .{ .rows = 300, .n = 384, .k = 256 },
+            .{ .rows = 64, .n = 768, .k = 384 },
+            .{ .rows = 16, .n = 21504, .k = 5376 },
+        },
         .control => &.{.{ .rows = 16, .n = 392, .k = 128 }}, // n % 8 keeps the epilogue's 16-byte stores aligned
     };
     return .{
         .name = switch (mode) {
             .plain => "cuda h3 int8 tma product h3_gemm_int8_tma",
             .swiglu => "cuda h3 int8 tma swiglu h3_swiglu_rows + h3_swiglu_int8_tma",
+            .heads => "cuda h3 int8 tma heads h3_heads_int8_tma",
             .control => "control: h3_gemm_int8_tma at a width off whole 128-column tiles",
         },
         .accum = .none, // int32 sums, exact: no fp accumulator for gate 4 to stress
         .depth = none,
-        .ops = 3,
+        .ops = if (mode == .heads) 8 else 3,
+        .mids = if (mode == .heads) 5 else 0, // dequantization, norm, cosine, sine and their two products
         .out = .bf16,
         .nan = .{ .stated = "a nonfinite row or column scale reaches every output it multiplies, as h3_dequantize's did" },
         .tiles = switch (mode) {
             .plain => .{ .{}, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 128, .step = 128, .min = 128 } },
             .swiglu => .{ .{}, .{ .size = 256, .step = 256, .min = 256 }, .{ .size = 128, .step = 128, .min = 128 } },
+            .heads => .{ .{}, .{}, .{} },
             .control => .{ .{}, .{}, .{} },
         },
         .served = served,
-        .replaces = if (mode == .swiglu) "h3_gemm_int8_tma then h3_swiglu" else null,
+        .replaces = switch (mode) {
+            .swiglu => "h3_gemm_int8_tma then h3_swiglu",
+            .heads => "h3_gemm_int8_tma then h3_heads",
+            else => null,
+        },
         .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
     };
 }
@@ -285,8 +314,8 @@ pub const GemmTma = struct {
     wq: []i8 = &.{},
     xs: []f32 = &.{},
     ws: []f32 = &.{},
-    /// xq, xs, wq, ws, out; swiglu adds the interleaved wq, ws and the baseline's two buffers.
-    dev: [9]u64 = @splat(0),
+    /// xq, xs, wq, ws, out; epilogue baselines and head inputs follow.
+    dev: [13]u64 = @splat(0),
 
     pub fn deinit(t: *GemmTma) void {
         t.rig.deinit();
@@ -294,10 +323,34 @@ pub const GemmTma = struct {
     }
 
     pub fn kernel(t: *GemmTma) g.Kernel {
-        return .{ .spec = gemmTmaSpec(t.mode), .ctx = t, .vt = &vt, .control = if (t.mode == .control) .shapes else null };
+        return .{ .spec = gemmTmaSpec(t.mode), .ctx = t, .vt = if (t.mode == .heads) &vt_heads else &vt, .control = if (t.mode == .control) .shapes else null };
     }
 
     const vt = g.hooks(GemmTma);
+    const vt_heads = blk: {
+        var v = vt;
+        v.check = checkHeads;
+        break :blk v;
+    };
+
+    fn headCount(t: *const GemmTma) usize {
+        return t.shape.n / 384;
+    }
+
+    fn headSlots(t: *const GemmTma) usize {
+        return std.mem.alignForward(usize, t.shape.rows, 64);
+    }
+
+    fn headBytes(t: *const GemmTma) usize {
+        return 3 * t.headCount() * t.headSlots() * 128 * 2;
+    }
+
+    fn checkHeads(ctx: *anyopaque, _: g.Gate) !?[]const u8 {
+        const t: *GemmTma = @ptrCast(@alignCast(ctx));
+        const want = try t.replaced();
+        const got = try t.rig.bytes(t.dev[4], t.headBytes());
+        return if (std.mem.eql(u8, got, want)) null else "fused norm or rotary differs from h3_gemm_int8_tma + h3_heads";
+    }
 
     fn outColumns(t: *const GemmTma) usize {
         return if (t.mode == .swiglu) t.shape.n / 2 else t.shape.n;
@@ -307,6 +360,7 @@ pub const GemmTma = struct {
         const width: usize = switch (t.mode) {
             .plain => 128,
             .swiglu => 256,
+            .heads => 384,
             .control => 8,
         };
         if (shape.k % 128 != 0 or shape.n % width != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
@@ -335,12 +389,33 @@ pub const GemmTma = struct {
         t.dev[1] = try t.rig.input(std.mem.sliceAsBytes(t.xs));
         t.dev[2] = try t.rig.input(std.mem.sliceAsBytes(t.wq));
         t.dev[3] = try t.rig.input(std.mem.sliceAsBytes(t.ws));
-        t.dev[4] = try t.rig.output(shape.rows * t.outColumns() * 2);
+        t.dev[4] = try t.rig.output(if (t.mode == .heads) t.headBytes() else shape.rows * t.outColumns() * 2);
         if (t.mode == .swiglu) {
             t.dev[5] = try t.rig.scratch(shape.n * shape.k);
             t.dev[6] = try t.rig.scratch(shape.n * 4);
             t.dev[7] = try t.rig.scratch(shape.rows * shape.n * 2);
             t.dev[8] = try t.rig.scratch(shape.rows * shape.n);
+        } else if (t.mode == .heads) {
+            t.dev[5] = try t.rig.scratch(shape.rows * shape.n * 2); // plain product's qkvc rows
+            t.dev[12] = try t.rig.scratch(t.headBytes()); // baseline's tile-order q, k and v
+            for ([_]usize{ 6, 7 }) |which| {
+                const nw = try a.alloc(u16, 128);
+                for (nw, 0..) |*v, i| v.* = c.toBf16(0.5 + @as(f32, @floatFromInt(i % 17)) / 16);
+                t.dev[which] = try t.rig.input(std.mem.sliceAsBytes(nw));
+            }
+            for ([_]usize{ 8, 9 }, 0..) |which, table| {
+                const v = try a.alloc(f32, shape.rows * 48);
+                for (v) |*x| x.* = if (table == 0) 0.9 + 0.1 * rng.float(f32) else 0.002 * rng.float(f32);
+                t.dev[which] = try t.rig.input(std.mem.sliceAsBytes(v));
+            }
+            const slot = try a.alloc(i32, shape.rows);
+            for (slot, 0..) |*v, i| v.* = @intCast(i);
+            rng.shuffle(i32, slot);
+            t.dev[10] = try t.rig.input(std.mem.sliceAsBytes(slot));
+            const row_of = try a.alloc(i32, t.headSlots());
+            @memset(row_of, -1);
+            for (slot, 0..) |s, row| row_of[@intCast(s)] = @intCast(row);
+            t.dev[11] = try t.rig.input(std.mem.sliceAsBytes(row_of));
         }
         return true;
     }
@@ -360,6 +435,41 @@ pub const GemmTma = struct {
         try cuda.launch.launch(try tmaFunction(t.mod, name), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
     }
 
+    fn fillOutput(t: *GemmTma, ptr: u64, len: usize) !void {
+        const b: cuda.DeviceBuffer = .{ .d = t.rig.gpu.d, .ptr = ptr, .len = len };
+        try b.fill8(0xAB, t.rig.s.handle);
+    }
+
+    fn productHeads(t: *GemmTma, out: u64) !void {
+        var maps: [2]TensorMap = undefined;
+        try encodeTiled(t.enc, &maps[0], t.dev[0], t.shape.rows, t.shape.k, 256);
+        try encodeTiled(t.enc, &maps[1], t.dev[2], t.shape.n, t.shape.k, 128);
+        const block = t.headBytes() / 3;
+        const heads: HeadEpilogue = .{
+            .nq = t.dev[6],
+            .nk = t.dev[7],
+            .cos = t.dev[8],
+            .sin = t.dev[9],
+            .slot = t.dev[10],
+            .tq = out,
+            .tk = out + block,
+            .tv = out + 2 * block,
+            .heads = @intCast(t.headCount()),
+            .slots = @intCast(t.headSlots()),
+            .rot = 48,
+            .eps = 1e-5,
+        };
+        var args: cuda.Args = .{};
+        args.add(maps[0]);
+        args.add(maps[1]);
+        for ([_]u64{ t.dev[1], t.dev[3] }) |p| args.add(p);
+        for ([_]usize{ t.shape.rows, t.shape.n, t.shape.k }) |v| args.add(@as(c_int, @intCast(v)));
+        args.add(heads);
+        const sm: usize = @intCast(try t.rig.gpu.ctx.attribute(.multiprocessor_count));
+        const tiles = (t.shape.rows + 255) / 256 * (t.shape.n / 128);
+        try cuda.launch.launch(try tmaFunction(t.mod, "h3_heads_int8_tma"), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = heads_shared_bytes }, t.rig.s, &args);
+    }
+
     pub fn run(t: *GemmTma) !void {
         if (t.mode == .swiglu) {
             var args: cuda.Args = .{};
@@ -367,12 +477,26 @@ pub const GemmTma = struct {
             args.add(@as(c_int, @intCast(t.shape.k)));
             try cuda.launch.launch(try t.mod.function("h3_swiglu_rows"), .{ .grid = .{ .x = @intCast(t.shape.n / 2) }, .block = .{ .x = 256 } }, t.rig.s, &args);
             try t.product("h3_swiglu_int8_tma", t.dev[5], t.dev[6], t.dev[4]);
+        } else if (t.mode == .heads) {
+            try t.fillOutput(t.dev[4], t.headBytes());
+            try t.productHeads(t.dev[4]);
         } else try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[4]);
         try t.rig.s.synchronize();
     }
 
     /// SwiGLU's baseline: the plain product on the original [gate | up] rows, then h3_swiglu.
     pub fn replaced(t: *GemmTma) ![]const u8 {
+        if (t.mode == .heads) {
+            try t.fillOutput(t.dev[12], t.headBytes());
+            try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[5]);
+            const block = t.headBytes() / 3;
+            var args: cuda.Args = .{};
+            for ([_]u64{ t.dev[5], t.dev[6], t.dev[7], t.dev[8], t.dev[9], t.dev[11], t.dev[12], t.dev[12] + block, t.dev[12] + 2 * block }) |p| args.add(p);
+            for ([_]usize{ t.headCount(), t.shape.n, 48, t.headSlots() }) |v| args.add(@as(c_int, @intCast(v)));
+            args.add(@as(f32, 1e-5));
+            try cuda.launch.launch(try t.mod.function("h3_heads"), .{ .grid = .{ .x = @intCast(t.headSlots() / 64) }, .block = .{ .x = 256 } }, t.rig.s, &args);
+            return t.rig.bytes(t.dev[12], t.headBytes());
+        }
         try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[7]);
         var args: cuda.Args = .{};
         for ([_]u64{ t.dev[7], t.dev[8] }) |p| args.add(p);
@@ -382,13 +506,21 @@ pub const GemmTma = struct {
     }
 
     pub fn count(t: *GemmTma) usize {
-        return t.shape.rows * t.outColumns();
+        return if (t.mode == .heads) t.headBytes() / 2 else t.shape.rows * t.outColumns();
     }
 
     /// The float64 product: exact int32 dots over the whole row (the mma order is irrelevant to
     /// them), then acc * xs * ws in fp32 rounded to bf16 as the store does; SwiGLU then rounds
     /// silu(gate) and silu * up to bf16 as h3_swiglu does.
     pub fn reference(t: *GemmTma, want: []f64, mag: []f64) !void {
+        if (t.mode == .heads) {
+            const bytes = try t.replaced();
+            for (want, mag, 0..) |*v, *m, i| {
+                v.* = c.fromBf16(std.mem.readInt(u16, bytes[i * 2 ..][0..2], .little));
+                m.* = @abs(v.*);
+            }
+            return;
+        }
         const k = t.shape.k;
         const n = t.shape.n;
         const cols = t.outColumns();
