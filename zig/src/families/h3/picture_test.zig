@@ -48,10 +48,13 @@ test "picture draft schedule: mmh3's renoised grid, drafts then the renoise or t
     defer a.deinit();
     const x = a.allocator();
     const base = try p.pdd(x, "{\"num_inference_steps\": 6, \"sigmas\": [1.0, 0.9675, 0.8875, 0.75, 0.5328, 0.232, 0.0]}");
-    // two drafts, no renoise: the draft sigmas, then the rest of the grid from sigma 3
-    const two = try p.draftSchedule(x, base, 2, null);
-    try testing.expectEqualSlices(f32, base.sigmas, two.sigmas);
-    try testing.expectEqual(@as(usize, 6), two.steps());
+    // cascade=M is drafts with no renoise: every M keeps the checkpoint's own sigmas, timesteps and deltas
+    for (1..6) |m| {
+        const cascade = try p.draftSchedule(x, base, m, null);
+        try testing.expectEqualSlices(f32, base.sigmas, cascade.sigmas);
+        try testing.expectEqualSlices(f32, base.timesteps, cascade.timesteps);
+        try testing.expectEqualSlices(f32, base.deltas, cascade.deltas);
+    }
     // three drafts renoised to 0.5: [1, .9675, .8875] at half size, [.5, .232] and 0 at full size
     const ren = try p.draftSchedule(x, base, 3, 0.5);
     try testing.expectEqualSlices(f32, &.{ 1.0, 0.9675, 0.8875, 0.5, 0.232, 0.0 }, ren.sigmas);

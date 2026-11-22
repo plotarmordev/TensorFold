@@ -1,9 +1,12 @@
 // MiniMax-H3-Image's prompt stage on CUDA: the glue between the checkpoint's bf16 cuBLASLt products,
 // rounding exactly as the Metal kernels (zig/kernels/metal/h3/h3_prompt.metal) and the host reference
 // (zig/src/families/h3/prompt_reference.zig) do: bf16 in, fp32 sums, every output rounded once to bf16.
+// The default text encoder runs its products int8 at a scale per 128 of K (h3p_quantize_groups, then
+// h3p_gemm_int8_groups); the bf16 h3p_linear is --bf16's.
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stddef.h>
+#include "h3_int8_tma.cuh"
 
 typedef __nv_bfloat16 bf16;
 
@@ -213,4 +216,30 @@ extern "C" __global__ void __launch_bounds__(256) h3p_linear(
 extern "C" __global__ void __launch_bounds__(256) h3p_round(const float* x, bf16* y, int n) {
     const int i = blockIdx.x * 256 + threadIdx.x;
     if (i < n) y[i] = h(x[i]);
+}
+
+// Each bf16 row of X (M, K) to int8 Q at a scale per 128 of K: one warp a 128-wide group, quantized at
+// its absmax / 127, the scale at S[group * ld + row] — group-major, the layout h3p_gemm_int8_groups reads
+// (`ld` the operand's rows; a weight's row offset is folded into S). Grid [M], 256 threads.
+extern "C" __global__ void __launch_bounds__(256) h3p_quantize_groups(const bf16* X, signed char* Q, float* S, int K, int ld) {
+    const size_t row = blockIdx.x;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    for (int g = warp; g < K >> 7; g += 8) {
+        const size_t at = row * K + g * 128 + lane * 4;
+        const __nv_bfloat162* p = reinterpret_cast<const __nv_bfloat162*>(X + at);
+        const float2 lo = __bfloat1622float2(p[0]), hi = __bfloat1622float2(p[1]);
+        float most = fmaxf(fmaxf(fabsf(lo.x), fabsf(lo.y)), fmaxf(fabsf(hi.x), fabsf(hi.y)));
+        for (int o = 16; o; o >>= 1) most = fmaxf(most, __shfl_xor_sync(0xffffffffu, most, o));
+        const float scale = most > 0.0f ? most / 127.0f : 1.0f;
+        *reinterpret_cast<char4*>(Q + at) = make_char4(__float2int_rn(lo.x / scale), __float2int_rn(lo.y / scale), __float2int_rn(hi.x / scale), __float2int_rn(hi.y / scale));
+        if (lane == 0) S[static_cast<size_t>(g) * ld + row] = scale;
+    }
+}
+
+// C (M, N) fp32 = Σ_g (XQ · WQᵀ over K group g) · XS[g · M + row] · WS[g · N + column]: the TMA int8 product
+// on 64 × 64 tiles, each K block's exact int32 sums folded at its group's scales. N a multiple of 64.
+extern "C" __global__ void __launch_bounds__(256) h3p_gemm_int8_groups(
+        const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
+        const float* XS, const float* WS, float* C, int M, int N, int K) {
+    h3_int8::gemm_kernel<h3_int8::PromptTile, false, true>(map_a, map_b, XS, WS, C, M, N, K);
 }

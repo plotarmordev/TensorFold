@@ -246,6 +246,8 @@ distilled heads their sigma span covers, as ComfyUI's step_heads does) and redra
 It draws a different picture, not a faster copy of the six-step one, so the teacher-forced and latent gates don't
 apply: drafts only run the free pass (`once` with `--draft-steps` is an error), and cases with reference rows
 refuse. It also writes `out/case.draft.h3case.safetensors`, the half-size draft's case.
+With no `--renoise-sigma`, `--draft-steps M` is the resolution cascade `cascade=M` of the ideas recipe; card 177
+below measures M = 2 and 4 and finds it fails idea 1's picture gates, so it stays opt-in.
 
 Warm on this Mac (M5 Ultra, 2048x2048, the seed-42 fox prompt): six timing-valid steps take 10.4 s; the same six
 steps with `--draft-steps 3` take 6.3 s — three half-size steps at 0.5 s each plus three full-size ones. The draft
@@ -1772,6 +1774,58 @@ stretches to 0.87-3.82 s, its single-threaded deflate after the pass, while the 
 GPU (round 9 loaded both). Rounds 4 (this card only), 5 and 7 (main only, load 57-99) lost their partner session to the
 load and are left out.
 
+### Card 177: the resolution cascade, `cascade=M`, measured against six full steps
+
+Idea 1 of [minimax-h3-image-ideas.md](minimax-h3-image-ideas.md) is `--draft-steps M` with no `--renoise-sigma`,
+on `tf-h3-image ... free` and `tf-h3-image-server`. The first M steps run on the half grid from `cascade.pool` of the
+seed's draw, the last of them keeps its velocity, then `cascade.lift` from sigma[M-1] to sigma[M], then the rest at
+full size. `draftSchedule` with no renoise keeps the checkpoint's sigmas, timesteps and deltas for every M
+(`picture_test.zig`), so every step keeps its own head. Without the flag no cascade code runs: the output is today's.
+**It stays opt-in.**
+
+**Run.** 22 Nov, M5 Ultra, this card's ReleaseFast `tf-h3-image-server` (SHA-256 `e57755c5…`). One resident session
+a schedule, each holding `/tmp/tensorfold-model.lock` for its 56-69 s: a cold warm-up, then four fixed prompts warm at
+2048x2048, seed 7. The prompts cover small text (a chalkboard menu), faces and hands, texture (knitted wool on oak) and
+architecture (a Gothic facade). Every step was `timing_valid=true`; speech was quiet. Other workers' builds held the
+one-minute load at 30-34, so wall totals carry CPU noise. Compare the steps' GPU seconds instead.
+Receipts: [`docs/receipts/h3-image-cascade-177`](../receipts/h3-image-cascade-177/): the session and gate scripts,
+prompts, server logs, loads, gate lines and PNG and latent SHA-256s.
+
+Every run, the six steps' GPU seconds / wall total, seconds:
+
+| Request | uncascaded | `cascade=2` | `cascade=4` |
+|---|---|---|---|
+| warm-up (cold bind, text prompt) | 9.35 / 11.23 | 7.26 / 10.74 | 5.17 / 11.45 |
+| text (same layout, reused) | 9.33 / 9.98 | 7.22 / 7.89 | 5.11 / 5.94 |
+| faces | 9.48 / 11.04 | 7.25 / 10.54 | 5.15 / 10.17 |
+| texture | 9.53 / 11.16 | 7.26 / 11.34 | 5.13 / 10.63 |
+| architecture | 9.45 / 11.09 | 6.89 / 10.91 | 4.82 / 9.34 |
+| steps, mean of the four warm | 9.45 | 7.16 (0.76x, 1.32x faster) | 5.05 (0.53x, 1.87x faster) |
+
+A half step takes 0.45-0.56 s of GPU against 1.48-1.75 s for a full one, a third, where the ideas recipe's 2.07x for
+m = 4 at 2048 implies 1/4.4. The steps come out 1.32x and 1.87x faster against the predicted 1.35x and 2.07x, and m = 4's 0.53x
+misses the 0.50x transformer gate. The warm text request is the clean wall-time A/B: 9.98 → 7.89 → 5.94 s. Each other
+prompt changes the layout's text rows, so it rebinds and its first step pays a cold start.
+
+**Gates: fail.** Each cascaded PNG was checked against the uncascaded PNG of the same prompt with
+[`gates.py`](../receipts/h3-image-cascade-177/gates.py): luma power with radial frequency between a quarter and half
+a cycle a pixel, over the base's (at least 0.90), and LPIPS (AlexNet; at most 0.08).
+
+| Prompt | `cascade=2` top-octave / LPIPS | `cascade=4` top-octave / LPIPS |
+|---|---|---|
+| text | 6.266 / 0.583 | 5.205 / 0.619 |
+| faces | 1.764 / 0.727 | 1.069 / 0.720 |
+| texture | 1.079 / 0.407 | 1.094 / 0.507 |
+| architecture | 2.165 / 0.557 | 2.000 / 0.604 |
+
+The energy gate passes everywhere; LPIPS fails all eight pairs by 5-9x. The cascade draws another picture from the
+same seed, as fast mode always has (latent cosine 0.70 above): a different layout, the menu's prices moved and its
+words misspelled differently, the faces' people rearranged. Top-octave energy rises because `cascade=4` leaves
+visible high-frequency hatching on faces and cloth, so that gate passing is no sign of kept detail. Idea 1's
+criteria (same picture, finer detail kept) do not hold on this lift: keep it opt-in as a speed mode and judge it on
+its own pictures, not as a copy of the six-step one. These are four prompts at one seed, against the ideas recipe's
+32 at two seeds; the GPU limit on this Mac allows only short sessions, and a 5-9x LPIPS miss on every pair would not
+turn into a pass with more prompts.
 ### Card 174: fc2's rows split between the GPU and SME2, measured and stopped
 
 The ideas page's idea 3: the CPU's SME2 units take a product's last rows while `h3_gemm_32x64_i8` runs the rest,
@@ -1999,6 +2053,80 @@ The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.
 
 Canal misses the floor by 1.64 dB in normal mode and 3.26 dB in fast mode, so routing stays off by default: about 0.4 s
 of a 10-12 s warm picture does not pay for a gate that fails. Receipts are in `h3-image-runs/187`, outside the repo.
+
+### Card 191: the decoder's attention tiles in registers, as the Spark's card 175
+
+`h3d_attention` now runs on 8 x 8 simdgroup matrices. A threadgroup of 128 threads (four simdgroups, 32 queries) stages
+a tile-head's keys 32 at a time in fp32. Each simdgroup's q·kᵀ scores, all 288 key slots, stay in its registers. The
+max-subtracted softmax runs there in place, a row's max and total shuffled over its four lanes (^1, ^8). The weights
+are then the A operand of p·v as the values stream through the same 8.5 KiB tile. Only keys and values touch
+threadgroup memory: 8,704 bytes, where main's kernel held 11,264 bytes of queries and weights.
+One kernel serves every Apple GPU (simdgroup matrices date from the M1), so the tensor-unit and simd forms no longer
+differ here. Only the M5 Ultra was run.
+
+Same session, M5 Ultra, ReleaseFast `tf-h3-image-decoder` for main `35ff44def` and this card, the same 2048x2048
+latent (128 x 128, 121 tiles, card 152's `cand-2`). Each run took `/tmp/tensorfold-model.lock` for itself
+(`zsystem flock`) and was one process: weights loaded, then one decode. Attention's time is the difference against a
+throwaway build of each that dispatches `h3d_attention` twice a block. The second dispatch reads q, k and v warm, so
+this is a lower bound. Load (one minute) 11.5-11.9. Seconds, GPU / decode wall:
+
+| Run | main | main, attention twice | card | card, attention twice |
+|---|---|---|---|---|
+| 1 | 0.61 / 0.63 | 0.77 / 0.80 | 0.49 / 0.52 | 0.54 / 0.57 |
+| 2 | 0.56 / 0.58 | 0.76 / 0.79 | 0.45 / 0.47 | 0.51 / 0.55 |
+
+Decoder attention goes from 0.16-0.20 s to 0.05-0.06 s a picture, and the whole decoder's GPU time from
+0.56-0.61 s to 0.45-0.49 s. **Kept.** The picture differs from main's by the sums' new order alone: 56.54 dB
+(mean 0.14, max 5) against card 80's 28.2 dB floor. Each build's two-dispatch PNG is byte-identical to its own one-dispatch
+PNG. `tf-h3-image-contract --only "image decoder"` passes gates 1-4 on all 10 decoder kernels, and all 12 controls go
+red as planted, with no limit problems. The attention bound's denominator is now a lane's 72 weights and two shuffles.
+Its control (staging drops the last key) goes red at shapes. `tf-h3-image-decoder selftest` passes.
+The script (`ab.sh`), its log and the PNGs are in `h3-image-runs/191`, outside the repo.
+
+### Card 192: the prompt encoder in int8 at a scale per 128 of K, measured and reverted
+
+This ported CUDA card 173 to Metal. Qwen3-VL's 50 text layers ran q/k/v (one product), o, gate/up (one product) and
+down as int8 with one scale per 128 of K on both operands. The weights were quantized once at load into private
+buffers, about 24 GiB beside the mapped bf16 layers. Each product's input rows were quantized by `h3_quantize_rows`,
+then summed by `h3_gemm_32x64_i8` with its K block made a template parameter (128 here, 256 for the picture). A
+`--bf16` flag kept main's encoder. On the tiny synthetic checkpoint the selftest held the int8 rows at cosine
+0.99977 (text) and 0.99980 (a reference's rows) against float64, and a second run was byte for byte the same.
+`--bf16`'s cases for canal and orchard were byte-identical to main's.
+
+The A/B ran main `35ff44def` against the card, one ReleaseFast server per side, each session holding
+`/tmp/tensorfold-model.lock` (66 s main, 114 s card). Each session ran card 34's pilot fox cold, then the canal, orchard
+and foundry prompts (unseen; 35, 37 and 42 tokens), all at seed 42, 2048x2048. Load was 83-112 through main's
+session and 48-89 through the card's, and live speech shared the GPU during the card's. Every request, in seconds
+(prompt / 6 steps / decoder / total):
+
+| Request | main (bf16) | card (int8) |
+|---|---|---|
+| cold fox | 0.29 / 11.33 / 0.64 / 13.55 | 0.50 / 28.92 / 4.17 / 47.76 |
+| canal | 0.22 / 10.76 / 0.66 / 12.47 | 5.58 / 14.96 / 2.23 / 25.06 |
+| orchard | 0.22 / 9.36 / 0.67 / 11.19 | 0.78 / 10.75 / 2.42 / 15.89 |
+| foundry | 0.22 / 10.67 / 0.81 / 12.75 | 1.11 / 11.03 / 2.59 / 17.01 |
+
+The card's walls carry the load and the speech: 0.58 s of canal's prompt waited for speech, and its fox took 14.15 s to
+bind the transformer. The encoder's own GPU time is the steadier measure. In the served runs it was 0.21 s for main
+on every unseen prompt against 0.26-0.34 s for the card. In a quiet one-shot `tf-h3-image-prompt` run (canal and
+orchard, one locked session) it was 0.29-0.30 s for main and `--bf16` against 0.18 s for int8. At 35-42 rows the bf16
+encoder already costs about 0.2 s of a 10-12 s warm picture. The Spark's 1.9-2.5 s, which card 173 cut, has no
+counterpart here, so the best case is about 0.1 s.
+
+The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.2 dB, mean pixel difference at most
+4.1) against main on every prompt:
+
+| Prompt | latent cosine | PSNR | mean |
+|---|---|---|---|
+| fox | 0.994437 | 27.129 dB | 4.031 |
+| canal | 0.858195 | 13.135 dB | 36.057 |
+| orchard | 0.989453 | 23.222 dB | 7.307 |
+| foundry | 0.977522 | 21.206 dB | 11.750 |
+
+The refined rows themselves stay close: cosine 0.999885 (canal) and 0.999820 (orchard) against main's, with the worst
+rows at 0.999645 and 0.998905. Six distilled steps carry that 1e-4 into a different picture, worst on canal, the same
+prompt that failed card 187's routing. With no speed to win on the Mac and the gate lost on all four prompts, the
+code is reverted. Receipts are in `h3-image-runs/192`, outside the repo.
 
 ### Next, ranked
 
