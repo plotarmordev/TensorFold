@@ -68,15 +68,17 @@ waits make the request slower than an unprofiled one, so the kernel seconds are 
 At startup the server puts every weight file it maps (text encoder, refiner, transformer, step heads) and the decoder's
 bf16 weights in one residency set on the three stages' queues (`holdWeights`), and prints the GiB it holds: 117.6 on
 the release folder, the refiner's shard counted twice since it is mapped twice. macOS unwires GPU memory idle for a
-second or two, so without the set each stage's first commit re-wires its weights on every request. Weights past 70% of
-RAM, or a macOS without residency sets, leave the server running as before. There is no keepalive: a request after a
-pause of more than a second or two re-wires once, in its prompt (about 1.4 s more, measured after 20 and 60 s).
+second or two, so without the set each stage's first commit re-wires its weights on every request. An idle ticker
+commits a tiny command buffer every 400 ms between requests so the set stays wired across pauses. If the weights
+cannot be held resident (past 70% of RAM, or a macOS without residency sets) or the idle ticker cannot start, it exits
+instead of serving unwarmed.
 
 Run `zig build test-h3-image-server -Doptimize=Debug` or `-Doptimize=ReleaseSafe` for the synthetic resident gates.
-Both pass all four tests: fresh/reused latent parity across prompt and layout changes, failed-bind cleanup including
-the final tag allocation, over-long-line recovery, and the shared serializer's scratch cleanup. Picture fixtures use
-the aligned safetensors serializer so these checks run with alignment safety enabled. The line-reader gate checks
-that the next request is read, not full image generation after an oversized line.
+Both pass the resident gates, among them: fresh/reused latent parity across prompt and layout changes and after an
+idle pause the ticker spans, failed-bind cleanup including the final tag allocation, over-long-line recovery, both
+fail-closed startup refusals, and the shared serializer's scratch cleanup. Picture fixtures use the aligned
+safetensors serializer so these checks run with alignment safety enabled. The line-reader gate checks that the next
+request is read, not full image generation after an oversized line.
 
 ## Edit, end to end
 
