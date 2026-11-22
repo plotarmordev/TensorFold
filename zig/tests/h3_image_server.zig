@@ -17,7 +17,8 @@ const usage =
     \\  profile: each request's six steps by kernel, each launch timed by the GPU's timestamp counters (slower; diagnostic)
     \\  --draft-steps N runs every request's first N steps on the half-size canvas, as mmh3's does:
     \\  a different picture, faster (the free run only; no reference edits)
-    \\  --far-pool pools distant keys and values 2 x 2 at 4096-wide canvases (tf-h3-image's --far-pool)
+    \\  --far-pool pools distant keys and values 2 x 2 at 4096-wide canvases (tf-h3-image's --far-pool); on the
+    \\  steps it pools it wins over --routed-steps
     \\  --routed-steps N routes the last N steps' attention, each picture tile to its best fifth of picture
     \\  tiles (FastH3's top-k): a different picture, measured in the Metal recipe
     \\

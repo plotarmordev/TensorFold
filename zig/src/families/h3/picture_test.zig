@@ -282,7 +282,10 @@ test "picture far field: every target key once, full in the query's band, pooled
     }
     try testing.expectEqualSlices(i32, &.{ 0, 1, 2, 3, 4 }, f.list[0..5]);
     try testing.expectEqual(@as(i32, 257 + p.far_band), f.list[1 + 4 * p.far_band]);
-    // 2048 x 2048 is under 8,192 rows; 4096 x 2048 is a pooled row of two tiles; references keep it dense
+    // 4096 x 2048 is exactly 8,192 rows and pools; 4096 x 1984 is under them, 2048 x 2048 too; 2048 x 8192 is a pooled
+    // row of two tiles; references keep it dense
+    try testing.expectEqual(@as(usize, 32), (try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 128, .columns = 256 } })).?.pooled);
+    try testing.expect(try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 124, .columns = 256 } }) == null);
     try testing.expect(try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 128, .columns = 128 } }) == null);
     try testing.expect(try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 512, .columns = 128 } }) == null);
     try testing.expect(try p.far(x, .{ .text = 24, .references = &.{.{ .rows = 64, .columns = 64 }}, .target = .{ .rows = 256, .columns = 256 } }) == null);

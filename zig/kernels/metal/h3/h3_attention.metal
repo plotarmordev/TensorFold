@@ -1,6 +1,7 @@
 // MiniMax H3 / FastH3 on Metal: tile-routed attention in bf16 on the tensor units, fp32 sums and an online softmax.
 
 // softmax(q k^T) v over a query tile's key tiles in bf16, fp32 sums and an online softmax. [query tiles, H] of 256.
+// P[3], the key tile lists: 0 one for all, 1 one per head and query tile (routed), 2 one per query tile (far field).
 [[kernel]] void h3_attention(
   const device bfloat* Q [[buffer(0)]],
   const device bfloat* K [[buffer(1)]],
@@ -20,12 +21,8 @@
   const int NQ = P[0], KSEL = P[1];
   const int head = int(tg.y), r0 = (P[2] + int(tg.x)) * TQ;
   const long hb = long(head) * TS;
-#ifdef H3_FAR
-  // a far-field binding's routed lists are its own: one a query tile, shared by every head
-  const device int32_t* list = IDX + (P[3] ? long(tg.x) * KSEL : 0);
-#else
-  const device int32_t* list = IDX + (P[3] ? (long(head) * NQ + tg.x) * KSEL : 0);
-#endif
+  const long lists = P[3] == 1 ? long(head) * NQ + tg.x : P[3] == 2 ? long(tg.x) : 0;
+  const device int32_t* list = IDX + lists * KSEL;
   tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> q((device bfloat*)Q + hb * D, dextents<int32_t, 2>(D, TS));
   tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> k((device bfloat*)K + hb * D, dextents<int32_t, 2>(D, TS));
   tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> v((device bfloat*)V + hb * D, dextents<int32_t, 2>(D, TS));

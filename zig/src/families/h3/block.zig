@@ -97,7 +97,10 @@ fn normQuant(m: *const Model, enc: mtl.ComputeEncoder, w: Ref, gates: ?Ref, gate
     enc.dispatchGroups(mtl.Size.of(m.rows, 1, 1), mtl.Size.of(32, 1, 1));
 }
 
-fn attend(m: *const Model, enc: mtl.ComputeEncoder, list: mtl.Buffer, queries: usize, keys: usize, first: usize, per_query: bool) void {
+/// h3_attention's key tile lists: one for every query tile, one per head and query tile, or one per query tile.
+const Lists = enum(i32) { all, per_head, per_query };
+
+fn attend(m: *const Model, enc: mtl.ComputeEncoder, list: mtl.Buffer, queries: usize, keys: usize, first: usize, lists: Lists) void {
     enc.setPipeline(m.pipeline("h3_attention"));
     enc.setBuffer(m.tq, 0, 0);
     enc.setBuffer(m.tk, 0, 1);
@@ -105,7 +108,7 @@ fn attend(m: *const Model, enc: mtl.ComputeEncoder, list: mtl.Buffer, queries: u
     enc.setBuffer(list, 0, 3);
     enc.setBuffer(m.sizes.buffer, m.sizes.offset, 4);
     enc.setBuffer(m.row_of, 0, 5);
-    enc.setValue([4]i32{ @intCast(queries), @intCast(keys), @intCast(first), @intFromBool(per_query) }, 6);
+    enc.setValue([4]i32{ @intCast(queries), @intCast(keys), @intCast(first), @intFromEnum(lists) }, 6);
     enc.setValue([1]f32{1.0 / @sqrt(@as(f32, h3.head_dim))}, 7);
     enc.setBuffer(m.qr, 0, 8);
     enc.dispatchGroups(mtl.Size.of(queries, m.heads, 1), mtl.Size.of(256, 1, 1));
@@ -120,8 +123,8 @@ fn attendFar(m: *const Model, enc: mtl.ComputeEncoder) void {
     enc.setValue([1]i32{@intCast(m.prefix_tiles)}, 2);
     enc.dispatchGroups(mtl.Size.of(m.far_pooled, m.heads, 1), mtl.Size.of(64, 1, 1));
     enc.barrier();
-    attend(m, enc, m.all_tiles, m.prefix_tiles, m.tiles, 0, false);
-    attend(m, enc, m.far_list, m.tiles - m.prefix_tiles, m.far_per_query, m.prefix_tiles, true);
+    attend(m, enc, m.all_tiles, m.prefix_tiles, m.tiles, 0, .all);
+    attend(m, enc, m.far_list, m.tiles - m.prefix_tiles, m.far_per_query, m.prefix_tiles, .per_query);
 }
 
 /// The tiles' means of q, k and v, the routing pass's input.
@@ -139,8 +142,8 @@ fn means(m: *const Model, enc: mtl.ComputeEncoder) void {
 
 /// The prefix's query tiles see every tile; a target tile sees the prefix and its chosen tiles.
 fn attendRouted(m: *const Model, enc: mtl.ComputeEncoder) void {
-    attend(m, enc, m.all_tiles, m.prefix_tiles, m.tiles, 0, false);
-    attend(m, enc, m.chosen, m.tiles - m.prefix_tiles, m.prefix_tiles + m.keep, m.prefix_tiles, true);
+    attend(m, enc, m.all_tiles, m.prefix_tiles, m.tiles, 0, .all);
+    attend(m, enc, m.chosen, m.tiles - m.prefix_tiles, m.prefix_tiles + m.keep, m.prefix_tiles, .per_head);
 }
 
 /// Block `index` of a forward; the block before left its MLP's rows in y, added here with this block's first norm.
@@ -185,7 +188,7 @@ pub fn run(m: *Model, pass: *h3.Pass, index: usize, routed: bool) !void {
             try m.lap(pass, "routing");
             attendRouted(m, enc.*);
         } else {
-            attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, false);
+            attend(m, enc.*, m.all_tiles, m.tiles, m.tiles, 0, .all);
         }
         try m.lap(pass, "attention");
     } else {
@@ -547,25 +550,28 @@ test "h3 gemm: a clip's linears stay bf16, bit for bit main's MLX product, whole
     }
 }
 
-/// One head's attention over `tiles` tiles (and `pooled` far-field tiles past them) with the case's buffers in `m`.
-fn attendOnce(device: mtl.Device, queue: mtl.Queue, m: *Model, tiles: usize, pooled: usize) !void {
+/// Attention with `m`'s case buffers, its slots `m.tiles` tiles and `m.far_pooled` pooled ones a head, in a library
+/// built with or without the far field.
+fn attendOnce(device: mtl.Device, queue: mtl.Queue, m: *Model, far: bool, pass: *const fn (*const Model, mtl.ComputeEncoder) void) !void {
     const a = std.testing.allocator;
-    const text = try @import("source.zig").library(a, 1, (tiles + pooled) * 64, tiles, if (pooled > 0) "#define H3_HIDDEN 128\n#define H3_FAR 1\n" else "#define H3_HIDDEN 128\n");
+    const text = try @import("source.zig").library(a, m.heads, (m.tiles + m.far_pooled) * 64, m.tiles, if (far) "#define H3_HIDDEN 128\n#define H3_FAR 1\n" else "#define H3_HIDDEN 128\n");
     defer a.free(text);
     const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
     defer lib.deinit();
     inline for (kernels.names, 0..) |name, i| m.pipelines[i] = try mtl.Pipeline.init(device, lib, name, false);
     defer for (m.pipelines) |p| p.deinit();
-    m.tiles = tiles;
-    m.far_pooled = pooled;
     m.dense = true;
     const cb = queue.commandBuffer();
     const enc = cb.compute(.concurrent);
-    if (pooled > 0) attendFar(m, enc) else attend(m, enc, m.all_tiles, tiles, tiles, 0, false);
+    pass(m, enc);
     enc.end();
     cb.commit();
     cb.wait();
     try std.testing.expect(cb.failure() == null);
+}
+
+fn attendDense(m: *const Model, enc: mtl.ComputeEncoder) void {
+    attend(m, enc, m.all_tiles, m.tiles, m.tiles, 0, .all);
 }
 
 test "h3 far field: where each 2 x 2 block's keys and values are equal, pooled far keys give dense attention" {
@@ -585,6 +591,8 @@ test "h3 far field: where each 2 x 2 block's keys and values are equal, pooled f
     var m: Model = undefined;
     m.heads = 1;
     m.prefix_tiles = 1;
+    m.tiles = tiles;
+    m.far_pooled = 2;
     inline for (.{ "tq", "tk", "tv" }) |f| @field(m, f) = try device.buffer(slots * 128 * 2, shared);
     defer inline for (.{ "tq", "tk", "tv" }) |f| @field(m, f).deinit();
     m.row_of = try device.buffer(slots * 4, shared);
@@ -636,9 +644,9 @@ test "h3 far field: where each 2 x 2 block's keys and values are equal, pooled f
         @memcpy(m.far_list.slice(i32, 48)[t * 6 ..][0..6], &[_]i32{ 0, base, base + 1, base + 2, base + 3, @intCast(tiles + 1 - p) });
     }
     m.qr = dense;
-    try attendOnce(device, queue, &m, tiles, 0);
+    try attendOnce(device, queue, &m, false, attendDense);
     m.qr = far;
-    try attendOnce(device, queue, &m, tiles, 2);
+    try attendOnce(device, queue, &m, true, attendFar);
     // relative to the largest output: one bf16 step, the sums in another order
     var worst: f32 = 0;
     var largest: f32 = 0;
@@ -650,4 +658,58 @@ test "h3 far field: where each 2 x 2 block's keys and values are equal, pooled f
     }
     errdefer std.debug.print("worst difference {e} of largest {e}\n", .{ worst, largest });
     try std.testing.expect(largest > 0 and worst <= largest / 128.0);
+}
+
+test "h3 far field: a far-field library's routed steps read each head's own chosen tiles" {
+    const device = mtl.Device.init() catch return error.SkipZigTest;
+    defer device.deinit();
+    if (!device.tensorUnits()) return error.SkipZigTest;
+    const pool = mtl.objc.Pool.push();
+    defer pool.pop();
+    const queue = try device.queue();
+    defer queue.deinit();
+    // two heads; a prefix tile of 24 text rows, then two full target tiles, each head choosing a different one
+    const prefix = 24;
+    const heads = 2;
+    const slots = 3 * 64;
+    const rows = prefix + 128;
+    const shared = mtl.ResourceOptions.shared;
+    var m: Model = undefined;
+    m.heads = heads;
+    m.prefix_tiles = 1;
+    m.tiles = 3;
+    m.keep = 1;
+    m.far_pooled = 0;
+    inline for (.{ "tq", "tk", "tv" }) |f| @field(m, f) = try device.buffer(heads * slots * 128 * 2, shared);
+    defer inline for (.{ "tq", "tk", "tv" }) |f| @field(m, f).deinit();
+    m.row_of = try device.buffer(slots * 4, shared);
+    defer m.row_of.deinit();
+    m.all_tiles = try device.buffer(3 * 4, shared);
+    defer m.all_tiles.deinit();
+    const sizes = try device.buffer(3 * 4, shared);
+    defer sizes.deinit();
+    m.sizes = .{ .buffer = sizes };
+    m.chosen = try device.buffer(heads * 2 * 2 * 4, shared);
+    defer m.chosen.deinit();
+    const plain = try device.buffer(rows * heads * 128 * 2, shared);
+    defer plain.deinit();
+    const far = try device.buffer(rows * heads * 128 * 2, shared);
+    defer far.deinit();
+    var prng = std.Random.DefaultPrng.init(182);
+    const r = prng.random();
+    for ([_]mtl.Buffer{ m.tq, m.tk, m.tv }) |b| for (b.slice(u16, heads * slots * 128), 0..) |*x, i| {
+        x.* = if (i / 128 % slots < prefix or i / 128 % slots >= 64) 0x3e00 | (r.int(u16) & 0x807f) else 0;
+    };
+    @memset(m.row_of.slice(i32, slots), -1);
+    for (0..prefix) |row| m.row_of.slice(i32, slots)[row] = @intCast(row);
+    for (0..128) |row| m.row_of.slice(i32, slots)[64 + row] = @intCast(prefix + row);
+    @memcpy(m.all_tiles.slice(i32, 3), &[_]i32{ 0, 1, 2 });
+    @memcpy(sizes.slice(i32, 3), &[_]i32{ prefix, 64, 64 });
+    // [head][query tile][prefix, chosen]: head 0 keeps tile 1, head 1 tile 2
+    @memcpy(m.chosen.slice(i32, 8), &[_]i32{ 0, 1, 0, 1, 0, 2, 0, 2 });
+    m.qr = plain;
+    try attendOnce(device, queue, &m, false, attendRouted);
+    m.qr = far;
+    try attendOnce(device, queue, &m, true, attendRouted);
+    try std.testing.expectEqualSlices(u16, plain.slice(u16, rows * heads * 128), far.slice(u16, rows * heads * 128));
 }
