@@ -1467,10 +1467,15 @@ PNGs are sha1-identical between the builds, the pilot's still `776b443a…` / `8
 | main | 5.6 → 4.1 | 9.22 (11.14) | 9.34 (10.87) | 9.34 (10.89) | 9.35 (10.90) |
 | head | 4.1 → 7.0 | 8.37 (12.96) | 7.71 (9.96) | 7.64 (9.57) | 8.03 (9.97) |
 
-Over the nine warm pictures a side, head's six steps take a median of 7.63 s (7.63-8.03) against main's 9.34 s
-(9.33-9.69), and the warm total takes 9.34 s (9.31-9.97) against 10.87 s (10.80-11.84). The 1.71 s step gain is over
-four times either side's spread. Bind takes 0.85 s (0.84-1.01) against 0.66 s (0.62-0.71), and the decoder takes
-0.62 s on both. Head's last cold took 2.98 s to bind as load rose, and its pilot's steps ran 8.37 s. Receipts
+Medians over the nine warm pictures a side, in seconds, with each stage's range in brackets:
+
+| Build | prompt | case | bind | six steps | decoder | total |
+|---|---|---|---|---|---|---|
+| main | 0.22 (0.22-0.22) | 0.01 (0.00-0.02) | 0.66 (0.62-0.71) | 9.34 (9.33-9.69) | 0.62 (0.61-1.28) | 10.87 (10.80-11.84) |
+| head | 0.22 (0.22-0.38) | 0.01 (0.00-0.02) | 0.85 (0.84-1.01) | 7.63 (7.63-8.03) | 0.62 (0.61-0.88) | 9.34 (9.31-9.97) |
+
+The 1.71 s step gain is over four times either side's spread, and head's bind costs 0.19 s of it back. Head's last
+cold took 2.98 s to bind as load rose, and its pilot's steps ran 8.37 s. Receipts
 (`gate.sh`, `session.sh`, the prompts, server output, latents, PNGs and `loads.txt`) are in `h3-image-runs/197`,
 outside the repo. Pair 1 there is left out: main started at load 9.4.
 
