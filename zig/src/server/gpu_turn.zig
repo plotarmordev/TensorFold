@@ -1,5 +1,6 @@
 //! Speech holds a shared flock; batch work yields between short command buffers and tracks speech generations.
 const std = @import("std");
+const windows = @import("builtin").os.tag == .windows;
 
 pub const path = "/tmp/tensorfold-speech.lock";
 
@@ -48,7 +49,8 @@ fn open(io: std.Io, at: []const u8) !std.Io.File {
     return dir.openFile(io, at, .{}) catch |e| switch (e) {
         error.FileNotFound => {
             const file = try dir.createFile(io, at, .{ .read = true, .truncate = false });
-            file.setPermissions(io, .fromMode(0o644)) catch {}; // past the creator's umask, so the other user opens it
+            // past the creator's umask, so the other user opens it; Windows has no mode bits
+            if (!windows) file.setPermissions(io, .fromMode(0o644)) catch {};
             return file;
         },
         else => e,
@@ -62,7 +64,7 @@ pub fn mark(io: std.Io, at: []const u8) ?Mark {
     const file = marker(io, at) catch return null;
     defer file.close(io);
     const stat = file.stat(io) catch return null;
-    if (stat.kind != .file or stat.permissions.toMode() & 0o666 != 0o666) return null;
+    if (stat.kind != .file or (!windows and stat.permissions.toMode() & 0o666 != 0o666)) return null;
     var result: Mark = .{ .inode = stat.inode, .bytes = undefined };
     if ((file.readPositionalAll(io, &result.bytes, 0) catch return null) != result.bytes.len) return null;
     const lock = open(io, at) catch return null;
@@ -101,7 +103,7 @@ fn marker(io: std.Io, at: []const u8) !std.Io.File {
                 return create_err;
             };
             errdefer file.close(io);
-            try file.setPermissions(io, .fromMode(0o666));
+            if (!windows) try file.setPermissions(io, .fromMode(0o666));
             var bytes: [16]u8 = undefined;
             io.random(&bytes);
             try file.writePositionalAll(io, &bytes, 0);

@@ -126,6 +126,10 @@ const win = struct {
     const Release = *const fn (*Com) callconv(.winapi) u32;
     const EnumAdapters1 = *const fn (*Com, u32, *?*Com) callconv(.winapi) i32;
     const GetDesc1 = *const fn (*Com, *Desc) callconv(.winapi) i32;
+    /// Entry `i` of `com`'s vtable as `F`; aarch64 code pointers are 4-aligned, the vtable's slots untyped.
+    fn method(comptime F: type, com: *Com, i: usize) F {
+        return @ptrCast(@alignCast(com.vtable[i]));
+    }
 
     fn regString(a: Allocator, comptime sub: []const u8, comptime value: []const u8) []const u8 {
         var buf: [256]u16 = undefined;
@@ -145,16 +149,16 @@ const win = struct {
         var raw: ?*anyopaque = null;
         if (create(&iid_factory1, &raw) < 0) return &.{};
         const factory: *Com = @ptrCast(@alignCast(raw orelse return &.{}));
-        defer _ = @as(Release, @ptrCast(factory.vtable[2]))(factory);
+        defer _ = method(Release, factory, 2)(factory);
         var out: std.ArrayList(parse.Adapter) = .empty;
         var i: u32 = 0;
         while (i < 16) : (i += 1) {
             var adapter: ?*Com = null;
-            if (@as(EnumAdapters1, @ptrCast(factory.vtable[12]))(factory, i, &adapter) < 0) break;
+            if (method(EnumAdapters1, factory, 12)(factory, i, &adapter) < 0) break;
             const ad = adapter orelse break;
-            defer _ = @as(Release, @ptrCast(ad.vtable[2]))(ad);
+            defer _ = method(Release, ad, 2)(ad);
             var d: Desc = undefined;
-            if (@as(GetDesc1, @ptrCast(ad.vtable[10]))(ad, &d) < 0) continue;
+            if (method(GetDesc1, ad, 10)(ad, &d) < 0) continue;
             const name = std.unicode.utf16LeToUtf8Alloc(a, std.mem.sliceTo(&d.description, 0)) catch "";
             try out.append(a, .{ .name = name, .vendor = d.vendor, .device = d.device, .memory = d.dedicated_video, .software = (d.flags & 2) != 0 });
         }
