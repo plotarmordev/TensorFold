@@ -136,8 +136,12 @@ The bar is h3-image-mlx's 356.84 s at 4096 x 4096 on an M5 Pro, at int8; these c
    - Low steps on the half (or quarter) grid's tiles and positions, then `cascade.lift`, then the rest at full size.
    - Without `cascade` the run is byte-identical to today's.
    - m = 4 passes idea 1's gates with transformer time at most 0.50x card 1's; the table per schedule in this recipe.
-3. **H3-Image: pooled far-field keys at 16,384 rows and above (`far=pool`).**
+3. **H3-Image: pooled far-field keys at 8,192 rows and above (`far=pool`).**
    - A kernel test that equal keys give dense attention's output; off below 8,192 rows; idea 2's gates hold.
+   - Built as `--far-pool` (card 182): a band of 16 full-resolution picture rows around each query tile, since a tile
+     is half a 128-wide picture row. Pooled on all six steps it moved the layout (cosine 0.70); pooled on the last
+     two it passes card 80's gates (cosine 0.9991, PSNR 31.0-31.3 dB) for 4096's steps 55-59 s to 49-50 s (Metal
+     recipe, card 182).
 4. **H3-Image: GPU and SME2 row split for the linear layers.**
    - At least 1.07x on idea 3's product with PSNR at least 50 dB. Measured at 1.015x at most (card 174): stopped.
 5. **H3-Image at 4096 x 4096 in at most 180 s on an M5 Pro, at least 1.98x faster than h3-image-mlx**, cards 2 and 3

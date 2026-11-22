@@ -724,7 +724,70 @@ byte-identical too.
 scales on them at 28.02 dB and 4.27, below the gates, and `160c5d8b`'s 256-wide rotation in mmh3's ConvRot
 style left the picture at 28.14 dB. Folding the same scales in registers changes only the fp32 order of a
 sum that is otherwise exact, so it should give the same picture (inferred, not run). This card ran no picture
-for them.
+for them; card 176 below does, at a scale per 128 of K, and reverts it.
+
+### Card 176: `out` and `fc2` int8 on the TMA product at a scale per 128 of K — measured and reverted
+
+The card ran `out` and `fc2` on card 146's product too, beside the default's int8 `qkvc` and `fc1`.
+`h3_quantize_blocks` quantized each 128-wide rotated chunk of K at that chunk's own absmax, one warp per chunk,
+and wrote the scales block-major (`S[c·M + row]`). The weights got the same layout. `h3_gemm_int8_tma_blocks`
+(`Epilogue::blocks`) folded every K block's exact int32 sums into fp32 at that block's two scales, held per lane
+in registers, before the next block's MMAs, on a 128×128 tile to stay under the register limit. No int32 plane
+left the registers, which was card 139's cost. The code is at `8027eb54` (behind `--int8-blocks`) for a retry.
+
+Contract and stop rule: `bench-146-contract.sh` at `095874ff` on TOP (GB10, driver 580.173.02). All five int8
+kernels passed gates 1-4, and the planted control went red at shapes. The per-block product's sums stayed within
+the fp32 fold's bound at K = 14,336, where fp16 sums would miss 3× and bf16 sums 26.3×. Gate 5's live sm_121
+limits read 236 registers for the product and 28 for `h3_quantize_blocks`. The same job's microbench timed the
+per-row `h3_gemm_int8_tma` on these shapes: `out` 1.68 ms against cuBLASLt's 2.09 ms (1.24×) and `fc2` 3.66 ms
+against 4.22 ms (1.15×).
+
+The picture A/B ran at `095874ff` with the per-block path as the default (job `top-639918032e5e`,
+22 November, `H3_PROFILE=1`): "this card" against "main" (`out`/`fc2` in bf16), with `--bf16` as the
+reference. Each side ran the fox cold and three prompts no earlier job used warm (glacier, bakery, orchard).
+Every selftest passed.
+
+| 2048² | wall s | transformer s | `attention out` s | `mlp out` s |
+|---|---:|---:|---:|---:|
+| this card, fox (cold) | 152.67 | 38.01 | 0.83 | 1.74 |
+| this card, glacier | 13.36 | 10.09 | 0.85 | 1.78 |
+| this card, bakery | 13.40 | 10.02 | 0.85 | 1.76 |
+| this card, orchard | 13.36 | 10.01 | 0.85 | 1.76 |
+| main, fox (cold) | 150.81 | 38.54 | 1.16 | 2.27 |
+| main, glacier | 14.07 | 10.77 | 1.16 | 2.28 |
+| main, bakery | 14.25 | 10.87 | 1.15 | 2.29 |
+| main, orchard | 14.11 | 10.80 | 1.16 | 2.27 |
+| `--bf16`, fox (cold) | 156.27 | 43.46 | 1.14 | 2.27 |
+| `--bf16`, glacier | 18.39 | 15.03 | 1.15 | 2.49 |
+| `--bf16`, bakery | 18.45 | 15.03 | 1.16 | 2.42 |
+| `--bf16`, orchard | 18.51 | 15.12 | 1.15 | 2.42 |
+
+Warm runs are 0.77 s faster (13.37 against 14.14 s), and so is the transformer (10.04 against 10.81 s).
+Every other stage stays within 0.04 s. Gates against the same job's `--bf16` picture (latent cosine ≥ 0.99,
+≥ 28.2 dB, mean ≤ 4.1):
+
+| picture | this card | main |
+|---|---|---|
+| glacier | 0.9974, 32.55 dB, 3.49 — pass | 0.9964, 30.48 dB, 3.78 — pass |
+| bakery | 0.9824, 23.42 dB, 7.77 — fail | 0.9825, 23.25 dB, 7.91 — fail |
+| orchard | 0.9861, 23.17 dB, 8.17 — fail | 0.9824, 22.37 dB, 8.40 — fail |
+| fox, against episode 1's Mac latent and PNG | 0.9910, 26.26 dB, 5.17 — fail | 0.9952, 28.69 dB, 4.01 — pass |
+
+Measured, not kept: per-128 scales fail the gates on bakery and orchard. In job `top-639918032e5e` I read
+bakery at 0.9824, 23.42 dB, 7.77 and orchard at 0.9861, 23.17 dB, 8.17, and the fox fails too.
+
+I measured the fox locally on the fetched pictures with `h3_image_compare.py` against
+`h3-image-runs/34/t2i-2048.latent.f32` and `fox-2048-seed42.png`. The same job's `--bf16` fox measured 0.9958,
+28.71 dB and 3.61 there. On the unseen prompts the card's PSNR and mean diff are at or above main's, and its
+cosine is within 0.0001 of main's on bakery. The two failures are main's too: per-row int8 on `qkvc`/`fc1`
+already moves those pictures past the gates. The fox is the exception. It misses episode 1's gates where main
+holds them, as card 139's per-256 scales did (28.02 dB, 4.27). By the recipe's rule since cards 129 and 139,
+0.77 s does not buy a default below the gates. An opt-in that fails the gates has no use either, so the code
+is reverted and `out` and `fc2` stay bf16.
+
+The review's rerun at `8027eb54` (per-block behind `--int8-blocks`, same three phases) did not complete: the
+`--bf16` reference hit `CUDA_ERROR_OUT_OF_MEMORY` after its cold run and the job exited 1. No speed or quality
+figure here rests on it. A scale per 64 or 32 of K would need a fold inside the 128-deep K block; it stays untried.
 
 ### Card 173: the prompt encoder in int8 at a scale per 128 of K, on our own TMA product — kept
 
@@ -921,6 +984,49 @@ three unseen prompts warm, `H3_PROFILE` off. The decoder's host side is its in-a
 The host side fell from 0.40-0.42 s to 0.12 s warm; eleven passes of eleven tiles cost the GPU 0.15 s over one of
 121, so the decoder stage nets 1.05 s against 1.18-1.20 s. All four PNGs are sha256-identical to main's on the same
 latents. The cold wall ran 4.6 s longer on the card's side, outside the decoder (cold decoder 1.63 s against 1.69 s).
+
+### Card 193: every decoder product fuses its bias, two passes in flight — kept
+
+The decoder has no convolutions to move onto tensor cores: H3's VAE decoder is a 2D ViT whose products already run on
+cuBLASLt's bf16 tensor-core algorithms. [`decoder-193-trace-job.sh`](minimax-h3-cuda/decoder-193-trace-job.sh) traced
+main's warm 2048² decode under the CUPTI preload (job `top-bec0983c41cc` at `b5ce1956`, 22 November): 3,212 launches
+in a 0.812 s span, 0.754 s in kernels and 0.058 s idle between them.
+
+| stage | launches | ms |
+|---|---:|---:|
+| products (cuBLASLt: three nvjet tiles 176.2 + 80.2 + 68.6, CUTLASS 22.1) | 1,067 | 347.1 |
+| `h3d_finish` (bias and LayerScale after an unfused product) | 792 | 236.2 |
+| `h3d_swiglu` | 264 | 80.0 |
+| `h3d_heads` (q k norm, rope) | 264 | 35.1 |
+| norms (`h3d_res_norm` 22.3, `h3d_rms_norm` 7.2, `h3d_layer_norm` 0.3) | 539 | 29.8 |
+| `h3d_flash` | 264 | 23.9 |
+| embedding | 22 | 1.3 |
+
+mmh3's VAE takes ~0.55 s of kernels (card 144). The gap was `h3d_finish`: at 11 tiles a pass (2,871 rows) cuBLASLt's
+first pick for three of the four products is an nvjet tile that refuses the bias epilogue, so `fuse` left them
+unfused and each paid an fp32 round trip and a separate pass. `Linear.repick` asks the heuristic again with the
+epilogue set, and the decoder's products (`Gemms.planFused`) take its first algorithm that fuses; no other engine's
+picks change. The decode also keeps two banded passes in flight, the host placing one pass's tiles from pinned rows
+while the GPU runs the next.
+
+[`bench-193-ab.sh`](minimax-h3-cuda/bench-193-ab.sh) ran this card and main (`bench-193-base.patch` reversed) in one
+TOP job (`top-dba6bd470f74` at `a95f05c4`, 22 November, every selftest PASS), 2048², the fox cold then three unseen
+prompts warm, `H3_PROFILE` off:
+
+| 2048² run | card wall s | card decoder s (passes / GPU / in all) | main wall s | main decoder s (passes / GPU / in all) |
+|---|---:|---:|---:|---:|
+| cold (fox) | 146.74 | 0.74 / 0.73 / 1.01 | 140.57 | 1.06 / 1.06 / 1.22 |
+| warm 1 (lighthouse) | 11.48 | 0.52 / 0.52 / 0.59 | 11.81 | 0.76 / 0.76 / 0.88 |
+| warm 2 (market) | 11.52 | 0.52 / 0.52 / 0.59 | 11.81 | 0.76 / 0.76 / 0.88 |
+| warm 3 (observatory) | 11.53 | 0.52 / 0.52 / 0.60 | 11.84 | 0.76 / 0.76 / 0.88 |
+
+The warm decoder stage fell from 0.88 s to 0.59 s (−33%), now under mmh3's ~0.7 s. The GPU's 0.24 s drop is
+`h3d_finish`'s 236 ms. Every latent and every PNG, the fox's and the three unseen prompts', is byte-identical to
+main's, so the fused epilogue rounds as `h3d_finish` did and the fox keeps main's gates (latent cosine 0.9952,
+28.69 dB, mean diff 4.015 against episode 1's Mac picture). The same-latent `reference` passed (85.566% of bytes
+identical, 99.894% within 1, at most 6 apart, PSNR 56.43 dB, relative error 3.26e-3 under 3e-2), and the same job's
+`h3d_flash` contract gates 1-4 and live limits passed. The cold wall ran 6.2 s longer on the card's side, outside the
+decoder (cold decoder 1.01 s against 1.22 s).
 
 ### Card 154: unseen prompts of every length draw again
 
