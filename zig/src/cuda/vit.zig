@@ -243,13 +243,25 @@ pub const Gemms = struct {
     }
 
     pub fn plan(g: *Gemms, rows: usize, n: usize, k: usize, out: cublaslt.DataType, epilogue: cublaslt.Epilogue) !*const Linear {
-        const key = [3]u64{ rows, n, k | @as(u64, @intCast(@backingInt(out))) << 40 | @as(u64, @backingInt(epilogue)) << 48 };
+        const key = planKey(rows, n, k, out, epilogue);
         const got = try g.plans.getOrPut(g.gpa, key);
         if (!got.found_existing) got.value_ptr.* = Linear.initEpilogue(&g.lt, rows, n, k, out, workspace_bytes, epilogue) catch |e| {
             g.plans.removeByPtr(got.key_ptr);
             return e;
         };
         return got.value_ptr;
+    }
+
+    /// `plan(.bf16, .bias)` whose algorithm runs the bias epilogue whenever the shape has one that can: see `repick`.
+    pub fn planFused(g: *Gemms, rows: usize, n: usize, k: usize) !*const Linear {
+        _ = try g.plan(rows, n, k, .bf16, .bias);
+        const p = g.plans.getPtr(planKey(rows, n, k, .bf16, .bias)).?;
+        try p.repick(.bias);
+        return p;
+    }
+
+    fn planKey(rows: usize, n: usize, k: usize, out: cublaslt.DataType, epilogue: cublaslt.Epilogue) [3]u64 {
+        return .{ rows, n, k | @as(u64, @intCast(@backingInt(out))) << 40 | @as(u64, @backingInt(epilogue)) << 48 };
     }
 };
 

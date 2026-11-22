@@ -1,0 +1,146 @@
+diff --git a/zig/src/families/h3/image_decoder_cuda.zig b/zig/src/families/h3/image_decoder_cuda.zig
+index 3881adab1..96cef40f8 100644
+--- a/zig/src/families/h3/image_decoder_cuda.zig
++++ b/zig/src/families/h3/image_decoder_cuda.zig
+@@ -408,11 +408,14 @@ pub const Decoder = struct {
+     }
+ 
+     /// The decoded picture [3, 16 rows, 16 cols] (normalised) of a raw latent: tiles in batches, blended in fp32.
+-    pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, batch: usize, out: []f32) !Timing {
++    /// A `bands` sink (or null) is called as `bands.final(rows)` once the picture's first `rows` rows are final: its
++    /// passes then end at each tile row, so the sink can take a band while the GPU decodes the next.
++    pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, batch: usize, out: []f32, bands: anytype) !Timing {
+         const t = try host.tiles(a, c, rows, cols);
+         if (layers > d.plan.layers) return error.H3BadTiles;
+         d.spent = @splat(0);
+-        const per = @min(batch, @min(most_batch, t.total()));
++        const banded = @TypeOf(bands) != @TypeOf(null);
++        const per = @min(batch, most_batch, if (banded) t.cols.len else t.total());
+         try d.prepare(raw, rows, cols, t.h, t.w, per);
+         var assembly = try vae.Assembler.init(a, t.rows, t.cols, 3, out);
+         const tile = try a.alloc(f32, 3 * t.h * t.w * vae.cell_pixels * vae.cell_pixels);
+@@ -420,7 +423,8 @@ pub const Decoder = struct {
+         var took: Timing = .{};
+         var k: usize = 0;
+         while (k < t.total()) {
+-            const n = @min(per, t.total() - k);
++            const row_end = if (banded) (k / t.cols.len + 1) * t.cols.len else t.total();
++            const n = @min(per, row_end - k);
+             for (origins[0..n], 0..) |*o, i| {
+                 const at = t.at(k + i);
+                 o.* = .{ @intCast(at.row), @intCast(at.col) };
+@@ -435,6 +439,10 @@ pub const Decoder = struct {
+                 try assembly.place(at.r, at.c, tile);
+             }
+             k += n;
++            if (banded and k == row_end) {
++                const r = k / t.cols.len;
++                try bands.final(if (r == t.rows.len) assembly.height else t.rows[r].start);
++            }
+         }
+         if (d.profile) {
+             var seen: f64 = 0;
+diff --git a/zig/src/families/h3/image_decoder_cuda_selftest.zig b/zig/src/families/h3/image_decoder_cuda_selftest.zig
+index 28b810538..a086fea53 100644
+--- a/zig/src/families/h3/image_decoder_cuda_selftest.zig
++++ b/zig/src/families/h3/image_decoder_cuda_selftest.zig
+@@ -201,7 +201,8 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const
+     ok = final.report("norm_out and proj_out", bounds.product_ulps, bounds.product_same, 1) and ok;
+     ok = chain.report("output after 2 blocks", bounds.chain_ulps, 0, bounds.chain_relative) and ok;
+ 
+-    // decode in passes of c.batch and of every tile: both equal the staged tiles assembled, bit for bit
++    // decode in passes of c.batch, of every tile and of a tile row with its bands streamed to a PNG: each equals the
++    // staged tiles assembled, bit for bit, and the streamed PNG `png.encode`'s bytes of that picture
+     const height = c.rows * side;
+     const width = c.cols * side;
+     const staged = try assemble(a, t, gpu_tiles, 3 * height * width);
+@@ -209,11 +210,12 @@ fn case(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, config: *const
+     const decoded = try a.alloc(f32, staged.len);
+     for ([_]usize{ c.batch, tiles }, 0..) |b, i| {
+         if (i == 1 and b == c.batch) continue;
+-        _ = try d.decode(a, config, latent, c.rows, c.cols, checked, b, decoded);
++        _ = try d.decode(a, config, latent, c.rows, c.cols, checked, b, decoded, null);
+         const same = std.mem.eql(u32, @ptrCast(staged), @ptrCast(decoded));
+         std.debug.print("  decode in passes of {d}: {s} the staged tiles assembled\n", .{ b, if (same) "bit-identical to" else "DIFFERENT from" });
+         ok = ok and same;
+     }
++    ok = try banded(a, d, config, latent, c, staged) and ok;
+     const ours = try a.alloc(u8, 3 * height * width);
+     const theirs = try a.alloc(u8, ours.len);
+     try vae.pixels(decoded, height, width, ours);
+@@ -243,6 +245,24 @@ fn assemble(a: std.mem.Allocator, t: host.Tiles, tiles: []const f32, len: usize)
+     return out;
+ }
+ 
++/// `latent` decoded a tile row a pass, each row's band streamed to a PNG: the picture `staged`, the PNG its encoding.
++fn banded(a: std.mem.Allocator, d: *dec.Decoder, config: *const vae.Config, latent: []const f32, c: Case, staged: []const f32) !bool {
++    const height = c.rows * side;
++    const width = c.cols * side;
++    const decoded = try a.alloc(f32, staged.len);
++    var bands = try dec.host_decoder.Bands.init(a, decoded, height, width);
++    defer bands.deinit();
++    _ = try d.decode(a, config, latent, c.rows, c.cols, checked, c.batch, decoded, &bands);
++    const streamed = try bands.finish(a);
++    const rgb = try a.alloc(u8, staged.len);
++    try vae.pixels(staged, height, width, rgb);
++    const whole = try dec.host_decoder.writer.png.encode(a, rgb, width, height);
++    const same = std.mem.eql(u32, @ptrCast(staged), @ptrCast(decoded));
++    const png_same = std.mem.eql(u8, whole, streamed);
++    std.debug.print("  decode a tile row a pass, bands streamed: {s} the staged tiles assembled; the PNG {s} the whole one's bytes\n", .{ if (same) "bit-identical to" else "DIFFERENT from", if (png_same) "has" else "DIFFERS from" });
++    return same and png_same;
++}
++
+ /// All 24 blocks chained, the GPU from the latent in one pass and the reference beside it.
+ fn deep(a: std.mem.Allocator, d: *dec.Decoder, model: ref.Model, latent: []const f32, c: Case, t: host.Tiles, origins: []const [2]u32, cos: []const u16, sin: []const u16, scratch: ref.Scratch) !bool {
+     try d.prepare(latent, c.rows, c.cols, t.h, t.w, t.total());
+@@ -269,6 +289,6 @@ fn timing(a: std.mem.Allocator, d: *dec.Decoder, config: *const vae.Config) !voi
+     const latent = try synthetic(a, cells, cells);
+     const out = try a.alloc(f32, 3 * cells * cells * side * side);
+     const tiles = (try host.tiles(a, config, cells, cells)).total();
+-    const took = try d.decode(a, config, latent, cells, cells, vae.layers, 16, out);
++    const took = try d.decode(a, config, latent, cells, cells, vae.layers, 16, out, null);
+     std.debug.print("timing: {d} tiles of 16 x 16, 24 blocks: {d:.2} s in passes, {d:.2} s on the GPU, {d:.1} ms a tile\n", .{ tiles, took.wall, took.gpu, 1000 * took.gpu / @as(f64, @floatFromInt(tiles)) });
+ }
+diff --git a/zig/tests/h3_image_decoder_cuda.zig b/zig/tests/h3_image_decoder_cuda.zig
+index ce94fdbd3..cd233284b 100644
+--- a/zig/tests/h3_image_decoder_cuda.zig
++++ b/zig/tests/h3_image_decoder_cuda.zig
+@@ -46,7 +46,8 @@ pub const Vae = struct {
+         return .{ .config = config, .d = d };
+     }
+ 
+-    /// The normalised `latent` [24, rows, cols] decoded and written to `path` as a PNG of `want` (default the canvas).
++    /// The normalised `latent` [24, rows, cols] decoded and written to `path` as a PNG of `want` (default the canvas):
++    /// at the canvas's size each tile row's band goes to the PNG while the GPU decodes the next.
+     pub fn png(v: *const Vae, init: std.process.Init, a: std.mem.Allocator, latent: []f32, rows: usize, cols: usize, want: ?dec.host.Size, path: []const u8) !void {
+         if (latent.len != try dec.host.latentLength(rows, cols)) return error.H3BadLatentLength;
+         const tiles = try dec.host.tiles(a, &v.config, rows, cols);
+@@ -56,8 +57,17 @@ pub const Vae = struct {
+         try vae.denormalize(&v.config, latent);
+         const started = dec.seconds();
+         const decoded = try a.alloc(f32, 3 * width * height);
+-        const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded);
+-        try hostdec.write(init.io, a, decoded, height, width, size.width, size.height, path);
++        const took = if (size.width == width and size.height == height) streamed: {
++            var bands = try hostdec.Bands.init(a, decoded, height, width);
++            defer bands.deinit();
++            const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded, &bands);
++            try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = path, .data = try bands.finish(a) });
++            break :streamed took;
++        } else resized: {
++            const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, decoded, null);
++            try hostdec.write(init.io, a, decoded, height, width, size.width, size.height, path);
++            break :resized took;
++        };
+         std.debug.print("{d}x{d} canvas: decoded {d} tiles in {d:.2} s ({d:.2} s on the GPU), {d:.2} s in all; wrote {s} at {d}x{d}\n", .{ width, height, tiles.total(), took.wall, took.gpu, dec.seconds() - started, path, size.width, size.height });
+     }
+ };
+@@ -85,7 +95,7 @@ fn reference(init: std.process.Init, a: std.mem.Allocator, model_dir: []const u8
+     try vae.denormalize(&v.config, latent);
+     const ours = try a.alloc(f32, 3 * width * height);
+     const started = dec.seconds();
+-    const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, ours);
++    const took = try v.d.decode(a, &v.config, latent, rows, cols, vae.layers, batch, ours, null);
+     try hostdec.write(init.io, a, ours, height, width, size.width, size.height, gpu_path);
+     std.debug.print("{d}x{d} canvas: GPU decoder {d:.2} s in all ({d:.2} s on the GPU); wrote {s} at {d}x{d}\n", .{ width, height, dec.seconds() - started, took.gpu, gpu_path, size.width, size.height });
+     var h = try hostdec.Decoder.init(init.gpa, vae.layers);

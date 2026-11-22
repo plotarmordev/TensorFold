@@ -11,7 +11,7 @@ const keepalive = @import("keepalive");
 const keep_warm_ns: i64 = std.math.maxInt(i64);
 
 const usage =
-    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile] [--draft-steps N] [--renoise-sigma X] [--routed-steps N]
+    \\usage: tf-h3-image-server TEXT_ENCODER_DIR MODEL_DIR [profile] [--draft-steps N] [--renoise-sigma X] [--far-pool] [--routed-steps N]
     \\  then one request a line on stdin: WIDTHxHEIGHT SEED OUT_PREFIX prompt.txt
     \\  each writes OUT_PREFIX.safetensors, .h3case.safetensors, .rows.f32, .latent.f32 and .png as
     \\  tf-h3-image-prompt, tf-h3-image (free) and tf-h3-image-decoder do, and prints a timing line;
@@ -20,6 +20,8 @@ const usage =
     \\  profile: each request's six steps by kernel, each launch timed by the GPU's timestamp counters (slower; diagnostic)
     \\  --draft-steps N runs every request's first N steps on the half-size canvas, as mmh3's does:
     \\  a different picture, faster (the free run only; no reference edits)
+    \\  --far-pool pools distant keys and values 2 x 2 at 4096 x 4096 only (tf-h3-image's --far-pool); on the
+    \\  steps it pools it wins over --routed-steps
     \\  --routed-steps N routes the last N steps' attention, each picture tile to its best fifth of picture
     \\  tiles (FastH3's top-k): a different picture, measured in the Metal recipe
     \\
@@ -104,6 +106,7 @@ pub fn main(init: std.process.Init) !u8 {
     var draft_steps: usize = 0;
     var routed_steps: usize = 0;
     var renoise: ?f32 = null;
+    var far_pool = false;
     var positional: std.ArrayList([]const u8) = .empty;
     var i: usize = 1;
     while (i < all.len) : (i += 1) {
@@ -118,6 +121,8 @@ pub fn main(init: std.process.Init) !u8 {
             i += 1;
             if (i >= all.len) return 2;
             renoise = std.fmt.parseFloat(f32, all[i]) catch return 2;
+        } else if (std.mem.eql(u8, arg, "--far-pool")) {
+            far_pool = true;
         } else if (std.mem.eql(u8, arg, "--routed-steps")) {
             i += 1;
             if (i >= all.len) return 2;
@@ -136,6 +141,7 @@ pub fn main(init: std.process.Init) !u8 {
     var encoder = try prompt_tool.Encoder.load(init, a, args[0], args[1]);
     defer encoder.deinit(init.gpa);
     var folder = try image_tool.Folder.open(init, a, args[1]);
+    folder.far_pool = far_pool;
     defer folder.heads.deinit();
     folder.routed_steps = routed_steps;
     const vae = try decoder_tool.Vae.load(init, a, args[1]);
