@@ -15,6 +15,24 @@ token reads (from the checkpoint's headers) over 273 GB/s.
 Each `--parallel` stream gets its own lane: a complete sequence state (cache and forward scratch, about 1.5 GiB at an
 8K window) and CUDA stream over the shared weights. A shared round queues every lane's forward before it waits on any.
 
+## Receipt: TOP's GB10, one capped run
+
+Job `top-0759755a0515` at `2301ab379`, `--context 8192`, greedy, 256 tokens, 3 reps, medians. This is one run with
+these settings, not a benchmark.
+
+| Streams | First token (code / chat) | Prompt (code) | Decode a stream | Total decode | Failed |
+|---|---|---|---|---|---|
+| 1 | 0.36 s / 0.18 s | 41.9 tok/s | 5.7 tok/s | 5.7 tok/s | 0 |
+| 4 | 0.90 s / 0.45 s | 17.3 tok/s | 2.3 tok/s | 9.4 tok/s (1.65x) | 0 |
+
+Memory (`/proc/meminfo`, host used): 10.7 GiB before the server, 35.3 GiB with Mini loaded with 4 lanes, and the same
+after both levels. GPU (`nvidia-smi`): 23.9 GiB held by the server.
+
+Bandwidth limit: a decoded token reads about 5.55 GB of weights (core layers 3 passes, 8 of 128 experts a visit, the
+whole unembedding), so 273 GB/s caps one stream near 49 tok/s; 5.7 tok/s is 12% of it. The gap is not bandwidth:
+the 175 ms a token is consistent with roughly 1,350 small launches and one-row matrix kernels per token, unbatched
+across lanes [INFERENCE, not profiled]. CUDA graphs per lane and batched expert rows across lanes are what is missing.
+
 ## RTX Spark (N1X): what differs and what must change
 
 I see the same chip and memory model as the GB10: sm_121 and one unified pool, so the `-Dsm=121` kernel images are
