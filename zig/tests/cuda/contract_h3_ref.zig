@@ -230,9 +230,7 @@ fn rne(x: f64) f64 {
     return if (@rem(f, 2.0) == 0.0) f else f + 1;
 }
 
-/// h3_heads_quant's row quantization in the kernel's own fp32: the bf16 row's absmax, its amax/127
-/// dequant factor, and each value's nearest-even code of value * (127 / amax); a dead or all-zero
-/// row takes the kernel's zero codes.
+/// Row absmax/127 quantization in the kernel's fp32; zero rows produce zero codes.
 fn quantizeRowI8(x: []const f64, codes: []i32) f64 {
     var amax: f32 = 0;
     // fmaxf's NaN-ignoring reduce, as the kernel's absmax reads it
@@ -245,8 +243,7 @@ fn quantizeRowI8(x: []const f64, codes: []i32) f64 {
     return amax * (1.0 / 127.0);
 }
 
-/// The u8 code the kernel's probability lands in: round(w * 255), with a NaN's zero and an
-/// overflowing one's saturation as the float-to-uint conversion reads them.
+/// The kernel's u8 probability code, including NaN and saturation behavior.
 fn probCode(w: f64) i32 {
     if (std.math.isNan(w)) return 0;
     if (w >= 1.0) return 255;
@@ -254,9 +251,7 @@ fn probCode(w: f64) i32 {
     return @intFromFloat(rne(w * 255.0));
 }
 
-/// h3_heads_quant + h3_attention_i8: the dense softmax over int8 products, attendRow's online
-/// order kept. The score and value sums are int32-exact; the reference quantizes q/k rows and each
-/// key tile's v in the kernel's fp32 so its codes match, then weighs them into u8 codes.
+/// Dense int8 attention with exact int32 products and attendRow's online-softmax order.
 pub fn attentionI8(in: In, s: Sum, scratch: []f64, want: []f64, mag: []f64) void {
     const T = in.rows;
     const ksel = in.k / 64;

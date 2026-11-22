@@ -116,10 +116,7 @@ __global__ void __launch_bounds__(256) h3_heads(
     }
 }
 
-// h3_heads' tile-order bf16 output as int8 for h3_attention_i8: q and k at each slot's absmax / 127
-// (the dequant factor lands in QS / KS), v at the head tile's absmax / 127 into dim-major rows of
-// 64 key bytes (VS one factor a tile). Dead slots write zero codes and a zero factor. Grid
-// [tiles, H], 128 threads.
+// h3_heads' bf16 tiles as int8: q/k row absmax, v head-tile absmax, dim-major v. Grid [tiles,H], 128 threads.
 __global__ void __launch_bounds__(128) h3_heads_quant(
         const __nv_bfloat16* TQ, const __nv_bfloat16* TK, const __nv_bfloat16* TV, const int* SIZES,
         int8_t* Q8, int8_t* K8, int8_t* V8, float* QS, float* KS, float* VS, int slots) {

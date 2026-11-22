@@ -106,12 +106,12 @@ pub fn prepare(self: *Model, in: *const Model.Inputs, p: @import("cuda_validatio
     for (all, 0..) |*t, i| t.* = @intCast(i);
     const all_map: cuda.DeviceBuffer = .{ .d = &self.driver, .ptr = g.all, .len = all.len * 4, .borrowed = true };
     try all_map.upload(0, std.mem.sliceAsBytes(all));
-    if (p.buffers[17] != 0) g.q8 = try buffer(self, p.buffers[17], false);
-    if (p.buffers[18] != 0) g.k8 = try pair(self, p.buffers[18], false);
-    if (p.buffers[19] != 0) g.v8 = try pair(self, p.buffers[19], false);
-    if (p.buffers[20] != 0) g.qs = try buffer(self, p.buffers[20], false);
-    if (p.buffers[21] != 0) g.ks = try pair(self, p.buffers[21], false);
-    if (p.buffers[22] != 0) g.vs = try pair(self, p.buffers[22], false);
+    if (p.buffers[17] != 0) g.q8 = try buffer(self, p.buffers[17], true);
+    if (p.buffers[18] != 0) g.k8 = try pair(self, p.buffers[18], true);
+    if (p.buffers[19] != 0) g.v8 = try pair(self, p.buffers[19], true);
+    if (p.buffers[20] != 0) g.qs = try buffer(self, p.buffers[20], true);
+    if (p.buffers[21] != 0) g.ks = try pair(self, p.buffers[21], true);
+    if (p.buffers[22] != 0) g.vs = try pair(self, p.buffers[22], true);
     g.rows = in.rows;
     g.tiles = in.tiles;
     g.prefix = p.prefix;

@@ -1,11 +1,4 @@
-// MiniMax H3's dense attention in int8 on mma.sync m16n8k32: h3_heads' bf16 tiles, quantized by
-// h3_heads_quant, feed m16n8k32.row.col.s32.s8.s8.s32 products. Q and K carry each row's absmax/127
-// dequant factor (QS, KS); V quantizes at the head tile's absmax/127 (VS, one float a tile). The
-// weighed probabilities become u8 codes round(p * 255) built straight in registers for
-// m16n8k32.row.col.s32.u8.s8.s32 — a code's value is the same in every operand order. The int32
-// score sums dequantize by their q and k row factors on the way into the online softmax; each key
-// tile's int32 value sums fold in at its V scale / 255, so a second [16][4] accumulator spans only
-// a tile's mma and never replaces the fp32 running out.
+// Dense H3 attention: int8 QK and unsigned-P/signed-V m16n8k32 products, fp32 online softmax.
 #pragma once
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -26,15 +19,12 @@ __device__ __forceinline__ void mma_u8(int (&d)[4], const uint32_t (&a)[4], uint
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
-// one 64 x 128 int8 tile: 8 KiB. qsm, ksm and vsm are the attention's whole dynamic shared memory.
+// Q, K and V each occupy one 8 KiB shared tile.
 constexpr int i8_tile_bytes = tile_rows * head_dim;
 constexpr int i8_attention_shared = 3 * i8_tile_bytes;
 static_assert(i8_attention_shared == 24576, "int8 attention's shared bytes");
 
-// softmax(q k^T scale) v over a query tile's key tiles in int8: h3_attention's 64 x 128 tiles and
-// cp.async pipeline, its fp32 online softmax order kept. Q8/K8 are rows x 128 bytes in tile order,
-// V8 the tile-transposed (dim, 64-key) rows; QS/KS a float a slot, VS a float a (head, tile). Grid
-// [query tiles, H] of 128 threads.
+// Dense int8 tiles and scales with h3_attention's online softmax and grid [query tiles,H] of 128.
 __device__ __forceinline__ void attention_body_i8(
         const int8_t* __restrict__ Q8, const int8_t* __restrict__ K8, const int8_t* __restrict__ V8,
         const float* __restrict__ QS, const float* __restrict__ KS, const float* __restrict__ VS,
@@ -66,8 +56,7 @@ __device__ __forceinline__ void attention_body_i8(
         const int8_t* src = V8 + (hs + static_cast<size_t>(tile) * T) * D;
         for (int c = tid; c < D * 4; c += THREADS) cp16(vsm + vat(c >> 2, c & 3), src + c * 16);
     };
-    // element e of row r sits at byte e & 15 of swizzled chunk e >> 4; a lane's quads are
-    // (lane & 3) * 4 apart, so every fragment register is one aligned u32
+    // Each fragment register is an aligned u32 at its swizzled row/channel quad.
     auto aread = [&](const unsigned char* sm, int r, int e) {
         return *reinterpret_cast<const uint32_t*>(sm + at(r, e >> 4) + (e & 15));
     };
@@ -139,8 +128,7 @@ __device__ __forceinline__ void attention_body_i8(
         m1 = fmaxf(m1, __shfl_xor_sync(0xffffffffu, m1, 2));
         const float n0 = fmaxf(top0, m0), n1 = fmaxf(top1, m1);
         const float f0 = exp2f(top0 - n0), f1 = exp2f(top1 - n1);
-        // the weights in fp32 for the mass; the u8 codes round(p * 255) carry the value product,
-        // packed two a u16 the way the fragment's quads gather them below
+        // Keep exact fp32 mass while u8 codes round(p*255) feed the value product.
         float l0 = 0.0f, l1 = 0.0f;
         uint32_t wlo[8], whi[8];
 #pragma unroll
@@ -178,10 +166,7 @@ __device__ __forceinline__ void attention_body_i8(
         for (int j = 0; j < 16; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0;
 #pragma unroll
         for (int kk = 0; kk < 2; ++kk) {
-            // the A fragment's key quad 4 * (lane & 3) + 32 kk is keys 8 * j + c0, c0 + 1 on lane
-            // (lane & ~3) + 2 * (lane & 1) and + 2, + 3 on the next lane; each lane packs the two
-            // u16 code pairs the quad may need, shuffles them from both lanes, and its (lane & 2)
-            // picks the j of the pair — no array subscript outlives the unrolled loops
+            // Gather each key quad's four codes from the two lanes holding its u16 pairs.
             const uint32_t pair[4] = {
                 (wlo[kk * 4] & 0xffffu) | (wlo[kk * 4 + 1] << 16),
                 (whi[kk * 4] & 0xffffu) | (whi[kk * 4 + 1] << 16),
