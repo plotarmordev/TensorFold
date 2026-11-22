@@ -153,8 +153,8 @@ pub fn load(gpa: std.mem.Allocator, d: *const cuda.Driver, ck: *core.Checkpoint,
     w.norm = try l.tensor(ck, "model.llm.norm.weight", .{}, .bf16, &.{h});
     w.unembed = try l.tensor(ck, "model.llm.unembed.weight", .{}, .bf16, &.{ c.text.vocab, h });
     w.output_query = try l.tensor(ck, "model.llm.attn_res.output_query", .{}, .f32, &.{h});
-    w.cross_qm = try l.tensor(ck, "model.llm.middle_cycle_cross_pass_queries", .{}, .f32, &.{ 2 * (c.text.loop.?.core_end - c.text.loop.?.core_start), h });
-    w.cross_kv = try l.tensor(ck, "model.llm.middle_cycle_cross_pass_kv_queries", .{}, .f32, &.{ 2 * (c.text.loop.?.core_end - c.text.loop.?.core_start), h });
+    w.cross_qm = try l.tensor(ck, "model.llm.middle_cycle_cross_pass_queries", .{}, .f32, &.{ 2 * (c.text.loop.?.end - c.text.loop.?.start), h });
+    w.cross_kv = try l.tensor(ck, "model.llm.middle_cycle_cross_pass_kv_queries", .{}, .f32, &.{ 2 * (c.text.loop.?.end - c.text.loop.?.start), h });
 
     for (w.layers, 0..) |*layer, k| {
         const i: u32 = @intCast(k);
@@ -219,7 +219,7 @@ pub fn load(gpa: std.mem.Allocator, d: *const cuda.Driver, ck: *core.Checkpoint,
         layer.experts = try modelopt.load(&l, ck, try std.fmt.bufPrint(&prefix, "model.llm.layers.{d}.mlp.experts.", L), formats[k], c.text.experts, h, c.text.expert_inter);
         @memset(&layer.controllers, .{ .down = 0, .forget = 0, .gain = 0 });
         const lp = c.text.loop.?;
-        if (i >= lp.core_start and i < lp.core_end) try controllers(&l, ck, &c.text, i, lp.gate_rank, &layer.controllers);
+        if (i >= lp.start and i < lp.end) try controllers(&l, ck, &c.text, i, lp.rank, &layer.controllers);
     }
     if (ck.unused() != 0) return error.UnusedCheckpointTensor;
     return w;

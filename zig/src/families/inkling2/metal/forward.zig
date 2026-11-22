@@ -131,7 +131,7 @@ fn bankAndReset(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, rows:
     copyBf16(m, e, at(s.prelude, 0), at(s.p, 0), rows * state.hidden);
 }
 
-fn prepareAttentionInputs(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visit, rows: usize) void {
+fn prepareAttentionInputs(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visits.Step, rows: usize) void {
     const lp = m.weight_plan.at(v.layer);
     const w = &m.weights.layers[v.layer];
     if (v.layer == 0) {
@@ -143,7 +143,7 @@ fn prepareAttentionInputs(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scra
             for (0..rows) |i| glue.ar(&m.glue, e, at(s.blocks, i * state.block_slots * state.hidden * 2), row(s.partial, i, state.hidden * 4), query, arRow(s, role, rows, i, false), lp.attn_sources, 1);
         }
     }
-    if (v.hasMessages()) {
+    if (v.pass > 0) {
         const controllers = w.controllers.?;
         const core = v.layer - 6;
         for (0..3) |role| for (0..rows) |i| {
@@ -152,7 +152,7 @@ fn prepareAttentionInputs(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scra
             loop.gates(&m.loop, e, l(arRow(s, source_role, rows, i, false)), l(messageRow(s, core, role, i)), l(r(c.down)), l(r(c.forget)), l(r(c.gain)), l(arRow(s, role, rows, i, true)), 1);
         };
     }
-    const gated = v.hasMessages();
+    const gated = v.pass > 0;
     // An ungated local visit has exactly one AR result and one norm result; Q/K/V alias.
     if (!gated and lp.kind == .local) {
         norm(m, e, arRow(s, 0, rows, 0, false), w.attn.q_norm, at(s.q_norm, 0), rows);
@@ -171,13 +171,13 @@ fn staticPostConv(m: *const Model, e: mtl.ComputeEncoder, cache: *state.Cache, s
     glue.convStatic(&m.glue, e, taps, r(weight), at(out.buf, out.off + base * channels * 2), @intCast(rows), @intCast(channels));
 }
 
-fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visit, segments: []const Segment) !void {
+fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visits.Step, segments: []const Segment) !void {
     var base: usize = 0;
     for (segments, 0..) |seg, si| {
         const rows = seg.rows;
         const cache = seg.cache;
-        const layer0 = cache.attentionLayer(&m.weight_plan, v.cache_slot, rows);
-        const layer = ap.Layer{ .window = layer0.window, .ring = @intCast(cache.ring(v.cache_slot)), .chunk = layer0.chunk, .tau = layer0.tau };
+        const layer0 = cache.attentionLayer(&m.weight_plan, v.of(.conv).?, rows);
+        const layer = ap.Layer{ .window = layer0.window, .ring = @intCast(cache.ring(v.of(.conv).?)), .chunk = layer0.chunk, .tau = layer0.tau };
         const start = cache.len;
         const rr = ap.Rows{ .rows = @intCast(rows), .heads = 24, .kv_heads = 8, .last_pos = @intCast(start + rows - 1), .streams = 1 };
         const prep = ap.Prep{ .qk_clip = m.config.text.qk_clip, .rel_clip = m.config.text.rel_clip, .floor = @floatFromInt(m.config.text.log_floor), .alpha = m.config.text.log_alpha, .eps = m.config.text.eps };
@@ -186,7 +186,7 @@ fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: 
             .seg_of = a(at(s.seg_of, base * 4)),
             .segs = a(at(s.segs, si * @sizeOf(ap.Seg))),
         };
-        const kv = attention.Cache{ .k = a(cache.keys(v.cache_slot)), .v = a(cache.values(v.cache_slot)) };
+        const kv = attention.Cache{ .k = a(cache.keys(v.of(.conv).?)), .v = a(cache.values(v.of(.conv).?)) };
         try convInputForAttention(m, e, s, cache, v, base, rows, true);
         try convInputForAttention(m, e, s, cache, v, base, rows, false);
         attention.prep(&m.attention, e, rr, layer, prep, meta, .{ a(at(s.q_raw, base * state.query_width * 2)), a(at(s.k_conv, base * state.kv_width * 2)), a(at(s.v_conv, base * state.kv_width * 2)), a(at(s.rel_raw, base * state.rel_width * 2)) }, .{ a(r(m.weights.layers[v.layer].attn.q_scale)), a(r(m.weights.layers[v.layer].attn.rel_scale)) }, a(at(s.q_prep, base * state.query_width * 2)), a(at(s.rel_prep, base * 24 * ap.extent * 2)), kv);
@@ -196,15 +196,15 @@ fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: 
     }
 }
 
-fn convInputForAttention(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, cache: *state.Cache, v: *const layer_plan.Visit, base: usize, rows: usize, key: bool) !void {
+fn convInputForAttention(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, cache: *state.Cache, v: *const layer_plan.Visits.Step, base: usize, rows: usize, key: bool) !void {
     const lp = m.weight_plan.at(v.layer);
     const w = &m.weights.layers[v.layer];
     const raw = if (key) at(s.k_conv, base * state.kv_width * 2) else at(s.v_conv, base * state.kv_width * 2);
     const projected = if (key) at(s.k_raw, base * state.kv_width * 2) else at(s.v_raw, base * state.kv_width * 2);
-    const normalized = if (key) at(s.k_norm, 0) else if (v.hasMessages() or lp.kind == .global) at(s.v_norm, 0) else at(s.q_norm, 0);
-    const taps = cache.staged(v.cache_slot, if (key) 0 else 1, 0);
-    copyBf16(m, e, cache.history(v.cache_slot, if (key) 0 else 1), taps, 3 * state.kv_width);
-    copyBf16(m, e, projected, cache.staged(v.cache_slot, if (key) 0 else 1, 3), rows * state.kv_width);
+    const normalized = if (key) at(s.k_norm, 0) else if (v.pass > 0 or lp.kind == .global) at(s.v_norm, 0) else at(s.q_norm, 0);
+    const taps = cache.staged(v.of(.conv).?, if (key) 0 else 1, 0);
+    copyBf16(m, e, cache.history(v.of(.conv).?, if (key) 0 else 1), taps, 3 * state.kv_width);
+    copyBf16(m, e, projected, cache.staged(v.of(.conv).?, if (key) 0 else 1, 3), rows * state.kv_width);
     switch (if (key) w.attn.k_conv else w.attn.v_conv) {
         .static => |weight| glue.convStatic(&m.glue, e, taps, r(weight), raw, @intCast(rows), state.kv_width),
         .dynamic => |d| glue.convDynamic(&m.glue, e, taps, at(normalized.buf, normalized.off + base * state.hidden * 2), r(d.static_w), r(d.projection), raw, @intCast(rows), state.kv_width),
@@ -231,11 +231,11 @@ fn routedExperts(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, laye
     try experts.combine(&m.experts, e, x(at(s.down, 0)), x(at(s.route_ids, 0)), x(at(s.route_weights, 0)), x(at(s.mlp_out, 0)), down_call);
 }
 
-fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visit, segments: []const Segment, rows: usize, taps: ?state.Ref) !void {
+fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visits.Step, segments: []const Segment, rows: usize, taps: ?state.Ref) !void {
     const lp = m.weight_plan.at(v.layer);
-    const gated = v.hasMessages();
+    const gated = v.pass > 0;
     if (taps) |to| {
-        const channel: ?usize = switch (v.cache_slot) {
+        const channel: ?usize = switch (v.of(.conv).?) {
             5 => 0,
             23 => 1,
             41 => 2,
@@ -243,7 +243,7 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
         };
         if (channel) |ch| captureTap(m, e, at(s.p, 0), to, rows, ch);
     }
-    if (v.pass > 1 and v.layer == 6) bankAndReset(m, e, s, rows);
+    if (v.pass > 0 and v.layer == 6) bankAndReset(m, e, s, rows);
     const w = &m.weights.layers[v.layer];
     // The running BF16 p is the partial AR source before attention replaces it with t.
     widen(m, e, at(s.p, 0), at(s.partial, 0), rows * state.hidden);
@@ -260,7 +260,7 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     dense(m, e, w.attn.wo, at(s.att, 0), at(s.attn_dense, 0), rows);
     var base: usize = 0;
     for (segments) |seg| {
-        staticPostConv(m, e, seg.cache, v.cache_slot, 2, at(s.attn_dense, 0), w.attn_conv, at(s.attn_conv, 0), base, seg.rows);
+        staticPostConv(m, e, seg.cache, v.of(.conv).?, 2, at(s.attn_dense, 0), w.attn_conv, at(s.attn_conv, 0), base, seg.rows);
         base += seg.rows;
     }
     runtime(m, e, .attention_partial, &.{ at(s.p, 0), at(s.attn_conv, 0), at(s.blocks, 0), at(s.partial, 0) }, rows * state.hidden, if (lp.boundary) lp.blocks_in + 1 else 0);
@@ -275,11 +275,11 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     try routedExperts(m, e, s, v.layer, rows);
     base = 0;
     for (segments) |seg| {
-        staticPostConv(m, e, seg.cache, v.cache_slot, 3, at(s.mlp_out, 0), w.mlp_conv, at(s.mlp_conv, 0), base, seg.rows);
+        staticPostConv(m, e, seg.cache, v.of(.conv).?, 3, at(s.mlp_out, 0), w.mlp_conv, at(s.mlp_conv, 0), base, seg.rows);
         base += seg.rows;
     }
     runtime(m, e, .mlp_partial, &.{ at(s.partial, 0), at(s.mlp_conv, 0), at(s.p, 0) }, rows * state.hidden, 0);
-    if (v.cache_slot == 5) copyBf16(m, e, at(s.p, 0), at(s.prelude, 0), rows * state.hidden);
+    if (v.of(.conv).? == 5) copyBf16(m, e, at(s.p, 0), at(s.prelude, 0), rows * state.hidden);
 }
 
 fn commitFullHistories(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, segments: []const Segment) void {
@@ -320,7 +320,7 @@ pub fn runShared(m: *const Model, s: *state.Scratch, segments: []const Segment, 
     const cb = m.queue.commandBuffer();
     const e = cb.compute(.serial);
     glue.embedNorm(&m.glue, e, options.ids orelse at(s.ids, 0), r(m.weights.embed), r(m.weights.embed_norm), at(s.p, 0), @intCast(rows));
-    for (m.weight_plan.visits[0..m.weight_plan.n_visits]) |*v| try visit(m, e, s, v, segments, rows, options.taps);
+    for (m.weight_plan.visits.slice()) |*v| try visit(m, e, s, v, segments, rows, options.taps);
     widen(m, e, at(s.p, 0), at(s.partial, 0), rows * state.hidden);
     const final = finalPlan(rows, options.all, options.taps != null);
     for (0..final.work_rows) |j| {

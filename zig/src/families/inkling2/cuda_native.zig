@@ -5,7 +5,7 @@ const lanes = @import("lanes");
 const core = @import("core");
 const config = @import("config.zig");
 const plan_ = @import("plan.zig");
-const loop = @import("loop.zig");
+const loop = @import("loop_cache.zig");
 const engine = @import("loop_engine.zig");
 const backend = @import("loop_backend.zig");
 

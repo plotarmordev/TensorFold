@@ -78,7 +78,7 @@ pub const runtime_names = [_][:0]const u8{
 pub fn admitConfig(c: *const cfg.Config) !void {
     const t = c.text;
     const l = t.loop orelse return error.Inkling2NotMini;
-    if (l.passes != 3 or l.core_start != 6 or l.core_end != 18 or l.gate_rank != 64)
+    if (l.passes != 3 or l.start != 6 or l.end != 18 or l.rank != 64)
         return error.UnsupportedInkling2Loop;
     if (t.hidden != 2304 or t.layers != 24 or t.vocab != 201024 or t.unpadded_vocab != 200058 or
         t.window != 1024 or t.d_rel != 16 or t.rel_extent != 1024 or t.log_floor != 8192 or
@@ -177,7 +177,7 @@ fn loadWeights(c: *const ck.Checkpoint, config: *const cfg.Config, wp: *const la
         l.gu = try matrix(c, layer, "w13", p.precision, 2304, 2304);
         l.down = try matrix(c, layer, "w2", p.precision, 2304, 1152);
         l.controllers = null;
-        if (config.text.loop) |lp| if (layer >= lp.core_start and layer < lp.core_end) {
+        if (config.text.loop) |lp| if (layer >= lp.start and layer < lp.end) {
             var controllers: [4]Controller = undefined;
             inline for (.{ "attn", "k", "v", "mlp" }, 0..) |role, j| controllers[j] = .{
                 .down = try get(c, "model.llm.layers.{d}.controllers." ++ role ++ ".down_weight", .{layer}, .bf16, &.{ 64, 4608 }),
@@ -235,7 +235,7 @@ pub const Model = struct {
         var precisions: [24]layer_plan.Precision = undefined;
         for (&precisions, 0..) |*p, i| p.* = if (i < 20) .nvfp4 else .mxfp8;
         m.weight_plan = try layer_plan.build(&m.config.text, &precisions);
-        if (m.weight_plan.n_visits != 48) return error.UnsupportedInkling2Loop;
+        if (m.weight_plan.visits.len != 48) return error.UnsupportedInkling2Loop;
         for (files) |path| try m.checkpoint.addFileSelected(m.device, path, "", "model.llm.");
         m.weights = try loadWeights(&m.checkpoint, &m.config, &m.weight_plan);
 

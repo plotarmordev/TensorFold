@@ -100,7 +100,7 @@ pub const Cache = struct {
     follow: ?mtl.ResidencySet.Follow = null,
 
     pub fn init(device: mtl.Device, capacity: usize, schedule: *const plan.Plan) !Cache {
-        if (capacity == 0 or capacity > 1048576 or schedule.n_visits != visit_slots) return error.Inkling2CacheShape;
+        if (capacity == 0 or capacity > 1048576 or schedule.visits.len != visit_slots) return error.Inkling2CacheShape;
         var out: Cache = .{
             .kv = undefined,
             .conv = undefined,

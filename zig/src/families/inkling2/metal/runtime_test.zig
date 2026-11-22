@@ -34,7 +34,7 @@ fn mini() cfg.Config {
             .up_cap = 25,
             .logit_cap = 30,
             .max_context = 1048576,
-            .loop = .{ .core_start = 6, .core_end = 18, .passes = 3, .gate_rank = 64 },
+            .loop = .{ .start = 6, .end = 18, .passes = 3, .rank = 64 },
         },
         .vision = undefined,
         .mtp = null,
@@ -54,20 +54,20 @@ test "Mini admits only its fixed geometry and expands 24 weights to 48 visits" {
     const c = mini();
     try model.admitConfig(&c);
     const p = schedule();
-    try std.testing.expectEqual(@as(u32, 48), p.n_visits);
+    try std.testing.expectEqual(@as(u32, 48), p.visits.len);
     try std.testing.expectEqual(@as(u32, 8), p.visitCount(.global));
     try std.testing.expectEqual(@as(u32, 5), p.final_sources);
-    for (p.visits[0..p.n_visits], 0..) |v, i| {
-        try std.testing.expectEqual(@as(u32, @intCast(i)), v.cache_slot);
+    for (p.visits.slice(), 0..) |v, i| {
+        try std.testing.expectEqual(@as(u16, @intCast(i)), v.of(.conv).?);
         try std.testing.expect(v.layer < 24);
     }
     for ([_]usize{ 18, 30 }) |i| {
-        try std.testing.expect(p.visits[i].pass > 1);
-        try std.testing.expectEqual(@as(u32, 6), p.visits[i].layer);
-        try std.testing.expect(p.visits[i].hasMessages());
+        try std.testing.expect(p.visits.steps[i].pass > 0);
+        try std.testing.expectEqual(@as(u16, 6), p.visits.steps[i].layer);
+        try std.testing.expect(p.messages(@intCast(i)));
     }
-    try std.testing.expect(!p.visits[0].hasMessages());
-    try std.testing.expect(!(p.visits[17].pass > 1 and p.visits[17].layer == 6));
+    try std.testing.expect(!p.messages(0));
+    try std.testing.expect(!(p.visits.steps[17].pass > 0 and p.visits.steps[17].layer == 6));
 }
 
 test "Every visit and convolution role has disjoint persistent and staged bytes" {

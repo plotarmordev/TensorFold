@@ -2,7 +2,7 @@
 const std = @import("std");
 const cuda = @import("cuda");
 const config = @import("config.zig");
-const loop = @import("loop.zig");
+const loop = @import("loop_cache.zig");
 const weights_ = @import("loop_weights.zig");
 const ops = @import("ops.zig");
 const attention = @import("kernels.zig");
@@ -187,7 +187,7 @@ pub const Model = struct {
         const local_slots = attention.slotsFor(local, context);
         const global_slots = attention.slotsFor(global, context);
         const part_slots = @max(rows * c.local.q * local_slots, rows * c.global.q * global_slots);
-        const hist_values = @as(usize, w.p.n_visits) * (2 * kv + 2 * h) * window_rows;
+        const hist_values = @as(usize, w.p.visits.len) * (2 * kv + 2 * h) * window_rows;
         m.s = .{
             .ids = try m.alloc(rows * 4),
             .pos = try m.alloc(rows * 4),
@@ -229,11 +229,11 @@ pub const Model = struct {
             .logits = try m.alloc(window_rows * c.unpadded_vocab * 4),
             .backup = try m.alloc(layout.bytes - layout.at(0).conv_offset),
             .hist = try m.alloc(hist_values * 4),
-            .rewind_sites = try m.alloc(w.p.n_visits * 4 * @sizeOf(ops.RewindSite)),
+            .rewind_sites = try m.alloc(w.p.visits.len * 4 * @sizeOf(ops.RewindSite)),
         };
         for (0..ops.max_blocks) |i| m.s.blocks[i] = try m.alloc(rows * h * 2);
         var sites: [config.max_visits * 4]ops.RewindSite = undefined;
-        for (0..w.p.n_visits) |v| for (0..4) |site| {
+        for (0..w.p.visits.len) |v| for (0..4) |site| {
             const kv_site = site < 2;
             sites[v * 4 + site] = .{
                 .state = m.convOf(@intCast(v), site),
@@ -242,7 +242,7 @@ pub const Model = struct {
                 .c = @intCast(if (kv_site) kv else h),
             };
         };
-        try m.upload(s, m.s.rewind_sites, std.mem.sliceAsBytes(sites[0 .. w.p.n_visits * 4]));
+        try m.upload(s, m.s.rewind_sites, std.mem.sliceAsBytes(sites[0 .. w.p.visits.len * 4]));
         try m.zeros(s, m.cache.ptr + m.layout.at(0).conv_offset, layout.bytes - m.layout.at(0).conv_offset);
         try s.synchronize();
         return m;
@@ -265,7 +265,7 @@ pub const Model = struct {
 
     pub fn rewind(m: *const Model, k: *const Kernels, s: cuda.Stream, kept: usize) !void {
         if (kept > window_rows) return error.WindowTooWide;
-        try ops.rewind(&k.glue, s, m.s.rewind_sites, m.w.p.n_visits * 4, m.w.c.text.hidden, m.s.backup, m.s.hist, 0, 0, kept);
+        try ops.rewind(&k.glue, s, m.s.rewind_sites, m.w.p.visits.len * 4, m.w.c.text.hidden, m.s.backup, m.s.hist, 0, 0, kept);
     }
 
     fn arBlocks(m: *const Model, blocks: []const u64, partial: u64, query: u64, out: u64, nq: usize, partial_bf16: bool, rows: usize) loop_math.ArArgs {
@@ -329,16 +329,16 @@ pub const Model = struct {
         var n_blocks: usize = 0;
         const lp = c.loop.?;
 
-        for (m.w.p.visits[0..m.w.p.n_visits]) |visit| {
+        for (m.w.p.visits.steps[0..m.w.p.visits.len]) |visit| {
             const layer = m.w.p.at(visit.layer);
             const lw = &m.w.layers[visit.layer];
-            if (visit.pass >= 2 and visit.layer == lp.core_start) {
+            if (visit.pass >= 1 and visit.layer == lp.start) {
                 try m.copy(s, partial, m.s.prelude, rows * h * 2);
                 n_blocks = 1; // block zero is the embedding; later passes never inherit completed blocks
             }
-            const messages = visit.hasMessages();
+            const messages = visit.pass > 0;
             if (messages) {
-                const core_j = visit.layer - lp.core_start;
+                const core_j = visit.layer - lp.start;
                 try loop_math.messages(&k.loop, s, m.s.bank0, m.s.bank1, m.w.cross_qm + 2 * core_j * h * 4, m.w.cross_kv + 2 * core_j * h * 4, m.s.messages, rows, 1, h, c.eps);
             }
             const nq: usize = if (layer.kind == .global) 3 else 1;
@@ -373,7 +373,7 @@ pub const Model = struct {
             try ops.rowdot(&k.glue, s, u_q, lw.attn.sink, m.s.sink, rows, layer.heads.q, h, true, true);
 
             const geometry = m.layerGeometry(visit.layer);
-            const cache = m.cacheOf(visit.cache_slot);
+            const cache = m.cacheOf(visit.of(.conv).?);
             const dynamic = layer.kind == .global;
             for (0..2) |kind| {
                 const input = if (kind == 0) u_k else u_v;
@@ -384,11 +384,11 @@ pub const Model = struct {
                 }
                 try ops.conv(&k.glue, s, .{
                     .x = if (kind == 0) m.s.k_raw else m.s.v_raw,
-                    .state = m.convOf(visit.cache_slot, kind),
+                    .state = m.convOf(visit.of(.conv).?, kind),
                     .w = if (kind == 0) lw.attn.k_conv else lw.attn.v_conv,
                     .dyn = if (dynamic) dyn_out else 0,
                     .out = if (kind == 0) m.s.k_conv else m.s.v_conv,
-                    .hist = if (record) m.histOf(visit.cache_slot, kind) else 0,
+                    .hist = if (record) m.histOf(visit.of(.conv).?, kind) else 0,
                     .x_bf16 = 1,
                     .heads = @intCast(layer.heads.kv),
                     .c = @intCast(kv_width),
@@ -424,11 +424,11 @@ pub const Model = struct {
             }
             try ops.conv(&k.glue, s, .{
                 .x = m.s.attn_out,
-                .state = m.convOf(visit.cache_slot, 2),
+                .state = m.convOf(visit.of(.conv).?, 2),
                 .w = lw.attn_conv,
                 .base = if (layer.boundary) 0 else partial,
                 .resid = m.s.t,
-                .hist = if (record) m.histOf(visit.cache_slot, 2) else 0,
+                .hist = if (record) m.histOf(visit.of(.conv).?, 2) else 0,
                 .x_bf16 = 1,
                 .c = @intCast(h),
                 .rows = @intCast(rows),
@@ -450,11 +450,11 @@ pub const Model = struct {
             try modelopt.run(&k.moe, s, lw.experts, .{ .gate = c.gate_cap, .up = c.up_cap }, m.s.normalized, h, m.s.route_pick, m.s.route_weights, rows, c.topk, m.s.moe_out, m.s.moe_scratch);
             try ops.conv(&k.glue, s, .{
                 .x = m.s.moe_out,
-                .state = m.convOf(visit.cache_slot, 3),
+                .state = m.convOf(visit.of(.conv).?, 3),
                 .w = lw.mlp_conv,
                 .resid = m.s.t,
                 .out = next,
-                .hist = if (record) m.histOf(visit.cache_slot, 3) else 0,
+                .hist = if (record) m.histOf(visit.of(.conv).?, 3) else 0,
                 .x_bf16 = 1,
                 .c = @intCast(h),
                 .rows = @intCast(rows),
@@ -462,8 +462,8 @@ pub const Model = struct {
             }, 1);
             std.mem.swap(u64, &partial, &next);
 
-            if (visit.layer + 1 == lp.core_start) try m.copy(s, m.s.prelude, partial, rows * h * 2);
-            if (visit.pass > 0 and visit.pass < lp.passes and visit.layer + 1 == lp.core_end) {
+            if (visit.layer + 1 == lp.start) try m.copy(s, m.s.prelude, partial, rows * h * 2);
+            if (visit.pass < lp.passes - 1 and visit.layer + 1 == lp.end) {
                 try m.copy(s, m.s.bank0, m.s.blocks[n_blocks - 1], rows * h * 2);
                 try m.copy(s, m.s.bank1, partial, rows * h * 2);
             }
@@ -487,8 +487,8 @@ pub const Model = struct {
     /// Compact bytes for all valid K/V rows and every convolution state of all 48 visits.
     pub fn snapshotBytes(m: *const Model, at: usize) u64 {
         var bytes = m.layout.bytes - m.layout.at(0).conv_offset;
-        for (0..m.w.p.n_visits) |v| {
-            const layer = m.w.p.at(m.w.p.visits[v].layer);
+        for (0..m.w.p.visits.len) |v| {
+            const layer = m.w.p.at(m.w.p.visits.steps[v].layer);
             const global = layer.kind == .global;
             const count = if (global) at else @min(at, m.w.c.text.window - 1);
             const row = @as(u64, layer.heads.kv) * layer.heads.dim * 2;
@@ -500,15 +500,15 @@ pub const Model = struct {
     fn copyState(m: *const Model, s: cuda.Stream, saved: *const Saved, out: bool) !void {
         const at: usize = saved.at;
         var off: usize = 0;
-        for (0..m.w.p.n_visits) |v| {
-            const visit = m.w.p.visits[v];
+        for (0..m.w.p.visits.len) |v| {
+            const visit = m.w.p.visits.steps[v];
             const layer = m.w.p.at(visit.layer);
             const geometry = m.layerGeometry(visit.layer);
             const rb = @as(usize, layer.heads.kv) * layer.heads.dim * 2;
             const global = layer.kind == .global;
             const count = if (global) at else @min(at, m.w.c.text.window - 1);
             const first = at - count;
-            const cache = m.cacheOf(visit.cache_slot);
+            const cache = m.cacheOf(visit.of(.conv).?);
             for ([2]u64{ cache.k, cache.v }) |base| {
                 var pos = first;
                 while (pos < at) {
@@ -534,7 +534,7 @@ pub const Model = struct {
         const saved = try gpa.create(Saved);
         errdefer gpa.destroy(saved);
         const lp = m.w.c.text.loop.?;
-        saved.* = .{ .at = at, .visits = m.w.p.n_visits, .passes = lp.passes, .hidden = m.w.c.text.hidden, .buf = try cuda.DeviceBuffer.alloc(m.d, @intCast(@max(snapshotBytes(m, at), 256))) };
+        saved.* = .{ .at = at, .visits = m.w.p.visits.len, .passes = lp.passes, .hidden = m.w.c.text.hidden, .buf = try cuda.DeviceBuffer.alloc(m.d, @intCast(@max(snapshotBytes(m, at), 256))) };
         errdefer saved.buf.free();
         try m.copyState(s, saved, true);
         return saved;
@@ -542,7 +542,7 @@ pub const Model = struct {
 
     pub fn restore(m: *const Model, s: cuda.Stream, saved: *const Saved) !void {
         const lp = m.w.c.text.loop.?;
-        if (saved.visits != m.w.p.n_visits or saved.passes != lp.passes or saved.hidden != m.w.c.text.hidden)
+        if (saved.visits != m.w.p.visits.len or saved.passes != lp.passes or saved.hidden != m.w.c.text.hidden)
             return error.StateOfAnotherModel;
         if (saved.at == 0 or saved.at > m.context or saved.buf.len < snapshotBytes(m, saved.at)) return error.BadLoopSnapshot;
         try m.copyState(s, saved, false);

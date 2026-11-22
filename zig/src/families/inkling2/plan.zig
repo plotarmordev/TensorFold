@@ -1,6 +1,24 @@
-//! The layer plan: which layers slide or see everything, where attention-residual blocks end, what layers sum over.
+//! The layer plan: which layers slide or see everything, where attention-residual blocks end, what layers sum over,
+//! and a looped model's visits (core/visit_plan.zig): each visit's layer, pass and state slots.
 const std = @import("std");
 const config = @import("config.zig");
+const visit_plan = @import("visit_plan");
+
+/// The states a visit keeps: a sliding layer's key/value ring, a global layer's whole cache, every visit's conv state.
+pub const Slot = enum { sliding, full, conv };
+
+/// Layer visits in run order with their slots (Small: every layer once).
+pub const Visits = visit_plan.Plan(Slot, config.max_visits);
+
+const Holds = struct {
+    pub fn keeps(_: Holds, layer: u16, k: Slot) bool {
+        return switch (k) {
+            .conv => true,
+            .full => config.isGlobal(layer),
+            .sliding => !config.isGlobal(layer),
+        };
+    }
+};
 
 /// A routed-expert layer's stored format, read from its tensors: ModelOpt NVFP4 (groups of 16) or MXFP8 (groups of 32).
 pub const Precision = enum { nvfp4, mxfp8 };
@@ -19,30 +37,34 @@ pub const Layer = struct {
     precision: Precision,
 };
 
-pub const Visit = struct {
-    layer: u32, // physical weight layer; core layers repeat with the same weights
-    pass: u32, // zero outside the core, otherwise one-based loop pass
-    cache_slot: u32, // this visit's private KV and four short-convolution states
-    previous_core_start: ?u32, // previous pass's first visit; its two bank states feed this visit's messages
-
-    pub fn hasMessages(v: Visit) bool {
-        return v.previous_core_start != null;
-    }
-};
-
 pub const Plan = struct {
     layers: [config.max_layers]Layer,
     n: u32,
-    visits: [config.max_visits]Visit,
-    n_visits: u32,
     final_sources: u32, // the output query's states: every finished block and the last layer's output
+    visits: Visits,
+    pre_blocks: u32, // looped: finished blocks entering the core
+    bank_blocks: u32, // looped: blocks a pass finishes past its entry block, the next pass's message sources
+
+    /// Visit k takes the previous pass's messages: a core layer at pass 1 or later.
+    pub fn messages(p: *const Plan, k: u32) bool {
+        return p.visits.steps[k].pass > 0;
+    }
+
+    /// Visit k starts a pass after the first: the running state restarts from the core's entry block.
+    pub fn restarts(p: *const Plan, k: u32) bool {
+        const s = p.visits.steps[k];
+        return s.enter and s.pass > 0;
+    }
+
+    /// The row of the cross-pass queries a core visit reads (its layer's place in the core), 0 outside the core.
+    pub fn coreIndex(p: *const Plan, k: u32) u32 {
+        const s = p.visits.steps[k];
+        const l = p.visits.loop;
+        return if (s.layer >= l.start and s.layer < l.end) s.layer - l.start else 0;
+    }
 
     pub fn at(p: *const Plan, i: u32) *const Layer {
         return &p.layers[i];
-    }
-
-    pub fn visit(p: *const Plan, i: u32) *const Visit {
-        return &p.visits[i];
     }
 
     pub fn count(p: *const Plan, kind: Kind) u32 {
@@ -53,30 +75,20 @@ pub const Plan = struct {
 
     pub fn visitCount(p: *const Plan, kind: Kind) u32 {
         var k: u32 = 0;
-        for (p.visits[0..p.n_visits]) |v| k += @intFromBool(p.layers[v.layer].kind == kind);
+        for (p.visits.slice()) |v| k += @intFromBool(p.layers[v.layer].kind == kind);
         return k;
     }
 };
 
 /// The plan for a parsed config and each layer's expert precision (`prec` holds one entry per layer).
-fn appendVisit(p: *Plan, c: *const config.Text, layer: u32, pass: u32) void {
-    const previous: ?u32 = if (c.loop) |core|
-        (if (pass >= 2) core.core_start + (pass - 2) * (core.core_end - core.core_start) else null)
-    else
-        null;
-    p.visits[p.n_visits] = .{
-        .layer = layer,
-        .pass = pass,
-        .cache_slot = p.n_visits,
-        .previous_core_start = previous,
-    };
-    p.n_visits += 1;
-}
-pub fn build(c: *const config.Text, prec: []const Precision) error{PrecisionCount}!Plan {
+pub fn build(c: *const config.Text, prec: []const Precision) error{ PrecisionCount, Layout, TooManySteps }!Plan {
     if (prec.len != c.layers) return error.PrecisionCount;
     var p: Plan = undefined;
     p.n = c.layers;
-    p.n_visits = 0;
+    const l: visit_plan.Loop = if (c.loop) |x| .{ .start = x.start, .end = x.end, .passes = x.passes } else visit_plan.straight;
+    p.visits = try Visits.build(c.layers, l, Holds{});
+    p.pre_blocks = l.start / c.block;
+    p.bank_blocks = if (c.loop != null) (l.end - l.start) / c.block - 1 else 0;
     for (0..c.layers) |k| {
         const i: u32 = @intCast(k);
         const boundary = i % c.block == 0;
@@ -95,12 +107,5 @@ pub fn build(c: *const config.Text, prec: []const Precision) error{PrecisionCoun
         };
     }
     p.final_sources = (c.layers + c.block - 1) / c.block + 1;
-    if (c.loop) |loop| {
-        for (0..loop.core_start) |i| appendVisit(&p, c, @intCast(i), 0);
-        for (1..loop.passes + 1) |pass| for (loop.core_start..loop.core_end) |i| appendVisit(&p, c, @intCast(i), @intCast(pass));
-        for (loop.core_end..c.layers) |i| appendVisit(&p, c, @intCast(i), 0);
-    } else {
-        for (0..c.layers) |i| appendVisit(&p, c, @intCast(i), 0);
-    }
     return p;
 }
