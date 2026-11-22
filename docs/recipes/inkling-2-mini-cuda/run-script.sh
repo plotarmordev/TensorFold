@@ -41,7 +41,7 @@ python3 -c 'import random; r = random.Random(4387); print(" ".join(str(r.randran
 text="The three laws of thermodynamics, explained for a curious student:"
 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text"
 INKLING2_REF_PLANT=1 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text"
-mem() { echo "$1: $(free -m | awk '/^Mem:/ {print "host used " $3 " MiB, available " $7 " MiB"}'); GPU $(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | tr '\n' ' ')"; }
+mem() { echo "$1: host $(awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {printf "used %d MiB, available %d MiB", (t - a) / 1024, a / 1024}' /proc/meminfo); GPU $(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | tr '\n' ' ')"; }
 mem "before the server"
 /work/sm121/native/bin/tensorfold-native serve "$model" --backend cuda --host 127.0.0.1 --port 8188 \
     --name inkling-2-mini --parallel 4 --context 8192 --no-update-check >"$out/server.log" 2>&1 &
@@ -63,10 +63,41 @@ for level in 1 4; do
         --temperatures 0 --label "gb10-$level" --output "$out/streams-$level.json"
     mem "after $level streams"
 done
-python3 - "$out" <<'EOF'
-import json, sys
+python3 - "$out" "$model" <<'EOF'
+import glob, json, re, struct, sys
+out, model = sys.argv[1:]
+agg = {}
 for level in (1, 4):
-    cells = json.load(open(f"{sys.argv[1]}/streams-{level}.json"))["cells"]
+    cells = json.load(open(f"{out}/streams-{level}.json"))["cells"]
     if any(c.get("failed") for c in cells):
         raise SystemExit(f"{level} streams: a request failed")
+    agg[level] = max(c["aggregate_tps"] for c in cells)
+    for c in cells:
+        r = c["request"]
+        print(f"RESULT inkling2 mini gb10 {level} stream(s) {c['prompt']}: first token {r['ttft_s']} s, prompt {r['prompt_ttft_tps']} tok/s, decode {c['per_stream_tps']} tok/s a stream, {c['aggregate_tps']} total")
+# weight bytes one decoded token reads: the core layers (loop_config) run num_passes times, each visit reads
+# num_experts_per_tok of n_routed_experts experts, the unembedding is read whole and the embedding one row
+text = json.load(open(f"{model}/config.json"))
+text = text.get("text_config", text)
+loop = text["loop_config"]
+per_token = 0.0
+for path in glob.glob(f"{model}/*.safetensors"):
+    with open(path, "rb") as f:
+        header = json.loads(f.read(struct.unpack("<Q", f.read(8))[0]))
+    for name, t in header.items():
+        if name == "__metadata__" or not name.startswith("model.llm.") or name == "model.llm.embed.weight":
+            continue
+        size = t["data_offsets"][1] - t["data_offsets"][0]
+        layer = re.match(r"model\.llm\.layers\.(\d+)\.", name)
+        if layer:
+            core = loop["core_start"] <= int(layer[1]) < loop["core_end"]
+            size *= loop["num_passes"] if core else 1
+            if ".mlp.experts." in name:
+                size *= text["num_experts_per_tok"] / text["n_routed_experts"]
+        per_token += size
+bandwidth = 273e9  # GB10's LPDDR5x peak, NVIDIA's DGX Spark specification
+print(f"RESULT inkling2 mini gb10 aggregate decode: 1 stream {agg[1]:.1f} tok/s, 4 streams {agg[4]:.1f} tok/s ({agg[4] / agg[1]:.2f}x)")
+print(f"RESULT inkling2 mini weight bytes a token {per_token / 1e9:.2f} GB: one stream's bandwidth limit {bandwidth / per_token:.1f} tok/s at 273 GB/s, measured {100 * agg[1] * per_token / bandwidth:.0f}% of it")
+if agg[4] < 1.5 * agg[1]:
+    raise SystemExit(f"4 streams gave {agg[4]:.1f} tok/s, not clearly more than 1 stream's {agg[1]:.1f}")
 EOF

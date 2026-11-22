@@ -9,3 +9,6 @@
   row-major copy left restored prompts' logits off from a fresh prefill.
 - Mini loop messages now store `[core][role][row][c]` planes, matching each controller's role offset across multi-row prompt chunks; the CUDA reference checks the same served layout.
 - The sampled CUDA serving reference widens the same BF16 logits the device sampler consumes, while retaining exact comparisons of the original FP32 logits.
+- Mini CUDA serves `--parallel N` streams at once: each lane owns its sequence state and CUDA stream over shared
+  weights, and a shared round queues every lane's forward before it waits. Before, the server admitted N requests
+  to one lane and failed the others with `NoFreeSlot`. The TOP receipt adds the bandwidth limit and a 4-stream gate.

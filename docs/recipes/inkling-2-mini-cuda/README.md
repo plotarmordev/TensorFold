@@ -8,7 +8,12 @@ The server is #4387's engine (`inkling2.native`, model type `inkling2_loop`) wit
 attention fixes from his #4387 comments; #4441's engine (`inkling2.mini_native`) rides along for its float64
 reference. The script fails on any of: `tf-cuda-test inkling2-serving` (#4387's checks), `tf-cuda-test
 inkling2-mini-ref` (32 greedy tokens equal to the float64 host reference), that reference's planted control staying
-green, or a failed stream in `tools/bench_concurrent.py` at 1 and 4 streams.
+green, a failed stream in `tools/bench_concurrent.py` at 1 and 4 streams, or 4 streams giving under 1.5 times one
+stream's total tok/s. The receipt also sets one stream's decode against GB10's bandwidth limit: the weight bytes a
+token reads (from the checkpoint's headers) over 273 GB/s.
+
+Each `--parallel` stream gets its own lane: a complete sequence state (cache and forward scratch, about 1.5 GiB at an
+8K window) and CUDA stream over the shared weights. A shared round queues every lane's forward before it waits on any.
 
 ## RTX Spark (N1X): what differs and what must change
 
