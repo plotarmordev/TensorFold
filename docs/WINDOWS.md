@@ -219,19 +219,37 @@ shares it) with Zig 0.17.0 and the CUDA 13.5.0 `windows-arm64` redistributables 
 - `glm_index_rope.cuh` marked `turn` GCC's way (`__attribute__((noinline))`), which nvcc with cl.exe rejects, so
   `glm_glue` and `glm_index` did not build; it is `__noinline__` now. `compile-native-cuda-windows` embeds empty
   images and cannot catch a kernel source that only cl.exe rejects.
-- Windows fatbins pass `-Xcompiler=/wd4819`: under the laptop's code page 936, C4819 warnings from the CUDA headers
-  buried that error.
+- Windows fatbins pass `-Xcompiler=/wd4819`, the flag that showed that error under the laptop's code page 936, where
+  C4819 warnings from the CUDA headers buried it. The build still prints C4819 warnings with it; which nvcc pass
+  they come from is not known.
 
-Then, at `09ea6dd6e` with the `__noinline__` fix, on the same laptop (git 2.56.1, Zig 0.17.0, nvcc 13.5.37 with
-`cl` 14.44.35207 arm64 from VS 2022 Build Tools 17.14, `vcvarsall arm64`; no Python or WSL):
+Then, from a clean checkout of `8365021a7` on the same laptop (git 2.56.1, Zig 0.17.0, nvcc 13.5.37 with `cl`
+14.44.35207 arm64 from VS 2022 Build Tools 17.14, `vcvarsall arm64`; no Python or WSL; power mode not recorded):
 
-- `zig build native install -Dsm=121 -Dstrip=true -Dnvcc=%CUDA_PATH%\bin\nvcc.exe` exits 0.
-- `tf-cuda-test` (sm_121, 48 SMs, 51,816 MiB), passed / failed: `smoke` 8/0, `glue` 1/0 (1473 of 1473 byte-equal),
-  `sample` 2/0, `quant-ref` 4/0 (worst 0.510 of its tolerance), `affine8` 1/0 (24 cases, worst 0.338), `modelopt`
-  6/0, `exlr8` 7/0 (worst 0.1084).
-- `tensorfold-native serve` of `mlx-community/Qwen3.5-2B-MLX-4bit` (`--context 8192 --parallel 1 --temperature 0`):
-  HTTP 200, 26 prompt and 200 completion tokens, 145.9 tok/s at the server (first token 0.027 s), 137.3 tok/s at the
-  client.
+- `zig build native install -Dsm=121 -Dstrip=true -Dnvcc=%CUDA_PATH%\bin\nvcc.exe` exits 0 in 629 s, 222 of 222
+  steps.
+- `tf-cuda-test` (sm_121, 48 SMs, 51,816 MiB), passed / failed, 29/0 in all: `smoke` 8/0, `glue` 1/0 (1473 of 1473
+  byte-equal), `sample` 2/0 (2880 draws, none differ), `quant-ref` 4/0 (worst 0.510 of its tolerance), `affine8` 1/0
+  (worst 0.338), `modelopt` 6/0, `exlr8` 7/0 (worst 0.1084).
+- `zig build kernel-contract -Dsm=121 -Dnvcc=%CUDA_PATH%\bin\nvcc.exe` did not finish: `tf-cuda-test
+  kernel-contract` ended with exit code 5, which the program never returns (0, 1 or 2), and printed no SUMMARY
+  line, so the standalone suites and gate 5 have no result. Counted from the gate lines it printed: 525 PASS, 47
+  planted controls red, 26 N/A and 12 FAIL, every FAIL in MiniMax-H3's image kernels (the laptop quoted 11 of the
+  12 lines) and none in another family's, Inkling 2's included.
+  - Seven `shapes` lines are one to four bf16 steps from float64, at 1.01 to 1.81 of their bound: `h3d_embed`,
+    `h3d_rms_norm`, `h3d_layer_norm`, `h3d_attention`, `h3p_norm` (qwen and h3) and `h3p_heads rotary`. Two `sums`
+    lines (`h3d_layer_norm`, `h3d_attention`) leave the bound. These kernels pass their nonfinite and repeat gates.
+    nvcc's flags differ from Linux's only by cl.exe's own three. The laptop reads the misses as bounds too tight
+    for bf16 outputs, not broken kernels; the same gates on Linux at this commit would settle it, and were not run.
+  - Two `sums` lines, `h3p_attention` causal and all rows, say "refused a served shape". That is the test's own
+    shape on any OS: gate 4 cuts the 77-row shape to 4 rows, and their `prepare` refuses fewer rows than K.
+  - Two of the N/A lines say MLP128's "cluster path needs sm_90 or newer, this GPU is sm_121". The wording is wrong
+    and the skip is right: those kinds run on sm_120 alone.
+- `tensorfold-native serve` was not run at `8365021a7`: the laptop's owner had the checkpoint deleted, and nothing
+  is downloaded there without their say. It stands from `09ea6dd6e` with the `__noinline__` change by hand, the
+  sources `8365021a7` builds apart from the `/wd4819` flag: one request to `mlx-community/Qwen3.5-2B-MLX-4bit` at
+  `93760be4f1f6` (`--context 8192 --parallel 1 --temperature 0`) gave HTTP 200, 26 prompt and 200 completion tokens,
+  145.9 tok/s at the server (first token 0.027 s), 137.3 tok/s at the client.
 
 Inkling 2 Mini is not served on any OS yet: `zig/src/families/inkling2` has kernels, ops and the host-side config,
 names, plan and prompt, which `tf-cuda-test`'s contracts use (they compile for `aarch64-windows-gnu`). For Windows it
@@ -247,3 +265,7 @@ needs:
    the cache and streams.
 5. Its CUDA sources in CUDA's qualifiers (`__noinline__`, `__forceinline__`), not GCC attributes: only a build with
    nvcc and cl.exe, such as this laptop's, rejects them.
+6. The kernel contract finished on this laptop, the only run that qualifies its kernels there: what ends the run
+   with exit code 5, the `h3d` and `h3p` gates at the same commit on a Linux sm_121 Spark to tell a fault of nvcc
+   with cl.exe from bounds too tight everywhere, and the two faults any OS has (gate 4's 4-row shape for
+   `h3p_attention`, the MLP128 N/A wording).

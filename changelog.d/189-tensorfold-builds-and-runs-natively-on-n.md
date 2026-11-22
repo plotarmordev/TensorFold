@@ -6,7 +6,8 @@
   calls cast vtable entries with `@alignCast` for aarch64; both stopped `tensorfold-native`.
 - `compile-native-cuda-windows` now also type-checks the sm_121 `aarch64-windows-gnu` product.
 - `glm_index_rope.cuh` uses CUDA's `__noinline__`, not GCC's `__attribute__((noinline))`, which nvcc
-  with cl.exe rejected in `glm_glue` and `glm_index`; Windows fatbins pass `/wd4819`, whose code-page
-  warnings buried that error.
-- `docs/WINDOWS.md` records the N1X laptop's build, `tf-cuda-test` counts and Qwen3.5-2B tok/s, and
-  what Inkling 2 Mini still needs there.
+  with cl.exe rejected in `glm_glue` and `glm_index`; Windows fatbins pass `/wd4819`, the flag that
+  showed that error under the code-page warnings burying it.
+- `docs/WINDOWS.md` records the N1X laptop's build, `tf-cuda-test` counts, the kernel-contract run that
+  ended before its SUMMARY (12 FAIL lines, all MiniMax-H3 image kernels), Qwen3.5-2B tok/s, and what
+  Inkling 2 Mini still needs there.
