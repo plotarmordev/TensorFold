@@ -294,7 +294,10 @@ Since that run:
   after each kernel. `zig build kernel-contract -Dcontract-only=WORD` (repeatable) passes the words
   `tf-cuda-test kernel-contract WORD...` already took: the kernels and launches so named, without the suites.
 
-None of this has run on the laptop yet.
+On TOP's GB10 (sm_121, Linux, nvcc 13.0) at `03e9b18df`, `kernel-contract h3d h3p d3_cfg_mix` passes gates 1-4 on
+all 27 kernels: `d3_cfg_mix` "3 non-finite and 20482 finite outputs match the float64 classes", with a COUNT line
+per kernel and the SUMMARY. It exits 1 on one limit problem, `d3_cfg_mix` "12 registers ... (recorded 0, 0)": that
+record is `registry.none`, pending on every OS. None of this has run on the laptop yet.
 
 No serve or model download is part of this card. Model serving and tok/s belong to card 202.
 
