@@ -52,6 +52,10 @@ fn half(x: f64) f16 {
     return @floatCast(@as(f32, @floatCast(x)));
 }
 
+fn tiledWeight(score: f64, running_max: f64, final_max: f64) f64 {
+    return @as(f64, half(@exp(score - running_max))) * @exp(running_max - final_max);
+}
+
 /// The spacing of fp16 values at |x| (subnormals 2^-24).
 fn ulp16(x: f64) f64 {
     const a = @abs(x);
@@ -232,18 +236,28 @@ pub const Attention = struct {
                 @memset(&out, 0);
                 @memset(&tol, 0);
                 @memset(&flip, 0);
+                var tile_max: f64 = -std.math.inf(f64);
+                var tile_top: usize = 0;
                 for (s, ds, 0..) |sj, dj, j| {
+                    if (t.rounded() and j % 64 == 0) {
+                        for (j..@min(j + 64, L)) |key| if (s[key] > tile_max) {
+                            tile_max = s[key];
+                            tile_top = key;
+                        };
+                    }
                     const pj = @exp(sj - m);
                     l += pj;
-                    // P's relative error: its score's and the top score's sums, exp2's approximation
-                    const rel = dj + ds[top] + 0x1p-21;
+                    // Each tile rounds P against its running max, then rescales its numerator to the final max.
+                    const local = if (t.rounded()) @exp(sj - tile_max) else pj;
+                    const rescale = if (t.rounded()) @exp(tile_max - m) else 1;
+                    const rel = dj + ds[top] + (if (t.rounded()) ds[tile_top] + 0x1p-21 else 0) + 0x1p-21;
                     var used = pj;
                     var turn: f64 = 0;
                     if (t.rounded()) {
-                        used = half(pj);
-                        const u = ulp16(pj);
-                        const mid = (@floor(pj / u) + 0.5) * u;
-                        if (@abs(pj - mid) <= pj * rel + 0x1p-60) turn = u;
+                        used = tiledWeight(sj, tile_max, m);
+                        const u = ulp16(local);
+                        const mid = (@floor(local / u) + 0.5) * u;
+                        if (@abs(local - mid) <= local * rel + 0x1p-60) turn = u * rescale;
                     }
                     for (&out, &tol, &flip, t.vAt(j, hd)) |*o, *tl, *fl, vh| {
                         const vv: f64 = vh;
@@ -292,6 +306,17 @@ test "the exact heads' P has an fp16 remainder far from both zero and a tie" {
     try std.testing.expect(@abs(lo) > 0.25 and @abs(lo) < 0.4);
     try std.testing.expectEqual(@as(f64, 0x1p-11), ulp16(0.9));
     try std.testing.expectEqual(@as(f64, 0x1p-24), ulp16(0x1p-20));
+}
+
+test "tiled attention rounds before a later tile raises the maximum" {
+    const old: f64 = 0;
+    const raised: f64 = 0.125;
+    const score: f64 = -0.75;
+    const local = @exp(score - old);
+    const online = tiledWeight(score, old, raised);
+    const flat = @as(f64, half(@exp(score - raised)));
+    try std.testing.expect(@abs(online - flat) > 0x1p-14);
+    try std.testing.expect(@abs(online - @exp(score - raised)) <= ulp16(local) * @exp(old - raised));
 }
 
 test "an exact head's fp32 remainder lies past the short form's allowance, and its fp16 P past no midpoint" {
