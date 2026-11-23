@@ -53,6 +53,69 @@ class SetupCacheTests(unittest.TestCase):
     def setup_cache(self, root):
         return subprocess.run([root / "tools/zig/setup_cache.sh"], env=self.env, capture_output=True, text=True)
 
+    def test_setup_rejects_cache_paths_inside_checkout(self):
+        root = self.checkout("card")
+        inside = root / "nested/cache"
+        alias = self.work / "alias"
+        (root / "nested").mkdir()
+        alias.symlink_to(root / "nested", target_is_directory=True)
+        for path in (root, inside, alias / "cache"):
+            result = subprocess.run([root / "tools/zig/setup_cache.sh"],
+                                    env={**self.env, "ZIG_LOCAL_CACHE_DIR": str(path)},
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("outside the checkout", result.stderr)
+            self.assertFalse((root / ".zig-cache").exists())
+            self.assertFalse((root / "zig-out").exists())
+
+    def test_setup_rejects_relative_cache_override(self):
+        root = self.checkout("card")
+        result = subprocess.run([root / "tools/zig/setup_cache.sh"], cwd=root,
+                                env={**self.env, "ZIG_LOCAL_CACHE_DIR": "nested/cache"},
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be absolute", result.stderr)
+        self.assertFalse((root / ".zig-cache").exists())
+
+    def test_setup_rejects_symlinked_output(self):
+        root = self.checkout("card")
+        digest = subprocess.check_output(["shasum", "-a", "256"], input=str(root), text=True).split()[0][:16]
+        target = self.cache / "checkouts" / digest
+        target.mkdir(parents=True)
+        (target / "zig-out").symlink_to(root / "nested", target_is_directory=True)
+        result = self.setup_cache(root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlinked", result.stderr)
+        self.assertFalse((root / ".zig-cache").exists())
+
+    def test_direct_entry_points_default_outside_checkout(self):
+        root = self.checkout("card")
+        home = self.work / "home"
+        home.mkdir()
+        stubs = self.work / "stubs"
+        stubs.mkdir()
+        for name, text in (("zig", STUB_ZIG), ("xcrun", "#!/bin/sh\necho /sdk\n")):
+            (stubs / name).write_text(text)
+            (stubs / name).chmod(0o755)
+        env = {key: value for key, value in self.env.items() if key not in ("ZIG_LOCAL_CACHE_DIR", "ZIG_GLOBAL_CACHE_DIR")}
+        env.update(HOME=str(home), ZIG=str(stubs / "zig"), PATH=f"{stubs}{os.pathsep}{os.environ['PATH']}")
+        for tool in TOOLS:
+            result = subprocess.run(["sh", root / f"tools/zig/{tool}_build.sh"], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        cache = home / ".cache/tensorfold/zig"
+        self.assertEqual(len(list(cache.glob("checkouts/*/tf-*"))), len(TOOLS))
+        self.assertFalse((root / ".zig-cache").exists())
+        self.assertFalse((root / "zig-out").exists())
+
+        release = root / "tools/release"
+        release.mkdir()
+        shutil.copy(ROOT / "tools/release/check_package.py", release / "check_package.py")
+        result = subprocess.run(["python3", release / "check_package.py", "--path-checker", str(stubs / "zig")],
+                                env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)  # The fixture checkout has no package inputs.
+        self.assertEqual(len(list(cache.glob("package-repeat-*"))), 1)
+        self.assertFalse((root / ".zig-cache").exists())
+
     def test_plain_build_from_a_clean_checkout_writes_only_outside_it(self):
         zig = os.environ.get("ZIG") or shutil.which("zig")
         if not zig:

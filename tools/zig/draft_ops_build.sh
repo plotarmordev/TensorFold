@@ -5,7 +5,7 @@ set -eu
 draft_ops_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$draft_ops_root"
 draft_ops_sdk=$(xcrun --sdk macosx --show-sdk-path)
-export ZIG_LOCAL_CACHE_DIR="${ZIG_LOCAL_CACHE_DIR:-$draft_ops_root/.zig-cache}"
+export ZIG_LOCAL_CACHE_DIR="${ZIG_LOCAL_CACHE_DIR:-$HOME/.cache/tensorfold/zig}"
 export ZIG_GLOBAL_CACHE_DIR="$ZIG_LOCAL_CACHE_DIR/global"
 draft_ops_checkout=$(printf '%s' "$draft_ops_root" | shasum -a 256 | cut -c1-16)
 mkdir -p "$ZIG_LOCAL_CACHE_DIR/checkouts/$draft_ops_checkout"

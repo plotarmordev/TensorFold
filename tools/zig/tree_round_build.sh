@@ -5,7 +5,7 @@ set -eu
 tree_round_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$tree_round_root"
 tree_round_sdk=$(xcrun --sdk macosx --show-sdk-path)
-export ZIG_LOCAL_CACHE_DIR="${ZIG_LOCAL_CACHE_DIR:-$tree_round_root/.zig-cache}"
+export ZIG_LOCAL_CACHE_DIR="${ZIG_LOCAL_CACHE_DIR:-$HOME/.cache/tensorfold/zig}"
 export ZIG_GLOBAL_CACHE_DIR="$ZIG_LOCAL_CACHE_DIR/global"
 tree_round_checkout=$(printf '%s' "$tree_round_root" | shasum -a 256 | cut -c1-16)
 mkdir -p "$ZIG_LOCAL_CACHE_DIR/checkouts/$tree_round_checkout"
