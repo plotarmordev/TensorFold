@@ -1,0 +1,98 @@
+started top-57fa0d391dec
+RED  limits sm_121 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_121: 166 registers x 1024 threads need 172032, a block has 65536
+RECORD control: heavy at 1,024 threads: .usage = .{ .{ .regs = 168, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, }
+FAIL kernel-contract-limits: 75 problems
+kernel-contract-limits exit 1
+INFO limits fatbins: images built by nvcc 13.0, checked against nvcc 13.0's records
+RED  limits sm_80 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_80: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_86 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_86: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_89 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_89: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_120 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_120: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_121 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_121: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_80 control: heavy at 1,024 threads: 168 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_80: 168 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_86 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_86: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_89 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_89: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_120 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_120: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_121 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_121: 166 registers x 1024 threads need 172032, a block has 65536
+RECORD drama3 d3_cfg_mix: .usage = .{ .{ .regs = 10, .static = 0, .bound = 0 }, .{ .regs = 10, .static = 0, .bound = 0 }, .{ .regs = 10, .static = 0, .bound = 0 }, .{ .regs = 12, .static = 0, .bound = 0 }, .{ .regs = 12, .static = 0, .bound = 0 }, }
+RECORD drama3 d3_router_compact: .usage = .{ .{ .regs = 19, .static = 592, .bound = 0 }, .{ .regs = 19, .static = 592, .bound = 0 }, .{ .regs = 19, .static = 592, .bound = 0 }, .{ .regs = 26, .static = 592, .bound = 0 }, .{ .regs = 26, .static = 592, .bound = 0 }, }
+RECORD exl3_experts tf_exl3_prompt_down: .usage = .{ .{ .regs = 126, .static = 43264, .bound = 256 }, .{ .regs = 126, .static = 43264, .bound = 256 }, .{ .regs = 126, .static = 43264, .bound = 256 }, .{ .regs = 126, .static = 43264, .bound = 256 }, .{ .regs = 126, .static = 43264, .bound = 256 }, }
+RECORD exl3_experts tf_exl3_prompt_down_k6: .usage = .{ .{ .regs = 125, .static = 40192, .bound = 256 }, .{ .regs = 125, .static = 40192, .bound = 256 }, .{ .regs = 125, .static = 40192, .bound = 256 }, .{ .regs = 127, .static = 40192, .bound = 256 }, .{ .regs = 127, .static = 40192, .bound = 256 }, }
+RECORD exl3_experts tf_exl3_prompt_gu: .usage = .{ .{ .regs = 126, .static = 43264, .bound = 256 }, .{ .regs = 128, .static = 43264, .bound = 256 }, .{ .regs = 128, .static = 43264, .bound = 256 }, .{ .regs = 124, .static = 43264, .bound = 256 }, .{ .regs = 124, .static = 43264, .bound = 256 }, }
+RECORD exl3_experts tf_exl3_prompt_gu_k6: .usage = .{ .{ .regs = 127, .static = 40192, .bound = 256 }, .{ .regs = 126, .static = 40192, .bound = 256 }, .{ .regs = 126, .static = 40192, .bound = 256 }, .{ .regs = 127, .static = 40192, .bound = 256 }, .{ .regs = 127, .static = 40192, .bound = 256 }, }
+RECORD flashnext_hcn fn_hcn_down2: .usage = .{ .{ .regs = 162, .static = 0, .bound = 224 }, .{ .regs = 162, .static = 0, .bound = 224 }, .{ .regs = 162, .static = 0, .bound = 224 }, .{ .regs = 161, .static = 0, .bound = 224 }, .{ .regs = 161, .static = 0, .bound = 224 }, }
+RECORD flashnext_hcn fn_hcn_down3: .usage = .{ .{ .regs = 191, .static = 0, .bound = 224 }, .{ .regs = 191, .static = 0, .bound = 224 }, .{ .regs = 191, .static = 0, .bound = 224 }, .{ .regs = 190, .static = 0, .bound = 224 }, .{ .regs = 190, .static = 0, .bound = 224 }, }
+RECORD flashnext_hcn fn_hcn_up3: .usage = .{ .{ .regs = 126, .static = 0, .bound = 256 }, .{ .regs = 126, .static = 0, .bound = 256 }, .{ .regs = 126, .static = 0, .bound = 256 }, .{ .regs = 128, .static = 0, .bound = 256 }, .{ .regs = 128, .static = 0, .bound = 256 }, }
+RECORD flashnext_mtp fn_row_topk: .usage = .{ .{ .regs = 32, .static = 9228, .bound = 1024 }, .{ .regs = 59, .static = 9228, .bound = 1024 }, .{ .regs = 59, .static = 9228, .bound = 1024 }, .{ .regs = 34, .static = 9228, .bound = 1024 }, .{ .regs = 34, .static = 9228, .bound = 1024 }, }
+RECORD glm_glue tf_glm_dsel_merge: .usage = .{ .{ .regs = 57, .static = 34064, .bound = 1024 }, .{ .regs = 64, .static = 34064, .bound = 1024 }, .{ .regs = 64, .static = 34064, .bound = 1024 }, .{ .regs = 64, .static = 34064, .bound = 1024 }, .{ .regs = 64, .static = 34064, .bound = 1024 }, }
+RECORD muse_dflash2 dfl_topk: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 48, .static = 3072, .bound = 256 }, }
+RECORD muse_dflash2 dfl_walk: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 38, .static = 196, .bound = 512 }, }
+RECORD muse_glue muse_argmax: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 40, .static = 2048, .bound = 0 }, }
+RECORD muse_glue muse_expert_sum: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 28, .static = 132, .bound = 0 }, }
+RECORD muse_glue muse_rms: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 19, .static = 132, .bound = 0 }, }
+RECORD muse_glue muse_softcap: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 30, .static = 0, .bound = 0 }, }
+RECORD muse_linear muse_linear2_k2_w4: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 245, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear2_k2_w8: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 251, .static = 16, .bound = 256 }, }
+RECORD muse_linear muse_linear2_k3_w8: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 252, .static = 16, .bound = 256 }, }
+RECORD muse_linear muse_linear2_k4_w4: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 245, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear2_k4_w8: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 251, .static = 16, .bound = 256 }, }
+RECORD muse_linear muse_linear2_k5_w4: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 253, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear2_k5_w8: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 255, .static = 16, .bound = 256 }, }
+RECORD muse_linear muse_linear2_k6_w4: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 255, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear2_k6_w8: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 255, .static = 16, .bound = 256 }, }
+RECORD muse_linear muse_linear2_k8_w4: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 245, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear_multi_k2: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 128, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear_multi_k3: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 153, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear_multi_k4: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 128, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear_multi_k5: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 154, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear_multi_k6: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 154, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_linear_multi_k8: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 141, .static = 16, .bound = 128 }, }
+RECORD muse_linear muse_rot_multi: .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 24, .static = 0, .bound = 128 }, }
+RECORD nemo_audio tf_nemo_attn64: .usage = .{ .{ .regs = 52, .static = 43264, .bound = 256 }, .{ .regs = 53, .static = 43264, .bound = 256 }, .{ .regs = 53, .static = 43264, .bound = 256 }, .{ .regs = 68, .static = 43264, .bound = 256 }, .{ .regs = 68, .static = 43264, .bound = 256 }, }
+RECORD nemo_audio tf_nemo_preds: .usage = .{ .{ .regs = 26, .static = 0, .bound = 256 }, .{ .regs = 26, .static = 0, .bound = 256 }, .{ .regs = 26, .static = 0, .bound = 256 }, .{ .regs = 27, .static = 0, .bound = 256 }, .{ .regs = 29, .static = 0, .bound = 256 }, }
+RECORD qmm_prefill many bit-exact BF16 launch fusion: .usage = .{ .{ .regs = 171, .static = 0, .bound = 256 }, .{ .regs = 171, .static = 0, .bound = 256 }, .{ .regs = 171, .static = 0, .bound = 256 }, .{ .regs = 128, .static = 1024, .bound = 256 }, .{ .regs = 130, .static = 0, .bound = 256 }, }
+RECORD qmmf BF16 fp32 out 16-row tile, fused slices: .usage = .{ .{ .regs = 78, .static = 0, .bound = 128 }, .{ .regs = 78, .static = 0, .bound = 128 }, .{ .regs = 78, .static = 0, .bound = 128 }, .{ .regs = 55, .static = 0, .bound = 128 }, .{ .regs = 55, .static = 0, .bound = 128 }, }
+RECORD qwen35 tf_q35_gdn_slots_1: .usage = .{ .{ .regs = 80, .static = 4096, .bound = 128 }, .{ .regs = 80, .static = 4096, .bound = 128 }, .{ .regs = 80, .static = 4096, .bound = 128 }, .{ .regs = 72, .static = 4096, .bound = 128 }, .{ .regs = 72, .static = 4096, .bound = 128 }, }
+RECORD qwen35 tf_q35_gdn_slots_2: .usage = .{ .{ .regs = 80, .static = 8192, .bound = 128 }, .{ .regs = 80, .static = 8192, .bound = 128 }, .{ .regs = 80, .static = 8192, .bound = 128 }, .{ .regs = 72, .static = 8192, .bound = 128 }, .{ .regs = 72, .static = 8192, .bound = 128 }, }
+RECORD qwen35 tf_q35_gdn_slots_4: .usage = .{ .{ .regs = 80, .static = 16384, .bound = 128 }, .{ .regs = 90, .static = 16384, .bound = 128 }, .{ .regs = 90, .static = 16384, .bound = 128 }, .{ .regs = 84, .static = 16384, .bound = 128 }, .{ .regs = 84, .static = 16384, .bound = 128 }, }
+STALE drama3 d3_cfg_mix
+STALE drama3 d3_router_compact
+STALE exl3_experts tf_exl3_prompt_down
+STALE exl3_experts tf_exl3_prompt_down_k6
+STALE exl3_experts tf_exl3_prompt_gu
+STALE exl3_experts tf_exl3_prompt_gu_k6
+STALE flashnext_hcn fn_hcn_down2
+STALE flashnext_hcn fn_hcn_down3
+STALE flashnext_hcn fn_hcn_up3
+STALE flashnext_mtp fn_row_topk
+STALE glm_glue tf_glm_dsel_merge
+STALE muse_dflash2 dfl_topk
+STALE muse_dflash2 dfl_walk
+STALE muse_glue muse_argmax
+STALE muse_glue muse_expert_sum
+STALE muse_glue muse_rms
+STALE muse_glue muse_softcap
+STALE muse_linear muse_linear2_k2_w4
+STALE muse_linear muse_linear2_k2_w8
+STALE muse_linear muse_linear2_k3_w8
+STALE muse_linear muse_linear2_k4_w4
+STALE muse_linear muse_linear2_k4_w8
+STALE muse_linear muse_linear2_k5_w4
+STALE muse_linear muse_linear2_k5_w8
+STALE muse_linear muse_linear2_k6_w4
+STALE muse_linear muse_linear2_k6_w8
+STALE muse_linear muse_linear2_k8_w4
+STALE muse_linear muse_linear_multi_k2
+STALE muse_linear muse_linear_multi_k3
+STALE muse_linear muse_linear_multi_k4
+STALE muse_linear muse_linear_multi_k5
+STALE muse_linear muse_linear_multi_k6
+STALE muse_linear muse_linear_multi_k8
+STALE muse_linear muse_rot_multi
+STALE nemo_audio tf_nemo_attn64
+STALE nemo_audio tf_nemo_preds
+STALE qmm_prefill many bit-exact BF16 launch fusion
+STALE qmmf BF16 fp32 out 16-row tile, fused slices
+STALE qwen35 tf_q35_gdn_slots_1
+STALE qwen35 tf_q35_gdn_slots_2
+STALE qwen35 tf_q35_gdn_slots_4
