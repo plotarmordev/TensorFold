@@ -1,24 +1,25 @@
 #!/bin/sh
 # llama.cpp CUDA baseline for run-script.sh's receipt: Unsloth's 16.6 GB UD-Q4_K_M GGUF on TOP's GB10.
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/llama-cpp-baseline.sh
-# The job has no network: the pilot folder's inkling-gguf holds llama.cpp at 690b87d88 (ggml-org #32704's merge),
-# Mainline_Support/Inkling-2-Mini-UD-Q4_K_M.gguf_file renamed .gguf, and CMake 3.31.6's linux-aarch64 archive.
+# The job has no network: the Desk staged Mainline_Support/Inkling-2-Mini-UD-Q4_K_M.gguf_file (renamed .gguf) in the
+# pilot folder's inkling-gguf, and llama.cpp b12611 (690b87d88, ggml-org #32704's merge) with CMake 3.31.6's
+# linux-aarch64 archive in inkling-llamacpp.
 set -eu
 pilot=/assets/drama3-pilot
-src=$pilot/inkling-gguf
+llama=$pilot/inkling-llamacpp
 staged=$pilot/cuda-build-toolchain
 gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
 cmake=cmake-3.31.6-linux-aarch64
-gguf=$src/Inkling-2-Mini-UD-Q4_K_M.gguf
+gguf=$pilot/inkling-gguf/Inkling-2-Mini-UD-Q4_K_M.gguf
 out=/work/out/inkling2-llama
-(cd "$src" && sha256sum -c --quiet) <<EOF
-78fcedcf93c5d1bfe83e225513b71392bb52259be0eaa5f8899c856a2e5834ae  Inkling-2-Mini-UD-Q4_K_M.gguf
-b4cc788d63112b2749b40627e719eb5d3b8ed8f00c36d77189f4019cfe64bc9e  $cmake.tar.gz
+sha256sum -c --quiet <<EOF
+78fcedcf93c5d1bfe83e225513b71392bb52259be0eaa5f8899c856a2e5834ae  $gguf
+b4cc788d63112b2749b40627e719eb5d3b8ed8f00c36d77189f4019cfe64bc9e  $llama/$cmake.tar.gz
 EOF
 tar -C /work -xJf "$staged/$gcc.tar.xz"
-tar -C /work -xzf "$src/$cmake.tar.gz"
+tar -C /work -xzf "$llama/$cmake.tar.gz"
 cc=/work/$gcc/bin/aarch64-none-linux-gnu
-/work/$cmake/bin/cmake -S "$src/llama.cpp" -B /work/llama-build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121 \
+/work/$cmake/bin/cmake -S "$llama/llama.cpp-b12611" -B /work/llama-build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121 \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="$cc-gcc" -DCMAKE_CXX_COMPILER="$cc-g++" \
     -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc -DCMAKE_CUDA_HOST_COMPILER="$cc-g++" -DLLAMA_OPENSSL=OFF \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF >/dev/null
