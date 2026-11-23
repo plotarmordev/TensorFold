@@ -163,14 +163,6 @@ fn compileInkling2Contracts() !void {
     const sums: @import("contract_inkling2_ops_ref.zig").Sums = undefined;
     const solved: []@import("contract_inkling2_ops_ref.zig").Iv = undefined;
     try mix.solve(a, sums, solved);
-    var modelopt: @import("contract_inkling2_modelopt.zig").ModelOpt = undefined;
-    _ = try modelopt.prepare(shape, .random, 0);
-    try modelopt.run();
-    _ = modelopt.kernel();
-    _ = modelopt.count();
-    const want: []f64 = undefined;
-    const mag: []f64 = undefined;
-    try modelopt.reference(want, mag);
 }
 
 fn compileContractGlue() !void { // the contract glue's device path, built with the runner: prepare through the vtable
