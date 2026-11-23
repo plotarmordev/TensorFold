@@ -672,10 +672,11 @@ SM walking the output tiles in bands of eight tile rows (mmh3's `group_m` defaul
 `mma.sync.m16n8k32.s8` into int32, its 256×128 tile, and an epilogue that applies the row and column scales in
 registers and writes bf16 from the tile. Not copied: the cp.async fallback, the low-rank adapter, the bias, the
 column-maxima tracking, none of which an H3 picture projection uses, and the 128×256 tile, which lost on every
-shape below. The grid has no edge tile, so `cuda_int8.zig` refuses a projection whose N is not a multiple of 128
-(cuBLASLt took any N divisible by 4). ConvRot (`convrot.cuh`) stays `h3_quantize`'s 128-wide rotation. The
-epilogue rounds as the replaced kernels did, so `qkvc` writes bf16 rows straight to plain `h3_heads` and `fc1`'s
-epilogue writes `silu(gate) * up` (`h3_swiglu_rows` interleaves its gate and up weight rows). `h3_dequantize`,
+shape below. The last 128-column tile may be partial (card 204: its lanes past N skip the epilogue), so
+`cuda_int8.zig` takes any N divisible by 8, a lane's one 16-byte store (cuBLASLt took any N divisible by 4).
+ConvRot (`convrot.cuh`) stays `h3_quantize`'s 128-wide rotation. The epilogue rounds as the replaced kernels did,
+so `qkvc` writes bf16 rows straight to plain `h3_heads` and `fc1`'s epilogue writes `silu(gate) * up`
+(`h3_swiglu_rows` interleaves its gate and up weight rows). `h3_dequantize`,
 `h3_heads_i8` and `h3_swiglu_int8` are deleted, and so are card 145's int8-only admission rules for `h3_heads_i8`.
 
 Stop rule (`bench-146-contract.sh` at `643ce1ba`, job `top-22c3ccdf2c2a`, 21 November, `tf-cuda-test

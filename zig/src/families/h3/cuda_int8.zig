@@ -44,10 +44,10 @@ pub const Weight = struct {
     }
 };
 
-/// h3_quantize's K (quantize_chunks) and the product's whole N tiles: the grid has no edge tile, so
-/// an N off 128 would leave its last columns unwritten.
+/// h3_quantize's K (quantize_chunks) and the product's N: a multiple of 8, so each lane's eight output
+/// columns are one 16-byte store; the last 128-column tile may be partial.
 pub fn checkGeometry(n: usize, k: usize) !void {
-    if (k % 128 != 0 or k > 14336 or n % block_n != 0) return error.BadGeometry;
+    if (k % 128 != 0 or k > 14336 or n % 8 != 0) return error.BadGeometry;
 }
 
 /// One block's quantized projections; fc1's rows and scales interleave gate/up pairs for the
@@ -147,7 +147,7 @@ pub const Int8 = struct {
         for ([_]u64{ lay.xs, w.scales(), out }) |a| args.add(a);
         for ([_]usize{ rows, w.n, w.k }) |v| args.add(@as(c_int, @intCast(v)));
         const sm: usize = @intCast(try self.ctx.attribute(.multiprocessor_count));
-        const tiles = (rows + block_m - 1) / block_m * (w.n / block_n);
+        const tiles = (rows + block_m - 1) / block_m * ((w.n + block_n - 1) / block_n);
         const blocks: u32 = @intCast(@min(sm, tiles));
         const name = if (w.swiglu) Model.functionIndex("h3_swiglu_int8_tma") else Model.functionIndex("h3_gemm_int8_tma");
         try self.launchShared(name, blocks, 256, gemm_shared, &args);
