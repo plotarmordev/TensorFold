@@ -274,8 +274,27 @@ The same laptop reran a clean checkout of `3332b7305` detached (2026-11-23), aga
   is -2.091842e-1 where float64 gives -2.091841e-1: 1.25 of its bound". `3332b7305` does not hold main's later
   bound for that kernel (`c6557d036`, the f32 angle's error), so that bound is untested on Windows.
 
-The merged head includes main's `c6557d036` bound for `h3m_sinusoid`: it carries the f32 angle error through sin/cos
-rather than widening an output-relative bound to fit one sample. This still needs a Windows rerun.
+A third clean checkout, `2d0a39ce3` (main merged in, with `c6557d036`'s `h3m_sinusoid` bound), ran there the same day.
+These figures are the operator's receipt; its logs stay on the laptop (`workspace\scripts\r2d0a\`):
+
+- `zig build native install -Dsm=121 -Dstrip=true` exits 1, 225 of 228 steps. Only `tf-qwen3-asr` fails: its timer
+  called POSIX `clock_gettime` (`std/c.zig`, "parameter of type void not allowed ... aarch64_aapcs_win").
+  `compile-native-cuda-windows` checks the server alone, so no host caught it. `tf-cuda-test.exe` was built.
+- `tf-cuda-test`: all eight suites exit 0 (`glue` 1473 of 1473 byte-equal; `sample` 2880 draws, none differ).
+- `zig build kernel-contract -Dsm=121` exits 1 after 2 h 40 min on one CPU core, with up to 18 minutes between
+  lines, and reaches its SUMMARY: "844 kernels: 841 pass gates 1-4, 3 fail, 11 known findings; 500 controls: 500 red
+  as planted, 0 missed; 1013 limit problems".
+
+Since that run:
+
+- `tf-qwen3-asr` reads the awake clock through `std.Io`, and builds for `aarch64-windows-gnu`.
+- `d3_cfg_mix` "refused a served shape" on every OS: gate 1 grows its one row to five and the test refused any row
+  count but one. The mix is one value per logit, so its rows are more logits through the same launch.
+- `kernel-contract` prints SUMMARY when a suite or gate 5 stops it too, marked "(stopped early)", and a COUNT line
+  after each kernel. `zig build kernel-contract -Dcontract-only=WORD` (repeatable) passes the words
+  `tf-cuda-test kernel-contract WORD...` already took: the kernels and launches so named, without the suites.
+
+None of this has run on the laptop yet.
 
 No serve or model download is part of this card. Model serving and tok/s belong to card 202.
 
@@ -299,12 +318,17 @@ needs:
    `tf_exl3x::grouped_kernel` and two unpack-kernel families need portable names before their Windows serving paths
    qualify. Confirm the actual Windows module symbols from its fatbin. Gate 5 now counts each missing function as one
    FAIL and continues to SUMMARY instead of aborting at the first lookup.
-7. Gate 5 records for sm_121 on Windows. The 470 `limits live` lines compare the laptop's nvcc 13.5/cl.exe images
-   against the newest recorded nvcc 13.3 set. Fifteen were MiniMax-H3's in the pre-merge image (`h3_norm`, `h3_swiglu`,
-   `h3_attention`, `h3_topk`, `h3_quantize`, `h3_norm_quant`, `h3_norm_quant_fp4`, `h3_swiglu_rows`, `h3d_rms_norm`,
-   `h3d_layer_norm`, `h3d_heads`, `h3p_norm`, `h3p_attention`, `h3m_sinusoid`, `h3m_project`). Main now records 1024
-   static shared bytes for `h3_norm`, `h3_quantize`, `h3_norm_quant`, `h3_norm_quant_fp4`; remaining register/shared
-   deltas require exact live figures from the next Windows run, keyed to that nvcc/host target. Do not copy older Linux
-   figures or guess missing values.
-8. The 231 nonfinite, shapes, repeat and sums lines read by family from the laptop's log, and `h3m_sinusoid` rerun
-   with `c6557d036`'s bound: until then no family's kernels are qualified on Windows by this contract.
+7. Gate 5 records for sm_121 on Windows. `2d0a39ce3` gave 1013 limit problems (`3332b7305`: 470 `limits live` lines).
+   A launch counts when it does not fit the driver's threads or shared bytes for that function, or when its
+   registers or static shared bytes differ from its record; the records are nvcc 13.3's and the laptop's images are
+   nvcc 13.5 with cl.exe. The receipt's example, "heavy at 1,024 threads: 1024 launched, driver allows 384; 166
+   registers", is the planted control `tf_ctl_heavy`, red as planted and not counted. Which of the 1013 are launches
+   that do not fit and which are stale records takes the laptop's log: fix the first, and give the second a record
+   keyed to that nvcc and host target from the run's own figures. Do not copy older Linux figures or guess values.
+8. Three of 844 kernels fail gates 1-4 at `2d0a39ce3`. `d3_cfg_mix` was the test's (above); the receipt does not
+   name the other two. Its other FAIL lines are of kernels with a declared known finding, which print FAIL
+   and then KNOWN on every OS: qwen35 decode attention ("a NaN key in one of a row's several chunks leaves the row
+   finite", bf16 and fp8 cache, MT2) and `tf_glm_scores` ("relu is fmaxf(x, 0) ... a NaN dot scores 0 where float64
+   keeps the NaN"). Making those propagate NaN changes served kernels on every OS, which this card did not do.
+9. The contract on every core. It is one thread and one CUDA stream, and the words filter only after every kernel's
+   fixture is built, so a full run cannot fit a short laptop window; `-Dcontract-only` runs one family at a time.

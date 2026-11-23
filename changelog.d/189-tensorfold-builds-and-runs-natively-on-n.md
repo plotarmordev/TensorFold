@@ -17,3 +17,8 @@
   output step off, as the bound allows, not a whole one; `h3p_norm` qwen's is unrounded throughout and `h3p_heads`
   rotary declares its four bf16 points. `h3p_norm` records the 1024 static shared bytes `h3_int8_tma.cuh`'s
   aligned shared array gives it.
+- `tf-qwen3-asr` times its stages with `std.Io`'s awake clock, not POSIX `clock_gettime`, the one step of 228 that
+  failed the N1X build at `2d0a39ce3`.
+- The kernel contract's `d3_cfg_mix` takes gate 1's five rows as more logits (it refused any row count but one, on
+  every OS). `kernel-contract` prints its SUMMARY when a suite or gate 5 stops it too, marked "(stopped early)", and
+  a COUNT line after each kernel; `zig build kernel-contract -Dcontract-only=WORD` runs the kernels so named.
