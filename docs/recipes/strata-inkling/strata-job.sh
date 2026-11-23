@@ -5,23 +5,33 @@
 # libgomp ride along) and the SQ-10 pack in the pilot folder strata-inkling-pack/. The engine runs as shipped, nothing is
 # installed: its built-in `--bench` (DSpark drafting as the engine defaults it) at 1, 4 and 64 streams, 256 generated
 # tokens each, then `--selfcheck`. Logs land in /work/out/strata-inkling; the `[bench]` lines go to stdout.
+# The binary needs glibc 2.38 and GLIBCXX 3.4.32, newer than the job image's, so it runs under the loader, glibc and
+# libstdc++ of Arm's GNU 14.3 toolchain that the Desk staged for cuda-build.sh, unpacked in /work.
 set -eu
 dir=/assets/drama3-pilot/strata-inkling-pack
 pack=$dir/Inkling-2-Mini-SQ-10.strata
 engine=$(find "$dir" -name strata-inkling -type f | head -1)
 out=/work/out/strata-inkling
+gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
+toolchain=/assets/drama3-pilot/cuda-build-toolchain/$gcc.tar.xz
 [ -f "$pack" ] && [ -n "$engine" ] || { echo "missing pack or engine under $dir" >&2; exit 1; }
 (cd "$dir" && grep " Inkling-2-Mini-SQ-10.strata\$" PACK-SHA256SUMS.txt | sha256sum -c --quiet)
+echo "7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $toolchain" | sha256sum -c --quiet
+tar -C /work -xJf "$toolchain"
+loader=$(find "/work/$gcc" -name ld-linux-aarch64.so.1 | head -1)
+libc=$(dirname "$(find "/work/$gcc" -name libc.so.6 | head -1)")
+libstdcxx=$(dirname "$(find "/work/$gcc" -name libstdc++.so.6 | head -1)")
+libs=$(dirname "$engine"):$libc:$libstdcxx:/usr/lib/aarch64-linux-gnu
+strata() { "$loader" --library-path "$libs" "$engine" "$@"; }
 mkdir -p "$out"
-export LD_LIBRARY_PATH=$(dirname "$engine")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
-"$engine" --version
+strata --version
 status=0
 for streams in 1 4 64; do
-    "$engine" --bench --native "$pack" --parallel "$streams" --gen 256 \
+    strata --bench --native "$pack" --parallel "$streams" --gen 256 \
         >"$out/bench-$streams.log" 2>&1 || status=$?
     grep '^\[bench\]' "$out/bench-$streams.log" || { tail -20 "$out/bench-$streams.log"; status=1; }
 done
-"$engine" --selfcheck --native "$pack" >"$out/selfcheck.log" 2>&1 || status=$?
+strata --selfcheck --native "$pack" >"$out/selfcheck.log" 2>&1 || status=$?
 tail -5 "$out/selfcheck.log"
 exit "$status"
