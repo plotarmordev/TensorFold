@@ -2,7 +2,7 @@
 # engines.sh TENSORFOLD_BINARY: the 1, 4 and 64-stream greedy receipt against oMLX on this Mac, 3 reps each, both
 # servers admitting 64 requests. oMLX serves its own 4-bit MTP build (Inkling-2-Mini-oQ4e-mtp) from
 # ~/.omlx/settings.json, MTP drafting on. Run it under `lockf -k /tmp/tensorfold-model.lock`; the two servers run one
-# after the other. OMLX names the oMLX binary; CONTEXT the TensorFold window (65536).
+# after the other. OMLX names the oMLX binary. 64 lanes take a 16384-token window to fit in memory.
 set -euo pipefail
 bin=$1
 wt=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
@@ -26,5 +26,5 @@ measure() { # LABEL PORT MODEL COMMAND...: start the server, bench it, stop it
     trap - EXIT
 }
 
-measure tensorfold 18235 Inkling-2-Mini "$bin" serve "$model" --port 18235 --context "${CONTEXT:-65536}" --parallel 64 --drafter "$model"
+measure tensorfold 18235 Inkling-2-Mini "$bin" serve "$model" --port 18235 --context 16384 --parallel 64 --drafter "$model"
 measure omlx 8765 Inkling-2-Mini-oQ4e-mtp "$omlx" serve --host 127.0.0.1 --port 8765 --max-concurrent-requests 64
