@@ -224,3 +224,51 @@ test "A snapshot restores each head's live rows into a cache of another capacity
     try moveLive(queue, &to, got, rows, false);
     try std.testing.expect(std.mem.eql(u8, want.slice(u8, size), got.slice(u8, size)));
 }
+
+fn blit(queue: mtl.Queue, from: mtl.Buffer, to: mtl.Buffer, bytes: usize) !void {
+    const pool = mtl.objc.Pool.push();
+    defer pool.pop();
+    const cb = queue.commandBuffer();
+    const e = cb.blit();
+    e.copy(from, 0, to, 0, bytes);
+    e.end();
+    cb.commit();
+    cb.wait();
+    if (cb.failure() != null) return error.GpuFailed;
+}
+
+test "A commit gives each open window the histories of its kept rows, with no saved copy" {
+    const device = mtl.Device.init() catch return error.SkipZigTest;
+    const queue = try device.queue();
+    defer queue.deinit();
+    const p = schedule();
+    var full = try state.Cache.init(device, 64, &p);
+    defer full.deinit();
+    var cut = try state.Cache.init(device, 64, &p);
+    defer cut.deinit();
+    const staged = try device.buffer(state.taps_bytes, mtl.ResourceOptions.shared);
+    defer staged.deinit();
+    const got = try device.buffer(state.conv_bytes, mtl.ResourceOptions.shared);
+    defer got.deinit();
+    var prng = std.Random.DefaultPrng.init(11);
+    prng.random().bytes(staged.slice(u8, state.taps_bytes));
+    const rows = 8;
+    const kept = [_]usize{ rows, 3 };
+    const caches = [_]*state.Cache{ &full, &cut };
+    for (caches) |c| {
+        try blit(queue, staged, c.taps, state.taps_bytes);
+        try c.begin(rows);
+    }
+    try std.testing.expectError(error.Inkling2CacheTransaction, state.commit(queue, &caches, &.{ rows, rows + 1 }));
+    try state.commit(queue, &caches, &kept);
+    for (caches, kept) |c, n| {
+        try std.testing.expectEqual(n, c.len);
+        try std.testing.expectEqual(@as(?usize, null), c.pending);
+        try blit(queue, c.conv, got, state.conv_bytes);
+        for (0..state.visit_slots) |slot| for (0..state.conv_states) |cs| {
+            const len = 3 * state.convWidth(cs) * 2;
+            const want = staged.slice(u8, state.taps_bytes)[state.convByteOffset(slot, cs, n, state.stage_rows)..][0..len];
+            try std.testing.expectEqualSlices(u8, want, got.slice(u8, state.conv_bytes)[state.convByteOffset(slot, cs, 0, 3)..][0..len]);
+        };
+    }
+}
