@@ -130,13 +130,14 @@ pub const Mix = struct {
 
     const mix_vt = g.hooks(Mix);
 
+    /// The mix is one value per logit, so gate 1's extra rows are more logits through the same launch.
     pub fn prepare(self: *Mix, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
-        if (shape.rows != 1) return false;
         self.free();
         self.rig.reset();
         const a = self.rig.gpu.gpa;
-        self.cond = try a.alloc(f32, shape.n);
-        self.uncond = try a.alloc(f32, shape.n);
+        const n = shape.rows * shape.n;
+        self.cond = try a.alloc(f32, n);
+        self.uncond = try a.alloc(f32, n);
         var prng = std.Random.DefaultPrng.init(seed);
         const rng = prng.random();
         for (self.cond, self.uncond) |*x, *y| {
@@ -145,14 +146,14 @@ pub const Mix = struct {
         }
         if (fill == .nonfinite) {
             const planted = [_]f32{ std.math.nan(f32), std.math.inf(f32), -std.math.inf(f32) };
-            for (planted, 0..) |v, i| if (i < shape.n) {
+            for (planted, 0..) |v, i| if (i < n) {
                 (if (i == 1) self.uncond else self.cond)[i] = v;
             };
         }
         // the inputs as the gates see them; each run copies the conditional logits into the output it mixes in place
         _ = try self.rig.input(std.mem.sliceAsBytes(self.cond));
         self.u = try self.rig.input(std.mem.sliceAsBytes(self.uncond));
-        self.out = try self.rig.output(shape.n * 4);
+        self.out = try self.rig.output(n * 4);
         return true;
     }
 
