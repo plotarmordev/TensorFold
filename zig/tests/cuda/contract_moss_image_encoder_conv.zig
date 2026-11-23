@@ -135,7 +135,11 @@ pub const Conv = struct {
 
     /// A tap sum `s` (range `sr`) through the bf16 rounding, the silu's fp32 roundings and the store's.
     fn value(s: f64, sr: Range) struct { want: f64, r: Range } {
-        return .{ .want = bf(mi.silu(bf(s))), .r = mi.siluRange(sr.bf16()).fp32(mi.exp_ulps + 0.5 + mi.div_ulps).bf16() };
+        const rounded = bf(s);
+        var r = mi.siluRange(sr.bf16()).fp32(mi.exp_ulps + 0.5 + mi.div_ulps);
+        // expf(-rounded) overflows fp32 here, so the kernel's division yields -0.
+        if (-rounded > 88.7228391) r.hi = @max(r.hi, 0);
+        return .{ .want = bf(mi.silu(rounded)), .r = r.bf16() };
     }
 
     pub fn reference(t: *Conv, want: []f64, mag: []f64) !void {
@@ -182,6 +186,13 @@ pub const Conv = struct {
         };
     }
 };
+
+test "conv signed interval includes fp32 silu overflow and excludes zero below it" {
+    const overflow = Conv.value(-89, Range.of(-89));
+    try std.testing.expect(overflow.want < 0 and overflow.r.lo <= overflow.want and overflow.r.hi == 0);
+    const finite = Conv.value(-88.5, Range.of(-88.5));
+    try std.testing.expect(finite.r.hi < 0);
+}
 
 /// The encoder's kernel and its planted control, on the heap: the gates hold pointers to them.
 pub const Set = struct {
