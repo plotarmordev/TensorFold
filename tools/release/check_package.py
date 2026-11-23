@@ -12,12 +12,15 @@ import tarfile
 import tempfile
 
 root = Path(__file__).resolve().parents[2]
+sys.dont_write_bytecode = True  # Keep __pycache__ out of the checkout.
+sys.path.insert(0, str(root / "tools/zig"))
+from outside_checkout import outside  # noqa: E402
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--path-checker", type=Path, required=True)
 parser.add_argument("script", nargs="?", type=Path, default=root / "tools/release/package.sh")
 options = parser.parse_args()
 script = options.script.resolve()
-cache = Path(os.environ.get("ZIG_LOCAL_CACHE_DIR") or Path.home() / ".cache/tensorfold/zig")
+cache = outside(root, os.environ.get("ZIG_LOCAL_CACHE_DIR") or Path.home() / ".cache/tensorfold/zig")
 cache.mkdir(parents=True, exist_ok=True)
 receipt = Path(tempfile.mkdtemp(prefix="package-repeat-", dir=cache))
 output = receipt / "archives"

@@ -5,7 +5,8 @@ set -eu
 bf16_topk_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$bf16_topk_root"
 bf16_topk_sdk=$(xcrun --sdk macosx --show-sdk-path)
-export ZIG_LOCAL_CACHE_DIR="${ZIG_LOCAL_CACHE_DIR:-$HOME/.cache/tensorfold/zig}"
+ZIG_LOCAL_CACHE_DIR=$(python3 tools/zig/outside_checkout.py "$bf16_topk_root" "${ZIG_LOCAL_CACHE_DIR:-$HOME/.cache/tensorfold/zig}")
+export ZIG_LOCAL_CACHE_DIR
 export ZIG_GLOBAL_CACHE_DIR="$ZIG_LOCAL_CACHE_DIR/global"
 bf16_topk_checkout=$(printf '%s' "$bf16_topk_root" | shasum -a 256 | cut -c1-16)
 mkdir -p "$ZIG_LOCAL_CACHE_DIR/checkouts/$bf16_topk_checkout"
