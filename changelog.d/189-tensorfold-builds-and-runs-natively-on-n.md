@@ -9,9 +9,13 @@
   with cl.exe rejected in `glm_glue` and `glm_index`; Windows fatbins pass `/wd4819`, the flag that
   showed that error under the code-page warnings burying it.
 - `docs/WINDOWS.md` records the N1X laptop's build, `tf-cuda-test` counts, the kernel-contract run that
-  ended before its SUMMARY (12 FAIL lines, all MiniMax-H3 image kernels), Qwen3.5-2B tok/s, and what
-  Inkling 2 Mini still needs there.
+  ended before its SUMMARY (12 FAIL lines, all MiniMax-H3 image kernels), and what Inkling 2 Mini still needs
+  there; the earlier Qwen3.5-2B serve, from sources before these fixes, is marked superseded.
 - The kernel contract's `h3p_attention` takes gate 4's 4-row cut of its 77-row shape (its keys are its rows; it
   refused fewer rows than K on every OS), and MLP128's N/A line names its sm_120-only tile, not the sm_90 cluster.
 - `h3p_scatter_add` and `h3p_splice`'s contract rows stay inside their buffer: gate 1's 5-row shape wrote past it
   and ended `kernel-contract` before its SUMMARY ("double free or corruption" on Linux, exit code 5 on Windows).
+- The `h3d` and `h3p` contract references end unrounded, so a tie the kernel's fp32 rounds the other way is half an
+  output step off, as the bound allows, not a whole one; `h3p_norm` qwen's is unrounded throughout and `h3p_heads`
+  rotary declares its four bf16 points. `h3p_norm` records the 1024 static shared bytes `h3_int8_tma.cuh`'s
+  aligned shared array gives it.

@@ -247,11 +247,10 @@ Then, from a clean checkout of `8365021a7` on the same laptop, run by its only o
     `prepare` no longer reads K and the depth bound counts rows.
   - Two of the N/A lines said MLP128's "cluster path needs sm_90 or newer, this GPU is sm_121". The skip is right
     (those kinds run on sm_120 alone); the line now says so.
-- `tensorfold-native serve` was not run at `8365021a7`: the laptop's owner had the checkpoint deleted, and nothing
-  is downloaded there without their say. It stands from `09ea6dd6e` with the `__noinline__` change by hand, the
-  sources `8365021a7` builds apart from the `/wd4819` flag: one request to `mlx-community/Qwen3.5-2B-MLX-4bit` at
-  `93760be4f1f6` (`--context 8192 --parallel 1 --temperature 0`) gave HTTP 200, 26 prompt and 200 completion tokens,
-  145.9 tok/s at the server (first token 0.027 s), 137.3 tok/s at the client.
+- Superseded, not this branch's receipt: an earlier serve from `09ea6dd6e` with the `__noinline__` change by hand
+  (`mlx-community/Qwen3.5-2B-MLX-4bit`, 145.9 tok/s at the server) predates every fix above, and the checkpoint is
+  gone from the laptop; nothing is downloaded there without its owner's say. The laptop's serving speed is measured
+  on Inkling 2 Mini (card 202).
 
 Inkling 2 Mini is not served on any OS yet: `zig/src/families/inkling2` has kernels, ops and the host-side config,
 names, plan and prompt, which `tf-cuda-test`'s contracts use (they compile for `aarch64-windows-gnu`). For Windows it
@@ -267,11 +266,16 @@ needs:
    the cache and streams.
 5. Its CUDA sources in CUDA's qualifiers (`__noinline__`, `__forceinline__`), not GCC attributes: only a build with
    nvcc and cl.exe, such as this laptop's, rejects them.
-6. The kernel contract finished on this laptop, the only run that qualifies its kernels there, and the `h3d` and
-   `h3p` shape bounds above, which Linux sm_121 misses the same way. The exit code 5 before SUMMARY was the test's
-   heap: TOP's run at `137959df8` died the same way ("double free or corruption") after `h3p_add`. Gate 1 grows
-   `h3p_scatter_add` and `h3p_splice`'s 4-row shape to 5 rows, and their indices `2i` then wrote past the 8-row
-   buffer; they now spread over its rows. At `5e49289e5`, [`contract-job.sh`](recipes/minimax-h3-cuda/contract-job.sh)
-   (`kernel-contract h3d h3p`, TOP's GB10, job `top-210ab786d31c`) reached its SUMMARY and exited 1: "26 kernels:
-   19 pass gates 1-4, 7 fail; 1 limit problems". The 7 are the nine lines above; the limit is `h3p_norm`'s live
-   1024 static shared bytes against the 4 recorded (its `__shared__ float r`), cause not known.
+6. The kernel contract finished on this laptop, the only run that qualifies its kernels there. The exit code 5
+   before SUMMARY was the test's heap: TOP's run at `137959df8` died the same way ("double free or corruption")
+   after `h3p_add`. Gate 1 grows `h3p_scatter_add` and `h3p_splice`'s 4-row shape to 5 rows, and their indices `2i`
+   then wrote past the 8-row buffer; they now spread over its rows. The nine `h3d` and `h3p` lines above were the
+   references, not the kernels: six ended in a bf16 rounding of their own, so one tie the kernel's fp32 rounded the
+   other way put them a whole output step away, where the bound allows half; they now end unrounded, as the bound's
+   last term is the kernel's own rounding. `h3p_norm` qwen's reference is unrounded throughout (its one mid rounding
+   is its spec's `mids`), and `h3p_heads` rotary declares the four bf16 points before its sum. `h3p_norm`'s 1024
+   static shared bytes (recorded 4) come from the `__align__(1024)` shared array `h3_int8_tma.cuh` adds to its
+   image; the records say 1024. [`contract-job.sh`](recipes/minimax-h3-cuda/contract-job.sh) on TOP's GB10:
+   `top-3766b21da521` at `85600bfca` gave "26 kernels: 25 pass gates 1-4, 1 fail; 0 limit problems", the rotary line
+   at 1.00 of its bound; `top-b6b76efdc239` at `ba92e161f`, with its four points, "26 kernels: 26 pass gates 1-4, 0
+   fail, 0 known findings; 0 limit problems", exit 0. The laptop's own rerun is still to come.
