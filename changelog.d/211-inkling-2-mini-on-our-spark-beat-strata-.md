@@ -7,4 +7,4 @@
   failed and 0 of 32 tokens off the float64 reference. `TF_NVFP4_DECODE_WARPS=1` and `TF_QMMF_HALF_BELOW=0` stay
   inside the noise and are rejected.
 - Strata v0.2.19's 74.3 tok/s at one stream is above this checkpoint's no-draft limit (49.2 tok/s at 273 GB/s), so
-  passing it needs a CUDA DSpark drafter for the Mini first.
+  passing it needs a CUDA DSpark drafter for the Mini first (card 215); the Strata bar moves to card 219.

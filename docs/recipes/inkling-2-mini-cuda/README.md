@@ -71,6 +71,8 @@ tok/s at one stream (5.55 GB a token), so one stream runs at 67% of it. The 64-s
 (534.8 tok/s) sits below the measured 590: real routing shares more experts across rows, so it is not a bound.
 
 Strata v0.2.19's GB10 figures (74.3 tok/s at one stream, 1,145.1 at 64) are 2.3x and 1.9x these, and one stream's
-74.3 is above any no-draft engine's 49.2 limit on this checkpoint. Strata gets there with its DSpark beam tree and
-smaller packs; the Mini's CUDA engine has no draft path (`takes_drafter = false`). Card 209's study orders the work:
-a CUDA DSpark tree ported from the Metal drafter, then fp4 tensor-core experts at 64 streams, then a smaller pack.
+74.3 is above any no-draft engine's 49.2 limit on this checkpoint: not yet Strata's speed, drafts come next. Strata gets
+there with its DSpark beam tree and smaller packs; the Mini's CUDA engine has no draft path (`takes_drafter = false`).
+Card 209's study orders the work: a CUDA DSpark tree ported from the Metal drafter (on #4128's DSpark kernels), then
+fp4 tensor-core experts at 64 streams, then a smaller pack. The Strata bar belongs to that drafter chain (card 215 for
+the drafter, card 219 for the hill-climb on top of it); no speed lever runs here.
