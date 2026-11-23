@@ -39,6 +39,78 @@ pub fn scratchBytes() usize {
     return bytes;
 }
 
+const cohort_fields = [_][]const u8{
+    "ids",   "anchors", "state", "next_state", "z",    "lambda", "x",     "y",    "resid", "next_resid", "q_raw", "k_raw",
+    "v_raw", "q",       "kb",    "vb",         "attn", "gate",   "up",    "act",  "kappa", "tile",       "base",  "logits",
+};
+
+fn cohortSizes() [cohort_fields.len]usize {
+    const s: usize = kernels.cohort_streams;
+    const rows = s * block;
+    const drafts = s * (block - 1);
+    const b = 2;
+    return .{
+        s * 4,                   s * 4,                          s * rank * b,            s * rank * b,
+        s * 3 * rank * b,        s * rank * b,                   rows * hidden * b,       rows * hidden * b,
+        rows * hidden * b,       rows * hidden * b,              rows * query * b,        rows * kv * b,
+        rows * kv * b,           rows * query * b,               rows * kv * b,           rows * kv * b,
+        rows * query * b,        rows * intermediate * b,        rows * intermediate * b, rows * intermediate * b,
+        drafts * 3 * rank * 4,   kernels.tile_rows * hidden * b, drafts * vocabulary * b, s * vocabulary * b,
+    };
+}
+
+pub fn cohortBytes() usize {
+    var bytes: usize = 0;
+    for (cohortSizes()) |n| bytes += n;
+    return bytes;
+}
+
+/// One greedy hold's cohort: every stream's eight block rows, the drafts' packed unembed input and their base rows.
+pub const Cohort = struct {
+    ids: mtl.Buffer,
+    anchors: mtl.Buffer,
+    state: mtl.Buffer,
+    next_state: mtl.Buffer,
+    z: mtl.Buffer,
+    lambda: mtl.Buffer,
+    x: mtl.Buffer,
+    y: mtl.Buffer,
+    resid: mtl.Buffer,
+    next_resid: mtl.Buffer,
+    q_raw: mtl.Buffer,
+    k_raw: mtl.Buffer,
+    v_raw: mtl.Buffer,
+    q: mtl.Buffer,
+    kb: mtl.Buffer,
+    vb: mtl.Buffer,
+    attn: mtl.Buffer,
+    gate: mtl.Buffer,
+    up: mtl.Buffer,
+    act: mtl.Buffer,
+    kappa: mtl.Buffer,
+    tile: mtl.Buffer,
+    base: mtl.Buffer,
+    logits: mtl.Buffer,
+
+    pub fn init(device: mtl.Device) !Cohort {
+        @setEvalBranchQuota(10_000);
+        const ns = cohortSizes();
+        var c: Cohort = undefined;
+        var made: usize = 0;
+        errdefer inline for (cohort_fields, 0..) |f, i| if (i < made) @field(c, f).deinit();
+        inline for (cohort_fields, 0..) |f, i| {
+            @field(c, f) = try device.buffer(ns[i], mtl.ResourceOptions.shared);
+            made += 1;
+        }
+        return c;
+    }
+
+    pub fn deinit(c: *Cohort) void {
+        inline for (cohort_fields) |f| @field(c, f).deinit();
+        c.* = undefined;
+    }
+};
+
 pub const Scratch = struct {
     ids: mtl.Buffer,
     resid: mtl.Buffer,
