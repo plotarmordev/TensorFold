@@ -15,7 +15,7 @@ out=/work/out/strata-inkling
 gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
 toolchain=/assets/drama3-pilot/cuda-build-toolchain/$gcc.tar.xz
 [ -f "$pack" ] && [ -n "$engine" ] || { echo "missing pack or engine under $dir" >&2; exit 1; }
-(cd "$dir" && grep " Inkling-2-Mini-SQ-10.strata\$" PACK-SHA256SUMS.txt | sha256sum -c --quiet)
+echo "ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934  $pack" | sha256sum -c --quiet
 echo "7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $toolchain" | sha256sum -c --quiet
 tar -C /work -xJf "$toolchain"
 loader=$(find "/work/$gcc" -name ld-linux-aarch64.so.1 | head -1)

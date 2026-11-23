@@ -6,5 +6,6 @@
   with the file a port would touch and a gain from GB10's 273 GB/s ceiling, states that nobody ships a Windows ARM64
   Inkling engine, and orders the follow-up cards for GB10 and the RTX Spark laptop.
 - `docs/recipes/strata-inkling/` stages Strata's own linux-aarch64 engine and its SQ-10 pack on TOP and benches them
-  at 1, 4 and 64 streams through `swarm gpu-run`. On TOP's GB10, Strata does 74.4 / 97.1 / 382.5 tok/s at 1 / 4 / 64
-  streams; TensorFold's Mini (card 188) does 32.5 at 1 and 117.7 at 4.
+  at 1, 4 and 64 streams through `swarm gpu-run`. On TOP's GB10, Strata does 74.4 / 97.1 / 382.5 tok/s at
+  1 / 4 / 64 streams; TensorFold's Mini does 32.5 at 1, 117.7 at 4, and 589.8–593.0 at 64 in a separate HTTP
+  receipt with different context, prompts and generation length. Drafting's solo contribution remains unmeasured.
