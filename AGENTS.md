@@ -5,6 +5,13 @@ A local card number is never an upstream issue number.
 
 The ATC instructions below and in the linked contributor workflows apply only to work intended for upstream `ashhart/TensorFold`.
 
+## Keep scratch in the worktree
+
+Put GPU job logs and fetches, bench outputs, tars, logs and nsys reports in `.scratch/` at the worktree root, never in `/tmp` or `/private/tmp`.
+Git ignores the folder, and it is deleted along with the worktree when the card is done or dropped.
+Run tools that make temporary files with `TMPDIR="$PWD/.scratch"` in front of the command, after `mkdir -p .scratch` (a missing folder sends Python back to `/tmp`).
+The shared lock files (`/tmp/tensorfold-model.lock`, `/tmp/tensorfold-speech.lock`) stay where they are.
+
 ## Ask the human before installing or publishing
 
 Following this file installs software and reports activity to a website, so tell the human what each step does and get a clear yes first.
