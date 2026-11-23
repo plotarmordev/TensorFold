@@ -11,12 +11,19 @@ histories in place; every stream's keep shares one command buffer).
 ## Ceiling
 
 A plain step reads about 5.6 GB: 8 of 128 experts (5.1 MB each) in 48 layer passes (24 layers, the 12 core ones three
-times) is 1.96 GB, the other layer weights 2.7 GB over the same passes, the bf16 LM head 0.93 GB. `bandwidth.py`
-measured this GPU at 744-951 GB/s reading, 573-991 adding and 388-966 copying over 4 GiB arrays (three runs, 03:46,
-load 51-55), so ~900 GB/s: a plain step's floor is 6.2 ms, 161 tok/s, and at a practical 75% of it 120 tok/s. The
-16.1 ms plain step (62 tok/s) is 38% of the floor and 52% of the practical ceiling; DSpark at one stream, 3.33 tokens a
-28.2 ms round, is 22% of its 3.33 × 161 bound. Bytes do not set the step: its dependent chain of kernels does, so the
-hold lever cuts launches and waits, not reads.
+times) is 1.96 GB, the other layer weights 2.7 GB over the same passes, the bf16 LM head 0.93 GB. `bandwidth.py` over
+4 GiB arrays, six timed passes each, at 05:04 (load 123, the GPU otherwise idle):
+
+| pass | GB/s (median) | ms a pass |
+|---|---|---|
+| read (sum) | 1,021 | 4.20 4.14 4.15 5.59 4.22 4.26 |
+| add (2R+1W) | 1,029 | 13.18 12.89 12.52 12.53 12.45 12.36 |
+| copy (1R+1W) | 1,004 | 8.48 8.55 8.53 8.59 8.56 8.56 |
+
+Three earlier runs at 03:46, beside other cards' GPU work, read 388-991 and are not used. At 1,020 GB/s a plain step's
+floor is 5.5 ms, 182 tok/s, and at a practical 75% of it 137 tok/s. The 16.1 ms plain step (62 tok/s) is 34% of the
+floor; DSpark at one stream, 3.33 tokens a 28.2 ms round, is 20% of its 3.33 × 182 bound. Bytes do not set the step:
+its dependent chain of kernels does, so the hold lever cuts launches and waits, not reads.
 
 ## DSpark hold lever
 
@@ -34,8 +41,18 @@ hold lever cuts launches and waits, not reads.
   clean control by 2.6-3.5%, a round is 1 ms shorter at the same 2.81 tokens.
 - At one stream it is inside noise (118.0-120.2 against 118.9-122.2) and under #4618's 123: not beaten. It passes
   Strata v0.2.19's 108.9-114.5 on M5 Max on code (another chip: a deployment comparison).
-- Plain, candidate: 61.1 / 62.6 at one stream, 223.7 / 224.1 at four, as card 210's 61.0-62.3 / 216-221. The plain
-  control beside it was disturbed (reps 188/173/171, 50/51/51) and is not used.
+- Plain, 05:00-05:04, control / candidate / control with the load average at 80, 90 and 127:
+
+  | plain, tok/s (code / chat) | control | candidate | control |
+  |---|---|---|---|
+  | 1 stream | 51.9 / 55.5 | 52.0 / 60.1 | 60.4 / 50.4 |
+  | 4 streams | 205.0 / 169.7 | 159.0 / 179.1 | 204.9 / 155.7 |
+  | round p50, 1 / 4 streams, code | 16.9 / 18.2 ms | 16.7 / 18.3 ms | 16.4 / 18.1 ms |
+
+  Host load moved single reps by up to 40% (control code at four streams: 205.0, 127.2, 209.5), so the medians cannot
+  separate the builds; the per-round time, which the load does not reach, can: it is equal within 0.5 ms at both
+  stream counts, as the lever only touches the drafted path. The earlier candidate cells (61.1 / 62.6 and 223.7 / 224.1
+  at load 9) match card 210's 61.0-62.3 / 216-221.
 - Every cell: 0 failed requests, every concurrent reply equal to its run alone (12 of 12), drafted equal to plain.
 
 ## Prefill at 45K
