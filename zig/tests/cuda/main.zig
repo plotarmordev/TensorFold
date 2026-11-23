@@ -256,6 +256,7 @@ fn run(gpu: check.Gpu, cmd: []const u8, rest: []const [:0]const u8) !void {
     if (std.mem.eql(u8, cmd, "stored-experts")) return storedExperts(gpu, rest);
     if (std.mem.eql(u8, cmd, "inkling2-mini-xcheck")) return @import("inkling2_mini_xcheck.zig").run(gpu, try arg(rest, 0), try arg(rest, 1));
     if (std.mem.eql(u8, cmd, "inkling2-mini-ref")) return @import("inkling2_mini_tests.zig").reference(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2));
+    if (std.mem.eql(u8, cmd, "inkling2-dspark")) return @import("inkling2_dspark_tests.zig").run(gpu, try arg(rest, 0));
     if (std.mem.eql(u8, cmd, "inkling2-mini")) return @import("inkling2_mini_tests.zig").run(gpu, try arg(rest, 0), try arg(rest, 1), try arg(rest, 2));
     if (std.mem.eql(u8, cmd, "projection-f32")) return projection_f32_tests.run(gpu);
     if (std.mem.eql(u8, cmd, "mxfp8")) return mxfp8_tests.run(gpu);
