@@ -1,6 +1,7 @@
 #!/bin/sh
-# PR 3733's review round on the GB10: which H3 clip checkpoints and case files this host holds (ask 4, kept in
-# checkpoints.txt), and the full kernel contract (ask 5) within the Desk's 30 min, its log kept as far as it gets.
+# PR 3733's review round on the GB10 in one job: which H3 clip checkpoints and case files this host holds (ask 4), both
+# H3 selftests and the full kernel contract without moss's tf_md_conv3x3 float64 reference (ask 5, the Lead's call),
+# whose log holds every H3 control's gate line (ask 3), and the five-SM limits audit.
 set -eu
 staged=/assets/drama3-pilot/cuda-build-toolchain
 zig=zig-aarch64-linux-0.17.0
@@ -27,12 +28,23 @@ export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACH
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
 b=/work/b
-zig build install fatbins kernel-contract-fatbins -Dsm=121 -Dnvcc=$nvcc -Doptimize=ReleaseFast --prefix $b
+zig build install fatbins kernel-contract-fatbins tf-h3-image-prompt-cuda tf-h3-image-decoder-cuda -Dsm=121 -Dnvcc=$nvcc -Doptimize=ReleaseFast --prefix $b
+status=0
+for t in decoder prompt; do
+    s=0
+    $b/bin/tf-h3-image-$t-cuda selftest >$out/$t-selftest.txt 2>&1 || s=$?
+    echo "== $t selftest exit $s"
+    cat $out/$t-selftest.txt
+    [ "$s" = 0 ] || status=$s
+done
 c=0
-timeout 1200 $b/bin/tf-cuda-test kernel-contract >$out/contract.log 2>&1 || c=$?
-echo "== full contract exit $c (124: stopped at 20 min), $(wc -l <$out/contract.log) lines; last suite reached:"
-tail -n 3 $out/contract.log
-grep -cE "^PASS" $out/contract.log || true
-echo "== every FAIL, CONTROL and KNOWN line"
-grep -E "^(FAIL|CONTROL|KNOWN)" $out/contract.log || true
-grep -E "SUMMARY|^FAIL kernel-contract" $out/contract.log || true
+timeout 2700 $b/bin/tf-cuda-test kernel-contract -tf_md_conv3x3 >$out/contract.log 2>&1 || c=$?
+echo "== full contract without tf_md_conv3x3: exit $c (124: stopped at 45 min), $(wc -l <$out/contract.log) lines"
+cat $out/contract.log
+zig build fatbins kernel-contract-fatbins -Dsm=80,86,89,120,121 -Dnvcc=$nvcc -Doptimize=ReleaseFast --prefix /work/release
+l=0
+$b/bin/tf-cuda-test kernel-contract-limits /work/release/fatbin >$out/limits.log 2>&1 || l=$?
+echo "== five-SM limits exit $l; every line not current"
+grep -vE "record current|^INFO" $out/limits.log || true
+echo "== exits: selftests $status, contract $c, limits $l"
+exit "$status"
