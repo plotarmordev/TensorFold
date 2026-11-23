@@ -2,25 +2,31 @@
 # llama.cpp b12628 serving Inkling 2 Mini (ggml-org IQ4_NL) on TOP's GB10 with the harness and settings of
 # TensorFold 188's run-script.sh, so its 1- and 4-stream numbers sit next to ours:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/llama-cpp-job.sh
-# The job has no network: the Desk staged llama-cpp-stage.sh's folder (binaries, GGUF, pinned SHA256SUMS) in the pilot
-# folder. The release is built on glibc 2.38 and the job image's is older, so the binaries run under the loader and
-# glibc of the Arm GNU 14.3 sysroot that ../minimax-h3-cuda/toolchain-stage.sh staged; the host is unchanged. The
-# server runs the mainline recipe (all layers on the GPU, 4 slots of 8192 tokens, the GGUF's chat template);
-# llama-bench adds its own tg128/pp512 line.
-# Logs and receipts land in /work/out/inkling2-llama-cpp.
+# The job has no network: the Desk staged llama-cpp-stage.sh's folder (binaries and GGUF) in the pilot folder, checked
+# here against the digests pinned below (the tarballs' are the release's published ones). The release is built on
+# glibc 2.38 and the job image's is older, so the binaries run under the loader and glibc of the Arm GNU 14.3 sysroot
+# that ../minimax-h3-cuda/toolchain-stage.sh staged; the host is unchanged. The server runs the mainline
+# recipe (all layers on the GPU, 4 slots of 8192 tokens, the GGUF's chat template); llama-bench adds its own
+# tg128/pp512 line. Logs and receipts land in /work/out/inkling2-llama-cpp.
 set -eu
 tag=b12628
 pilot=/assets/drama3-pilot
 stage=$pilot/llama-cpp-$tag
 gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
 gguf=$stage/Inkling-2-Mini-IQ4_NL.gguf
+llama=llama-$tag-bin-ubuntu-cuda-13.5-arm64.tar.gz
+cudart=cudart-llama-$tag-bin-ubuntu-cuda-13.5-arm64.tar.gz
 out=/work/out/inkling2-llama-cpp
 [ -f "$gguf" ] || { echo "missing $gguf: the Desk stages llama-cpp-stage.sh's folder" >&2; exit 1; }
-(cd "$stage" && sha256sum -c --quiet SHA256SUMS)
+(cd "$stage" && sha256sum -c --quiet) <<EOF
+2a6f7d5c65b511871cb6dbf7d610dd68767b18cfcc9a82218c432e1a838cb558  $llama
+fe0cf0b1c16827065aa834dfcdd1391461bf915197f4a932eb868f8e1f2e3a53  $cudart
+cbdf3fa9dc50a4124977980f37da4f1fa764b0cfe800d275cd43d26ce2a81af4  Inkling-2-Mini-IQ4_NL.gguf
+EOF
 echo "7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $pilot/cuda-build-toolchain/$gcc.tar.xz" | sha256sum -c --quiet
 rm -rf "$out" /work/llama-cpp
 mkdir -p "$out" /work/llama-cpp
-for archive in "$stage"/*.tar.gz; do tar -C /work/llama-cpp -xzf "$archive"; done
+for archive in "$llama" "$cudart"; do tar -C /work/llama-cpp -xzf "$stage/$archive"; done
 tar -C /work/llama-cpp -xJf "$pilot/cuda-build-toolchain/$gcc.tar.xz"
 bin=$(dirname "$(find /work/llama-cpp -name llama-server -type f | head -1)")
 ld=$(find /work/llama-cpp/$gcc -name ld-linux-aarch64.so.1 | head -1)
@@ -56,8 +62,8 @@ import json, sys
 agg = {}
 for level in (1, 4):
     cells = json.load(open(f"{sys.argv[1]}/streams-{level}.json"))["cells"]
-    if any(c.get("failed") for c in cells):
-        raise SystemExit(f"{level} streams: a request failed")
+    if any(c.get("failed") or c.get("unmeasured") or not c["aggregate_tps"] for c in cells):
+        raise SystemExit(f"{level} streams: a request failed, went unmeasured or decoded nothing")
     agg[level] = max(c["aggregate_tps"] for c in cells)
     for c in cells:
         r = c["request"]
