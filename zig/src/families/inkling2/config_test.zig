@@ -77,6 +77,8 @@ test "loop layouts the engine does not run are refused by their config key" {
     try refused(mini, "\"core_start\": 6", "\"core_start\": 7", error.Layout, "multiples of the 6-layer");
     try refused(mini, "\"core_end\": 18", "\"core_end\": 24", error.Layout, "multiples of the 6-layer");
     try refused(mini, "\"core_end\": 18,", "\"core_end\": 30,", error.Layout, "fit inside the 24 physical layers");
+    try refused(mini, "\"num_passes\": 3", "\"num_passes\": 0", error.BadConfig, "num_passes is not a positive whole number");
+    try refused(mini, "\"n_layers_per_attn_res_block\": 6", "\"n_layers_per_attn_res_block\": 0", error.BadConfig, "n_layers_per_attn_res_block is not a positive whole number");
     try refused(mini, "Inkling2LoopForConditionalGeneration", "Inkling2ForConditionalGeneration", error.NotInkling2, "model_type and architectures must match");
     try refused(mini, "\"model_type\": \"inkling2_loop\"", "\"model_type\": \"inkling2\"", error.NotInkling2, "model_type and architectures must match");
 }

@@ -72,7 +72,7 @@ const Reference = struct {
 
 fn serial(b: lanes.backend.Backend, ids: []const u32) !Reference {
     var sink: TapSink = .{};
-    var s = try lanes.Stream.init(gpa, .{ .id = "host-reference", .prompt = ids, .max_new = made, .drafts = false, .logprobs = 3 });
+    var s = try lanes.Stream.init(gpa, .{ .id = "serial-reference", .prompt = ids, .max_new = made, .drafts = false, .logprobs = 3 });
     defer s.deinit(gpa);
     try b.vtable.prefill_features.?(b.ptr, &s, &taps, .{ .ptr = &sink, .take = TapSink.take });
     defer b.release(&s);
@@ -248,7 +248,7 @@ fn transactions(dir: []const u8, drafter_dir: []const u8, ids: []const u32, want
     try std.testing.expectEqualSlices(u8, &want.continuation_tap, &(try featureRow(target_b, &s, ids.len + 15)));
 }
 
-test "Mini Metal serving matches the host reference token for token" {
+test "Mini Metal serving, fresh and restored, matches one serial stream on the backend token for token" {
     const dir = try checkpoint();
     const ids = prompt(history, 1);
     var turn: [history + 16]u32 = undefined;

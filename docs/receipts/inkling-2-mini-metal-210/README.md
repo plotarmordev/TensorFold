@@ -4,10 +4,27 @@ Apple M5 Ultra, 256 GB, macOS 27.0; the official checkpoint (`Inkling-2-Mini`, i
 DSpark drafter); `tensorfold-native` from `zig build native -Doptimize=ReleaseFast` at 930686a0, `--context 65536`.
 Every run held `/tmp/tensorfold-model.lock` inside the Desk's Mac GPU window, one at a time, nothing else on the GPU.
 
+## Ceiling
+
+A device-to-device blit of 4 GiB on this M5 Ultra moves **1,072 GB/s** (read plus write, best of 12). Bytes a plain
+step reads, from the checkpoint's safetensors headers, over the 48 visits (layers 6-17 three times): 2,787 MB of
+dense layer weights, 1,839 MB of routed experts (8 of 128 a visit), 926 MB of the bf16 unembedding: 5.55 GB a token.
+At four streams a step reads the dense weights and the head once and 22.8% of each visit's experts (1 - (120/128)^4):
+10.41 GB for four tokens. DSpark adds the drafter's 636 MB a round and divides the target's bytes by the accepted
+length. KV at 256 tokens is under 0.1% and left out.
+
+| ceiling, tok/s | plain | DSpark (code, measured accepted length) |
+|---|---|---|
+| 1 stream | 193 | 3.33 tokens a round: 576 |
+| 4 streams, total | 412 | 2.81 tokens a round: 1,091 |
+
+The measured cells below are 32% (plain) and 21% (DSpark) of their ceiling at one stream, 54% and 26% at four: the
+step is bound by the 48 visits' launch chain, not by bandwidth, and a DSpark round is not yet priced like a plain step.
+
 ## Speed
 
-`bench.sh` runs `tools/bench_concurrent.py --levels 1,4 --reps 3 --tokens 256 --temperatures 0 --alone --serial`:
-medians of three reps, the default code and chat prompts, greedy. Control, candidate, control:
+`bench.sh` runs `tools/bench_concurrent.py --levels 1,4 --tokens 256 --temperatures 0 --alone --serial`: medians of
+three reps, the default code and chat prompts, greedy. Control, candidate, control:
 
 | tok/s (code / chat) | plain, first | DSpark | plain, again | best open number |
 |---|---|---|---|---|
@@ -22,6 +39,9 @@ medians of three reps, the default code and chat prompts, greedy. Control, candi
   the plain controls moved 2% between them, so this is a tie at best. Strata v0.2.19's 108.9-114.5 on M5 Max is
   passed at one stream on code (another chip: a deployment comparison, not a chip one). The gap is the hold, not
   acceptance: a round costs 1.74 plain steps at one stream and 2.24 at four, for 3.33 and 2.81 tokens.
+- A rerun at six reps (`bench.sh` now asks for six) at `d29431d5f` is void: its two plain controls disagree by 29% at
+  four streams on code (210.5 then 150.5 tok/s, p95 round gaps of 56-97 ms against 19 ms), so the GPU was not idle.
+  The table stays the three-rep run, whose controls agree within 2%.
 
 ## Prefill at 45K
 
@@ -32,10 +52,13 @@ reply is identical to the fresh one.
 ## Exactness
 
 With `TF_INKLING2_METAL_DIR` and `TF_INKLING2_DSPARK_DIR` set to the checkpoint, the `test-inkling2-metal-host` test
-binary passed 85 device tests (175 s) in the earlier receipt; it now skips the slow float64 gate in Debug. These include:
+binary at `d29431d5f` passed 85 device tests and skipped one, the float64 gate it skips in Debug (383 s, under the
+lock). These include:
 
-- `Mini Metal serving matches the host reference token for token`: the first turn, a fresh second turn and the
-  same turn restored from the prompt cache each equal the host reference, logprobs included;
+- `Mini Metal serving, fresh and restored, matches one serial stream on the backend token for token`: the first
+  turn, a fresh second turn and the same turn restored from the prompt cache each equal one stream run alone on the
+  same Metal backend, logprobs included. It checks serving against the backend, not against the host: the host
+  oracle is the float64 gate below;
 - `Mini Metal opt-in DSpark drafting preserves target tokens and rolls back exactly`.
 
 `TF_INKLING2_METAL_DIR=$HOME/models/Inkling-2-Mini zig build test-inkling2-metal-float64` passes the official-checkpoint

@@ -588,6 +588,11 @@ implementation (`mlx_vlm/models/inkling2/` and `mlx_vlm/speculative/drafters/ink
 mlx-vlm is MIT (see [`LICENSES/MIT.txt`](LICENSES/MIT.txt)). No reference source code is vendored. The supplied materials
 give only these two abbreviated reference heads, not their full commit SHAs.
 
+`zig/src/families/inkling2/mini_ref.zig`, the float64 host forward the Metal greedy tokens are checked against, is
+adapted from Jürgen Schmied's (@jschmied) file of the same name in his closed draft ashhart/TensorFold#4441 (commits
+`802787196` and `dc2ca8a17`), planted control included; TensorFold moves it onto the Metal weight plan and always
+applies the bf16 rounding of gate and up that his `round_caps` switch made optional.
+
 ## Inkling 2 attention kernels
 
 `zig/kernels/cuda/inkling2/attention.cu`, `zig/kernels/cuda/inkling2/prompt_attention.cu` and
