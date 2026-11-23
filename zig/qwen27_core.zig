@@ -2,6 +2,7 @@
 pub const checkpoint = @import("src/core/checkpoint.zig");
 pub const gguf = @import("src/core/gguf.zig");
 pub const checkpoint_metal = @import("src/core/checkpoint_metal.zig");
+pub const checkpoint_file_cache = @import("src/core/checkpoint_file_cache.zig");
 pub const safetensors = @import("src/core/safetensors.zig");
 pub const Checkpoint = checkpoint.Checkpoint;
 pub const npy = @import("src/core/npy.zig");
