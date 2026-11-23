@@ -49,30 +49,36 @@ Linux route. From #1010 (`5b1f10812`) and #2107:
 
 ## Hill-climb and limits
 
-`hillclimb.sh` runs `setup.sh`'s build and gates, then the no-draft limits from `ceiling.py`, then fresh servers in
-the order control, `TF_NVFP4_DECODE_WARPS=1`, control, `TF_QMMF_HALF_BELOW=0`, control at 1 and 64 streams, with
-medians and a kept/rejected verdict for each lever in `/work/out/inkling2/ledger.jsonl`.
+`hillclimb.sh` runs `setup.sh`'s build and exactness gates, then the no-draft limits from `ceiling.py`, then fresh servers in
+the order control, `TF_NVFP4_DECODE_WARPS=1`, control, `TF_QMMF_HALF_BELOW=0`, control. It measures one same-prompt
+stream and 64 same-prompt and mixed-prompt streams; each cell requires a valid timing from every request. The 64
+different prompts in [`prompts-64.json`](prompts-64.json) have sha256
+`027e6b85a51f007f83c7b2002067aa650f5a5c65c83bb95c180038de5dd930f6`; the ledger records the path and hash.
 
 Job `top-975292aaf4c0` at `505ffbc48` (#4441's engine, `--parallel 64 --context 4096`, greedy, 128 tokens; medians
 of 6 reps at one stream and 3 at 64). Gates: the serving checks passed, 0 of 32 greedy tokens off the float64
 reference (the planted control caught 6 of 32), and no request failed.
 
-| Arm | 1 stream | 64 streams total |
-|---|---|---|
+| Arm (checkpoint as stored, no draft; same-prompt only) | 1 stream, tok/s | 64 streams total, tok/s |
+|---|---:|---:|
 | control | 32.6 | 589.8 |
 | `TF_NVFP4_DECODE_WARPS=1` | 32.9 | 596.9 |
 | control | 32.9 | 593.0 |
 | `TF_QMMF_HALF_BELOW=0` | 32.8 | 593.3 |
 | control | 32.8 | 592.1 |
 
-Neither lever clears its controls by more than the 3% noise (+0.7% and +0.1% at 64 streams): both rejected, the
-defaults stay. The no-draft limit at 273 GB/s (the job cannot open the DRM card the bandwidth probe needs) is 49.2
-tok/s at one stream (5.55 GB a token), so one stream runs at 67% of it. The 64-stream estimate under uniform routing
-(534.8 tok/s) sits below the measured 590: real routing shares more experts across rows, so it is not a bound.
+Neither lever clears its controls by more than the 3% noise (+0.7% and +0.1% at 64 streams): both rejected; the
+defaults stay. **No mixed-prompt result has been measured** for this receipt. The no-draft limit of 49.2 tok/s at one
+stream applies only to this 5.55 GB/token stored checkpoint at the GB10's 273 GB/s specification (the job cannot
+open the DRM card for the bandwidth probe); it does not bound Strata's smaller packs. The 64-stream estimate under
+uniform routing (534.8 tok/s) is not a bound: actual routing shares experts across rows.
 
-Strata v0.2.19's GB10 figures (74.3 tok/s at one stream, 1,145.1 at 64) are 2.3x and 1.9x these, and one stream's
-74.3 is above any no-draft engine's 49.2 limit on this checkpoint: not yet Strata's speed, drafts come next. Strata gets
-there with its DSpark beam tree and smaller packs; the Mini's CUDA engine has no draft path (`takes_drafter = false`).
-Card 209's study orders the work: a CUDA DSpark tree ported from the Metal drafter (on #4128's DSpark kernels), then
-fp4 tensor-core experts at 64 streams, then a smaller pack. The Strata bar belongs to that drafter chain (card 215 for
-the drafter, card 219 for the hill-climb on top of it); no speed lever runs here.
+Strata v0.2.19's published GB10 rows are for **different packs**: SQ-10 gives 74.3 tok/s at one stream and 805.8
+total at 64; SQ-20 gives 46.1 at one and 1,145.1 total at 64. Card 209's TOP run of Strata 0.1.66 on the staged
+SQ-10 pack gave 74.4 at one and 382.5 at 64 with its built-in `--bench` (job `top-edfe387b00e5`), against our
+32.6–32.9 and 589.8–593.0 on the stored checkpoint; prompt lengths (64 vs code/chat), generated lengths (256 vs
+128), client protocols and pack sizes differ, so these are **not matched engine comparisons**. Strata SQ-20 has
+no same-session TOP measurement in this receipt. Neither published pack nor the one-stream bar is beaten by this
+engine; Mini CUDA has no draft path (`takes_drafter = false`). Card 209 proposes a CUDA DSpark tree on #4128's kernels,
+then fp4 tensor-core experts at 64 streams and a smaller pack. Cards 215 and 219 own that work, but their future
+results are not evidence for this card's bar.
