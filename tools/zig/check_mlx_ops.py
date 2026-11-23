@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -16,9 +17,12 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
+from outside_checkout import shared_cache
+
 ROOT = Path(__file__).resolve().parents[2]
 OPS_DIR = ROOT / "zig" / "kernels" / "metal" / "ops"
-BUILD = ROOT / "build" / "zig-ops"
+# The runner and the input/output tensors it stages, per checkout in the shared cache: an aborted run leaves no weights in the tree.
+BUILD = shared_cache(ROOT) / "checkouts" / hashlib.sha256(str(ROOT).encode()).hexdigest()[:16] / "zig-ops"
 METALLIB = Path(mx.__file__).parent / "lib" / "mlx.metallib"
 MLX_ATTRIBUTES = [  # (name, type) in the order mx.fast.metal_kernel writes them
     ("dispatch_quadgroups_per_threadgroup", "uint"), ("dispatch_simdgroups_per_threadgroup", "uint"),
