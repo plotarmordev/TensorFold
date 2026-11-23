@@ -162,12 +162,15 @@ The run uses Strata's own linux-aarch64 build as shipped, with no host changes. 
 - [`recipes/strata-inkling/strata-job.sh`](recipes/strata-inkling/strata-job.sh): through `swarm gpu-run`, the
   engine's `--bench` at 1, 4 and 64 streams with 256 generated tokens, then `--selfcheck`.
 
-This step did not stage the pack. It downloaded at 2.6–3 MB/s here, about an hour for the 10.47 GB pack before the
-upload to TOP, which is past this card's time box. The 1- and 4-stream rows below wait for that job.
+Job `top-1bd4b665a3d1` (this branch at `474b16da5`) reached the GPU and stopped at its first check: the SQ-10 pack is
+not in TOP's pilot folder yet. Staging it from a Mac on this network runs at 2.6–3 MB/s or less, over an hour for
+the 10.47 GB pack before the upload to TOP. The Strata rows below wait for `strata-stage.sh`, then a re-run of the
+same job.
 
 | GB10, 1 stream / 4 streams total | Source |
 |---|---|
-| TensorFold 5.7 / 9.4 tok/s | job `top-0759755a0515`, card 188 at `2301ab379` |
+| TensorFold 32.5 / 117.7 tok/s | job `top-29fb623d4dee`, card 188 at `54bf2c7f0` (#4441's graphed engine) |
+| TensorFold 5.7 / 9.4 tok/s | job `top-0759755a0515`, card 188 at `2301ab379` (#4387's loop engine) |
 | Strata SQ-10 — / — | `strata-job.sh`, pending staging |
 
 ## Windows on ARM: nobody ships Inkling 2 Mini fast there
