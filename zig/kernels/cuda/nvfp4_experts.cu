@@ -622,3 +622,13 @@ extern "C" __global__ void __launch_bounds__(128)
   tf_nvfp4_experts::prompt_body<2, 4, 4, 1, 4>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out, N,
                                                gate_cap, skip, nullptr, nullptr, 0, up_cap);
 }
+
+// 64-pair decode tiles: tf_nvfp4_softcap's sums and epilogue, with one weight load per item.
+extern "C" __global__ void __launch_bounds__(128)
+    tf_nvfp4_fact_softcap(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
+                          const float* __restrict__ scale, int KG, int NB, const int* __restrict__ items,
+                          const int* __restrict__ counts, const int* __restrict__ members, void* __restrict__ out,
+                          int N, float gate_cap, float up_cap, int skip) {
+  tf_nvfp4_experts::prompt_body<2, 4, 4, 1, 4, true>(X, x_stride, slots, W, scale, KG, NB, items, counts, members, out,
+                                                     N, gate_cap, skip, nullptr, nullptr, 0, up_cap);
+}

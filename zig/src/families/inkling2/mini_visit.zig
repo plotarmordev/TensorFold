@@ -243,9 +243,10 @@ fn moe(m: *Model, k: *const Kernels, s: cuda.Stream, r: *const Rows, L: *const w
     const h: usize = t.hidden;
     const n = r.n;
     const pairs = n * t.topk;
+    // Up to 16 rows, each expert already fits one decode unit; larger rounds stage up to 64 rows per expert.
+    const tile: usize = if (r.prompt) cuda.experts.promptTile(L.experts.format) else if (n > 16) 64 else 16;
     try ops.rowdot(&k.ops, s, m.s.xm, L.router, m.s.scores, n, t.experts, h, false, true);
     try ops.topk(&k.ops, s, m.s.scores, L.router_bias, m.s.pick, m.s.rw, n, t.experts, t.topk, t.route_scale);
-    const tile: usize = if (r.prompt) cuda.experts.promptTile(L.experts.format) else 16;
     const items = cuda.grouped.maxItems(pairs, t.experts, tile);
     try k.router.route(s, m.s.pick, pairs, t.experts, tile, m.s.plan);
     const gx = k.experts();

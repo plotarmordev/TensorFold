@@ -1,4 +1,4 @@
-//! The stored experts' two checkpoint checks: one-hot rows read each decoded weight back, random rows the outputs.
+//! The stored experts' checkpoint checks: one-hot rows read each decoded weight back, random rows the outputs, 64-row items the 16-row items' bytes.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
@@ -200,6 +200,140 @@ pub fn outputs(gpu: Gpu, s: st.Stored, layer: usize) !void {
         try check.expect(bad[0] == 0 and bad[1] == 0, "layer {d} {d} tokens: {d} gate-up and {d} down outputs outside the fp32 bound", .{ layer, tokens, bad[0], bad[1] });
         check.pass("layer {d} {s} {d} tokens ({s}): {d} gate-up and {d} down outputs within the fp32 bound; worst err/bound {d:.3} and {d:.3}", .{ layer, if (s.nv) "NVFP4" else "MXFP8", tokens, if (prompt) "prompt form" else "decode form", pairs * st.width, pairs * st.hidden, worst[0], worst[1] });
     }
+}
+
+/// Elements of a 64-row plan's output against a 16-row plan's: how many differ, how many of each still hold the 0xff fill, the first that differs.
+const Tally = struct { differ: usize = 0, poison: [2]usize = .{ 0, 0 }, first: ?usize = null };
+
+fn tally(new: []const u8, old: []const u8, wide: usize) Tally {
+    var t: Tally = .{};
+    for (0..old.len / wide) |i| {
+        const p = new[i * wide ..][0..wide];
+        const q = old[i * wide ..][0..wide];
+        if (!std.mem.eql(u8, p, q)) {
+            if (t.first == null) t.first = i;
+            t.differ += 1;
+        }
+        t.poison[0] += @as(usize, @intFromBool(std.mem.allEqual(u8, p, 0xff)));
+        t.poison[1] += @as(usize, @intFromBool(std.mem.allEqual(u8, q, 0xff)));
+    }
+    return t;
+}
+
+/// Element `i` of a `wide`-byte output, little endian, for a failure's line.
+fn word(bytes: []const u8, i: usize, wide: usize) u32 {
+    const at = i * wide;
+    return if (wide == 2) std.mem.readInt(u16, bytes[at..][0..2], .little) else std.mem.readInt(u32, bytes[at..][0..4], .little);
+}
+
+/// 64 tokens sharing one top-8 pick on plans of 16 rows (the released decode form) and of 64 (Mini's n > 16 decode): gate-up BF16 and
+/// down FP32 byte for byte, the 16-row plan's outputs read back before the 64-row plan runs; the items each plan holds on the device
+/// beside the host's launch bound (maxItems over every expert, what the kernels are launched with).
+pub fn rows64(gpu: Gpu, s: st.Stored, layer: usize) !void {
+    const a = gpu.gpa;
+    const sms: usize = @intCast(try gpu.ctx.attribute(.multiprocessor_count));
+    var k4 = try ex_.Nvfp4Experts.load(gpu.d, sms);
+    defer k4.unload();
+    var k8 = try mx.Mxfp8Experts.load(gpu.d, sms);
+    defer k8.unload();
+    var mod = try cuda.Module.load(gpu.d, cuda.kernels.experts);
+    defer mod.unload();
+    const router = try grouped.Router.resolve(mod);
+    var stream = try cuda.Stream.init(gpu.d, false);
+    defer stream.deinit();
+    var bufs: [4]cuda.DeviceBuffer = undefined;
+    const l = try s.upload(gpu, &bufs);
+    defer for (&bufs) |*b| b.free();
+    const gx: ex_.Grouped = .{ .nvfp4 = &k4, .mxfp8 = &k8 };
+    const tokens = 64;
+    const pairs = tokens * st.top;
+    var prng = std.Random.DefaultPrng.init(0x7ed0 + layer);
+    const xs = try a.alloc(u16, tokens * st.hidden);
+    defer a.free(xs);
+    for (xs) |*v| v.* = c.toBf16((prng.random().float(f32) * 2 - 1) * 2);
+    const one = try st.picks(a, 1, 0x64);
+    defer a.free(one);
+    const ids = try a.alloc(i32, pairs);
+    defer a.free(ids);
+    var chosen: [st.experts]bool = @splat(false);
+    for (one) |e| chosen[@intCast(e)] = true;
+    for (0..tokens) |t| @memcpy(ids[t * st.top ..][0..st.top], one);
+    var dx = try cuda.DeviceBuffer.fromHost(gpu.d, std.mem.sliceAsBytes(xs));
+    defer dx.free();
+    var dids = try cuda.DeviceBuffer.fromHost(gpu.d, std.mem.sliceAsBytes(ids));
+    defer dids.free();
+    const act_len = pairs * st.width * 2;
+    const y_len = pairs * st.hidden * 4;
+    const act16 = try a.alloc(u8, act_len);
+    defer a.free(act16);
+    const y16 = try a.alloc(u8, y_len);
+    defer a.free(y16);
+    const act64 = try a.alloc(u8, act_len);
+    defer a.free(act64);
+    const y64 = try a.alloc(u8, y_len);
+    defer a.free(y64);
+    var bound: [2]usize = undefined; // the host's launch bound: maxItems over all 128 experts
+    var held: [2]usize = undefined; // counts[0]: the items the plan holds on the device
+    for ([_]usize{ 16, 64 }, 0..) |tile, ti| {
+        const per: usize = tokens / tile; // items a picked expert's rows fill
+        var pb = try st.PlanBufs.init(gpu, pairs, tile);
+        defer pb.deinit();
+        bound[ti] = pb.items;
+        try router.route(stream, dids.ptr, pairs, st.experts, tile, pb.plan);
+        try stream.synchronize();
+        var counts: [2]i32 = undefined; // items the plan holds, experts with rows
+        try cuda.memory.download(gpu.d, pb.plan.counts, std.mem.sliceAsBytes(&counts));
+        held[ti] = @intCast(@max(@as(i32, 0), @min(counts[0], @as(i32, @intCast(bound[ti])))));
+        const raw = try a.alloc(i32, 3 * held[ti]);
+        defer a.free(raw);
+        try cuda.memory.download(gpu.d, pb.plan.items, std.mem.sliceAsBytes(raw));
+        var items_of: [st.experts]usize = @splat(0);
+        var rows_of: [st.experts]usize = @splat(0);
+        var prefix: [st.experts]usize = undefined;
+        var seen: usize = 0;
+        for (chosen, 0..) |on, e| {
+            prefix[e] = seen;
+            if (on) seen += tokens;
+        }
+        var bad: usize = 0; // items outside their expert's rows, in plan order
+        for (0..held[ti]) |i| {
+            const e = raw[3 * i];
+            if (e < 0 or e >= st.experts or raw[3 * i + 1] < 0 or raw[3 * i + 2] < 0) {
+                bad += 1;
+                continue;
+            }
+            const eu: usize = @intCast(e);
+            const first: usize = @intCast(raw[3 * i + 1]);
+            const rows: usize = @intCast(raw[3 * i + 2]);
+            if (!chosen[eu] or rows != tile or first != prefix[eu] + rows_of[eu]) bad += 1;
+            items_of[eu] += 1;
+            rows_of[eu] += rows;
+        }
+        var off: usize = 0; // experts without their rows in whole `tile`-row items
+        for (chosen, 0..) |on, e| {
+            if (rows_of[e] != (if (on) tokens else 0) or items_of[e] != (if (on) per else 0)) off += 1;
+        }
+        try check.expect(bound[ti] == grouped.maxItems(pairs, st.experts, tile) and held[ti] == st.top * per and counts[1] == st.top and bad == 0 and off == 0, "layer {d}, tile {d}: launch bound {d}, {d} items held over {d} experts, {d} misplaced, {d} experts not covered", .{ layer, tile, bound[ti], held[ti], counts[1], bad, off });
+        var act = try cuda.DeviceBuffer.alloc(gpu.d, act_len);
+        defer act.free();
+        var y = try cuda.DeviceBuffer.alloc(gpu.d, y_len);
+        defer y.free();
+        try act.fill8(0xff, stream.handle);
+        try y.fill8(0xff, stream.handle);
+        const up_in: ex_.Rows = .{ .x = dx.ptr, .stride = st.hidden, .slots = st.top };
+        const down_in: ex_.Rows = .{ .x = act.ptr, .stride = st.width };
+        try gx.decode(stream, .up, up_in, l, pb.plan, act.ptr, bound[ti], pairs, tile, -1);
+        try gx.decode(stream, .down_f32, down_in, l, pb.plan, y.ptr, bound[ti], pairs, tile, -1);
+        try stream.synchronize();
+        try act.download(0, if (ti == 0) act16 else act64);
+        try y.download(0, if (ti == 0) y16 else y64);
+    }
+    for ([_][2][]u8{ .{ act64, act16 }, .{ y64, y16 } }, [2]usize{ 2, 4 }, [2]usize{ st.width, st.hidden }, [_][]const u8{ "gate-up BF16", "down FP32" }) |o, w, n, name| {
+        const t = tally(o[0], o[1], w);
+        const first = t.first orelse 0;
+        try check.expect(t.differ == 0 and t.poison[0] == 0 and t.poison[1] == 0, "layer {d} {s}: {d} of {d} outputs of the 64-row items differ from the 16-row items, {d} and {d} still hold the 0xff fill; first at pair {d} (expert {d}), column {d}: {x} for {x}", .{ layer, name, t.differ, o[1].len / w, t.poison[0], t.poison[1], first / n, ids[first / n], first % n, word(o[0], first, w), word(o[1], first, w) });
+    }
+    check.pass("layer {d} {s}: 64 tokens sharing one top-{d} pick ({d} pairs over {d} experts): launch bound {d} -> {d} (maxItems over {d} experts), device items {d} -> {d}, {d} -> {d} an expert at {d} rows; {d} gate-up BF16 and {d} down FP32 outputs of the 64-row items equal the 16-row items byte for byte", .{ layer, if (s.nv) "NVFP4" else "MXFP8", st.top, pairs, st.top, bound[0], bound[1], st.experts, held[0], held[1], tokens / 16, tokens / 64, tokens, pairs * st.width, pairs * st.hidden });
 }
 
 /// MXFP8's E8M0 edges through tf_mxfp8_down_f32: scale byte 0 is 2^-127 (not 0, not 2^-126).
