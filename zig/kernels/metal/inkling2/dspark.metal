@@ -325,9 +325,9 @@ kernel void tf_ink2_dspark_base(const device bfloat* unembed [[buffer(0)]], cons
     }
   }
   #pragma unroll
-  for (uint row = 0; row < DSP_TILE; ++row) {
+  for (uint row = 0; row < a.rows; ++row) {
     const float sum = simd_sum(acc[row]);
-    if (row < a.rows && lane == 0) out[size_t(row) * a.vocab + id] = bfloat(sum);
+    if (lane == 0) out[size_t(row) * a.vocab + id] = bfloat(sum);
   }
 }
 
