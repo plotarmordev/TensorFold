@@ -73,9 +73,9 @@ fn serial(b: lanes.backend.Backend, ids: []const u32) !Reference {
     try b.vtable.prefill_features.?(b.ptr, &s, &taps, .{ .ptr = &sink, .take = TapSink.take });
     defer b.release(&s);
     try std.testing.expectEqual(@as(usize, 1), sink.seen);
+    var next = try b.read(try b.first(&s, ids.len));
     const first = try b.firstRow(&s);
     var out: Reference = .{ .tokens = undefined, .first = first, .tap = sink.bytes };
-    var next = try b.read(try b.first(&s, ids.len));
     out.tokens[0] = next;
     try std.testing.expectEqual(next, first.token);
     for (1..made) |i| {
@@ -210,6 +210,7 @@ fn transactions(dir: []const u8, drafter_dir: []const u8, ids: []const u32, want
     defer s.deinit(gpa);
     try b.prefill(&s);
     defer b.release(&s);
+    try std.testing.expectEqual(want.tokens[0], try b.read(try b.first(&s, ids.len)));
     try expectFirstRow(want.first, try b.firstRow(&s));
     try std.testing.expectEqualSlices(u8, &want.tap, &(try featureRow(target_b, &s, ids.len - 1)));
 
