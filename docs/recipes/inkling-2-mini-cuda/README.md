@@ -6,7 +6,8 @@ GPU door. The job has no network, so the checkpoint must already sit in the pilo
 
 The server is jschmied's #4441 engine (`inkling2.native`, model type `inkling2_loop`, on his #4364 and #4365): graphs,
 fused input projections and one batched forward for every stream's rows in a round. #4387's checks run against it.
-The script fails on any of: `tf-cuda-test inkling2-serving` (#4387's checks), `tf-cuda-test inkling2-mini-ref` (32
+The script fails on any of: `tf-cuda-test kernel-contract "inkling2 loop"` (the served message and gate kernels
+against FP64 references, with their planted controls), `tf-cuda-test inkling2-serving` (#4387's checks), `tf-cuda-test inkling2-mini-ref` (32
 greedy tokens equal to the float64 host reference), that reference's planted control staying green, a failed stream
 in `tools/bench_concurrent.py` at 1 and 4 streams, or 4 streams giving under 1.5 times one stream's total tok/s. The
 receipt also sets one stream's decode against GB10's bandwidth limit: the weight bytes a token reads (from the
@@ -22,8 +23,9 @@ these settings, not a benchmark.
 | 1 | 0.077 s / 0.038 s | 195.9 tok/s | 32.5 tok/s | 32.5 tok/s | 0 |
 | 4 | 0.189 s / 0.092 s | 82.6 tok/s | 29.6 tok/s | 117.8 tok/s (3.62x) | 0 |
 
-Memory (`/proc/meminfo`, host used): 10.9 GiB before the server, 31.6 GiB with Mini loaded for 4 streams, and the
-same after both levels. GPU (`nvidia-smi`): 20.0 GiB held by the server.
+Memory, sampled after each step (not process peaks): host used (`/proc/meminfo`) was 10.9 GiB before the server,
+31.6 GiB with Mini loaded for 4 streams, and the same after both levels; the server held 20.0 GiB of GPU memory
+(`nvidia-smi`).
 
 Bandwidth limit: a decoded token reads about 5.55 GB of weights (core layers 3 passes, 8 of 128 experts a visit, the
 whole unembedding), so 273 GB/s caps one stream near 49 tok/s; 32.5 tok/s is 66% of it. #4387's own engine, removed
