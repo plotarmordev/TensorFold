@@ -37,15 +37,18 @@ mem "before the server"
     --no-webui >"$out/server.log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null || :' EXIT
-python3 - <<'EOF'
-import time, urllib.request
+python3 - "$server" "$out/server.log" <<'EOF'
+import sys, time, urllib.request
+pid, log = sys.argv[1:]
 for _ in range(600):
     try:
         urllib.request.urlopen("http://127.0.0.1:8189/health", timeout=5)
         raise SystemExit(0)
     except OSError:
+        if open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0] == "Z":
+            break
         time.sleep(1)
-raise SystemExit("llama-server did not answer /health in 10 min")
+raise SystemExit("llama-server exited or did not answer /health in 10 min:\n" + open(log).read()[-4000:])
 EOF
 mem "server loaded"
 for level in 1 4; do
