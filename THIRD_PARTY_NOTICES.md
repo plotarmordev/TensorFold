@@ -576,9 +576,8 @@ stated on its model card (see [the license text](LICENSES/Apache-2.0.txt)). The 
 headers, no tensor data or weights. `tools/zig/inkling2_fixtures.py` rebuilds all three from the Mini release, or from its
 extracted headers, with the same revision annotation. No revision was derived from fixture digests.
 
-The Mini loop host/reference implementations in `zig/src/families/inkling2/loop.zig`, the CUDA and Metal loop kernels
-and the stored-expert implementations in `modelopt.zig` and
-`zig/kernels/cuda/inkling2/modelopt.cu` are independent TensorFold implementations of the supplied math-only Mini
+The Mini loop host/reference implementation in `zig/src/families/inkling2/loop.zig`, its CUDA and Metal loop kernels,
+and its shared expert kernels are independent TensorFold implementations of the supplied math-only Mini
 specification. Its primary reference is huggingface/transformers PR #51050 at head `6173a2f6`: the Mini configuration and
 forward pass in `models/inkling2_loop/modular_inkling2_loop.py` and `modeling_inkling2_loop.py`, with the temporary
 NVFP4/MXFP8 expert dequantization in `core_model_loading.py` and the checkpoint mappings in `conversion_mapping.py`.
@@ -606,13 +605,3 @@ these layers of Hugging Face transformers' `src/transformers/models/inkling2/mod
 `Inkling2NormedEmbedding`, `Inkling2BlockAttentionResidual`, `Inkling2ShortConvolution`,
 `Inkling2DynamicShortConvolution`, `Inkling2TopKRouter`, `Inkling2SoftcappedSwiGLU` and `Inkling2Softcap`. The kernels
 are TensorFold's own.
-
-## Inkling 2 expert and vision kernels
-
-`zig/kernels/cuda/inkling2/experts.cu` and `zig/src/families/inkling2/experts.zig` run `Inkling2Experts` from Hugging
-Face transformers' `src/transformers/models/inkling2/modeling_inkling2.py` at commit `109a7d19bf66`
-([huggingface/transformers](https://github.com/huggingface/transformers), Apache-2.0) on main's EXL3 grouped-expert
-arithmetic. `zig/kernels/cuda/inkling2/vision.cu` and `zig/src/families/inkling2/vision.zig` compute the same file's
-vision tower: `Inkling2VisionEmbeddings`, `Inkling2VisionRotaryEmbedding`, `Inkling2VisionAttention`,
-`Inkling2VisionMLP` and `Inkling2VisionMerger`. `zig/src/families/inkling2/image.zig` follows `Inkling2ImageProcessor`
-in `image_processing_inkling2.py` at the same commit for its 40-pixel patches and the tower's input tables.
