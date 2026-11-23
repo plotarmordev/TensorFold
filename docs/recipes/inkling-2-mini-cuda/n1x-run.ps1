@@ -1,9 +1,9 @@
 # Inkling 2 Mini (revision ed40e7da62) whole on an RTX Spark N1X laptop, native Windows ARM64, run by its Codync bot:
-#   powershell -ExecutionPolicy Bypass -File docs\recipes\inkling-2-mini-cuda\n1x-run.ps1 -Step build|check|serve
+#   powershell -ExecutionPolicy Bypass -File docs\recipes\inkling-2-mini-cuda\n1x-run.ps1 -Step build|check|control|serve
 # From a clean checkout with `vcvarsall arm64` set up and CUDA_PATH naming the windows-arm64 toolkit. Installs, downloads
-# and deletes nothing outside .\zig-out and $env:TEMP\inkling2-n1x. Each step stops itself well inside 10 minutes.
+# and deletes nothing outside .\zig-out and $env:TEMP\inkling2-n1x. Each step after a warm build stops inside 10 minutes.
 param(
-    [Parameter(Mandatory)][ValidateSet('build', 'check', 'serve')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('build', 'check', 'control', 'serve')][string]$Step,
     [string]$Model = 'C:\models\Inkling-2-Mini-ed40e7da62'
 )
 $ErrorActionPreference = 'Stop'
@@ -39,6 +39,7 @@ if ($Step -eq 'build') {
     exit 0
 }
 
+$text = 'The three laws of thermodynamics, explained for a curious student:'
 if ($Step -eq 'check') {
     # 188's GB10 checks as they are: the served kernels, #4387's serving checks, the float64 reference
     Run $test @('info')
@@ -46,17 +47,25 @@ if ($Step -eq 'check') {
     $r = New-Object System.Random 4387
     (1..4200 | ForEach-Object { $r.Next(1000, 199000) }) -join ' ' | Set-Content -Encoding ascii "$out\ids.txt"
     Run $test @('inkling2-serving', $Model, "$out\ids.txt")
-    $text = 'The three laws of thermodynamics, explained for a curious student:'
     Run $test @('inkling2-mini-ref', $Model, '32', $text)
-    $env:INKLING2_REF_PLANT = '1'
-    & $test inkling2-mini-ref $Model 32 $text
-    Write-Output "planted control EXIT=$LASTEXITCODE (must be non-zero)"
-    Remove-Item Env:INKLING2_REF_PLANT
-    if (-not $LASTEXITCODE) { exit 1 }
     exit 0
 }
 
-# serve: one server, 1 then 4 greedy streams of 256 tokens, first token and decode per stream, the pool's peak
+# The reference's planted control is its own step: the float64 reference takes 226 s on the N1X, twice is over 10 min.
+# Alone, any non-zero exit (a bad path, no GPU) would pass it, so it also needs the plant's own differing tokens.
+if ($Step -eq 'control') {
+    $env:INKLING2_REF_PLANT = '1'
+    $ref = Start-Process -FilePath $test -Wait -PassThru -NoNewWindow -RedirectStandardError "$out\control.log" `
+        -ArgumentList @('inkling2-mini-ref', "`"$Model`"", '32', "`"$text`"")
+    Get-Content "$out\control.log"
+    Write-Output "planted control EXIT=$($ref.ExitCode) (must be non-zero)"
+    $planted = Select-String -Path "$out\control.log" -Pattern '\(PLANTED: no messages\): [1-9]\d* of 32 greedy tokens differ'
+    if (-not $ref.ExitCode -or -not $planted) { exit 1 }
+    exit 0
+}
+
+# serve: one server, 1 then 4 greedy 256-token replies, timed by the server's own `done` lines (first token, decode):
+# run 2's client timed itself, as PowerShell's line reads fell 4x behind the server's output
 Pool 'before the server'
 $port = 8188
 $proc = Start-Process -FilePath $server -PassThru -NoNewWindow -RedirectStandardOutput "$out\server.log" `
@@ -72,54 +81,37 @@ try {
     }
     Write-Output ("RESULT n1x server ready in {0:N1} s" -f $loaded.Elapsed.TotalSeconds)
     Pool 'server loaded'
+    # nvidia-smi samples the pool every 500 ms in its own process for the whole run; its largest sample is the peak
+    $smi = Start-Process -FilePath nvidia-smi -PassThru -NoNewWindow -RedirectStandardOutput "$out\pool.csv" `
+        -ArgumentList @('-i', $gpu, '--query-gpu=memory.used', '--format=csv,noheader,nounits', '-lms', '500')
     Add-Type -AssemblyName System.Net.Http
     $http = New-Object System.Net.Http.HttpClient
     $http.Timeout = [TimeSpan]::FromMinutes(4)
-    $peak = 0
+    $body = '{"model":"inkling-2-mini","prompt":"Write a short Python function that computes the Fibonacci ' +
+        'sequence and explain it.","max_tokens":256,"temperature":0,"ignore_eos":true}'
     foreach ($n in 1, 4) {
-        $clock = [Diagnostics.Stopwatch]::StartNew()
-        $body = '{"model":"inkling-2-mini","prompt":"Write a short Python function that computes the Fibonacci ' +
-            'sequence and explain it.","max_tokens":256,"temperature":0,"ignore_eos":true,"stream":true,' +
-            '"stream_options":{"include_usage":true}}'
+        $before = @(Select-String -Path "$out\server.log" -Pattern '\] done ').Count
         $calls = foreach ($i in 1..$n) {
-            $req = New-Object System.Net.Http.HttpRequestMessage 'Post', "http://127.0.0.1:$port/v1/completions"
-            $req.Content = New-Object System.Net.Http.StringContent $body, ([Text.Encoding]::UTF8), 'application/json'
-            $http.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
+            $http.PostAsync("http://127.0.0.1:$port/v1/completions",
+                (New-Object System.Net.Http.StringContent $body, ([Text.Encoding]::UTF8), 'application/json'))
         }
-        $streams = foreach ($c in $calls) {
-            $reader = New-Object IO.StreamReader $c.Result.Content.ReadAsStreamAsync().Result
-            @{ reader = $reader; first = $null; last = $null; tokens = $null }
-        }
-        # read the streams in turn: a reply's pieces wait in its socket, the clock stamps when each is read
-        while ($streams | Where-Object { $_.reader }) {
-            foreach ($s in $streams | Where-Object { $_.reader }) {
-                $line = $s.reader.ReadLine()
-                if ($null -eq $line -or $line -eq 'data: [DONE]') { $s.reader = $null; continue }
-                if (-not $line.StartsWith('data: ')) { continue }
-                $j = $line.Substring(6) | ConvertFrom-Json
-                if ($j.usage) { $s.tokens = $j.usage.completion_tokens }
-                if ($j.choices -and $j.choices[0].text) {
-                    if ($null -eq $s.first) { $s.first = $clock.Elapsed.TotalSeconds }
-                    $s.last = $clock.Elapsed.TotalSeconds
-                }
-            }
-            $used = [int](nvidia-smi -i $gpu --query-gpu=memory.used --format=csv,noheader,nounits)
-            if ($used -gt $peak) { $peak = $used }
-        }
+        foreach ($c in $calls) { if (-not $c.Result.IsSuccessStatusCode) { throw "$n streams: $($c.Result.StatusCode)" } }
+        $done = @(Select-String -Path "$out\server.log" -Pattern '\] done ' | Select-Object -Skip $before)
+        if ($done.Count -ne $n) { throw "$n streams: want $n done lines, got $($done.Count)" }
         $total = 0
-        foreach ($s in $streams) {
-            if ($s.tokens -ne 256) { throw "$n streams: a reply ended at $($s.tokens) tokens" }
-            $tps = ($s.tokens - 1) / ($s.last - $s.first)
-            $total += $s.tokens - 1
-            Write-Output ("RESULT n1x {0} stream(s): first token {1:N3} s, decode {2:N1} tok/s" -f $n, $s.first, $tps)
+        foreach ($d in $done) {
+            if ($d.Line -notmatch 'tokens=256 .*ttft=([\d.]+) .*tok/s=([\d.]+)') { throw "not a 256-token reply: $($d.Line)" }
+            $total += [double]$Matches[2]
+            Write-Output "RESULT n1x $n stream(s): first token $($Matches[1]) s, decode $($Matches[2]) tok/s"
         }
-        $span = ($streams | ForEach-Object { $_.last } | Measure-Object -Maximum).Maximum -
-            ($streams | ForEach-Object { $_.first } | Measure-Object -Minimum).Minimum
-        Write-Output ("RESULT n1x {0} stream(s) total decode {1:N1} tok/s" -f $n, ($total / $span))
+        Write-Output ("RESULT n1x {0} stream(s) total decode {1:N1} tok/s" -f $n, $total)
     }
-    Write-Output "RESULT n1x peak GPU memory sampled while decoding: $peak MiB"
+    $smi.Kill(); $smi.WaitForExit()
+    $peak = (Get-Content "$out\pool.csv" | ForEach-Object { [int]$_ } | Measure-Object -Maximum).Maximum
+    if (-not $peak) { throw "no samples in $out\pool.csv" }
+    Write-Output "RESULT n1x peak GPU memory sampled every 500 ms: $peak MiB"
     Write-Output "RESULT n1x server process peak working set $([int]($proc.PeakWorkingSet64 / 1MB)) MiB"
 } finally {
-    if (-not $proc.HasExited) { Stop-Process -Id $proc.Id }
+    foreach ($p in $proc, $smi) { if ($p -and -not $p.HasExited) { $p.Kill() } }
     Get-Content "$out\server.err" -Tail 20
 }
