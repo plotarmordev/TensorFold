@@ -1,0 +1,4 @@
+# Inkling 2 Mini on Metal: a DSpark round stops saving its convolution histories
+
+- A verify window no longer copies a stream's 1.9 MB of convolution histories aside before its forward and back after a rejection: the forward leaves the histories alone while a window is open, and the keep takes them from the staged taps of the rows it keeps. Every stream's keep shares one command buffer and one wait a round, where each stream had its own before the forward and one more after a rejection; a stream's cache is 1.9 MB smaller.
+- Not yet measured: no Mac GPU window was open in this step. A device test covers the kept histories of a full and a cut window; the real-checkpoint serving tests (`TF_INKLING2_METAL_DIR`, `TF_INKLING2_DSPARK_DIR`) and the control/candidate/control bench on the M5 Ultra are still due before any speed is claimed against #4618's 123 / 281.
