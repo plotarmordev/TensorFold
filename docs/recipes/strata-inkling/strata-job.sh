@@ -1,17 +1,17 @@
 #!/bin/sh
-# Strata's own Inkling 2 Mini engine on TOP's GB10, set up as Strata publishes it, for card 242's receipt:
-#   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/strata-inkling/strata-job.sh
-# SQ-20 and SQ-10, each under the engine's own `--bench` and, behind Strata's server, under our HTTP bench
-# (tools/bench_concurrent.py), at 1, 4 and 64 streams, medians of 3. The receipt counts only if SQ-10 at 64 lands
-# within 10% of the 805.8 tok/s of Strata's pack card; the last line says which.
+# Strata's own Inkling 2 Mini engine on TOP's GB10, set up as Strata publishes it, for card 242's receipt. One GPU
+# job a pack and level, as the Desk queues them (job start passes no env or args):
+#   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/strata-inkling/strata-sq20-1.sh
+# and likewise strata-sq20-4.sh, strata-sq20-64.sh, strata-sq10-1.sh, strata-sq10-4.sh, strata-sq10-64.sh; they set
+# STRATA_PACK (sq20 or sq10) and STRATA_STREAMS (1, 4 or 64). Unset, this script runs every pack and level.
+# Each pack, under the engine's own `--bench` and, behind Strata's server, under our HTTP bench
+# (tools/bench_concurrent.py), medians of 3. The receipt counts only if SQ-10 at 64 lands within 10% of the
+# 805.8 tok/s of Strata's pack card; the sq10-64 job's [gate] line says which.
 # The Desk stages v0.2.19's engine, Control and tokenizer in strata-inkling-0219/; the SQ-20 and SQ-10 packs
 # already live in strata-inkling-sq20/ and strata-inkling-pack/. The job has no network. The engine needs glibc 2.38
 # and GLIBCXX 3.4.32, supplied by the staged Arm GNU 14.3 toolchain.
+# Setup runs first and logs "build: N s"; only the measurement runs under `timeout 600` and logs "measure: N s".
 set -eu
-if [ -z "${STRATA_TIMEOUT:-}" ]; then
-    STRATA_TIMEOUT=1 timeout -k 5 590 sh "$0"
-    exit $?
-fi
 pilot=/assets/drama3-pilot
 out=/work/out/strata-inkling
 gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
@@ -22,8 +22,86 @@ engine=$(find "$release/inkling" -name strata-inkling -type f 2>/dev/null | head
 server=$(find "$release/control" -path '*/serve/server.py' -type f 2>/dev/null | head -1)
 sq20=$pilot/strata-inkling-sq20/Inkling-2-Mini-SQ-20.strata
 sq10=$pilot/strata-inkling-pack/Inkling-2-Mini-SQ-10.strata
-for file in "$engine" "$server" "$release/tokenizer.json" "$release/inkling_tokenizer.py" "$sq20" "$sq10" "$toolchain"; do
-    [ -n "$file" ] && [ -f "$file" ] || { echo "missing staged input: ${file:-engine or server in $release}" >&2; exit 1; }
+python=$(find "$release/control" -path '*/python/bin/python3' -type f 2>/dev/null | head -1)
+control=$(dirname "$(dirname "$server")")
+strata=/work/strata-inkling # Strata's server knows the engine by this file name
+packs=${STRATA_PACK:-sq20 sq10}
+levels=${STRATA_STREAMS:-1 4 64}
+
+bench() { # bench CELL PACK STREAMS [FLAG...]: one --bench run, its [bench] line to stdout and $out/CELL.txt
+    cell=$1 pack=$2 streams=$3
+    shift 3
+    "$strata" --bench --native "$pack" --parallel "$streams" "$@" >"$out/bench.log" 2>&1 &&
+        grep '^\[bench\]' "$out/bench.log" >>"$out/$cell.txt" || { tail -20 "$out/bench.log"; exit 1; }
+    tail -1 "$out/$cell.txt"
+}
+median() { sed 's/.*decode=\([0-9.]*\) tps.*/\1/' "$out/$1.txt" | sort -n | sed -n 2p; }
+summary() { # summary REPORT: one [http] line a cell; fails on a failed or unmeasured request
+    python3 - "$1" <<'EOF'
+import json, sys
+report = json.load(open(sys.argv[1]))
+for cell in report["cells"]:
+    prompt = [r["prompt_tokens"] for rep in cell["reps"] for r in rep["requests"] if r.get("prompt_tokens")] or [0]
+    print("[http] %s, %d streams: %.1f tok/s total, %.1f a stream (medians of 3); prompt %d-%d tokens, %d output "
+          "tokens asked, thinking %s, failed %d, unmeasured %d, timing_valid %s" % (
+              report["label"], cell["streams"], cell["aggregate_tps"], cell["per_stream_tps"], min(prompt),
+              max(prompt), report["tokens"], "/".join(cell["thinking_modes"]), cell["failed"], cell["unmeasured"],
+              cell["timing_valid"]))
+    if cell["failed"] or cell["unmeasured"]:
+        sys.exit(1)
+EOF
+}
+measure() { # every pack and level asked for, own bench then HTTP bench
+    for name in $packs; do
+        eval "pack=\$$name"
+        for streams in $levels; do
+            for rep in 1 2 3; do bench "$name-$streams" "$pack" "$streams"; done
+            echo "[own] $name at $streams streams: median $(median "$name-$streams") tok/s total"
+        done
+    done
+    # The pack card does not disclose engine version, flags, context or prompt content; the gate is empirical.
+    [ ! -f "$out/sq10-64.txt" ] || awk -v got="$(median sq10-64)" -v want="$published" 'BEGIN {
+        ratio = got / want
+        verdict = (ratio >= 0.9 && ratio <= 1.1) ? "counted" : "not counted, nothing in this receipt is a bar"
+        printf "[gate] SQ-10 at 64 streams, own bench: %.1f tok/s, %.0f%% of the published %.1f: %s\n", got,
+            100 * ratio, want, verdict
+    }'
+    for name in $packs; do
+        eval "pack=\$$name"
+        for streams in $levels; do
+            cat >"$out/$name.json" <<EOF
+{"exe": "$strata", "args": ["--native", "$pack", "--max-context", "32768"], "cwd": "/work", "arch": "inkling2_loop",
+ "tokenizer": "$out/tokenizer-$name", "model_name": "$name", "drafting": "dspark", "parallel": $streams}
+EOF
+            PYTHONPATH=$control:$control/tools "$python" "$server" --engine strata --config "$out/$name.json" \
+                --port 8242 --no-api-key >"$out/server-$name-$streams.log" 2>&1 &
+            pid=$!
+            until python3 -c 'import urllib.request as u; u.urlopen("http://127.0.0.1:8242/v1/models")' 2>/dev/null; do
+                kill -0 "$pid" 2>/dev/null || { tail -30 "$out/server-$name-$streams.log"; exit 1; }
+                sleep 2
+            done
+            for cell in same different; do
+                python3 tools/bench_concurrent.py http://127.0.0.1:8242 "$name" --levels "$streams" --tokens 128 \
+                    --reps 3 --temperatures 0 --prompts "$out/$cell.json" --label "$name $cell" \
+                    --output "$out/http-$name-$streams-$cell.json" >"$out/http.log"
+                summary "$out/http-$name-$streams-$cell.json"
+            done
+            kill "$pid"
+            wait "$pid" || :
+            grep -h -o 'kv_dtype=[a-z0-9]*' "$out/server-$name-$streams.log" | sort -u
+        done
+    done
+}
+if [ -n "${STRATA_MEASURE:-}" ]; then
+    measure
+    exit
+fi
+
+started=$(date +%s)
+for file in "$engine" "$server" "$python" "$release/tokenizer.json" "$release/inkling_tokenizer.py" "$sq20" "$sq10" \
+    "$toolchain"; do
+    [ -n "$file" ] && [ -f "$file" ] ||
+        { echo "missing staged input: ${file:-engine, server or Control Python in $release}" >&2; exit 1; }
 done
 echo "[inputs] engine=$engine control=$server sq20=$sq20 sq10=$sq10 tokenizer=$release/tokenizer.json"
 # the packs' digests as Strata pins them (terminal/strata_control/inkling_family.py at v0.2.19)
@@ -37,7 +115,6 @@ tar -C /work -xJf "$toolchain"
 loader=$(find "/work/$gcc" -name ld-linux-aarch64.so.1 | head -1)
 libc=$(dirname "$(find "/work/$gcc" -name libc.so.6 | head -1)")
 libstdcxx=$(dirname "$(find "/work/$gcc" -name libstdc++.so.6 | head -1)")
-strata=/work/strata-inkling # Strata's server knows the engine by this file name
 printf '#!/bin/sh\nexec "%s" --library-path "%s" "%s" "$@"\n' \
     "$loader" "$(dirname "$engine"):$libc:$libstdcxx:/usr/lib/aarch64-linux-gnu" "$engine" >"$strata"
 chmod +x "$strata"
@@ -72,32 +149,6 @@ cat <<'EOF'
   and names follow; each [http] line gives its cell's prompt tokens and thinking mode.
 EOF
 
-bench() { # bench CELL PACK STREAMS [FLAG...]: one --bench run, its [bench] line to stdout and $out/CELL.txt
-    cell=$1 pack=$2 streams=$3
-    shift 3
-    "$strata" --bench --native "$pack" --parallel "$streams" "$@" >"$out/bench.log" 2>&1 &&
-        grep '^\[bench\]' "$out/bench.log" >>"$out/$cell.txt" || { tail -20 "$out/bench.log"; exit 1; }
-    tail -1 "$out/$cell.txt"
-}
-median() { sed 's/.*decode=\([0-9.]*\) tps.*/\1/' "$out/$1.txt" | sort -n | sed -n 2p; }
-for name in sq20 sq10; do
-    eval "pack=\$$name"
-    for streams in 1 4 64; do
-        for rep in 1 2 3; do bench "$name-$streams" "$pack" "$streams"; done
-        echo "[own] $name at $streams streams: median $(median "$name-$streams") tok/s total"
-    done
-done
-# The pack card does not disclose engine version, flags, context or prompt content; the gate is empirical.
-
-awk -v got="$(median sq10-64)" -v want="$published" 'BEGIN {
-    ratio = got / want
-    printf "[gate] SQ-10 at 64 streams, own bench: %.1f tok/s, %.0f%% of the published %.1f: %s\n", got, 100 * ratio,
-        want, (ratio >= 0.9 && ratio <= 1.1) ? "counted" : "not counted, nothing in this receipt is a bar"
-}'
-
-control=$(dirname "$(dirname "$server")")
-python=$(find "$release/control" -path '*/python/bin/python3' -type f 2>/dev/null | head -1)
-[ -n "$python" ] || { echo "missing staged Control Python under $release/control" >&2; exit 1; }
 python3 - "$out" <<'EOF'
 import json, sys
 chat = [q for q in json.load(open("tools/bench_prompts.json")) if q["kind"] == "chat"]
@@ -106,22 +157,7 @@ for cell, prompts in (("same", chat[:1]), ("different", chat)):
 print("[settings] same prompt, %s: %r" % (chat[0]["name"], chat[0]["prompt"]))
 print("[settings] different prompts (%d): %s" % (len(chat), ", ".join("%s=%r" % (q["name"], q["prompt"]) for q in chat)))
 EOF
-summary() { # summary REPORT: one [http] line a cell; fails on a failed or unmeasured request
-    python3 - "$1" <<'EOF'
-import json, sys
-report = json.load(open(sys.argv[1]))
-for cell in report["cells"]:
-    prompt = [r["prompt_tokens"] for rep in cell["reps"] for r in rep["requests"] if r.get("prompt_tokens")] or [0]
-    print("[http] %s, %d streams: %.1f tok/s total, %.1f a stream (medians of 3); prompt %d-%d tokens, %d output "
-          "tokens asked, thinking %s, failed %d, unmeasured %d, timing_valid %s" % (
-              report["label"], cell["streams"], cell["aggregate_tps"], cell["per_stream_tps"], min(prompt),
-              max(prompt), report["tokens"], "/".join(cell["thinking_modes"]), cell["failed"], cell["unmeasured"],
-              cell["timing_valid"]))
-    if cell["failed"] or cell["unmeasured"]:
-        sys.exit(1)
-EOF
-}
-for name in sq20 sq10; do
+for name in $packs; do
     eval "pack=\$$name"
     # as Control's setup does where its Python reads no zstd: the engine exports the pack's template, and its
     # tokenizer when the pack embeds one; otherwise the pack repo's tokenizer.json is used
@@ -130,26 +166,10 @@ for name in sq20 sq10; do
     [ -f "$tokenizer" ] || tokenizer=$release/tokenizer.json
     "$python" "$release/inkling_tokenizer.py" --hf-json "$tokenizer" \
         --template "$out/export-$name/chat_template.jinja" --out "$out/tokenizer-$name"
-    for streams in 1 4 64; do
-        cat >"$out/$name.json" <<EOF
-{"exe": "$strata", "args": ["--native", "$pack", "--max-context", "32768"], "cwd": "/work", "arch": "inkling2_loop",
- "tokenizer": "$out/tokenizer-$name", "model_name": "$name", "drafting": "dspark", "parallel": $streams}
-EOF
-        PYTHONPATH=$control:$control/tools "$python" "$server" --engine strata --config "$out/$name.json" \
-            --port 8242 --no-api-key >"$out/server-$name-$streams.log" 2>&1 &
-        pid=$!
-        until python3 -c 'import urllib.request as u; u.urlopen("http://127.0.0.1:8242/v1/models")' 2>/dev/null; do
-            kill -0 "$pid" 2>/dev/null || { tail -30 "$out/server-$name-$streams.log"; exit 1; }
-            sleep 2
-        done
-        for cell in same different; do
-            python3 tools/bench_concurrent.py http://127.0.0.1:8242 "$name" --levels "$streams" --tokens 128 \
-                --reps 3 --temperatures 0 --prompts "$out/$cell.json" --label "$name $cell" \
-                --output "$out/http-$name-$streams-$cell.json" >"$out/http.log"
-            summary "$out/http-$name-$streams-$cell.json"
-        done
-        kill "$pid"
-        wait "$pid" || :
-        grep -h -o 'kv_dtype=[a-z0-9]*' "$out/server-$name-$streams.log" | sort -u
-    done
 done
+echo "build: $(($(date +%s) - started)) s"
+started=$(date +%s)
+status=0
+STRATA_MEASURE=1 timeout -k 5 600 sh "$0" || status=$?
+echo "measure: $(($(date +%s) - started)) s"
+exit "$status"
