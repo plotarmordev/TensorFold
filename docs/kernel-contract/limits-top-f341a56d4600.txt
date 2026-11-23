@@ -1,0 +1,201 @@
+RED  limits sm_121 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_121: 166 registers x 1024 threads need 172032, a block has 65536
+RECORD control: heavy at 1,024 threads: .usage = .{ .{ .regs = 168, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, }
+PASS kernel-contract-limits: every audited launch fits sm_80, sm_86, sm_89, sm_120 and sm_121, every control red
+kernel-contract-limits exit 0
+INFO limits fatbins: images built by nvcc 13.0, checked against nvcc 13.0's records
+RED  limits sm_80 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_80: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_86 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_86: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_89 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_89: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_120 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_120: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_121 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_121: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_80 control: heavy at 1,024 threads: 168 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_80: 168 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_86 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_86: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_89 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_89: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_120 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_120: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_121 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_121: 166 registers x 1024 threads need 172032, a block has 65536
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=2, KS=2, NS=4, FOLD=true]" at line 215
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=2, KS=2, NS=4, FOLD=true]" at line 215
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=4, NS=4, FOLD=true]" at line 215
+
+
+kernel-contract-fatbins
++- fatbins
+   +- install generated to fatbin/flashnext_attn.fatbin
+      +- run /usr/local/cuda/bin/nvcc (flashnext_attn.fatbin) w
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=false]" at line 483
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=true]" at line 512
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=false]" at line 483
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=true]" at line 512
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=false]" at line 483
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=true]" at line 512
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=false]" at line 483
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=true]" at line 512
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=false]" at line 483
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=true]" at line 512
+
+
+

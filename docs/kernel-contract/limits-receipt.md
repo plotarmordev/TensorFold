@@ -7,6 +7,11 @@ does not pass `-Xptxas -v`. The job's output is [`limits-top-57fa0d391dec.txt`](
 found 41 stale launches across 12 families, and its 10 planted control checks went RED. Each `RECORD` line was copied
 unedited into `zig/src/core/contract/measurements/main_130.zig`.
 
+Job `top-f341a56d4600` reran the same script on 24 Nov at `de0b46704e4c2f80f2c075fb8512365e7bba1f3d`, whose CUDA
+kernels, records and build match main's. Its output, [`limits-top-f341a56d4600.txt`](limits-top-f341a56d4600.txt),
+has no stale launch (`router tf_nemo_router_tiles` included, at its recorded 184 registers on sm_86), all 10 control
+checks RED and exit 0.
+
 Why each family moved:
 
 | Family | Launches | Reason |
