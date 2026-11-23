@@ -148,7 +148,7 @@ For multi-host changes, include matching build/checkpoint/precision checks and p
 ## Select checks by the change
 
 Use the exact Zig version in `.zig-version`; do not upgrade the toolchain as a porting shortcut.
-When several checkouts build on one machine, follow [Keep checkouts small](../../CONTRIBUTING.md#keep-checkouts-small): one shared `ZIG_LOCAL_CACHE_DIR`, and weights, GGUF files and job output outside the tree.
+For card checkouts, run `tools/zig/setup_cache.sh` before building; follow [Keep checkouts small](../../CONTRIBUTING.md#keep-checkouts-small) for shared cache and external weights, GGUF files and job output.
 The native-code baseline host checks are visible in [no-GPU CI](../../.github/workflows/no-gpu.yml):
 
 ```sh
