@@ -8,10 +8,7 @@
 - `glm_index_rope.cuh` uses CUDA's `__noinline__`, not GCC's `__attribute__((noinline))`, which nvcc
   with cl.exe rejected in `glm_glue` and `glm_index`; Windows fatbins pass `/wd4819`, the flag that
   showed that error under the code-page warnings burying it.
-- `docs/WINDOWS.md` records the N1X laptop's build, `tf-cuda-test` counts and both kernel-contract runs: the first
-  ended before its SUMMARY with 12 MiniMax-H3 FAIL lines, the rerun exits 1 at gate 5 when
-  `tfl2pf::segments_kernel<true>` is not in its module (704 FAIL lines beside the planted controls). It lists what
-  Inkling 2 Mini still needs there and the serve still to run; the earlier Qwen3.5-2B serve predates these fixes.
+- `docs/WINDOWS.md` records the N1X laptop's clean native build and eight passing `tf-cuda-test` suites. A prior kernel-contract run aborted at gate 5 on a missing LP64-mangled symbol; the contract now counts each missing image symbol as one limit failure and continues to its SUMMARY. Main's derived `h3m_sinusoid` bound is included by merge, but the updated contract and nvcc 13.5 resource records still need a fresh Windows receipt. Model serving and tok/s are outside this card.
 - The kernel contract's `h3p_attention` takes gate 4's 4-row cut of its 77-row shape (its keys are its rows; it
   refused fewer rows than K on every OS), and MLP128's N/A line names its sm_120-only tile, not the sm_90 cluster.
 - `h3p_scatter_add` and `h3p_splice`'s contract rows stay inside their buffer: gate 1's 5-row shape wrote past it

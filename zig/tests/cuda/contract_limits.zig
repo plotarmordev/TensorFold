@@ -99,7 +99,14 @@ pub fn live(gpu: check.Gpu, only: []const []const u8) !usize {
         defer mod.unload();
         const sym = try gpu.gpa.dupeSentinel(u8, r.launch.symbol, 0);
         defer gpu.gpa.free(sym);
-        const f = try mod.function(sym);
+        const f = mod.function(sym) catch |err| switch (err) {
+            error.NotFound => {
+                n += 1;
+                std.debug.print("FAIL limits live {s}: symbol {s} not in image {s}\n", .{ r.launch.name, r.launch.symbol, r.launch.image });
+                continue;
+            },
+            else => return err,
+        };
         const regs: u32 = @intCast(try f.attribute(.num_regs));
         const static: u32 = @intCast(try f.attribute(.shared_size_bytes));
         const most: u32 = @intCast(try f.attribute(.max_threads_per_block));

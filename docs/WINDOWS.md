@@ -274,21 +274,10 @@ The same laptop reran a clean checkout of `3332b7305` detached (2026-11-23), aga
   is -2.091842e-1 where float64 gives -2.091841e-1: 1.25 of its bound". `3332b7305` does not hold main's later
   bound for that kernel (`c6557d036`, the f32 angle's error), so that bound is untested on Windows.
 
-No model has replied from a clean committed build: an earlier serve from `09ea6dd6e` with the `__noinline__` change
-by hand (`mlx-community/Qwen3.5-2B-MLX-4bit`, 145.9 tok/s at the server) predates every fix above, and the
-checkpoint is gone from the laptop. Still to run there, from the `3332b7305` build, once its owner allows the
-download:
+The merged head includes main's `c6557d036` bound for `h3m_sinusoid`: it carries the f32 angle error through sin/cos
+rather than widening an output-relative bound to fit one sample. This still needs a Windows rerun.
 
-```bat
-git rev-parse HEAD
-zig-out\native\bin\tensorfold-native pull mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3
-zig-out\native\bin\tensorfold-native serve mlx-community/Qwen3.5-2B-MLX-4bit --name qwen2b --context 8192 --no-thinking
-curl -fsS http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" ^
-  -d "{\"model\":\"qwen2b\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in one sentence.\"}],\"max_tokens\":128,\"temperature\":0}"
-```
-
-Its receipt is the commit, the reply's text and `tensorfold.tokens_per_second`, and the server's `[tensorfold] done`
-line (`tok/s=`).
+No serve or model download is part of this card. Model serving and tok/s belong to card 202.
 
 Inkling 2 Mini is not served on any OS yet: `zig/src/families/inkling2` has kernels, ops and the host-side config,
 names, plan and prompt, which `tf-cuda-test`'s contracts use (they compile for `aarch64-windows-gnu`). For Windows it
@@ -304,17 +293,18 @@ needs:
    the cache and streams.
 5. Its CUDA sources in CUDA's qualifiers (`__noinline__`, `__forceinline__`), not GCC attributes: only a build with
    nvcc and cl.exe, such as this laptop's, rejects them.
-6. Kernel names that mean the same on Windows. Of the 759 mangled names the engine and its contract look up, 49
-   spell `long` or `unsigned long` (`l`, `m`): `tfl2pf::segments_kernel` and `dsv41_l2pace::paced_kernel`, which
-   GLM's and DeepSeek's L2 prefetch load, and DeepSeek's `x3ld`, `x3pf`, `dense3`, `exl3_linear` and `exl3x`
-   kernels. Their sources say `int64_t`, which is `long long` under cl.exe, so the name nvcc gives them there
-   probably differs; that is not confirmed from the module's symbols. None is Inkling 2's, but the contract cannot
-   reach its SUMMARY on Windows until the first of them resolves.
-7. Gate 5 records for sm_121 on Windows. The 470 `limits live` lines are the laptop's nvcc and cl.exe against
-   figures recorded on GB10 Linux. Fifteen are MiniMax-H3's (`h3_norm`, `h3_swiglu`, `h3_attention`, `h3_topk`,
-   `h3_quantize`, `h3_norm_quant`, `h3_norm_quant_fp4`, `h3_swiglu_rows`, `h3d_rms_norm`, `h3d_layer_norm`,
-   `h3d_heads`, `h3p_norm`, `h3p_attention`, `h3m_sinusoid`, `h3m_project`): registers off by 1 to 4, static shared
-   bytes recorded 128 where the laptop's image has 1024 (`h3_norm`, `h3_quantize`, `h3_norm_quant`,
-   `h3_norm_quant_fp4`), and `h3_attention` recorded 0 where it has 49,152.
+6. Portable kernel names. The first missing symbol, `tfl2pf::segments_kernel<true>`
+   (`_ZN6tfl2pf15segments_kernelILb1EEEvPKlij`), is compiled from `const int64_t*`: LP64 encodes `long` as `l`, while
+   Windows LLP64 encodes its `long long` as `x`. The affected `l2pf`, `l2pace`, DeepSeek `x3ld`/`x3pf`,
+   `tf_exl3x::grouped_kernel` and two unpack-kernel families need portable names before their Windows serving paths
+   qualify. Confirm the actual Windows module symbols from its fatbin. Gate 5 now counts each missing function as one
+   FAIL and continues to SUMMARY instead of aborting at the first lookup.
+7. Gate 5 records for sm_121 on Windows. The 470 `limits live` lines compare the laptop's nvcc 13.5/cl.exe images
+   against the newest recorded nvcc 13.3 set. Fifteen were MiniMax-H3's in the pre-merge image (`h3_norm`, `h3_swiglu`,
+   `h3_attention`, `h3_topk`, `h3_quantize`, `h3_norm_quant`, `h3_norm_quant_fp4`, `h3_swiglu_rows`, `h3d_rms_norm`,
+   `h3d_layer_norm`, `h3d_heads`, `h3p_norm`, `h3p_attention`, `h3m_sinusoid`, `h3m_project`). Main now records 1024
+   static shared bytes for `h3_norm`, `h3_quantize`, `h3_norm_quant`, `h3_norm_quant_fp4`; remaining register/shared
+   deltas require exact live figures from the next Windows run, keyed to that nvcc/host target. Do not copy older Linux
+   figures or guess missing values.
 8. The 231 nonfinite, shapes, repeat and sums lines read by family from the laptop's log, and `h3m_sinusoid` rerun
    with `c6557d036`'s bound: until then no family's kernels are qualified on Windows by this contract.
