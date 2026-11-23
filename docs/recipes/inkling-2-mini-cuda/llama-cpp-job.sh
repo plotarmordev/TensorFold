@@ -2,26 +2,37 @@
 # llama.cpp b12628 serving Inkling 2 Mini (ggml-org IQ4_NL) on TOP's GB10 with the harness and settings of
 # TensorFold 188's run-script.sh, so its 1- and 4-stream numbers sit next to ours:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/llama-cpp-job.sh
-# The job has no network: llama-cpp-stage.sh put the release binaries and the GGUF in the pilot folder. The server
-# runs the mainline recipe (all layers on the GPU, 4 slots of 8192 tokens, the GGUF's chat template); llama-bench
-# adds its own tg128/pp512 line. Logs and receipts land in /work/out/inkling2-llama-cpp.
+# The job has no network: llama-cpp-stage.sh put the release binaries and the GGUF in the pilot folder. The release is
+# built on glibc 2.38 and the job image's is older, so the binaries run under the loader and glibc of the Arm GNU 14.3
+# sysroot that ../minimax-h3-cuda/toolchain-stage.sh staged; the host is unchanged. The server runs the mainline recipe
+# (all layers on the GPU, 4 slots of 8192 tokens, the GGUF's chat template); llama-bench adds its own tg128/pp512 line.
+# Logs and receipts land in /work/out/inkling2-llama-cpp.
 set -eu
 tag=b12628
-stage=/assets/drama3-pilot/llama-cpp-$tag
+pilot=/assets/drama3-pilot
+stage=$pilot/llama-cpp-$tag
+gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
 gguf=$stage/Inkling-2-Mini-IQ4_NL.gguf
 out=/work/out/inkling2-llama-cpp
 [ -f "$gguf" ] || { echo "missing $gguf: run llama-cpp-stage.sh" >&2; exit 1; }
 (cd "$stage" && sha256sum -c --quiet SHA256SUMS)
+echo "7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $pilot/cuda-build-toolchain/$gcc.tar.xz" | sha256sum -c --quiet
 rm -rf "$out" /work/llama-cpp
 mkdir -p "$out" /work/llama-cpp
 for archive in "$stage"/*.tar.gz; do tar -C /work/llama-cpp -xzf "$archive"; done
+tar -C /work/llama-cpp -xJf "$pilot/cuda-build-toolchain/$gcc.tar.xz"
 bin=$(dirname "$(find /work/llama-cpp -name llama-server -type f | head -1)")
-export LD_LIBRARY_PATH=$bin:$(dirname "$(find /work/llama-cpp -name 'libcudart.so*' | head -1)")
+ld=$(find /work/llama-cpp/$gcc -name ld-linux-aarch64.so.1 | head -1)
+libs=$bin:$(dirname "$(find /work/llama-cpp -name 'libcudart.so*' | head -1)")
+for lib in libc.so.6 libstdc++.so.6; do libs=$libs:$(dirname "$(find /work/llama-cpp/$gcc -name $lib | head -1)"); done
+libs=$libs:$(dirname "$(ldconfig -p | awk '/libcuda.so.1 /{print $NF; exit}')")
 nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
-"$bin/llama-bench" -m "$gguf" -ngl 99 -fa 1 -p 512 -n 128 -r 3 >"$out/llama-bench.txt" 2>&1 || { cat "$out/llama-bench.txt" >&2; exit 1; }
+# ggml loads its backends from the executable's or the working directory; under an explicit loader only the latter holds
+(cd "$bin" && "$ld" --library-path "$libs" ./llama-bench -m "$gguf" -ngl 99 -fa 1 -p 512 -n 128 -r 3) \
+    >"$out/llama-bench.txt" 2>&1 || { cat "$out/llama-bench.txt" >&2; exit 1; }
 cat "$out/llama-bench.txt"
-"$bin/llama-server" -m "$gguf" -ngl 99 -c 32768 -np 4 --jinja --host 127.0.0.1 --port 8189 \
-    --alias inkling-2-mini >"$out/server.log" 2>&1 &
+(cd "$bin" && exec "$ld" --library-path "$libs" ./llama-server -m "$gguf" -ngl 99 -c 32768 -np 4 --jinja \
+    --host 127.0.0.1 --port 8189 --alias inkling-2-mini) >"$out/server.log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null || :' EXIT
 python3 - <<'EOF'
