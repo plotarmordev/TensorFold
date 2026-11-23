@@ -1,5 +1,8 @@
 # TensorFold builds cleanly with the Windows CUDA compiler
 
 - `glm_index_rope.cuh` marks the indexer rope's `turn` with CUDA's portable `__noinline__` instead of
-  GCC's `__attribute__((noinline))`, which MSVC-hosted nvcc rejects; `tf-muse` and the CUDA runners
-  now build on Windows without local patches. Linux codegen is unchanged.
+  GCC's `__attribute__((noinline))`, which MSVC-hosted nvcc rejects. Linux codegen is unchanged.
+- The Windows CUDA install compiles: DXGI's vtable entries are cast with `@alignCast`, the speech lock sets and
+  checks mode bits only on POSIX, and `tf-qwen3-asr` times with `std.Io`'s clock instead of `clock_gettime`.
+- `tf-muse` builds on Windows: one rank and `MUSE_PAIR` run there, while `TF_TP_WORLD` and `follow` refuse with
+  `MuseSparkTpPlatform`, as the native server already does, since fabric/tp's sockets and verbs are POSIX.

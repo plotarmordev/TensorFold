@@ -8,6 +8,8 @@ const pair = @import("pair.zig");
 const draft_main = @import("draft_main.zig");
 const prompt_main = @import("prompt_main.zig");
 const Model = muse.forward.Model;
+/// Two ranks meet over fabric/tp, whose sockets, mmap and verbs are POSIX: on Windows tf-muse runs one rank or MUSE_PAIR.
+const fabric = @import("builtin").os.tag != .windows;
 
 /// A developer knob's whole number (`std.c.getenv("MUSE_...")` at the call, so the name stays a literal).
 fn env(raw: ?[*:0]const u8, default: usize) usize {
@@ -118,8 +120,8 @@ pub fn main(init: std.process.Init) !u8 {
     const kn: Knobs = .{ .rows_per = rows_per, .slots = slots, .context = context, .n_greedy = n_greedy, .capture = capture, .teacher = teacher, .graphs = graphs, .max_layers = max_layers, .mode = mode, .dk = .{ .context = env(std.c.getenv("MUSE_CONTEXT"), 8192), .n_greedy = env(std.c.getenv("MUSE_GREEDY"), 64), .graphs = env(std.c.getenv("MUSE_GRAPHS"), 1) != 0 and env(std.c.getenv("MUSE_PAIR"), 0) == 0, .max_layers = max_layers, .rows_per = env(std.c.getenv("MUSE_ROWS"), 32), .dump_taps = env(std.c.getenv("MUSE_DUMP_TAPS"), 0) != 0 }, .prompt = prompt_check };
     const pair_mode = env(std.c.getenv("MUSE_PAIR"), 0) != 0; // both ranks of TP=2 in this process on one GPU (an in-process gather)
     const tp_set = @import("sys").environment.Process.get(.{}, "TF_TP_WORLD") != null; // unset: one rank (tp's default is two)
-    const tpc: ?tp.Config = if (!pair_mode and tp_set) try tp.Config.fromEnv() else null;
-    const world: usize = if (pair_mode) 2 else if (tpc) |c| c.world else 1;
+    if (!fabric and !pair_mode and tp_set) return error.MuseSparkTpPlatform;
+    const tpc: ?tp.Config = if (fabric and !pair_mode and tp_set) try tp.Config.fromEnv() else null;
     const rank: usize = if (tpc) |c| c.rank else 0;
     var driver = try cuda.Driver.open();
     defer driver.close();
@@ -142,16 +144,22 @@ pub fn main(init: std.process.Init) !u8 {
         std.debug.print("DONE m1 pair\n", .{});
         return 0;
     }
+    if (fabric) if (tpc) |c| if (c.world > 1) return ranks(gpa, ar, io, &driver, args, c, kn);
+    try runRank(gpa, ar, io, &driver, args, rank, 1, null, kn);
+    return 0;
+}
+
+/// This process's rank of a TP session over the fabric.
+fn ranks(gpa: std.mem.Allocator, ar: std.mem.Allocator, io: std.Io, driver: *const cuda.Driver, args: []const [:0]const u8, cfg: tp.Config, kn: Knobs) !u8 {
     var session: tp.Session = undefined;
-    if (world > 1) try session.open(&driver, tpc.?, @import("tp_kernel").mailbox);
+    try session.open(driver, cfg, @import("tp_kernel").mailbox);
     // a failed rank only closes: its hang-up fails the peer fast (exit 70) instead of leaving it in a collective
-    defer if (world > 1) session.close();
-    try runRank(gpa, ar, io, &driver, args, rank, world, if (world > 1) session.comm() else null, kn);
-    if (world > 1) { // the stop: rank 0 (dumps written) announces it, then both meet, so neither close fails the other
-        if (rank == 0) session.announceStop();
-        try session.comm().barrier();
-        std.debug.print("STOPPED rank {d}: both ranks done\n", .{rank});
-    }
+    defer session.close();
+    try runRank(gpa, ar, io, driver, args, cfg.rank, cfg.world, session.comm(), kn);
+    // the stop: rank 0 (dumps written) announces it, then both meet, so neither close fails the other
+    if (cfg.rank == 0) session.announceStop();
+    try session.comm().barrier();
+    std.debug.print("STOPPED rank {d}: both ranks done\n", .{cfg.rank});
     return 0;
 }
 
@@ -282,6 +290,7 @@ fn runRank(gpa: std.mem.Allocator, ar: std.mem.Allocator, io: std.Io, driver: *c
 
 /// Rank 1 behind the native server: the model rank 0 announces (hello), then every step rank 0 sends, until it stops.
 fn follow(gpa: std.mem.Allocator, io: std.Io, model_dir: []const u8, drafter: ?[]const u8) !u8 {
+    if (comptime !fabric) return error.MuseSparkTpPlatform;
     const cfg = try tp.Config.fromEnv();
     if (cfg.world < 2 or cfg.rank == 0) return error.FollowNeedsRankOne;
     var driver = try cuda.Driver.open();
