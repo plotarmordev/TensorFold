@@ -1,9 +1,11 @@
 """List a card's scratch left loose in /tmp; exit 1 when there is any (AGENTS.md, "Keep scratch in the worktree").
 
-A stray is an entry of this user up to three folders deep in /tmp, changed since the card's worktree was made, whose
-name carries the card number (the worktree folder's leading digits, after any `review-`) as a whole number:
-`tf245-gpu.log`, `some-helper-dir/review-245-a.log`. Output with no card number in its name is caught at the source:
-a tool line naming a /tmp path other than the shared locks and stop files is reported too, since TMPDIR cannot move it.
+A stray is an entry of this user up to three folders deep in /tmp, created or changed since the card's worktree was made
+(ctime too, so a copy keeping older timestamps counts), whose name carries the card number (the worktree folder's
+leading digits, after any `review-`) as a whole number not run into letters after it: `tf245-gpu.log`,
+`some-helper-dir/review-245-a.log`, not `uuid-af245beef.log`. Live `bot-scratch copy` checkouts are skipped: that tool
+removes them when the step ends. Output with no card number in its name is caught at the source: a tool line naming
+a /tmp path other than the shared locks and stop files is reported too, since TMPDIR cannot move it.
 Run it from the worktree after the step and after every helper's task, since helpers share the user and the /tmp.
 """
 import os
@@ -14,6 +16,7 @@ from pathlib import Path
 
 TMP = "/tmp"
 DEPTH = 3
+BOT_SCRATCH = "bot-scratch"
 # Shared locks and stop files that live in /tmp on purpose.
 SHARED = {"/tmp/arc_stop", "/tmp/b70.lock", "/tmp/tensorfold-model.lock", "/tmp/tensorfold-speech.lock"}
 TMP_PATH = re.compile(r"/tmp/[A-Za-z0-9_.-]+")  # git grep -E knows no \w
@@ -21,15 +24,15 @@ TMP_PATH = re.compile(r"/tmp/[A-Za-z0-9_.-]+")  # git grep -E knows no \w
 
 def strays(tmp, card, since, uid, depth=DEPTH):
     """Entries under tmp named for card, owned by uid and changed at or after since; a match is not searched inside."""
-    pat = re.compile(rf"(?<!\d){card}(?!\d)")
+    pat = re.compile(rf"(?<!\d){card}(?![0-9A-Za-z])")
     found = []
     for e in os.scandir(tmp):
         try:
             st = e.stat(follow_symlinks=False)
-            if st.st_uid != uid:
+            if st.st_uid != uid or e.name == BOT_SCRATCH:
                 continue
             if pat.search(e.name):
-                if st.st_mtime >= since:
+                if max(st.st_mtime, st.st_ctime) >= since:
                     found.append(Path(e.path))
             elif depth > 1 and e.is_dir(follow_symlinks=False):
                 found += strays(e.path, card, since, uid, depth - 1)

@@ -14,7 +14,7 @@ Run tools that make temporary files with `TMPDIR="$S"` in front of the command (
 Make a second checkout with `git worktree add --detach "$S/ab-base" REF` and remove it with `git worktree remove --force "$S/ab-base"` when the step ends.
 A swarm brief that prescribes `bot-scratch copy` wins over this line: that tool keeps its copies in `/tmp/bot-scratch`, removes them when the step ends, and `bot-scratch clean` runs last; their outputs still go in `$S`.
 Every brief to a delegated helper (`task` subagent) carries this section and the value of `$S`: helpers do not read this file.
-After each helper's task and at the end of the step, run `python3 tools/scratch_check.py` from the worktree; it exits 1 while `/tmp` holds an entry named for this card (up to three folders deep) made since its worktree was, or a file under `tools/` names a `/tmp` path other than the shared locks.
+After each helper's task and at the end of the step, run `python3 tools/scratch_check.py` from the worktree; it exits 1 while `/tmp` holds an entry named for this card (up to three folders deep, live `/tmp/bot-scratch` copies aside) created or changed since its worktree was made, or a file under `tools/` names a `/tmp` path other than the shared locks.
 The shared lock files (`/tmp/tensorfold-model.lock`, `/tmp/tensorfold-speech.lock`) stay where they are.
 
 ## Ask the human before installing or publishing
