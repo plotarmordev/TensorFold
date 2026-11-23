@@ -40,7 +40,9 @@ chmod +x "$strata"
 mkdir -p "$out"
 
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
-"$strata" --version
+version=$("$strata" --version)
+echo "$version"
+[ "$version" = "strata-inkling 0.1.65" ] || { echo "not Strata v0.2.19's engine: $engine" >&2; exit 1; }
 cat <<'EOF'
 [settings] Strata v0.2.19 is strata-inkling 0.1.65 (https://github.com/Niko1221/Strata/releases/tag/v0.2.19); its
   published bench flags, from the engine's --help (engine/src/inkling2/ink_main.cpp at that tag):
