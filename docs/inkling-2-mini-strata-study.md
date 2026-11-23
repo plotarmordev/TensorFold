@@ -72,9 +72,9 @@ TensorFold: the config parses Mini's MTP head and `names.zig` maps every tensor 
 
 Would touch: a new `zig/src/families/inkling2/dspark.zig` behind `zig/src/core/lanes/drafter.zig`, and a new
 `zig/kernels/cuda/inkling2/dspark.cu`, ported from the Metal kernels.
-Gain: once at the roof, Strata's tree turns a ≈50 tok/s plain ceiling into 74.3 on the smaller pack. On the same
-bytes, expect 1.5–2× solo [INFERENCE: Strata publishes no drafting-off GB10 row, so its acceptance per sweep is
-unmeasured]. Before the roof it buys little, because each verify sweep costs what a token costs now.
+Gain: measured on TOP at most 1.36× solo, together with the last third of our roof: Strata's 74.4 is 90% of its
+≈83 tok/s plain roof with the tree on, our 32.5 is 66% of ours without one (section below). No multi-stream gain:
+Strata's tree runs for one greedy stream only.
 
 ### 2. Zero-logits device-to-host — partial
 
@@ -148,30 +148,38 @@ TensorFold: lanes and paged KV are general (`zig/src/core/lane_host.zig`, `zig/s
 `--parallel 4` with batched rows; it has not run at 64.
 
 Would touch: 188's `mini_backend.zig` lane admission and `kv_pool` attach.
-Gain: rides on levers 3 and 5. Strata's c=64 runs at 15× its own SQ-10 solo rate on GB10.
+Gain: rides on levers 3 and 5. On TOP, Strata's SQ-10 does 382.5 tok/s at 64 streams, 5.1× its solo rate (below).
 
-## Strata's engine on TOP, next to ours: staged, not yet measured
+## Strata's engine on TOP, next to ours: measured
 
-The run uses Strata's own linux-aarch64 build as shipped, with no host changes. `strata-inkling` 0.1.66 bundles
-`libcublas`, `libcublasLt`, `libcudart` and `libgomp` and needs only the driver (≥ 580.65) and glibc.
+Strata's own linux-aarch64 build ran as shipped, with no host changes, through `swarm gpu-run` (job
+`top-edfe387b00e5`, this branch at `f88916b9e`).
 
-- [`recipes/strata-inkling/strata-stage.sh`](recipes/strata-inkling/strata-stage.sh): the Desk fetches the engine
-  tarball (sha256 `a01f0e1f…`, from the release's `SHA256SUMS.txt`) and the SQ-10 pack (sha256 `ac4d452a…`) and puts
-  them in TOP's pilot folder as `strata-inkling-0.1.66/`. The GPU job has no network, and `top-menu fetch hf` only
-  copies models already on a Spark.
-- [`recipes/strata-inkling/strata-job.sh`](recipes/strata-inkling/strata-job.sh): through `swarm gpu-run`, the
-  engine's `--bench` at 1, 4 and 64 streams with 256 generated tokens, then `--selfcheck`.
+- The Desk staged the engine tarball (sha256 `a01f0e1f…`, from the release's `SHA256SUMS.txt`) and the SQ-10 pack
+  (sha256 `ac4d452a…`) in TOP's pilot folder `strata-inkling-pack/`, as
+  [`recipes/strata-inkling/strata-stage.sh`](recipes/strata-inkling/strata-stage.sh) does.
+- [`recipes/strata-inkling/strata-job.sh`](recipes/strata-inkling/strata-job.sh) runs the engine's `--bench` at 1, 4
+  and 64 streams (64-token prompt, 256 generated tokens) and `--selfcheck` (PASS, `sm_121`, `sm120_tc=1`). The binary
+  needs glibc 2.38, newer than the job image's, so it runs under the loader and libraries of the Arm GNU 14.3
+  toolchain already staged for `cuda-build.sh`, unpacked in `/work`.
 
-Job `top-1bd4b665a3d1` (this branch at `474b16da5`) reached the GPU and stopped at its first check: the SQ-10 pack is
-not in TOP's pilot folder yet. Staging it from a Mac on this network runs at 2.6–3 MB/s or less, over an hour for
-the 10.47 GB pack before the upload to TOP. The Strata rows below wait for `strata-stage.sh`, then a re-run of the
-same job.
+| GB10 decode, tok/s | 1 stream | 4 streams total | 64 streams total | Source |
+|---|---|---|---|---|
+| Strata 0.1.66, SQ-10 pack, DSpark on | **74.4** | **97.1** (24.3 a stream) | 382.5 | job `top-edfe387b00e5` |
+| TensorFold, checkpoint as stored, no drafting | **32.5** | **117.7** (29.6 a stream) | not run | job `top-29fb623d4dee`, card 188 at `54bf2c7f0` |
+| TensorFold, #4387's loop engine | 5.7 | 9.4 | not run | job `top-0759755a0515`, card 188 at `2301ab379` |
 
-| GB10, 1 stream / 4 streams total | Source |
-|---|---|
-| TensorFold 32.5 / 117.7 tok/s | job `top-29fb623d4dee`, card 188 at `54bf2c7f0` (#4441's graphed engine) |
-| TensorFold 5.7 / 9.4 tok/s | job `top-0759755a0515`, card 188 at `2301ab379` (#4387's loop engine) |
-| Strata SQ-10 — / — | `strata-job.sh`, pending staging |
+The two benches differ: Strata's `--bench` seeds every slot with the same prompt; ours is `tools/bench_concurrent.py`
+over HTTP with code and chat prompts. The gap, lever by lever:
+
+- **Solo, Strata leads 2.29×.** Its 74.4 reproduces the published 74.3. SQ-10 reads ≈3.29 GB a token against our
+  5.55 GB, so the smaller pack (lever 4) accounts for 1.69× of the gap. The rest, 1.36×, is drafting (lever 1) above
+  Strata's ≈83 tok/s plain roof net of our 66% of ours [INFERENCE: no `--draft off` run separates them].
+- **Four streams, TensorFold leads 1.21×.** Strata's DSpark fast path is one greedy stream only; at 4 it falls back
+  to plain batched decode and loses 4× per stream, where 188's graphed batch loses 9%. Graphs and batching
+  (levers 5 and 6) are where TensorFold is already ahead.
+- **64 streams:** Strata's SQ-10 reaches 382.5, not the published 1,145, which is the SQ-20 pack's row. TensorFold
+  has not run 64 Mini streams.
 
 ## Windows on ARM: nobody ships Inkling 2 Mini fast there
 
@@ -192,17 +200,16 @@ same job.
 
 For 207 (GB10):
 
-1. **CUDA DSpark beam tree for Mini.** Port 188's Metal DSpark to CUDA with W ≤ 4, adaptive tree nodes, one verify
-   sweep and on-device commit, under the conformance ledger's tree = chain = plain rule. Touches new
-   `zig/src/families/inkling2/dspark.zig` and `zig/kernels/cuda/inkling2/dspark.cu`. Gain: 1.5–2× solo; this is the
-   lever that puts Strata above its own plain roof.
-2. **Native fp4 grouped experts at M ≥ 24, and 64 streams.** Put Mini's NVFP4 experts on `mma4.cuh`'s `mxf4nvf4`
-   with device-built expert tiles, admit 64 lanes and profile the 30.7 ms step against the ≈20 ms floor. Touches
-   `zig/kernels/cuda/inkling2/experts.cu`, `mini_backend.zig`. Gain: c=64 throughput (Strata ≈25× its solo rate) and
-   up to 1.5× solo from the rest of the roof.
-3. **A quantised trunk (a TensorFold pack).** Pack the bf16 attention to 8-bit rows and the experts below 4 bits,
+1. **A quantised trunk (a TensorFold pack).** Pack the bf16 attention to 8-bit rows and the experts below 4 bits,
    gated on top-1/KL against the checkpoint. Touches `mini_model.zig` and `zig/src/cuda/nvfp4.zig`. Gain: a roof from
-   49 to ≈83 tok/s (1.7×).
+   49 to ≈83 tok/s (the bytes ratio, 1.69× of the measured 2.29× solo gap), at every stream count.
+2. **CUDA DSpark beam tree for Mini.** Port 188's Metal DSpark to CUDA with W ≤ 4, adaptive tree nodes, one verify
+   sweep and on-device commit, under the conformance ledger's tree = chain = plain rule. Touches new
+   `zig/src/families/inkling2/dspark.zig` and `zig/kernels/cuda/inkling2/dspark.cu`. Gain: up to the remaining 1.36×
+   solo, shared with profiling the 30.7 ms step down to the ≈20 ms floor; nothing at 4 streams.
+3. **Native fp4 grouped experts at M ≥ 24, and 64 streams.** Put Mini's NVFP4 experts on `mma4.cuh`'s `mxf4nvf4`
+   with device-built expert tiles and admit 64 lanes. Touches `zig/kernels/cuda/inkling2/experts.cu`,
+   `mini_backend.zig`. Gain: c=64 throughput, where Strata's SQ-10 reaches 382.5 and ours is unmeasured.
 
 For 202 (RTX Spark laptop, Windows-native, N1X-tuned):
 
