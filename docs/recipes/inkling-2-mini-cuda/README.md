@@ -14,21 +14,20 @@ checkpoint's headers) over 273 GB/s.
 
 ## Receipt: TOP's GB10, one capped run
 
-Job `top-0759755a0515` at `2301ab379`, `--context 8192`, greedy, 256 tokens, 3 reps, medians. This is one run with
+Job `top-16bffb6ca094` at `9f542e6fa`, `--context 8192`, greedy, 256 tokens, 3 reps, medians. This is one run with
 these settings, not a benchmark.
 
 | Streams | First token (code / chat) | Prompt (code) | Decode a stream | Total decode | Failed |
 |---|---|---|---|---|---|
-| 1 | 0.36 s / 0.18 s | 41.9 tok/s | 5.7 tok/s | 5.7 tok/s | 0 |
-| 4 | 0.90 s / 0.45 s | 17.3 tok/s | 2.3 tok/s | 9.4 tok/s (1.65x) | 0 |
+| 1 | 0.077 s / 0.038 s | 195.9 tok/s | 32.5 tok/s | 32.5 tok/s | 0 |
+| 4 | 0.189 s / 0.092 s | 82.6 tok/s | 29.6 tok/s | 117.8 tok/s (3.62x) | 0 |
 
-Memory (`/proc/meminfo`, host used): 10.7 GiB before the server, 35.3 GiB with Mini loaded with 4 lanes, and the same
-after both levels. GPU (`nvidia-smi`): 23.9 GiB held by the server.
+Memory (`/proc/meminfo`, host used): 10.9 GiB before the server, 31.6 GiB with Mini loaded for 4 streams, and the
+same after both levels. GPU (`nvidia-smi`): 20.0 GiB held by the server.
 
 Bandwidth limit: a decoded token reads about 5.55 GB of weights (core layers 3 passes, 8 of 128 experts a visit, the
-whole unembedding), so 273 GB/s caps one stream near 49 tok/s; 5.7 tok/s is 12% of it. The gap is not bandwidth:
-the 175 ms a token is consistent with roughly 1,350 small launches and one-row matrix kernels per token, unbatched
-across lanes [INFERENCE, not profiled]. CUDA graphs per lane and batched expert rows across lanes are what is missing.
+whole unembedding), so 273 GB/s caps one stream near 49 tok/s; 32.5 tok/s is 66% of it. #4387's own engine, removed
+here, gave 5.7 tok/s at one stream and 9.4 at four on the same GB10 (job `top-0759755a0515`).
 
 ## RTX Spark (N1X): what differs and what must change
 
