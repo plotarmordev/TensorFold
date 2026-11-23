@@ -16,12 +16,20 @@ gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
 toolchain=/assets/drama3-pilot/cuda-build-toolchain/$gcc.tar.xz
 [ -f "$pack" ] && [ -n "$engine" ] || { echo "missing pack or engine under $dir" >&2; exit 1; }
 echo "ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934  $pack" | sha256sum -c --quiet
+engine_dir=$(dirname "$engine")
+{
+    echo "e96a5ce6c49d45d6355e0fccd881e094d36b80ea8722e0d8307388ebd1746c6d  $engine"
+    echo "930418840b747413584867cb7167dd5911dcf4184135589e0334527e9abbac9f  $engine_dir/libcublasLt.so.13"
+    echo "4e346a7b60a01552bd9bf4bbc6c862e11eb851559c3da3572293345de6aaed75  $engine_dir/libcublas.so.13"
+    echo "7bdba2b5b08cbdc85203c41cc94598adedb1bcfea7cb574ca693ac73599e4e63  $engine_dir/libcudart.so.13"
+    echo "33c8bcb7d33228fe5101bfeb201bcaff4563d4ecf09497229b9deba522ebaf3d  $engine_dir/libgomp.so.1"
+} | sha256sum -c --quiet
 echo "7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $toolchain" | sha256sum -c --quiet
 tar -C /work -xJf "$toolchain"
 loader=$(find "/work/$gcc" -name ld-linux-aarch64.so.1 | head -1)
 libc=$(dirname "$(find "/work/$gcc" -name libc.so.6 | head -1)")
 libstdcxx=$(dirname "$(find "/work/$gcc" -name libstdc++.so.6 | head -1)")
-libs=$(dirname "$engine"):$libc:$libstdcxx:/usr/lib/aarch64-linux-gnu
+libs=$engine_dir:$libc:$libstdcxx:/usr/lib/aarch64-linux-gnu
 strata() { "$loader" --library-path "$libs" "$engine" "$@"; }
 mkdir -p "$out"
 nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
