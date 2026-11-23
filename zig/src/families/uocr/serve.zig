@@ -242,11 +242,12 @@ fn fakeStream(a: std.mem.Allocator, probe: *Probe, ids: []const u32) !lanes.Stre
     return lanes.Stream.init(a, .{ .id = "cancel-test", .prompt = ids, .max_new = 4, .cancel_check = .{ .ptr = probe, .check = Probe.cancelled } });
 }
 
+fn fakeDecoder(a: std.mem.Allocator, cap: usize, rows: usize) decoder_mod.Decoder {
+    return .{ .gpa = a, .device = undefined, .queue = undefined, .k = undefined, .w = undefined, .cap = cap, .rows = rows };
+}
+
 fn fakeModel(a: std.mem.Allocator) Model {
-    var m: Model = std.mem.zeroes(Model);
-    m.gpa = a;
-    m.decoder.cap = cfg.max_context;
-    return m;
+    return .{ .gpa = a, .io = undefined, .device = undefined, .queue = undefined, .weights = undefined, .kernels = undefined, .encoder = undefined, .decoder = fakeDecoder(a, cfg.max_context, 0) };
 }
 
 test "uocr: a request cancelled before image encoding stops before the tower" {
@@ -285,9 +286,7 @@ test "uocr: a request cancelled before the first prefill chunk writes no cache" 
     var p = try prompt_mod.positions(a, try a.dupe(u32, &ids));
     defer p.deinit(a);
     var rows: [H]u16 = undefined;
-    var d: decoder_mod.Decoder = std.mem.zeroes(decoder_mod.Decoder);
-    d.cap = 8;
-    d.rows = 2;
+    var d = fakeDecoder(a, 8, 2);
     try std.testing.expectError(error.Cancelled, d.prefill(p, &rows, &s));
     try std.testing.expectEqual(@as(usize, 0), d.len); // nothing committed
 }
