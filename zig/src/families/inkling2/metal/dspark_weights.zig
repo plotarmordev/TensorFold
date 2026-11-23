@@ -5,6 +5,7 @@ const ck = @import("../../../core/checkpoint_metal.zig");
 const cfg = @import("../config.zig");
 const Model = @import("model.zig").Model;
 const fold = @import("dspark_fold.zig");
+const head = @import("dspark_head.zig");
 
 pub const hidden = 2304;
 pub const query = 3072;
@@ -48,10 +49,13 @@ pub const Loaded = struct {
     checkpoint: ck.Checkpoint,
     weights: Weights,
     dflare: mtl.Buffer, // four H-wide rows: three layers, then the Markov head
-    phi: mtl.Buffer, // [201024,256] BF16, folded once in binary64
+    phi: head.Packed, // [201024,256], folded once in binary64, then packed to the head's precision
     beta: mtl.Buffer, // [201024] BF16
+    /// The target unembedding's private packed copy; null at BF16, where the head reads the target's own.
+    unembed: ?head.Packed,
 
     pub fn deinit(l: *Loaded) void {
+        if (l.unembed) |*u| u.deinit();
         l.beta.deinit();
         l.phi.deinit();
         l.dflare.deinit();
@@ -60,7 +64,8 @@ pub const Loaded = struct {
     }
 
     pub fn fixedBytes(l: *const Loaded) u64 {
-        return l.checkpoint.residentBytes() + l.dflare.length() + l.phi.length() + l.beta.length();
+        const unembed: u64 = if (l.unembed) |u| u.buffer.length() else 0;
+        return l.checkpoint.residentBytes() + l.dflare.length() + l.phi.buffer.length() + l.beta.length() + unembed;
     }
 };
 
@@ -122,7 +127,7 @@ fn layer(c: *const ck.Checkpoint, i: usize) !Layer {
     };
 }
 
-pub fn load(gpa: std.mem.Allocator, target: *const Model, dir: []const u8) !Loaded {
+pub fn load(gpa: std.mem.Allocator, target: *const Model, dir: []const u8, precision: head.Precision) !Loaded {
     try admit(&target.config);
     var checkpoint = ck.Checkpoint.init(gpa);
     errdefer checkpoint.deinit();
@@ -155,12 +160,23 @@ pub fn load(gpa: std.mem.Allocator, target: *const Model, dir: []const u8) !Load
     const dflare_packed = dflare.slice(u16, 4 * hidden);
     for (weights.layers, 0..) |l, i| @memcpy(dflare_packed[i * hidden ..][0..hidden], l.dflare.host(u16));
     @memcpy(dflare_packed[3 * hidden ..][0..hidden], weights.markov_norm.host(u16));
-    const phi = try target.device.buffer(vocabulary * rank * 2, mtl.ResourceOptions.shared);
+    var phi = try head.Packed.init(target.device, precision, vocabulary, rank);
     errdefer phi.deinit();
     const beta = try target.device.buffer(vocabulary * 2, mtl.ResourceOptions.shared);
     errdefer beta.deinit();
-    try fold.fold(gpa, target.weights.unembed.host(u16), weights.hidden_out.host(u16), weights.hidden_bias.host(u16), phi.slice(u16, vocabulary * rank), beta.slice(u16, vocabulary));
-    return .{ .checkpoint = checkpoint, .weights = weights, .dflare = dflare, .phi = phi, .beta = beta };
+    const unembed = target.weights.unembed.host(u16);
+    if (precision == .bf16) {
+        try fold.fold(gpa, unembed, weights.hidden_out.host(u16), weights.hidden_bias.host(u16), phi.buffer.slice(u16, vocabulary * rank), beta.slice(u16, vocabulary));
+        return .{ .checkpoint = checkpoint, .weights = weights, .dflare = dflare, .phi = phi, .beta = beta, .unembed = null };
+    }
+    const folded = try gpa.alloc(u16, vocabulary * rank);
+    defer gpa.free(folded);
+    try fold.fold(gpa, unembed, weights.hidden_out.host(u16), weights.hidden_bias.host(u16), folded, beta.slice(u16, vocabulary));
+    try head.pack(phi, folded);
+    var copy = try head.Packed.init(target.device, precision, vocabulary, hidden);
+    errdefer copy.deinit();
+    try head.pack(copy, unembed);
+    return .{ .checkpoint = checkpoint, .weights = weights, .dflare = dflare, .phi = phi, .beta = beta, .unembed = copy };
 }
 
 test "a misshapen DSpark tensor has a named refusal" {

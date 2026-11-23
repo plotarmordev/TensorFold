@@ -202,8 +202,13 @@ fn transactions(dir: []const u8, drafter_dir: []const u8, ids: []const u32, want
     defer model.deinit();
     const target = try backend.Metal.init(gpa, model, .{ .capacity = context, .streams = 1, .budget = st.cacheBytes(context) });
     defer target.deinit();
+    // The draft head reads its own copies: loading it leaves the target's shared tables byte-identical.
+    const unembed_before = std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(model.weights.unembed.host(u16)));
+    const embed_before = std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(model.weights.embed.host(u16)));
     const draft_head = try dspark.Drafter.init(gpa, io, model.device, model, drafter_dir);
     defer draft_head.deinit();
+    try std.testing.expectEqual(unembed_before, std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(model.weights.unembed.host(u16))));
+    try std.testing.expectEqual(embed_before, std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(model.weights.embed.host(u16))));
     try draft_head.setContext(context);
     var wrapped = try lanes.drafted.Drafted.init(gpa, target.backend(), draft_head.drafter());
     defer wrapped.deinit();

@@ -10,6 +10,7 @@ const glue = @import("glue.zig");
 const k = @import("dspark_kernels.zig");
 const weight_loader = @import("dspark_weights.zig");
 const state = @import("dspark_state.zig");
+const head = @import("dspark_head.zig");
 
 const dr = lanes.drafter;
 const Stream = lanes.Stream;
@@ -48,6 +49,8 @@ pub const Drafter = struct {
     scores: ?mtl.Buffer = null,
     /// The block attention's tensor-unit kernels, on the chips that have the units.
     units: ?k.Units = null,
+    /// The packed head's kernels; null at BF16, where `pipelines` holds them.
+    head: ?head.Pipelines = null,
     capacity: usize = 1,
     /// A draft's share of a full hold, timed by `measure`.
     step_ms: f64 = 0,
@@ -62,7 +65,7 @@ pub const Drafter = struct {
         d.* = .{
             .gpa = gpa,
             .target = target,
-            .weights = weight_loader.load(gpa, target, drafter_dir) catch |err| return err,
+            .weights = weight_loader.load(gpa, target, drafter_dir, try head.Precision.fromEnv()) catch |err| return err,
             .pipelines = undefined,
             .scratch = undefined,
         };
@@ -75,6 +78,8 @@ pub const Drafter = struct {
         errdefer d.chain.deinit();
         d.chain_tokens = try device.buffer(chain_streams * 8 * @sizeOf(u32), mtl.ResourceOptions.shared);
         errdefer d.chain_tokens.deinit();
+        if (d.weights.phi.precision != .bf16) d.head = try head.Pipelines.load(device, d.weights.phi.precision);
+        errdefer if (d.head) |*h| h.deinit();
         if (device.tensorUnits()) d.units = try k.Units.load(device, @import("inkling2_metal").inkling2_dspark_units);
         return d;
     }
@@ -85,6 +90,7 @@ pub const Drafter = struct {
         d.contexts.deinit(d.gpa);
         if (d.scores) |scores| scores.deinit();
         if (d.units) |*u| u.deinit();
+        if (d.head) |*h| h.deinit();
         d.chain_tokens.deinit();
         d.chain.deinit();
         for (d.more.items) |*extra| extra.deinit();
@@ -279,15 +285,23 @@ pub const Drafter = struct {
             const next_norm = if (i + 1 < d.weights.weights.layers.len) d.weights.weights.layers[i + 1].input_norm else d.weights.weights.norm;
             k.residualNorm(&d.pipelines, e, at(s.y, 0), at(s.next_resid, 0), r(next_norm), at(s.resid, 0), at(s.x, 0), 8, false);
         }
-        k.base(&d.pipelines, e, r(d.target.weights.unembed), at(s.x, state.hidden * 2), at(s.base, 0), depth, state.vocabulary);
-        k.kappa(&d.pipelines, e, at(s.x, state.hidden * 2), at(lane.newest, 0), r(d.weights.weights.rnn), r(d.weights.weights.rnn_bias), at(s.kappa, 0), depth);
+        const y = at(s.x, state.hidden * 2);
+        if (d.head) |*h| head.base(h, e, d.weights.unembed.?, y, at(s.base, 0), depth, state.vocabulary) else k.base(&d.pipelines, e, r(d.target.weights.unembed), y, at(s.base, 0), depth, state.vocabulary);
+        k.kappa(&d.pipelines, e, y, at(lane.newest, 0), r(d.weights.weights.rnn), r(d.weights.weights.rnn_bias), at(s.kappa, 0), depth);
     }
 
     fn recurrent(d: *Drafter, e: mtl.ComputeEncoder, s: *const state.Scratch, step: usize, previous: u32, second_bank: bool) void {
         const current = if (second_bank) s.next_state else s.state;
         const next = if (second_bank) s.state else s.next_state;
         k.recurrentStep(&d.pipelines, e, at(current, 0), at(s.kappa, step * 3 * state.rank * 4), r(d.weights.weights.rnn), r(d.weights.weights.markov_w1), at(s.z, 0), at(next, 0), at(s.lambda, 0), previous);
-        k.finalLogits(&d.pipelines, e, at(s.base, step * state.vocabulary * 2), at(d.weights.phi, 0), at(d.weights.beta, 0), at(s.lambda, 0), at(s.logits, 0));
+        d.finalLogits(e, s, step);
+    }
+
+    /// One step's final logits from its base row, the Phi correction and lambda, into `s.logits`.
+    fn finalLogits(d: *Drafter, e: mtl.ComputeEncoder, s: *const state.Scratch, step: usize) void {
+        const base = at(s.base, step * state.vocabulary * 2);
+        const w = &d.weights;
+        if (d.head) |*h| head.logits(h, e, base, w.phi, at(w.beta, 0), at(s.lambda, 0), at(s.logits, 0), k.vocab) else k.finalLogits(&d.pipelines, e, base, at(w.phi.buffer, 0), at(w.beta, 0), at(s.lambda, 0), at(s.logits, 0));
     }
 
     fn slot(d: *Drafter, index: usize) !*const state.Scratch {
@@ -308,7 +322,7 @@ pub const Drafter = struct {
             const current = if (second_bank) s.next_state else s.state;
             const next = if (second_bank) s.state else s.next_state;
             k.chainStep(&d.chain, e, at(current, 0), at(s.kappa, step * 3 * state.rank * 4), r(d.weights.weights.rnn), r(d.weights.weights.markov_w1), at(s.z, 0), at(next, 0), at(s.lambda, 0), held, @intCast(step));
-            k.finalLogits(&d.pipelines, e, at(s.base, step * state.vocabulary * 2), at(d.weights.phi, 0), at(d.weights.beta, 0), at(s.lambda, 0), at(s.logits, 0));
+            d.finalLogits(e, s, step);
             k.chainPick(&d.chain, e, at(s.logits, 0), held, @intCast(step));
             second_bank = !second_bank;
         }
