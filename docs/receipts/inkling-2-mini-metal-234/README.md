@@ -37,10 +37,11 @@ its dependent chain of kernels does, so the hold lever cuts launches and waits, 
 
 \* reps 81/32/46 and 112/190/216: disturbed, not used.
 
-- At four streams the lever is kept: code beats both controls by 2.5-3.9% and #4618's 281 by 0.6-1.7%, chat beats the
-  clean control by 2.6-3.5%, a round is 1 ms shorter at the same 2.81 tokens.
-- At one stream it is inside noise (118.0-120.2 against 118.9-122.2) and under #4618's 123: not beaten. It passes
-  Strata v0.2.19's 108.9-114.5 on M5 Max on code (another chip: a deployment comparison).
+- At four streams the lever is kept: code is 2.5-3.9% over both controls, chat 2.6-3.5% over the clean control, a
+  round is 1 ms shorter at the same 2.81 tokens. #4618 reads 281 there.
+- At one stream it is inside noise (118.0-120.2 against 118.9-122.2). Bar not reached: one stream reads 118.0-120.2
+  tok/s at `1038e2d4` against #4618's 123. Strata v0.2.19 reads 108.9-114.5 on M5 Max, another chip: a deployment
+  comparison, not a chip one.
 - Plain, 05:00-05:04, control / candidate / control with the load average at 80, 90 and 127:
 
   | plain, tok/s (code / chat) | control | candidate | control |
@@ -74,7 +75,7 @@ chunk after 13 s, so its code cells are unmeasured in every run, card 235's too;
 | 1 stream | **90.2** (89.5-91.5) | 38.4 / 24.8 |
 | 64 streams | **306.6** (229.4-311.2) | 225.6 / 203.3 |
 
-- TensorFold leads at both: 2.3× at one stream, 1.36-1.51× at 64.
+- TensorFold leads at both against oMLX's 4-bit build: 2.3× at one stream, 1.36-1.51× at 64.
 - TensorFold's code cells in the same session: 115.4 at one stream (96.5-117.7), 239.8 at four (194.3-273.5, load
   60-77, under the clean 282.7-285.7 above), 399.1 at 64 (309.3-456.4).
 - 0 failed requests in every cell of both engines.
