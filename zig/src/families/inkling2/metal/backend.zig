@@ -415,7 +415,7 @@ pub const Metal = struct {
         var ids: [st.batch_rows]u32 = undefined;
         var total: usize = 0;
         var begun: usize = 0;
-        errdefer for (segments[0..begun]) |seg| seg.cache.rollback(self.model.queue) catch {};
+        errdefer for (segments[0..begun]) |seg| seg.cache.rollback();
         for (windows, out, 0..) |w, o, i| {
             const rows = w.rows();
             if (rows == 0 or rows > st.window_rows or total + rows > st.batch_rows or w.parents != null or w.held != 0 or o.sampled.len != rows or o.drafts.len != rows - 1 or w.positions.len != rows) return error.UnsupportedInklingWindow;
@@ -429,7 +429,7 @@ pub const Metal = struct {
             total += rows;
         }
         for (segments[0..windows.len]) |seg| {
-            try seg.cache.begin(self.model.queue, seg.rows);
+            try seg.cache.begin(seg.rows);
             begun += 1;
         }
         const generation = if (self.prepared) self.nextTapGeneration() else 0;
@@ -453,13 +453,17 @@ pub const Metal = struct {
 
     fn keepFn(ptr: *anyopaque, windows: []const be.Window, paths: []const []const u32) !void {
         const self = cast(ptr);
-        if (windows.len != paths.len) return error.InvalidInklingWindows;
-        for (windows, paths) |w, path| {
+        if (windows.len != paths.len or windows.len > st.batch_rows) return error.InvalidInklingWindows;
+        var caches: [st.batch_rows]*st.Cache = undefined;
+        var accepted: [st.batch_rows]usize = undefined;
+        for (windows, paths, 0..) |w, path, i| {
             const cache = try self.cacheOf(w.stream);
-            for (path, 0..) |r, i| if (r != i) return error.UnsupportedInklingTree;
+            for (path, 0..) |r, j| if (r != j) return error.UnsupportedInklingTree;
             if (path.len == 0 or path.len > w.rows() or cache.pending == null or cache.pending.? != w.rows()) return error.UnsupportedInklingWindow;
-            try cache.commit(self.model.queue, path.len);
+            caches[i] = cache;
+            accepted[i] = path.len;
         }
+        try st.commit(self.model.queue, caches[0..windows.len], accepted[0..windows.len]);
     }
 
     fn draftFn(ptr: *anyopaque, requests: []const be.DraftRequest) !void {
@@ -475,7 +479,7 @@ pub const Metal = struct {
         const self = cast(ptr);
         if (self.caches.fetchRemove(stream)) |entry| {
             const cache = entry.value;
-            if (cache.pending != null) cache.rollback(self.model.queue) catch |err| std.log.err("inkling2_loop rollback at release: {s}", .{@errorName(err)});
+            if (cache.pending != null) cache.rollback();
             self.held -= st.cacheBytes(cache.capacity);
             cache.deinit();
             self.gpa.destroy(cache);
