@@ -33,6 +33,9 @@ for argument; do
 done
 """
 TOOLS = ("bf16_topk", "draft_ops", "tree_round")
+FIXTURES = ("attn", "basic", "mamba", "moe", "qmv")
+# Imports check_mlx_ops against stub mlx/numpy, compiles its runner with a stub swiftc and stages one batch.
+MLX_CHECK = "import check_mlx_ops as c; c.runner(); print(c.Batch('weights').dir)"
 
 
 class SetupCacheTests(unittest.TestCase):
@@ -46,7 +49,9 @@ class SetupCacheTests(unittest.TestCase):
     def checkout(self, name):
         root = self.work / name
         (root / "tools/zig").mkdir(parents=True)
-        for script in ("setup_cache.sh", "outside_checkout.py", *(f"{tool}_build.sh" for tool in TOOLS)):
+        scripts = ("setup_cache.sh", "outside_checkout.py", "check_mlx_ops.py", *(f"{tool}_build.sh" for tool in TOOLS),
+                   *(f"xpu_fixtures_{name}.py" for name in FIXTURES))
+        for script in scripts:
             shutil.copy(ROOT / "tools/zig" / script, root / "tools/zig" / script)
         (root / "tools/release").mkdir()
         shutil.copy(ROOT / "tools/release/check_package.py", root / "tools/release/check_package.py")
@@ -69,6 +74,15 @@ class SetupCacheTests(unittest.TestCase):
             (stubs / name).write_text(text)
             (stubs / name).chmod(0o755)
         return {**self.env, "ZIG": str(stubs / "zig"), "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}"}
+
+    def python_stubs(self):
+        """Empty numpy and mlx modules, enough to import the generators and the Metal checker without them."""
+        stubs = self.work / "pystubs"
+        (stubs / "mlx").mkdir(parents=True)
+        (stubs / "mlx/__init__.py").write_text("")
+        (stubs / "mlx/core.py").write_text("def __getattr__(name):\n    return name\n")
+        (stubs / "numpy.py").write_text("")
+        return stubs
 
     def test_setup_rejects_cache_paths_inside_checkout(self):
         root = self.checkout("card")
@@ -99,6 +113,45 @@ class SetupCacheTests(unittest.TestCase):
         for result in self.entry_points(root, env):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("outside the checkout", result.stderr)
+        self.assertEqual(list(root.iterdir()), [root / "tools"])
+
+    def test_every_entry_point_rejects_a_cache_path_with_a_newline(self):
+        root = self.checkout("card")
+        cache = f"{root}\n"  # Command substitution would strip the newline and use the checkout itself.
+        results = [self.setup_cache(root, cache), *self.entry_points(root, {**self.stubs(), "ZIG_LOCAL_CACHE_DIR": cache})]
+        for result in results:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not contain a newline", result.stderr)
+        self.assertEqual(list(root.iterdir()), [root / "tools"])
+
+    def test_metal_checker_stages_runner_and_tensors_outside_checkout(self):
+        root = self.checkout("card")
+        home = self.work / "home"
+        swiftc = self.work / "stubs/swiftc"
+        swiftc.parent.mkdir()
+        swiftc.write_text('#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\ntouch "$2"\n')
+        swiftc.chmod(0o755)
+        env = {key: value for key, value in self.env.items() if key != "ZIG_LOCAL_CACHE_DIR"}
+        env.update(HOME=str(home), PATH=f"{swiftc.parent}{os.pathsep}{os.environ['PATH']}",
+                   PYTHONPATH=f"{root / 'tools/zig'}{os.pathsep}{self.python_stubs()}")
+        result = subprocess.run(["python3", "-B", "-c", MLX_CHECK], cwd=root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        staged = Path(result.stdout.strip())
+        self.assertEqual(staged.parents[3], home / ".cache/tensorfold/zig/checkouts")
+        self.assertTrue(staged.is_dir())
+        self.assertTrue((staged.parents[1] / "metal_bench").is_file())
+        self.assertEqual(list(root.iterdir()), [root / "tools"])
+
+    def test_fixture_generators_default_outside_checkout(self):
+        root = self.checkout("card")
+        home = self.work / "home"
+        env = {key: value for key, value in self.env.items() if key != "TF_FIXTURES_DIR"}
+        env.update(HOME=str(home), TF_NEMOTRON_DIR=str(self.work / "no-checkpoint"), PYTHONPATH=str(self.python_stubs()))
+        for name in FIXTURES:
+            script = root / f"tools/zig/xpu_fixtures_{name}.py"
+            result = subprocess.run(["python3", "-B", script], cwd=root, env=env, capture_output=True, text=True)
+            self.assertIn("no-checkpoint", result.stderr)  # It stops at the missing checkpoint, after choosing its folder.
+        self.assertTrue((home / "tensorfold-fixtures").is_dir())
         self.assertEqual(list(root.iterdir()), [root / "tools"])
 
     def test_setup_rejects_relative_cache_override(self):

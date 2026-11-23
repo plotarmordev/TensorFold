@@ -135,8 +135,9 @@ Zig chooses the local cache before `build.zig` runs, so plain `zig build` cannot
 moves Zig's test scratch files, which do not follow `ZIG_LOCAL_CACHE_DIR` alone. Zig locks its object cache for
 concurrent builds. Each checkout has its own folder under the shared cache's `checkouts/`: `zig-out` links to it, so the
 default install of `zig build` and `zig build native` lands there under the documented `zig-out/...` paths, and the
-standalone Metal scripts write their executables beside it. Model weights, GGUF files, fixtures
-(`TF_FIXTURES_DIR`) and job output belong outside the checkout; pass their paths instead of staging copies in the tree.
+standalone Metal scripts write their executables beside it, as `tools/zig/check_mlx_ops.py` does its runner and staged
+tensors. Model weights, GGUF files, fixtures (`TF_FIXTURES_DIR`, by default `$HOME/tensorfold-fixtures`) and job output
+belong outside the checkout; pass their paths instead of staging copies in the tree.
 Delete the shared folder to reclaim its space when no build is running.
 
 ## Exactness and precision
