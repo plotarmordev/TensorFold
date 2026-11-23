@@ -10,6 +10,7 @@ test {
     _ = @import("runtime_kernels_test.zig");
     _ = @import("dspark_kernels_test.zig");
     _ = @import("dspark_fold.zig");
+    _ = @import("dspark_head.zig");
     _ = @import("dspark_weights.zig");
     _ = @import("dspark_state.zig");
     _ = @import("dspark.zig");

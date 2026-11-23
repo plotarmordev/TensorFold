@@ -264,6 +264,14 @@ kernel void tf_ink2_dspark_chain_pick(const device bfloat* logits [[buffer(0)]],
   held[a.token + 1] = isnan(float(logits[0])) ? 0u : at;
 }
 
+// Each row's simdgroup sum of one id's dots, rounded once to BF16.
+static inline void dspark_store_base(thread const float* acc, device bfloat* out, constant DsparkBaseArgs& a, uint id, uint lane) {
+  for (uint row = 0; row < a.rows; ++row) {
+    const float sum = simd_sum(acc[row]);
+    if (lane == 0) out[size_t(row) * a.vocab + id] = bfloat(sum);
+  }
+}
+
 // A simdgroup an id: eight columns a lane a step, every row sharing the read of unembed[id]; rounded once to BF16.
 [[max_total_threads_per_threadgroup(256)]]
 kernel void tf_ink2_dspark_base(const device bfloat* unembed [[buffer(0)]], const device bfloat* y [[buffer(1)]], device bfloat* out [[buffer(2)]], constant DsparkBaseArgs& a [[buffer(3)]],
@@ -279,17 +287,83 @@ kernel void tf_ink2_dspark_base(const device bfloat* unembed [[buffer(0)]], cons
       acc[row] += dot(w0, float4(*(const device bfloat4*)x)) + dot(w1, float4(*(const device bfloat4*)(x + 4)));
     }
   }
-  for (uint row = 0; row < a.rows; ++row) {
-    const float sum = simd_sum(acc[row]);
-    if (lane == 0) out[size_t(row) * a.vocab + id] = bfloat(sum);
-  }
+  dspark_store_base(acc, out, a, id, lane);
+}
+
+// The folded correction on id i's Phi dot: bias, then logit, each rounded, then the 30 tanh softcap.
+static inline void dspark_final(const device bfloat* base, const device bfloat* beta, device bfloat* out, uint i, float dot) {
+  const bfloat bias = bfloat(float(beta[i]) + dot);
+  const bfloat logit = bfloat(float(base[i]) + float(bias));
+  out[i] = bfloat(30.0f * tanh(float(logit) / 30.0f));
 }
 
 kernel void tf_ink2_dspark_logits(const device bfloat* base [[buffer(0)]], const device bfloat* phi [[buffer(1)]], const device bfloat* beta [[buffer(2)]], const device bfloat* lambda [[buffer(3)]], device bfloat* out [[buffer(4)]], constant DsparkCountArgs& a [[buffer(5)]], uint i [[thread_position_in_grid]]) {
   if (i >= a.count) return;
   float dot = 0.0f;
   for (uint d = 0; d < DSP_RANK; ++d) dot += float(phi[i * DSP_RANK + d]) * float(lambda[d]);
-  const bfloat bias = bfloat(float(beta[i]) + dot);
-  const bfloat logit = bfloat(float(base[i]) + float(bias));
-  out[i] = bfloat(30.0f * tanh(float(logit) / 30.0f));
+  dspark_final(base, beta, out, i, dot);
 }
+
+// The draft head's private packed copies: BITS-wide codes a row, then one BF16 scale a 32-column block.
+// FP4 codes are E2M1 (low nibble first), FP8 codes E4M3; a weight is its code's value times its block's scale.
+constant float DSP_E2M1[16] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};
+
+static inline float dspark_e4m3(uint code) {
+  // E4M3's exponent and mantissa sit in a half's low bits; 2^8 restores the bias, subnormals included.
+  const float v = float(as_type<half>(ushort((code & 0x7fu) << 7))) * 256.0f;
+  return (code & 0x80u) ? -v : v;
+}
+
+// Eight consecutive weights from one 32-bit (FP4) or two 32-bit (FP8) code words.
+template <uint BITS>
+static inline void dspark_unpack8(const device uchar* codes, float scale, thread float4& lo, thread float4& hi) {
+  if (BITS == 4) {
+    const uint w = *(const device uint*)codes;
+    lo = float4(DSP_E2M1[w & 15u], DSP_E2M1[(w >> 4) & 15u], DSP_E2M1[(w >> 8) & 15u], DSP_E2M1[(w >> 12) & 15u]) * scale;
+    hi = float4(DSP_E2M1[(w >> 16) & 15u], DSP_E2M1[(w >> 20) & 15u], DSP_E2M1[(w >> 24) & 15u], DSP_E2M1[w >> 28]) * scale;
+  } else {
+    const uint2 w = *(const device uint2*)codes;
+    lo = float4(dspark_e4m3(w.x & 255u), dspark_e4m3((w.x >> 8) & 255u), dspark_e4m3((w.x >> 16) & 255u), dspark_e4m3(w.x >> 24)) * scale;
+    hi = float4(dspark_e4m3(w.y & 255u), dspark_e4m3((w.y >> 8) & 255u), dspark_e4m3((w.y >> 16) & 255u), dspark_e4m3(w.y >> 24)) * scale;
+  }
+}
+
+// The base product on the packed unembed copy: four lanes share a block's scale.
+template <uint BITS>
+[[max_total_threads_per_threadgroup(256)]]
+kernel void tf_ink2_dspark_head_base(const device uchar* codes [[buffer(0)]], const device bfloat* scales [[buffer(1)]], const device bfloat* y [[buffer(2)]], device bfloat* out [[buffer(3)]], constant DsparkBaseArgs& a [[buffer(4)]],
+    uint tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+  const uint id = tg * 8 + sg;
+  if (id >= a.vocab) return;
+  const device uchar* w = codes + size_t(id) * DSP_H * BITS / 8;
+  const device bfloat* s = scales + size_t(id) * (DSP_H / 32);
+  float acc[7] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  for (uint i = 8 * lane; i < DSP_H; i += 256) {
+    float4 w0, w1;
+    dspark_unpack8<BITS>(w + i * BITS / 8, float(s[i / 32]), w0, w1);
+    for (uint row = 0; row < a.rows; ++row) {
+      const device bfloat* x = y + size_t(row) * DSP_H + i;
+      acc[row] += dot(w0, float4(*(const device bfloat4*)x)) + dot(w1, float4(*(const device bfloat4*)(x + 4)));
+    }
+  }
+  dspark_store_base(acc, out, a, id, lane);
+}
+
+// The final logits on the packed Phi copy, eight columns a step.
+template <uint BITS>
+kernel void tf_ink2_dspark_head_logits(const device bfloat* base [[buffer(0)]], const device uchar* codes [[buffer(1)]], const device bfloat* scales [[buffer(2)]], const device bfloat* beta [[buffer(3)]], const device bfloat* lambda [[buffer(4)]], device bfloat* out [[buffer(5)]], constant DsparkCountArgs& a [[buffer(6)]], uint i [[thread_position_in_grid]]) {
+  if (i >= a.count) return;
+  const device uchar* w = codes + size_t(i) * DSP_RANK * BITS / 8;
+  float sum = 0.0f;
+  for (uint d = 0; d < DSP_RANK; d += 8) {
+    float4 w0, w1;
+    dspark_unpack8<BITS>(w + d * BITS / 8, float(scales[size_t(i) * (DSP_RANK / 32) + d / 32]), w0, w1);
+    sum += dot(w0, float4(*(const device bfloat4*)(lambda + d))) + dot(w1, float4(*(const device bfloat4*)(lambda + d + 4)));
+  }
+  dspark_final(base, beta, out, i, sum);
+}
+
+template [[host_name("tf_ink2_dspark_head_base_fp4")]] kernel void tf_ink2_dspark_head_base<4>(const device uchar*, const device bfloat*, const device bfloat*, device bfloat*, constant DsparkBaseArgs&, uint, uint, uint);
+template [[host_name("tf_ink2_dspark_head_base_fp8")]] kernel void tf_ink2_dspark_head_base<8>(const device uchar*, const device bfloat*, const device bfloat*, device bfloat*, constant DsparkBaseArgs&, uint, uint, uint);
+template [[host_name("tf_ink2_dspark_head_logits_fp4")]] kernel void tf_ink2_dspark_head_logits<4>(const device bfloat*, const device uchar*, const device bfloat*, const device bfloat*, const device bfloat*, device bfloat*, constant DsparkCountArgs&, uint);
+template [[host_name("tf_ink2_dspark_head_logits_fp8")]] kernel void tf_ink2_dspark_head_logits<8>(const device bfloat*, const device uchar*, const device bfloat*, const device bfloat*, const device bfloat*, device bfloat*, constant DsparkCountArgs&, uint);
