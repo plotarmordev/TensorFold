@@ -17,8 +17,6 @@ const Ref = k.Ref;
 const tap_list = [_]u32{ 5, 23, 41, 48 };
 /// Drafts a hold offers at most: the block after its anchor. The depth rule prices how many a round takes.
 const hold_depth: u32 = state.block - 1;
-/// Streams one greedy hold can chain on the GPU; a wider hold samples on the host as sampled streams do.
-const chain_streams = 16;
 
 fn at(buf: mtl.Buffer, off: usize) Ref {
     return .{ .buf = buf, .off = off };
@@ -40,11 +38,14 @@ pub const Drafter = struct {
     weights: weight_loader.Loaded,
     pipelines: k.Pipelines,
     scratch: state.Scratch,
-    /// Scratch for the second and later streams of one hold; the first uses `scratch`, as absorb does.
+    /// Scratch for the second and later streams of a sampled hold; the first uses `scratch`, as absorb does.
     more: std.ArrayList(state.Scratch) = .empty,
-    /// The greedy chain's kernels, and each held stream's eight tokens: the anchor, then its drafts.
+    /// The solo timing kernels and eight held tokens per cohort slot.
     chain: k.Chain = undefined,
     chain_tokens: mtl.Buffer = undefined,
+    /// Shared greedy block rows, packed unembed inputs and base rows.
+    cohort: k.Cohort = undefined,
+    cohort_state: state.Cohort = undefined,
     scores: ?mtl.Buffer = null,
     /// The block attention's tensor-unit kernels, on the chips that have the units.
     units: ?k.Units = null,
@@ -71,9 +72,15 @@ pub const Drafter = struct {
         errdefer d.pipelines.deinit();
         d.scratch = try state.Scratch.init(device);
         errdefer d.scratch.deinit();
-        d.chain = try k.Chain.load(device, @import("inkling2_metal").inkling2_dspark);
+        const lib = try mtl.Library.fromSource(device, @import("inkling2_metal").inkling2_dspark, mtl.CompileOptions.mlx());
+        defer lib.deinit();
+        d.chain = try k.Chain.fromLibrary(device, lib);
         errdefer d.chain.deinit();
-        d.chain_tokens = try device.buffer(chain_streams * 8 * @sizeOf(u32), mtl.ResourceOptions.shared);
+        d.cohort = try k.Cohort.fromLibrary(device, lib);
+        errdefer d.cohort.deinit();
+        d.cohort_state = try state.Cohort.init(device);
+        errdefer d.cohort_state.deinit();
+        d.chain_tokens = try device.buffer(k.cohort_streams * 8 * @sizeOf(u32), mtl.ResourceOptions.shared);
         errdefer d.chain_tokens.deinit();
         if (device.tensorUnits()) d.units = try k.Units.load(device, @import("inkling2_metal").inkling2_dspark_units);
         return d;
@@ -85,6 +92,8 @@ pub const Drafter = struct {
         d.contexts.deinit(d.gpa);
         if (d.scores) |scores| scores.deinit();
         if (d.units) |*u| u.deinit();
+        d.cohort_state.deinit();
+        d.cohort.deinit();
         d.chain_tokens.deinit();
         d.chain.deinit();
         for (d.more.items) |*extra| extra.deinit();
@@ -96,7 +105,7 @@ pub const Drafter = struct {
     }
 
     pub fn fixedBytes(d: *const Drafter) u64 {
-        return d.weights.fixedBytes() + state.scratchBytes();
+        return d.weights.fixedBytes() + state.scratchBytes() + state.cohortBytes();
     }
 
     pub fn scoreBytes(capacity: usize) u64 {
@@ -340,33 +349,94 @@ pub const Drafter = struct {
         d.step_ms = ms / @as(f64, @floatFromInt(hold_depth));
     }
 
-    /// Greedy streams: the blocks and every step in one command buffer, each draft picked on the GPU for the next.
-    fn holdChained(d: *Drafter, items: []const dr.Hold) !void {
-        const tokens = d.chain_tokens.slice(u32, chain_streams * 8);
+    /// Every stream's block in the cohort's launches, then its kappa and the drafts' packed unembed rows.
+    fn encodeCohort(d: *Drafter, e: mtl.ComputeEncoder, items: []const dr.Hold, order: *const k.Order) void {
+        const c = &d.cohort_state;
+        const p = &d.pipelines;
+        const streams: u32 = @intCast(order.active[0]);
+        const slots = order.slots[0..streams];
+        const rows = streams * state.block;
+        const anchors = c.anchors.slice(u32, k.cohort_streams);
+        const tokens = d.chain_tokens.slice(u32, k.cohort_streams * 8);
+        for (slots, 0..) |item, s| {
+            anchors[s] = @intCast(items[item].position - 1);
+            c.ids.slice(u32, k.cohort_streams)[s] = items[item].pending;
+            tokens[s * 8] = items[item].pending;
+        }
+        @memset(c.state.slice(u16, k.cohort_streams * state.rank), 0);
+        glue.embedNorm(&d.target.glue, e, at(c.ids, 0), r(d.target.weights.embed), r(d.target.weights.embed_norm), at(c.tile, 0), streams);
+        k.cohortInitializeRows(p, e, at(c.tile, 0), r(d.weights.weights.mask), at(c.x, 0), streams);
+        k.residualNorm(p, e, at(c.x, 0), at(c.resid, 0), r(d.weights.weights.layers[0].input_norm), at(c.resid, 0), at(c.x, 0), rows, true);
+        for (d.weights.weights.layers, 0..) |layer, i| {
+            fwd.dense(d.target, e, layer.q, at(c.x, 0), at(c.q_raw, 0), rows);
+            fwd.dense(d.target, e, layer.k, at(c.x, 0), at(c.k_raw, 0), rows);
+            fwd.dense(d.target, e, layer.v, at(c.x, 0), at(c.v_raw, 0), rows);
+            k.cohortQkv(&d.cohort, e, at(c.q_raw, 0), at(c.k_raw, 0), at(c.v_raw, 0), r(layer.q_norm), r(layer.k_norm), at(c.q, 0), at(c.kb, 0), at(c.vb, 0), at(c.anchors, 0), streams);
+            for (slots, 0..) |item, s| {
+                const lane = d.contexts.getPtr(items[item].stream).?;
+                const q = at(c.q, s * state.block * state.query * 2);
+                const kb = at(c.kb, s * state.block * state.kv * 2);
+                const vb = at(c.vb, s * state.block * state.kv * 2);
+                const attn = at(c.attn, s * state.block * state.query * 2);
+                if (d.units) |*u| k.attendUnits(u, e, q, kb, vb, at(lane.k[i], 0), at(lane.v[i], 0), at(d.scores.?, 0), attn, @intCast(lane.end), @intCast(lane.rings[i]), i != 1, @intCast(lane.from)) else k.attend(p, e, q, kb, vb, at(lane.k[i], 0), at(lane.v[i], 0), at(d.scores.?, 0), attn, @intCast(lane.end), @intCast(lane.rings[i]), i != 1, @intCast(lane.from));
+            }
+            fwd.dense(d.target, e, layer.o, at(c.attn, 0), at(c.y, 0), rows);
+            k.residualNorm(p, e, at(c.y, 0), at(c.resid, 0), r(layer.post_norm), at(c.next_resid, 0), at(c.x, 0), rows, false);
+            fwd.dense(d.target, e, layer.gate, at(c.x, 0), at(c.gate, 0), rows);
+            fwd.dense(d.target, e, layer.up, at(c.x, 0), at(c.up, 0), rows);
+            k.swiglu(p, e, at(c.gate, 0), at(c.up, 0), at(c.act, 0), rows * state.intermediate);
+            fwd.dense(d.target, e, layer.down, at(c.act, 0), at(c.y, 0), rows);
+            const next_norm = if (i + 1 < d.weights.weights.layers.len) d.weights.weights.layers[i + 1].input_norm else d.weights.weights.norm;
+            k.residualNorm(p, e, at(c.y, 0), at(c.next_resid, 0), r(next_norm), at(c.resid, 0), at(c.x, 0), rows, false);
+        }
+        for (slots, 0..) |item, s| {
+            const lane = d.contexts.getPtr(items[item].stream).?;
+            const y = at(c.x, (s * state.block + 1) * state.hidden * 2);
+            const out = at(c.kappa, s * (state.block - 1) * 3 * state.rank * 4);
+            k.kappa(p, e, y, at(lane.newest, 0), r(d.weights.weights.rnn), r(d.weights.weights.rnn_bias), out, @min(items[item].depth, hold_depth));
+        }
+        var first: usize = 0;
+        while (first < order.rows) {
+            const count: u32 = @intCast(@min(@as(usize, k.tile_rows), order.rows - first));
+            const args = k.PackArgs{ .active = order.active, .first = @intCast(first), .count = count };
+            k.cohortPack(&d.cohort, e, at(c.x, 0), at(c.tile, 0), args);
+            k.base(p, e, r(d.target.weights.unembed), at(c.tile, 0), at(c.base, first * state.vocabulary * 2), count, state.vocabulary);
+            first += count;
+        }
+    }
+
+    /// Share block and unembed launches before stepping across all greedy streams.
+    fn holdCohort(d: *Drafter, items: []const dr.Hold) !void {
+        var depths: [k.cohort_streams]u32 = undefined;
+        for (items, 0..) |item, i| depths[i] = @min(item.depth, hold_depth);
+        const order = k.Order.sort(depths[0..items.len]);
+        const tokens = d.chain_tokens.slice(u32, k.cohort_streams * 8);
         const pool = mtl.objc.Pool.push();
         defer pool.pop();
         const cb = d.target.queue.commandBuffer();
         const e = cb.compute(.serial);
-        for (items, 0..) |item, i| {
-            const depth: usize = @min(item.depth, 7);
-            const s = try d.slot(i);
-            const lane = d.contexts.getPtr(item.stream).?;
-            const held = Ref{ .buf = d.chain_tokens, .off = i * 8 * @sizeOf(u32) };
-            tokens[i * 8] = item.pending;
-            d.encodeChain(e, s, lane, held, item.pending, item.position - 1, depth);
+        d.encodeCohort(e, items, &order);
+        const c = &d.cohort_state;
+        const held = Ref{ .buf = d.chain_tokens, .off = 0 };
+        for (order.active, 0..) |streams, step| {
+            if (streams == 0) break;
+            const current = if (step % 2 == 0) c.state else c.next_state;
+            const next = if (step % 2 == 0) c.next_state else c.state;
+            k.cohortStep(&d.cohort, e, at(current, 0), at(c.kappa, 0), r(d.weights.weights.rnn), r(d.weights.weights.markov_w1), at(c.z, 0), at(next, 0), at(c.lambda, 0), held, @intCast(step), streams);
+            k.cohortLogits(&d.cohort, e, at(c.base, 0), at(d.weights.phi, 0), at(d.weights.beta, 0), at(c.lambda, 0), at(c.logits, 0), @intCast(order.first[step]), streams);
+            k.cohortPick(&d.cohort, e, at(c.logits, 0), held, @intCast(step), streams);
         }
         e.end();
         cb.commit();
-        try failed(cb, "chained block");
-        for (items, 0..) |item, i| {
-            const depth: usize = @min(item.depth, 7);
-            const lane = d.contexts.getPtr(item.stream).?;
-            for (0..depth) |step| {
-                const token = tokens[i * 8 + step + 1];
+        try failed(cb, "cohort hold");
+        for (order.slots[0..items.len], 0..) |item, s| {
+            const lane = d.contexts.getPtr(items[item].stream).?;
+            for (0..depths[item]) |step| {
+                const token = tokens[s * 8 + step + 1];
                 if (token >= state.vocabulary) return error.DraftNonfinite;
                 lane.held[step] = token;
             }
-            lane.held_len = @intCast(depth);
+            lane.held_len = depths[item];
         }
     }
 
@@ -375,16 +445,16 @@ pub const Drafter = struct {
         const d = cast(ptr);
         if (items.len == 0) return;
         var deepest: usize = 0;
-        for (items, 0..) |item, i| {
+        var greedy = items.len <= k.cohort_streams;
+        for (items) |item| {
             const lane = d.contexts.getPtr(item.stream) orelse return error.DraftStreamUnknown;
             if (item.depth == 0 or item.position == 0) return error.DraftDepth;
             if (lane.end != item.position - 1) return error.DraftContextGap;
             deepest = @max(deepest, @min(item.depth, 7));
-            @memset((try d.slot(i)).state.slice(u16, state.rank), 0);
+            greedy = greedy and item.sampling == null;
         }
-        var greedy = items.len <= chain_streams;
-        for (items) |item| greedy = greedy and item.sampling == null;
-        if (greedy) return d.holdChained(items);
+        if (greedy) return d.holdCohort(items);
+        for (items, 0..) |_, i| @memset((try d.slot(i)).state.slice(u16, state.rank), 0);
         const previous = try d.gpa.alloc(u32, items.len);
         defer d.gpa.free(previous);
         const values = try d.gpa.alloc(f32, state.vocabulary);
