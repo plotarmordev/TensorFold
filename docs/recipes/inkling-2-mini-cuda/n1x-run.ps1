@@ -17,13 +17,19 @@ function Run([string]$exe, [string[]]$argv) {
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
 }
 
+# nvidia-smi on the laptop also lists an NVIDIA NPU, so every query names the N1X by its index, found by name
+$gpus = nvidia-smi --query-gpu=index,name --format=csv,noheader
+$gpu = @($gpus | Where-Object { $_ -match 'N1X' })
+if ($gpu.Count -ne 1) { throw "want one N1X in nvidia-smi, got: $($gpus -join '; ')" }
+$gpu = $gpu[0].Split(',')[0].Trim()
+
 # The WDDM device pool the driver gives CUDA (the N1X shares it with the CPU; firmware sets its size), MiB
 function Pool([string]$label) {
-    Write-Output "$label`: $(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader)"
+    Write-Output "$label`: $(nvidia-smi -i $gpu --query-gpu=memory.used,memory.total --format=csv,noheader)"
 }
 
 Run (Join-Path $env:CUDA_PATH 'bin\nvcc.exe') @('--version')
-nvidia-smi --query-gpu=name,driver_version,power.limit,clocks.max.sm --format=csv,noheader
+nvidia-smi -i $gpu --query-gpu=name,driver_version,power.limit,clocks.max.sm --format=csv,noheader
 Write-Output "power plan: $(powercfg /getactivescheme)"
 $test = 'zig-out\bin\tf-cuda-test.exe'
 $server = 'zig-out\native\bin\tensorfold-native.exe'
@@ -97,7 +103,7 @@ try {
                     $s.last = $clock.Elapsed.TotalSeconds
                 }
             }
-            $used = [int](nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)
+            $used = [int](nvidia-smi -i $gpu --query-gpu=memory.used --format=csv,noheader,nounits)
             if ($used -gt $peak) { $peak = $used }
         }
         $total = 0
