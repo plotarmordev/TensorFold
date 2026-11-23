@@ -146,7 +146,7 @@ pub fn explain(_: ?*anyopaque, err: anyerror) ?[]const u8 {
     return switch (err) {
         error.Inkling2MiniLoopsFixed => "--loops: Inkling 2 Mini runs the passes its loop_config names (3 over layers 6 to 17); serve without --loops",
         error.Inkling2MiniImages => "images: Inkling 2 Mini on CUDA reads text only until its vision slice (C6) lands; send text parts only",
-        error.Inkling2MiniNoRollback => "Inkling 2 Mini on CUDA keeps every verified row (no drafts are offered to roll back)",
+        error.Inkling2MiniNoRollback => "Inkling 2 Mini could not restore the verified window's requested prefix",
         error.Inkling2NotLooped => "Inkling 2 Small (model_type inkling2) has no CUDA engine yet: this one serves inkling2_loop",
         error.Inkling2WeightMap => "the checkpoint's tensors differ from what its config.json implies (the log names each one)",
         error.Inkling2Nvfp4Denominator => "an NVFP4 expert's outer_scale_denominator is not 2688, the one the checkpoint's factors are checked against",
