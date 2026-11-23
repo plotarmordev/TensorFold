@@ -13,7 +13,7 @@ Python 3.9 or later supplies the test driver.
 2. Execute the test driver with a new output directory.
 
    ```sh
-   python3 tools/zig/check_weight_reads.py --output /tmp/tensorfold-weight-results
+   python3 tools/zig/check_weight_reads.py --output .scratch/tensorfold-weight-results
    ```
 
 Use `--storage-directory /path/to/storage` to select a filesystem for the temporary fixtures.
