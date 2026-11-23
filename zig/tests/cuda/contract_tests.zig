@@ -81,13 +81,14 @@ const images = struct {
 
 /// Gates 1-4 on every registered CUDA kernel and each control at its own gate, then gate 5; `only`: contract_after.zig.
 pub fn run(gpu: check.Gpu, only: []const []const u8) !void {
-    var t0: i96 = undefined;
-    const t = try registered(gpu, only, &t0);
-    try @import("contract_finish.zig").run(gpu, only, t, t0);
+    var t: g.Tally = .{};
+    var t0 = check.now(gpu.io);
+    const gates = registered(gpu, only, &t0, &t);
+    try @import("contract_finish.zig").run(gpu, only, t, t0, gates);
 }
 
 // The registered owners and modules end here, before the standalone suites allocate their working sets.
-fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
+fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96, tally: *g.Tally) !void {
     const a = gpu.gpa;
     if (!kk.available) return error.BuiltWithoutKernels;
     if (!options.controls) {
@@ -639,10 +640,8 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     defer weight_only.destroy(a);
     const families = try @import("contract_family_sets.zig").Sets.init(gpu, s, a, &kernels, &affine4, cap);
     defer families.deinit();
-    var t: g.Tally = .{};
     try @import("contract_dump.zig").run(a, kernels.items);
     t0.* = check.now(gpu.io);
     @import("contract_after.zig").keep(&kernels, only);
-    try g.runAll(a, kernels.items, 0x6b63, &t);
-    return t;
+    try g.runAll(a, kernels.items, 0x6b63, tally);
 }

@@ -350,7 +350,8 @@ pub fn one(a: std.mem.Allocator, which: Gate, k: Kernel, seed: u64) !Verdict {
 
 /// Gates 1-4 on each kernel, and each control at its own gate (which must fail).
 pub fn runAll(a: std.mem.Allocator, kernels: []const Kernel, seed: u64, t: *Tally) !void {
-    for (kernels) |k| {
+    for (kernels, 1..) |k, i| {
+        defer if (!quiet) std.debug.print("COUNT {d} of {d}: {d} pass, {d} fail, {d} known findings; {d} of {d} controls red\n", .{ i, kernels.len, t.passed, t.failed, t.known, t.caught, t.controls });
         defer if (k.vt.release) |free| free(k.ctx);
         const s = std.hash.Wyhash.hash(seed, k.spec.name);
         if (k.control) |g| {

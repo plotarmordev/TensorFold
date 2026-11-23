@@ -217,6 +217,7 @@ pub fn cuda(b: *std.Build, runner: *std.Build.Step.Compile, controls: ?std.Build
     for (names, h3_image) |n, file| if (file) |f| install.dependOn(&b.addInstallFile(f, b.fmt("fatbin/{s}.fatbin", .{n})).step);
     const run = b.addRunArtifact(runner);
     run.addArg("kernel-contract");
+    run.addArgs(b.option([]const []const u8, "contract-only", "kernel-contract: only the kernels whose name holds this word (repeatable)") orelse &.{});
     b.step("kernel-contract", "Every registered CUDA kernel through the contract's gates on this GPU, each control red").dependOn(&run.step);
     const prefill_many = b.addRunArtifact(runner);
     prefill_many.addArg("qmm-prefill-many-contract");
