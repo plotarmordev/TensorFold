@@ -1,0 +1,4 @@
+- `docs/recipes/inkling-2-mini-metal/engines.sh` measures Inkling 2 Mini on the M5 Ultra under TensorFold, llama.cpp (b12406 or later, the IQ4_NL GGUF) and Strata v0.2.19's Metal engine (the SQ-20 and SQ-10 packs) at 1, 4 and 64 streams.
+  - One engine at a time under `/tmp/tensorfold-model.lock`; setup and measure are logged separately, and each run is capped by `timeout 600`.
+  - Our bench's 256 greedy tokens, medians of 3, same-prompt and diverse-prompt cells.
+  - The digests of every staged input are pinned. No receipt yet: the Mac GPU window and the Desk's setup are pending.
