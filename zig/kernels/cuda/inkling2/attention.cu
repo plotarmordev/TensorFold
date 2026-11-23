@@ -139,6 +139,34 @@ __device__ __forceinline__ float scaled(float o, float a, float p, float b) {
     return __fadd_rn(__fmul_rn(o, a), __fmul_rn(p, b));
 }
 
+#if __CUDA_ARCH__ >= 900 && !defined(TF_INK2_KV_LOADS)
+// The global ring is 64-row aligned; a row's 256 bytes fit one bulk copy. Shared rows retain their bank padding.
+__device__ __forceinline__ void stageRow(uint16_t* ks, uint16_t* vs, const uint16_t* kc, const uint16_t* vc,
+                                         int kt, int k_lo, int k_hi, uint64_t* ready, int phase) {
+    const int row = threadIdx.x & 63;
+    const bool key = threadIdx.x < 64;
+    uint16_t* dst = (key ? ks : vs) + row * kPad;
+    const uint16_t* src = (key ? kc : vc) + row * kDim;
+    const uint32_t bar = static_cast<uint32_t>(__cvta_generic_to_shared(ready));
+    if (kt + row >= k_lo && kt + row <= k_hi) {
+        asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], 256;" :: "r"(bar) : "memory");
+        asm volatile("cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [%0], [%1], 256, [%2];"
+                     :: "r"(static_cast<uint32_t>(__cvta_generic_to_shared(dst))), "l"(src), "r"(bar) : "memory");
+    } else {
+        for (int col = 0; col < kDim; col += 8) *reinterpret_cast<uint4*>(dst + col) = make_uint4(0, 0, 0, 0);
+        asm volatile("{ .reg .b64 state; mbarrier.arrive.shared::cta.b64 state, [%0]; }"
+                     :: "r"(bar) : "memory");
+    }
+    uint32_t done;
+    do {
+        asm volatile("{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2;"
+                     " selp.b32 %0, 1, 0, p; }"
+                     : "=r"(done) : "r"(bar), "r"(phase) : "memory");
+    } while (!done);
+}
+#endif
+
 // 64 (row, head) pairs of a key head over a block's keys (FOLD: a global chunk, split: a sub-chunk, else a chunk).
 template <bool FOLD>
 __device__ __forceinline__ void attnTile(const uint16_t* __restrict__ q, const uint16_t* __restrict__ kc,
@@ -195,6 +223,16 @@ __device__ __forceinline__ void attnTile(const uint16_t* __restrict__ q, const u
     if (FOLD)
         for (int n = 0; n < 16; ++n) O[n][0] = O[n][1] = O[n][2] = O[n][3] = 0.0f;
     const size_t head_base = s.off + static_cast<size_t>(kvh) * ring * kDim;
+#if __CUDA_ARCH__ >= 900 && !defined(TF_INK2_KV_LOADS)
+    __shared__ __align__(8) uint64_t ready;
+    if (threadIdx.x == 0) {
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], 128;"
+                     :: "r"(static_cast<uint32_t>(__cvta_generic_to_shared(&ready))) : "memory");
+        asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
+    }
+    __syncthreads();
+    int page = 0;
+#endif
     const int step = FOLD ? kSub : b_hi - b_lo + 1;
     for (int s_lo = b_lo; s_lo <= b_hi && s_lo <= tile_hi; s_lo += step) {
         const int s_hi = s_lo + step - 1;
@@ -205,6 +243,10 @@ __device__ __forceinline__ void attnTile(const uint16_t* __restrict__ q, const u
         for (int kt = k_lo & ~(kKeys - 1); kt <= k_hi; kt += kKeys) {
             __syncthreads();
             const size_t slot0 = static_cast<size_t>(kt % ring);
+#if __CUDA_ARCH__ >= 900 && !defined(TF_INK2_KV_LOADS)
+            stageRow(ks, vs, kc + head_base + slot0 * kDim, vc + head_base + slot0 * kDim,
+                     kt, k_lo, k_hi, &ready, page++ & 1);
+#else
             for (int e = threadIdx.x; e < kKeys * (kDim / 8); e += 128) {
                 const int key = e >> 4, col = (e & 15) * 8;
                 const int kp = kt + key;
@@ -217,6 +259,7 @@ __device__ __forceinline__ void attnTile(const uint16_t* __restrict__ q, const u
                 *reinterpret_cast<uint4*>(ks + key * kPad + col) = kv;
                 *reinterpret_cast<uint4*>(vs + key * kPad + col) = vv;
             }
+#endif
             __syncthreads();
             if (!busy) continue;
             float sc[8][4];

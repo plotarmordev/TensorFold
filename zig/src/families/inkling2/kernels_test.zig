@@ -32,6 +32,20 @@ test "inkling2 kernels: chunks and scratch at the context targets (1M x 1 and 8 
     try t.expectEqual(@as(u32, 131136), k.Layer.global(131073).ring);
 }
 
+test "inkling2 kernels: 64-key cache pages stay aligned and never straddle the ring" {
+    for ([_]k.Layer{ k.Layer.sliding(1024, 512), k.Layer.global(8193) }) |layer| {
+        try t.expectEqual(@as(u32, 0), layer.ring % k.tile_keys);
+        const head_bytes = layer.cacheBytes(1);
+        for ([_]usize{ 0, 63, 64, 65, 127, 128, 1023, 1024, 8191, 8192 }) |pos| {
+            const page = pos & ~@as(usize, k.tile_keys - 1);
+            const slot = page % @as(usize, layer.ring);
+            const byte_offset = slot * k.head_dim * 2;
+            try t.expectEqual(@as(usize, 0), byte_offset % (k.tile_keys * k.head_dim * 2));
+            try t.expect(byte_offset + k.tile_keys * k.head_dim * 2 <= head_bytes);
+        }
+    }
+}
+
 test "inkling2 kernels: the loader type-checks in a build with kernels" {
     _ = &k.Kernels.load;
     _ = &k.Kernels.unload;
