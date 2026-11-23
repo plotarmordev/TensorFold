@@ -1,0 +1,36 @@
+{"label": "c2-ctl-a", "prompt": "code", "streams": 1, "aggregate_tps": 123.2, "end_to_end_tps": 120.0, "tokens_per_round": 3.368, "failed": 0, "alone": {"equal": 3, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-a", "prompt": "code", "streams": 2, "aggregate_tps": 188.9, "end_to_end_tps": 185.2, "tokens_per_round": 2.813, "failed": 0, "alone": {"equal": 6, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-a", "prompt": "code", "streams": 4, "aggregate_tps": 271.2, "end_to_end_tps": 267.6, "tokens_per_round": 2.813, "failed": 0, "alone": {"equal": 12, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-a", "prompt": "code", "streams": 16, "aggregate_tps": 262.2, "end_to_end_tps": 262.0, "tokens_per_round": 2.813, "failed": 0, "alone": {"equal": 48, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-a", "prompt": "chat", "streams": 1, "aggregate_tps": 67.5, "end_to_end_tps": 65.8, "tokens_per_round": 2.286, "failed": 0, "alone": {"equal": 3, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-a", "prompt": "chat", "streams": 2, "aggregate_tps": 121.9, "end_to_end_tps": 118.7, "tokens_per_round": 2.327, "failed": 0, "alone": {"equal": 6, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-a", "prompt": "chat", "streams": 4, "aggregate_tps": 136.5, "end_to_end_tps": 134.4, "tokens_per_round": 2.327, "failed": 0, "alone": {"equal": 12, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-a", "prompt": "chat", "streams": 16, "aggregate_tps": 130.5, "end_to_end_tps": 130.5, "tokens_per_round": 2.327, "failed": 0, "alone": {"equal": 48, "unequal": 0, "failed": 0}}
+{"label": "c2-cand", "prompt": "code", "streams": 1, "aggregate_tps": 121.7, "end_to_end_tps": 118.7, "tokens_per_round": 3.368, "failed": 0, "alone": {"equal": 3, "unequal": 0, "failed": 0}}
+{"label": "c2-cand", "prompt": "code", "streams": 2, "aggregate_tps": 205.6, "end_to_end_tps": 201.3, "tokens_per_round": 2.813, "failed": 0, "alone": {"equal": 6, "unequal": 0, "failed": 0}}
+{"label": "c2-cand", "prompt": "code", "streams": 4, "aggregate_tps": 310.3, "end_to_end_tps": 305.5, "tokens_per_round": 2.813, "failed": 0, "alone": {"equal": 12, "unequal": 0, "failed": 0}}
+{"label": "c2-cand", "prompt": "code", "streams": 16, "aggregate_tps": 344.1, "end_to_end_tps": 343.7, "tokens_per_round": 2.813, "failed": 0, "alone": {"equal": 48, "unequal": 0, "failed": 0}}
+{"label": "c2-cand", "prompt": "chat", "streams": 1, "aggregate_tps": 90.5, "end_to_end_tps": 88.1, "tokens_per_round": 2.37, "failed": 0, "alone": {"equal": 3, "unequal": 0, "failed": 0}}
+{"label": "c2-cand", "prompt": "chat", "streams": 2, "aggregate_tps": 170.1, "end_to_end_tps": 166.0, "tokens_per_round": 2.327, "failed": 0, "alone": {"equal": 6, "unequal": 0, "failed": 0}}
+{"label": "c2-cand", "prompt": "chat", "streams": 4, "aggregate_tps": 256.5, "end_to_end_tps": 251.9, "tokens_per_round": 2.327, "failed": 0, "alone": {"equal": 12, "unequal": 0, "failed": 0}}
+{"label": "c2-cand", "prompt": "chat", "streams": 16, "aggregate_tps": 234.6, "end_to_end_tps": 234.2, "tokens_per_round": 2.327, "failed": 0, "alone": {"equal": 48, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-b", "prompt": "code", "streams": 1, "aggregate_tps": 112.2, "end_to_end_tps": 109.0, "tokens_per_round": 3.325, "failed": 0, "alone": {"equal": 3, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-b", "prompt": "code", "streams": 2, "aggregate_tps": 186.4, "end_to_end_tps": 180.8, "tokens_per_round": 2.813, "failed": 0, "alone": {"equal": 6, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-b", "prompt": "code", "streams": 4, "aggregate_tps": 239.6, "end_to_end_tps": 235.9, "tokens_per_round": 2.813, "failed": 0, "alone": {"equal": 12, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-b", "prompt": "code", "streams": 16, "aggregate_tps": 243.9, "end_to_end_tps": 243.9, "tokens_per_round": 2.813, "failed": 0, "alone": {"equal": 48, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-b", "prompt": "chat", "streams": 1, "aggregate_tps": 82.4, "end_to_end_tps": 80.1, "tokens_per_round": 2.56, "failed": 0, "alone": {"equal": 3, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-b", "prompt": "chat", "streams": 2, "aggregate_tps": 139.5, "end_to_end_tps": 133.6, "tokens_per_round": 2.327, "failed": 0, "alone": {"equal": 6, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-b", "prompt": "chat", "streams": 4, "aggregate_tps": 187.8, "end_to_end_tps": 183.6, "tokens_per_round": 2.327, "failed": 0, "alone": {"equal": 12, "unequal": 0, "failed": 0}}
+{"label": "c2-ctl-b", "prompt": "chat", "streams": 16, "aggregate_tps": 222.0, "end_to_end_tps": 221.6, "tokens_per_round": 2.327, "failed": 0, "alone": {"equal": 48, "unequal": 0, "failed": 0}}
+{"label": "tensorfold", "prompt": "code", "streams": 1, "aggregate_tps": 116.2, "end_to_end_tps": 112.3, "tokens_per_round": 3.241, "failed": 0, "alone": null}
+{"label": "tensorfold", "prompt": "code", "streams": 4, "aggregate_tps": 295.9, "end_to_end_tps": 292.0, "tokens_per_round": 2.813, "failed": 0, "alone": null}
+{"label": "tensorfold", "prompt": "code", "streams": 64, "aggregate_tps": 340.9, "end_to_end_tps": 341.8, "tokens_per_round": 2.813, "failed": 0, "alone": null}
+{"label": "tensorfold", "prompt": "chat", "streams": 1, "aggregate_tps": 93.8, "end_to_end_tps": 90.7, "tokens_per_round": 2.306, "failed": 0, "alone": null}
+{"label": "tensorfold", "prompt": "chat", "streams": 4, "aggregate_tps": 261.4, "end_to_end_tps": 256.4, "tokens_per_round": 2.327, "failed": 0, "alone": null}
+{"label": "tensorfold", "prompt": "chat", "streams": 64, "aggregate_tps": 232.2, "end_to_end_tps": 232.8, "tokens_per_round": 2.327, "failed": 0, "alone": null}
+{"label": "omlx", "prompt": "code", "streams": 1, "aggregate_tps": 0.0, "end_to_end_tps": 45.1, "tokens_per_round": null, "failed": 0, "alone": null}
+{"label": "omlx", "prompt": "code", "streams": 4, "aggregate_tps": 0.0, "end_to_end_tps": 107.0, "tokens_per_round": null, "failed": 0, "alone": null}
+{"label": "omlx", "prompt": "code", "streams": 64, "aggregate_tps": 0.0, "end_to_end_tps": 209.3, "tokens_per_round": null, "failed": 0, "alone": null}
+{"label": "omlx", "prompt": "chat", "streams": 1, "aggregate_tps": 8.4, "end_to_end_tps": 8.3, "tokens_per_round": 3.556, "failed": 0, "alone": null}
+{"label": "omlx", "prompt": "chat", "streams": 4, "aggregate_tps": 86.5, "end_to_end_tps": 79.1, "tokens_per_round": 2.0, "failed": 0, "alone": null}
+{"label": "omlx", "prompt": "chat", "streams": 64, "aggregate_tps": 229.3, "end_to_end_tps": 227.6, "tokens_per_round": 1.797, "failed": 0, "alone": null}
