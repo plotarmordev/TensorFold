@@ -9,10 +9,8 @@ const usage = "usage: tf-qwen3-asr MODEL_DIR CLIP.wav [--case DIR [--ids-only] [
     "  with a case, a gate: exit 1 when the prompt or transcript differs or a stage's cosine is under X (default 0.99)\n";
 const eos = [_]u32{ 151645, 151643 };
 
-fn seconds() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) * 1e-9;
+fn seconds(io: std.Io) f64 {
+    return @as(f64, @floatFromInt(std.Io.Clock.awake.now(io).toNanoseconds())) * 1e-9;
 }
 
 fn widen(bits: u16) f64 {
@@ -108,10 +106,10 @@ pub fn main(init: std.process.Init) !u8 {
     defer gpa.free(bytes);
     const samples = try host.wav.decode(gpa, bytes);
     defer gpa.free(samples);
-    const t_mel = seconds();
+    const t_mel = seconds(io);
     var feats = try host.mel.features(gpa, samples, cfg.audio.mels);
     defer feats.deinit(gpa);
-    const mel_s = seconds() - t_mel;
+    const mel_s = seconds(io) - t_mel;
     const plan = try host.chunks.Plan.init(cfg.audio, feats.frames);
     var tk = try tok.loadTokenizer(io, gpa, args[1]);
     defer tk.deinit();
@@ -128,7 +126,7 @@ pub fn main(init: std.process.Init) !u8 {
     var name_buf: [256]u8 = undefined;
     var s = try cuda.Stream.init(&driver, false);
     defer s.deinit();
-    const t_load = seconds();
+    const t_load = seconds(io);
     const opts: qa.Options = .{ .audio_rows = plan.rows, .pass_rows = ids.len, .positions = ids.len + max_new + 1 };
     const m = try qa.Model.load(gpa, io, &driver, s, args[1], cfg, opts);
     defer m.deinit();
@@ -139,7 +137,7 @@ pub fn main(init: std.process.Init) !u8 {
             return @as(f64, @floatFromInt(x)) / (1 << 30);
         }
     }.f;
-    std.debug.print("GPU {s}: weights {d:.2} GiB, scratch {d:.2} GiB, load {d:.2} s\n", .{ ctx.name(&name_buf) catch "?", gib(m.weight_bytes), gib(m.st.bytes - m.weight_bytes), seconds() - t_load });
+    std.debug.print("GPU {s}: weights {d:.2} GiB, scratch {d:.2} GiB, load {d:.2} s\n", .{ ctx.name(&name_buf) catch "?", gib(m.weight_bytes), gib(m.st.bytes - m.weight_bytes), seconds(io) - t_load });
     std.debug.print("CLIP {d:.2} s: {d} frames, {d} chunks, {d} rows, {d} windows; prompt {d} ids\n", .{ @as(f64, @floatFromInt(samples.len)) / 16000.0, feats.frames, plan.chunks, plan.rows, plan.windows(), ids.len });
 
     var case: ?host.case.Case = if (case_dir) |dir| try host.case.Case.open(gpa, io, dir) else null;
@@ -159,18 +157,18 @@ pub fn main(init: std.process.Init) !u8 {
     // a warm pass first: the timed pass after it sees no cuBLASLt plan creation or module load
     _ = try m.encode(feats, rows_buf.ptr, null);
     try s.synchronize();
-    const t_tower = seconds();
+    const t_tower = seconds(io);
     const rows = try m.encode(feats, rows_buf.ptr, null);
     try s.synchronize();
-    const tower_s = seconds() - t_tower;
+    const tower_s = seconds(io) - t_tower;
     if (cmp) |*c| if (!ids_only) {
         _ = try m.encode(feats, rows_buf.ptr, .{ .ctx = c, .put = Compare.put });
         try c.finishConvs();
     };
-    const t_prompt = seconds();
+    const t_prompt = seconds(io);
     const splice: qa.Splice = .{ .ptr = rows_buf.ptr, .at = at, .n = rows };
     var next = try m.forward(ids, 0, splice);
-    const prompt_s = seconds() - t_prompt;
+    const prompt_s = seconds(io) - t_prompt;
     var out: std.ArrayList(u32) = .empty;
     defer out.deinit(gpa);
     var margins: std.ArrayList(f32) = .empty;
@@ -179,14 +177,14 @@ pub fn main(init: std.process.Init) !u8 {
     if (cmp) |*c| if (!ids_only) { // the prompt pass's stages, then the pass again: its caches written as before
         _ = try m.forwardDump(ids, 0, splice, .{ .ctx = c, .put = Compare.put });
     };
-    const t_dec = seconds();
+    const t_dec = seconds(io);
     while (out.items.len < max_new) {
         try out.append(gpa, next);
         if (std.mem.indexOfScalar(u32, &eos, next) != null) break;
         next = try m.forward(&.{next}, ids.len + out.items.len - 1, null);
         try margins.append(gpa, m.last_margin);
     }
-    const dec_s = seconds() - t_dec;
+    const dec_s = seconds(io) - t_dec;
     const body = if (out.items.len > 0 and std.mem.indexOfScalar(u32, &eos, out.items[out.items.len - 1]) != null) out.items[0 .. out.items.len - 1] else out.items;
     const reply = try tk.decode(gpa, body, true);
     defer gpa.free(reply);
