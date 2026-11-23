@@ -90,37 +90,35 @@ awk -v got="$(median sq10-64)" -v want="$published" 'BEGIN {
         want, (ratio >= 0.9 && ratio <= 1.1) ? "counted" : "not counted, nothing in this receipt is a bar"
 }'
 
-if [ -z "$server" ]; then
+[ -n "$server" ] || {
     echo "[http] not run: strata-control 0.1.65 (serve/server.py) is not staged under $pilot/strata-inkling-sq20"
     exit 1
-else
-    control=$(dirname "$(dirname "$server")")
-    python=$control/python/bin/python3
-    python3 -c 'import json, sys; json.dump(json.load(open("tools/bench_prompts.json"))[:1], sys.stdout)' \
-        >"$out/same.json"
-    for name in sq20 sq10; do
-        eval "pack=\$$name"
-        "$python" "$control/tools/inkling_tokenizer.py" --strata "$pack" --out "$out/tokenizer-$name"
-        for streams in 1 4 64; do
-            cat >"$out/$name.json" <<EOF
+}
+control=$(dirname "$(dirname "$server")")
+python=$control/python/bin/python3
+python3 -c 'import json, sys; json.dump(json.load(open("tools/bench_prompts.json"))[:1], sys.stdout)' >"$out/same.json"
+for name in sq20 sq10; do
+    eval "pack=\$$name"
+    "$python" "$control/tools/inkling_tokenizer.py" --strata "$pack" --out "$out/tokenizer-$name"
+    for streams in 1 4 64; do
+        cat >"$out/$name.json" <<EOF
 {"exe": "$strata", "args": ["--native", "$pack", "--max-context", "32768"], "cwd": "/work", "arch": "inkling2_loop",
  "tokenizer": "$out/tokenizer-$name", "model_name": "$name", "drafting": "dspark", "parallel": $streams}
 EOF
-            PYTHONPATH=$control:$control/tools "$python" "$server" --engine strata --config "$out/$name.json" \
-                --port 8242 --no-api-key >"$out/server-$name-$streams.log" 2>&1 &
-            pid=$!
-            until python3 -c 'import urllib.request as u; u.urlopen("http://127.0.0.1:8242/v1/models")' 2>/dev/null; do
-                kill -0 "$pid" 2>/dev/null || { tail -30 "$out/server-$name-$streams.log"; exit 1; }
-                sleep 2
-            done
-            for prompts in "$out/same.json" tools/bench_prompts.json; do
-                python3 tools/bench_concurrent.py http://127.0.0.1:8242 "$name" --levels "$streams" --tokens 256 \
-                    --reps 3 --temperatures 0 --prompts "$prompts" --label "$name $(basename "$prompts" .json)" \
-                    --output "$out/http-$name-$streams-$(basename "$prompts")"
-            done
-            kill "$pid"
-            wait "$pid" || :
-            grep -h -o 'kv_dtype=[a-z0-9]*' "$out/server-$name-$streams.log" | sort -u
+        PYTHONPATH=$control:$control/tools "$python" "$server" --engine strata --config "$out/$name.json" \
+            --port 8242 --no-api-key >"$out/server-$name-$streams.log" 2>&1 &
+        pid=$!
+        until python3 -c 'import urllib.request as u; u.urlopen("http://127.0.0.1:8242/v1/models")' 2>/dev/null; do
+            kill -0 "$pid" 2>/dev/null || { tail -30 "$out/server-$name-$streams.log"; exit 1; }
+            sleep 2
         done
+        for prompts in "$out/same.json" tools/bench_prompts.json; do
+            python3 tools/bench_concurrent.py http://127.0.0.1:8242 "$name" --levels "$streams" --tokens 256 \
+                --reps 3 --temperatures 0 --prompts "$prompts" --label "$name $(basename "$prompts" .json)" \
+                --output "$out/http-$name-$streams-$(basename "$prompts")"
+        done
+        kill "$pid"
+        wait "$pid" || :
+        grep -h -o 'kv_dtype=[a-z0-9]*' "$out/server-$name-$streams.log" | sort -u
     done
-fi
+done
