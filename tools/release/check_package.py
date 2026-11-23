@@ -17,8 +17,9 @@ parser.add_argument("--path-checker", type=Path, required=True)
 parser.add_argument("script", nargs="?", type=Path, default=root / "tools/release/package.sh")
 options = parser.parse_args()
 script = options.script.resolve()
-(root / ".zig-cache").mkdir(exist_ok=True)
-receipt = Path(tempfile.mkdtemp(prefix="package-repeat-", dir=root / ".zig-cache"))
+cache = Path(os.environ.get("ZIG_LOCAL_CACHE_DIR") or root / ".zig-cache")
+cache.mkdir(parents=True, exist_ok=True)
+receipt = Path(tempfile.mkdtemp(prefix="package-repeat-", dir=cache))
 output = receipt / "archives"
 output.mkdir()
 binary = receipt / "tensorfold-native"
