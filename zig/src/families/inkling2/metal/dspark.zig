@@ -451,8 +451,8 @@ pub const Drafter = struct {
         }
     }
 
-    /// A greedy hold of up to `cohort_streams` runs step-major in one command buffer; otherwise every stream's block and
-    /// first step in one command buffer, then one command buffer a later step for all of them.
+    /// A greedy hold of up to `cohort_streams` streams runs step-major, all depths in one command buffer. A sampled or
+    /// larger hold encodes one command buffer per depth for all its streams, with each block in the first.
     fn holdFn(ptr: *anyopaque, items: []const dr.Hold) anyerror!void {
         const d = cast(ptr);
         if (items.len == 0) return;
