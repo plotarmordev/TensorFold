@@ -336,11 +336,16 @@ needs:
    Two parts of the 1013 need no laptop: the offline audit, which a full run adds on any OS, counts 203 problems
    over the 1755 records at this branch's head, and 172 of the 1748 launches live on sm_121 have no recorded
    registers for an nvcc 13.5 image (99 for 13.3, 7 for 13.0), which gate 5 counts as it did `d3_cfg_mix` on TOP.
-8. Three of 844 kernels fail gates 1-4 at `2d0a39ce3`. `d3_cfg_mix` was the test's (above); the receipt does not
-   name the other two. Its other FAIL lines are of kernels with a declared known finding, which print FAIL
-   and then KNOWN on every OS: qwen35 decode attention ("a NaN key in one of a row's several chunks leaves the row
-   finite", bf16 and fp8 cache, MT2) and `tf_glm_scores` ("relu is fmaxf(x, 0) ... a NaN dot scores 0 where float64
-   keeps the NaN"). Making those propagate NaN changes served kernels on every OS, which this card did not do.
+8. Three of 844 kernels failed gates 1-4 at `2d0a39ce3`. `d3_cfg_mix` refused gate 1's five-row shape;
+   that fixture now accepts more rows as more logits. At `03e9b18df`, the laptop's next full run reported two
+   remaining gate failures: `tf_me_conv` left its signed interval at gate 4 because fp32 `expf(-s)` overflows
+   for a stress sum of -89, yielding -0 instead of float64 silu's tiny negative result; the reference now
+   includes zero in that interval. `tf_idol_dec_attention` exceeded its shapes bound by 1.07 at 16x1000x65:
+   the reference rounded P at the final row max, while the tiled kernel rounds against each tile's running
+   max before rescaling. Its reference now follows that tile grid. Both corrections await a laptop run.
+   The 11 other non-control FAIL lines are declared known findings: qwen35 decode attention can leave a
+   NaN-key row finite, and `tf_glm_scores` maps a NaN score to zero via `fmaxf`. Those served-kernel
+   behaviors are unchanged by this card.
 9. A full contract inside a laptop window. It is one thread and one CUDA stream a process, so shards (above) are
    how it uses more cores, but the words and the shard filter only after every kernel's fixture is built: each
    process pays that build and holds its GPU memory, which N processes multiply. Run one family at a time
