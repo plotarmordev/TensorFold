@@ -51,6 +51,8 @@ for _ in range(600):
 raise SystemExit("llama-server exited or did not answer /health in 10 min:\n" + open(log).read()[-4000:])
 EOF
 mem "server loaded"
+# the receipt names what the server did with -c and -ngl
+grep -m 2 -E 'n_ctx_slot|offloaded' "$out/server.log" || :
 for level in 1 4; do
     python3 tools/bench_concurrent.py http://127.0.0.1:8189 inkling-2-mini --levels "$level" --tokens 256 --reps 3 \
         --temperatures 0 --label "llama-$level" --output "$out/streams-$level.json"
@@ -80,4 +82,11 @@ ids = lambda s: post("/tokenize", {"content": s})["tokens"]
 w, g = ids(want), ids(got)
 same = next((i for i, (a, b) in enumerate(zip(w, g)) if a != b), min(len(w), len(g)))
 print(f"RESULT llama.cpp q4_k_m greedy vs float64 reference: first {same} of {len(w)} tokens equal: {got!r}")
+# teacher-forced, as tf-cuda-test inkling2-mini-ref scores TensorFold: after the reference's own prefix, is llama.cpp's
+# next pick the reference's token? A free run says nothing past its first difference.
+start = post("/tokenize", {"content": prompt, "add_special": True})["tokens"]
+piece = lambda t: post("/detokenize", {"tokens": [t]})["content"]
+pick = lambda i: post("/completion", {"prompt": start + w[:i], "n_predict": 1, "temperature": 0, "cache_prompt": False})["content"]
+misses = [i for i in range(len(w)) if pick(i) != piece(w[i])]
+print(f"RESULT llama.cpp q4_k_m teacher-forced on the float64 reference: {len(w) - len(misses)} of {len(w)} picks equal, differing at {misses}")
 EOF
