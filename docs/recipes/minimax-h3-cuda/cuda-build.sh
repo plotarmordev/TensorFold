@@ -45,7 +45,7 @@ if [ "${H3_BUILD:-}" = limits ]; then
         --prefix /work/release
     cp -r /work/release/bin/tf-cuda-limits /work/release/fatbin "$cuda"
     status=0
-    "$cuda/tf-cuda-limits" "$cuda/fatbin" h3 h3_image_decoder h3_image_prompt h3_image_modulation contract_controls \
+    "$cuda/tf-cuda-limits" "$cuda/fatbin" ${LIMITS_IMAGES:-h3 h3_image_decoder h3_image_prompt h3_image_modulation contract_controls} \
         >"$out/limits.log" 2>&1 || status=$?
     tail -n 3 "$out/limits.log"
     echo "kernel-contract-limits exit $status"
