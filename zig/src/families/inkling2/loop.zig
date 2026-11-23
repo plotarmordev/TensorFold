@@ -2,8 +2,9 @@
 //! C2 stand-in: the arithmetic #4337's Metal implementation runs; the kernel contract for these is C2's slice.
 const std = @import("std");
 const cuda = @import("cuda");
+const config = @import("config.zig");
 
-pub const max_blocks = 8;
+pub const max_blocks = config.max_blocks;
 pub const max_queries = 4;
 pub const max_gates = 3;
 pub const max_rank = 128;
