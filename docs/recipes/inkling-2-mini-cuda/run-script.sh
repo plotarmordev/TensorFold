@@ -35,6 +35,7 @@ zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=Rel
 bin=/work/sm121/bin
 rm -rf "$out"
 mkdir -p "$out"
+"$bin/tf-cuda-test" kernel-contract "inkling2 loop"
 # #4387's serving checks take any 4,096+ ids; these are fixed so every run sees the same prompt
 python3 -c 'import random; r = random.Random(4387); print(" ".join(str(r.randrange(1000, 199000)) for _ in range(4200)))' >"$out/ids.txt"
 "$bin/tf-cuda-test" inkling2-serving "$model" "$out/ids.txt"

@@ -363,3 +363,12 @@ test "the forward's launches type-check against the shared operators" {
     std.testing.refAllDecls(Model);
     std.testing.refAllDecls(Kernels);
 }
+
+test "the forward refuses token id vocab before any launch" {
+    var why: config.Why = .{};
+    const c = try config.parse(std.testing.allocator, @embedFile("fixtures/mini_config.json"), &why);
+    // no driver, weights or caches: a launch before the check would fault
+    var m: Model = .{ .gpa = std.testing.allocator, .d = undefined, .w = undefined, .c = &c.text, .context = 64, .slots = 1, .sliding = undefined, .full = undefined };
+    const bad = [_]u32{ 1, c.text.vocab };
+    try std.testing.expectError(error.InvalidToken, m.forward(undefined, undefined, &.{.{ .slot = 0, .p0 = 0, .tokens = &bad }}, true, 0, 1));
+}
