@@ -91,12 +91,13 @@ Never leave a line blank or claim a check you did not run.
 - Run the lean checker on base and head with the same checker, as CI does, and report both counts and zero new findings:
 
   ```sh
-  git worktree add --detach ../lean-base "$(git merge-base HEAD origin/main)"
-  cp tools/zig/lean_check.py ../lean-base/tools/zig/lean_check.py
-  (cd ../lean-base && python3 tools/zig/lean_check.py > ../lean-base.txt || true)
-  python3 tools/zig/lean_check.py > ../lean-head.txt || true
-  python3 tools/zig/lean_new.py ../lean-base.txt ../lean-head.txt
-  git worktree remove ../lean-base
+  S="$(git rev-parse --show-toplevel)/.scratch"; mkdir -p "$S"
+  git worktree add --detach "$S/lean-base" "$(git merge-base HEAD origin/main)"
+  cp tools/zig/lean_check.py "$S/lean-base/tools/zig/lean_check.py"
+  (cd "$S/lean-base" && python3 tools/zig/lean_check.py > "$S/lean-base.txt" || true)
+  python3 tools/zig/lean_check.py > "$S/lean-head.txt" || true
+  python3 tools/zig/lean_new.py "$S/lean-base.txt" "$S/lean-head.txt"
+  git worktree remove --force "$S/lean-base"
   ```
 
   A nonzero inherited count is not a clean exit; name it as inherited.
