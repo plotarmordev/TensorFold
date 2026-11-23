@@ -41,11 +41,21 @@ claimed. DSpark's bar is the hold: a round costs 1.74 plain steps at one stream 
 2,439 without the drafter. Each repeat equals its fresh reply but reads 0 cached tokens with `--drafter`, where card
 210's plain session read 46,080: the drafter session does not reuse the prompt cache.
 
-## Engines at 1 and 64 streams: void
+## Engines at 1 and 64 streams
 
-Card 235's `engines.sh` ran next (02:12-02:38), when the load average rose from 35 to 72: TensorFold's own one-stream
-code cell fell to 100.2 (99-117) from 118-120 minutes earlier, and oMLX's code cells streamed each reply in one chunk
-after 13 s, so they are unmeasured. No engine comparison is claimed from it; card 235 owns that receipt.
+Card 235's `engines.sh` (TensorFold with DSpark, then oMLX's own 4-bit MTP build `Inkling-2-Mini-oQ4e-mtp`, the
+fastest other engine on this Mac), run twice: 02:12-02:38 (load 35 rising to 72) and 02:46-03:11 (load 38-48). Both
+ran under other cards' CPU load, so their absolute numbers sit under the clean cells above. oMLX streams each code reply
+in one chunk after 13 s, so its code cells are unmeasured in both runs, as in card 235's own; the comparison is on chat.
+
+| chat, tok/s total | TensorFold, run 1 / 2 | oMLX, run 1 / 2 |
+|---|---|---|
+| 1 stream | **49.0 / 48.0** | 38.4 / 24.8 |
+| 64 streams | 141.4 / 154.8 | **225.6 / 203.3** |
+
+- One stream: TensorFold leads in both runs. 64 streams: oMLX leads by 31-60%; TensorFold is not the fastest here.
+- TensorFold's code cells (no oMLX number to set against): 100.2 / 115.8 at one stream, 152.7 / 203.8 at 64.
+- 0 failed requests in every cell of both engines.
 
 ## Files
 
