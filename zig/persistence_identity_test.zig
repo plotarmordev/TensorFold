@@ -126,7 +126,7 @@ test "persistence identity: file fingerprints cover every block and agree with t
     try t.expect(!std.mem.eql(u8, &expected, &(try binary.hash(io, path, data.len))));
 }
 
-test "persistence identity: tokenizer and template edits reuse only identical canonical token prefixes" {
+test "persistence identity: tokenizer and template edits move the namespace; kept states reuse only identical canonical token prefixes" {
     const a = t.allocator;
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
@@ -143,7 +143,7 @@ test "persistence identity: tokenizer and template edits reuse only identical ca
     try kept.add(Imprint.keyOf(&ids), 2, &ids, &.{1}, 4);
     try tmp.dir.writeFile(io, .{ .sub_path = "tokenizer.json", .data = "other tokenizer" });
     try tmp.dir.writeFile(io, .{ .sub_path = "chat_template.jinja", .data = "other template" });
-    try t.expectEqual(identity, try disk.scoped(a, io, dir, 1));
+    try t.expect(identity != try disk.scoped(a, io, dir, 1));
     try t.expect(kept.best(&ids, &.{ 1, 2 }, true, 0) != null);
     try t.expect(kept.best(&.{ 5, 9, 11 }, &.{ 1, 2 }, true, 0) == null);
     try t.expect(kept.best(&.{ 5, 7, 13 }, &.{ 1, 2 }, true, 0) == null);

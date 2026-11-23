@@ -57,6 +57,7 @@ pub const gdn_prep = @import("gdn_prep.zig");
 pub const qk_rows = @import("qk_rows.zig");
 pub const experts = @import("experts.zig");
 pub const experts_mx = @import("experts_mx.zig");
+pub const pair_experts = @import("experts_pair.zig");
 pub const affine_experts = @import("affine_experts.zig");
 pub const experts32 = @import("experts32.zig");
 pub const experts_waves = @import("experts_waves.zig");

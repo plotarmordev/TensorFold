@@ -198,6 +198,22 @@ pub const Linear = struct {
         self.workspace_need = found[0].workspace_size;
     }
 
+    /// When `fuse` left `epilogue` unfused, asks the heuristic again with it set: the shape's first algorithm that
+    /// runs it (another tile, often slower alone, but it spares a separate bias pass). Keeps the plan when none does.
+    pub fn repick(self: *Linear, epilogue: Epilogue) Error!void {
+        if (self.epilogue == epilogue) return;
+        const kept = .{ self.algo, self.workspace_need };
+        const e: u32 = @backingInt(epilogue);
+        try self.lt.check(self.lt.api.cublasLtMatmulDescSetAttribute(self.desc, desc_epilogue, &e, @sizeOf(u32)), "set epilogue");
+        if (self.pick()) |_| {
+            self.epilogue = epilogue;
+            return;
+        } else |err| if (err != error.NoAlgorithm) return err;
+        self.algo, self.workspace_need = kept;
+        const none: u32 = @backingInt(Epilogue.none);
+        try self.lt.check(self.lt.api.cublasLtMatmulDescSetAttribute(self.desc, desc_epilogue, &none, @sizeOf(u32)), "unset epilogue");
+    }
+
     pub fn deinit(self: *Linear) void {
         const api = self.lt.api;
         _ = api.cublasLtMatmulPreferenceDestroy(self.pref);
