@@ -14,8 +14,8 @@ pub fn owns(name: []const u8) bool {
     return false;
 }
 
-test "EXL3 prompt: unmeasured compiler usage stays pending" {
-    for (records) |r| for ([_]?limits.Nvcc{ null, .{ .major = 13, .minor = 0 }, .{ .major = 13, .minor = 1 }, .{ .major = 13, .minor = 2 }, .{ .major = 13, .minor = 3 } }) |version| {
+test "EXL3 prompt: usage stays pending beyond nvcc 13.0's receipt" {
+    for (records) |r| for ([_]?limits.Nvcc{ null, .{ .major = 13, .minor = 1 }, .{ .major = 13, .minor = 2 }, .{ .major = 13, .minor = 3 } }) |version| {
         try std.testing.expectEqualDeep(registry.none, registry.usageFor(r, version));
     };
     try std.testing.expectEqual(@as(usize, 20), try registry.checkCuda(std.testing.allocator, &records, true));
