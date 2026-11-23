@@ -24,9 +24,12 @@ The headline pairs (250 / 4,090, 74.3 / 1,145) each mix two packs. The c=64 rows
 slot with the same 16-token prompt and first token (`engine/src/inkling2/cuda/ink_cuda_main.cu`, lines 392–427), so the
 64 streams route to largely the same experts; diverse traffic would score lower.
 
-TensorFold's only Mini measurement is card 188's job `top-0759755a0515` at `2301ab379` (bf16 trunk, the checkpoint's
-NVFP4 experts, `--context 8192`, greedy, 256 tokens): **5.7 tok/s at 1 stream, 9.4 tok/s total at 4**. The 13×
-in the card's title is 74.3 / 5.7, Strata's best GB10 solo row against ours.
+TensorFold serves Mini only on card 188's branch (bf16 trunk, the checkpoint's NVFP4 experts, `--context 8192`, greedy,
+256 tokens). The 13× in the card's title is 74.3 / 5.7, against 188's first receipt (job `top-0759755a0515` at
+`2301ab379`, #4387's ungraphed loop engine: 5.7 tok/s at 1 stream, 9.4 total at 4). On jschmied's #4441 engine
+(graphs, fused input projections, one batched forward a round), job `top-29fb623d4dee` at `54bf2c7f0` measures
+**32.5 tok/s at 1 stream and 117.7 total at 4**, with 0 of 32 greedy tokens off the float64 reference. Against
+Strata's best GB10 solo row that is 2.3×, not 13×.
 
 ## Ceiling math on GB10 (273 GB/s)
 
@@ -39,10 +42,10 @@ vocab 200,058.
 | Strata SQ-20 (bf16 attention, SF4/MX8 experts) | ≈5.42 GB | ≈50 tok/s |
 | Strata SQ-10 (Q8_ROW attention, 2–3-bit experts) | ≈3.29 GB | ≈83 tok/s |
 
-SQ-20's 46.1 tok/s sits at 92% of its plain ceiling and SQ-10's 74.3 at 90% of its ceiling, with drafting on; both numbers
-are bandwidth-bound. Our 5.7 tok/s is 12% of the same ceiling: 175 ms a token against a ≈20 ms weight-read floor.
-The gap comes from launch overhead and unbatched work, not bandwidth (card 188's receipt: about 1,350 launches a token
-[INFERENCE, not profiled]). The ordering below follows from that: get to the bandwidth roof first, then lower the roof.
+SQ-20's 46.1 tok/s sits at 92% of its plain ceiling and SQ-10's 74.3 at 90% of its ceiling, with drafting on; both
+numbers are bandwidth-bound. Our 32.5 tok/s is 66% of our 49 tok/s ceiling with no drafting: 30.7 ms a token against
+a ≈20 ms weight-read floor. The 5.7 → 32.5 step was graphs and batching (lever 5). What remains is that last third of
+the roof, then drafting to emit more than one token per sweep (lever 1), then a lower roof (lever 4).
 
 ## The levers
 
@@ -123,18 +126,18 @@ Would touch: `zig/src/families/inkling2/mini_model.zig` (188's branch), reusing 
 Gain: lowers the roof. SQ-10-class bytes lift the ceiling from 49 to ≈83 tok/s (1.7×), at a measured quality cost
 that a TensorFold pack has to gate on its own.
 
-### 5. CUDA graphs — in TensorFold, unmeasured on Mini
+### 5. CUDA graphs — in TensorFold
 
 Strata: `GraphKey {M, mode, taps, kv_dtype}` (`ink_runner.cuh`, lines 1757–1761). It captures the whole 48-visit body
 (`emit_48_visits`) per decode shape, per verify-tree size and per batch B = 1…64, so c=64 is one `forward_batched(64)`
 replay a step.
 
-TensorFold: `zig/src/cuda/graph_cache.zig` is general. 188's head moved Mini onto jschmied's #4441 engine with graphs,
-fused input projections and one batched forward for every stream's rows. The 5.7 / 9.4 receipt predates that move,
-from #4387's ungraphed loop engine.
+TensorFold: `zig/src/cuda/graph_cache.zig` is general. 188's head serves Mini on jschmied's #4441 engine with graphs,
+fused input projections and one batched forward for every stream's rows. That move took Mini from 5.7 to 32.5 tok/s
+solo and from 9.4 to 117.7 total at 4 streams (jobs `top-0759755a0515` → `top-29fb623d4dee`).
 
-Would touch: nothing new. Re-measure 188's head with `docs/recipes/inkling-2-mini-cuda/run-script.sh`.
-Gain: up to ≈8.6× solo (175 ms → the ≈20 ms floor), the largest single lever, if the graph removes the launch gaps.
+Would touch: `zig/src/families/inkling2/mini_backend.zig` (188's branch), to key graphs by tree size once lever 1 lands.
+Gain: taken (5.7×). The last third of the roof (30.7 ms → ≈20 ms a token, up to 1.5×) is profiling, not graphs.
 
 ### 6. 64-slot batching — partial
 
@@ -186,16 +189,17 @@ upload to TOP, which is past this card's time box. The 1- and 4-stream rows belo
 
 For 207 (GB10):
 
-1. **Measure 188's graphed engine and close the launch gap.** Run `run-script.sh` at 188's head. If solo is still
-   far from 49 tok/s, profile with the CUPTI preload and capture the whole 48-visit step in one graph per batch size,
-   as Strata's `emit_48_visits` does. Touches `mini_backend.zig`, `mini_visit.zig`. Gain: up to 8.6× solo.
-2. **CUDA DSpark beam tree for Mini.** Port 188's Metal DSpark to CUDA with W ≤ 4, adaptive tree nodes, one verify
+1. **CUDA DSpark beam tree for Mini.** Port 188's Metal DSpark to CUDA with W ≤ 4, adaptive tree nodes, one verify
    sweep and on-device commit, under the conformance ledger's tree = chain = plain rule. Touches new
-   `inkling2/dspark.zig` and `zig/kernels/cuda/inkling2/dspark.cu`. Gain: 1.5–2× solo once at the roof.
-3. **Native fp4 grouped experts at M ≥ 24, then a quantised trunk.** Put Mini's NVFP4 experts on `mma4.cuh`'s
-   `mxf4nvf4` with device-built expert tiles, and run 64 streams. Then pack the bf16 attention to 8-bit rows, gated
-   on top-1/KL against the checkpoint. Touches `zig/kernels/cuda/inkling2/experts.cu`, `mini_model.zig`. Gain: c=64
-   throughput (Strata ≈25× its solo rate), and a roof from 49 to ≈83 tok/s.
+   `zig/src/families/inkling2/dspark.zig` and `zig/kernels/cuda/inkling2/dspark.cu`. Gain: 1.5–2× solo; this is the
+   lever that puts Strata above its own plain roof.
+2. **Native fp4 grouped experts at M ≥ 24, and 64 streams.** Put Mini's NVFP4 experts on `mma4.cuh`'s `mxf4nvf4`
+   with device-built expert tiles, admit 64 lanes and profile the 30.7 ms step against the ≈20 ms floor. Touches
+   `zig/kernels/cuda/inkling2/experts.cu`, `mini_backend.zig`. Gain: c=64 throughput (Strata ≈25× its solo rate) and
+   up to 1.5× solo from the rest of the roof.
+3. **A quantised trunk (a TensorFold pack).** Pack the bf16 attention to 8-bit rows and the experts below 4 bits,
+   gated on top-1/KL against the checkpoint. Touches `mini_model.zig` and `zig/src/cuda/nvfp4.zig`. Gain: a roof from
+   49 to ≈83 tok/s (1.7×).
 
 For 202 (RTX Spark laptop, Windows-native, N1X-tuned):
 
