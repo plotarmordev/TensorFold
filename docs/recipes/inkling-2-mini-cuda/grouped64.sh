@@ -4,7 +4,7 @@ set -eu
 . docs/recipes/inkling-2-mini-cuda/setup.sh
 "$bin/tf-cuda-test" stored-experts ckpt "$model"
 mem() {
-    awk -v label="$1" '/^MemTotal:/ {total = $2} /^MemAvailable:/ {avail = $2} END {used = (total-avail)/1048576; printf "%s host used %.1f GiB, available %.1f GiB\n", label, used, avail; if (used >= 128) exit 1}' /proc/meminfo
+    awk -v label="$1" '/^MemTotal:/ {total = $2} /^MemAvailable:/ {avail = $2} END {used = (total-avail)/1048576; printf "%s host used %.1f GiB, available %.1f GiB\n", label, used, avail/1048576; if (used >= 128) exit 1}' /proc/meminfo
     nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader
 }
 mem before

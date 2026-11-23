@@ -6,3 +6,14 @@
 - `docs/recipes/inkling-2-mini-cuda/grouped64.sh` checks the released checkpoint, greedy float64 reference and its
   planted control, then measures 64-stream same-prompt and distinct-prompt greedy decode at 128 tokens, three reps,
   with per-request solo token equality and zero failed requests required.
+- On TOP's checkpoint, layers 0 (NVFP4) and 20 (MXFP8), 64 tokens sharing one top-8 pick hold 8 device items instead of
+  32: one weight read per expert per round, not four. The launch bound falls from 160 to 136, and the gate-up/down
+  outputs match the 16-row plan byte for byte. Greedy decode still has 0 of 32 tokens off float64, the planted control
+  is still red (6 of 32), and every 64-stream reply matches its solo run (192 of 192 per cell).
+- 64-stream decode, total tok/s (median of 3, 128 tokens), against the control (211's head plus this script only):
+  same prompt (`code`) 560.6 vs 547.3 (+2.4%), same prompt (`chat`) 664.3 vs 644.7 (+3.0%), and distinct prompts
+  (`tools/bench_prompts.json`) 413.8 vs 415.2 (-0.3%). Jobs `top-227cd6b42fe4` and `top-a7166be3615d`; 0 failed
+  requests, host peak 57.5 GiB. The same-prompt gains are at the 3% noise edge; the distinct cell is unchanged.
+- The Desk's GB10 Strata SQ-20 receipt (`bottom-c5e4253968cb`, Strata's own `--bench`: 64 distinct synthetic prompts
+  of 64 ids, 32 tokens, no HTTP) gives 332.1 tok/s at 64. That receipt's HTTP cell measured nothing. These figures
+  come from different benches and hosts, so this is not a matched comparison.
