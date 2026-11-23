@@ -4,8 +4,6 @@
 # The job has no network: the Desk put the checkpoint in the pilot folder as Inkling-2-Mini, and the toolchain
 # archives of ../minimax-h3-cuda/toolchain-stage.sh beside it. Logs and the 1/4-stream receipt land in /work/out/inkling2.
 set -eu
-# TOP's GPU slot is 10 minutes: the whole job, build included, runs under timeout and exits with its status
-[ -n "${INKLING2_TIMED:-}" ] || INKLING2_TIMED=1 exec timeout 600 sh "$0" "$@"
 pilot=/assets/drama3-pilot
 staged=$pilot/cuda-build-toolchain
 zig=zig-aarch64-linux-0.17.0
@@ -20,20 +18,24 @@ if [ -z "$model" ]; then
     find /assets -maxdepth 5 -name config.json -exec grep -l '"inkling2' {} + >&2 || true
     exit 1
 fi
-[ -d "$staged" ] || { echo "missing $staged: run ../minimax-h3-cuda/toolchain-stage.sh" >&2; exit 1; }
-(cd "$staged" && sha256sum -c --quiet) <<EOF
+# TOP's GPU slot is 10 minutes of measurement: the build runs first, then the script again under timeout, with its status
+if [ -z "${INKLING2_TIMED:-}" ]; then
+    [ -d "$staged" ] || { echo "missing $staged: run ../minimax-h3-cuda/toolchain-stage.sh" >&2; exit 1; }
+    (cd "$staged" && sha256sum -c --quiet) <<EOF
 9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8  $zig.tar.xz
 7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $gcc.tar.xz
 EOF
-tar -C /work -xJf "$staged/$zig.tar.xz"
-tar -C /work -xJf "$staged/$gcc.tar.xz"
-# the checkout may be read-only: caches and builds go to /work
-export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
-export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
-nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
-echo "model $model: $(cat "$model"/*.safetensors | sha256sum | cut -d' ' -f1)"
-zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/sm121
+    tar -C /work -xJf "$staged/$zig.tar.xz"
+    tar -C /work -xJf "$staged/$gcc.tar.xz"
+    # the checkout may be read-only: caches and builds go to /work
+    export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
+    export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+    export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
+    nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
+    echo "model $model: $(cat "$model"/*.safetensors | sha256sum | cut -d' ' -f1)"
+    zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/sm121
+    INKLING2_TIMED=1 exec timeout 600 sh "$0" "$@"
+fi
 bin=/work/sm121/bin
 rm -rf "$out"
 mkdir -p "$out"
