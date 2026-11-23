@@ -28,7 +28,7 @@ not representative of any particular client traffic.
 TensorFold serves Mini only on card 188's branch (bf16 trunk, the checkpoint's NVFP4 experts, `--context 8192`, greedy,
 256 tokens). The 13× in the card's title is 74.3 / 5.7, against 188's first receipt (job `top-0759755a0515` at
 `2301ab379`, #4387's ungraphed loop engine: 5.7 tok/s at 1 stream, 9.4 total at 4). On jschmied's #4441 engine
-(graphs, fused input projections, one batched forward a round), job `top-29fb623d4dee` at `54bf2c7f0`
+(graphs, fused input projections, one batched forward a round), job `top-16bffb6ca094` at `9f542e6fa`
 ([receipt](https://github.com/plotarmordev/TensorFold/blob/54bf2c7f0cf3f72e5ab9ef9d4449c81a260fc6e0/docs/recipes/inkling-2-mini-cuda/README.md))
 measures **32.5 tok/s at 1 stream and 117.8 total at 4**, with 0 of 32 greedy tokens off the float64 reference.
 Against Strata's best GB10 solo row that is 2.3×, not 13×.
@@ -107,12 +107,17 @@ c=64, prefill: `ink_moe_cuda.cuh`, lines 3251–3253). At M ≤ 16 (solo decode 
 each weight byte once across all rows. SQ-10/SQ-15 use INT8 tensor cores (M ≥ 16) and `dp4a` below that.
 
 TensorFold: the native block-scaled FP4 mma exists (`zig/kernels/cuda/mma4.cuh`, the same instruction) but only
-Nemotron uses it (`zig/kernels/cuda/ck_experts.cu`). 188's Inkling experts take exl3-arithmetic grouped tiles
-(`zig/kernels/cuda/inkling2/experts.cu` on 188's branch). The NVFP4 expert kernels used by other families decode fp4
-into bf16 mma (`zig/kernels/cuda/nvfp4_experts.cu`).
+Nemotron uses it (`zig/kernels/cuda/ck_experts.cu`). On 188's branch Mini's experts go through the shared grouped
+path: `mini_visit.zig`'s `moe` calls `Grouped.decode` / `Grouped.prompt` (`zig/src/cuda/experts.zig`), which send
+layers 0–19 to `Nvfp4Experts.run` / `runPrompt` (`zig/kernels/cuda/nvfp4_experts.cu`, with the soft-capped SwiGLU
+gate-up `tf_nvfp4_softcap` from `experts_mx.zig`'s `Softcap`) and layers 20–23 to `Mxfp8Experts.run`
+(`zig/kernels/cuda/fp8_experts.cu`). Both kernels widen the stored codes to bf16 pairs (`fp4pair`, `e4m3x2` in
+`common/fp_pairs.cuh`) and sum on bf16 mma, at every row count. `zig/kernels/cuda/inkling2/experts.cu` is the full
+model's EXL3 path; Mini does not run it.
 
-Would touch: `zig/kernels/cuda/inkling2/experts.cu` and `zig/src/families/inkling2/experts.zig` (188's branch), on
-`mma4.cuh`.
+Would touch: `zig/kernels/cuda/nvfp4_experts.cu` (an `mxf4nvf4` entry on `mma4.cuh`, keeping the soft caps) behind
+`Nvfp4Experts.run` / `runPrompt` in `zig/src/cuda/experts.zig`, the same for `fp8_experts.cu` / `Mxfp8Experts.run` on
+`kind::mxf8f6f4`, and `mini_visit.zig`'s `moe` to pick it when a call has M ≥ 24 rows (c=32, c=64 decode, prompts).
 Gain: none solo (Strata itself uses byte-once kernels there). At c=64: unmeasured. No receipt isolates tensor-core
 from CUDA-core expert math; Strata's c=64 aggregate over its solo rate also folds in batching and loses drafting.
 
@@ -140,7 +145,7 @@ replay a step.
 
 TensorFold: `zig/src/cuda/graph_cache.zig` is general. 188's head serves Mini on jschmied's #4441 engine with graphs,
 fused input projections and one batched forward for every stream's rows. That move took Mini from 5.7 to 32.5 tok/s
-solo and from 9.4 to 117.8 total at 4 streams (jobs `top-0759755a0515` → `top-29fb623d4dee`).
+solo and from 9.4 to 117.8 total at 4 streams (jobs `top-0759755a0515` → `top-16bffb6ca094`).
 
 Would touch: `zig/src/families/inkling2/mini_model.zig` (188's branch, `Model.capture`), to key graphs by tree size once
 lever 1 lands.
@@ -173,7 +178,7 @@ Strata's own linux-aarch64 build ran as shipped, with no host changes, through `
 | GB10 decode, tok/s | 1 stream | 4 streams total | 64 streams total | Source |
 |---|---|---|---|---|
 | Strata 0.1.66, SQ-10 pack, DSpark on | **74.4** | **97.1** (24.3 a stream) | 382.5 | job `top-edfe387b00e5` |
-| TensorFold, checkpoint as stored, no drafting | **32.5** | **117.8** (29.6 a stream) | 589.8–593.0 (different client protocol) | jobs `top-29fb623d4dee` at `54bf2c7f0`; `top-975292aaf4c0` at `505ffbc48` |
+| TensorFold, checkpoint as stored, no drafting | **32.5** | **117.8** (29.6 a stream) | 589.8–593.0 (different client protocol) | jobs `top-16bffb6ca094` at `9f542e6fa`; `top-975292aaf4c0` at `505ffbc48` |
 | TensorFold, #4387's loop engine | 5.7 | 9.4 | not run | job `top-0759755a0515`, card 188 at `2301ab379` |
 
 These benches are not matched: Strata's built-in `--bench` uses distinct synthetic 64-token prompts and 256 generated
@@ -196,22 +201,25 @@ lever:
 - **64 streams:** Strata's SQ-10 reaches 382.5, not the published 1,145, which is the SQ-20 pack's row. TensorFold's
   589.8–593.0 control is 1.54–1.55× higher on its different HTTP workload; this is not a matched comparison.
 
-## Windows on ARM: nobody ships Inkling 2 Mini fast there
+## Windows on ARM: Inkling builds exist; none is Strata's or tuned for the N1X
 
 - Strata ships no Windows ARM64 build. v0.2.19 and v0.2.20 have `windows-x86_64` engines only. `install.ps1` refuses
   any non-AMD64 Windows ("a Windows on ARM PC … has no engine for ARM processors"), and
   [issue #4579, "ARM64 Windows (RTX Spark)"](https://github.com/Niko1221/Strata/issues/4579), is open.
 - The only Strata build on the N1X is a community fork,
   [strata-n1x-Zackyzq](https://github.com/zackyangzeqi-spec/strata-n1x-Zackyzq), for DeepSeek-V4.1-Flash, not Inkling.
-- CUDA itself runs there. CUDA 13.4 ships Windows ARM64 nvcc, cudart and cuBLAS, and NVIDIA's
-  [RTX Spark guide](https://build.nvidia.com/rtx-spark/running-llamacpp) downloads a prebuilt Windows ARM64
-  llama.cpp. Ollama and LM Studio ship WoA CUDA builds too. None carries Strata's levers, and whether any runs
-  Inkling 2 is unverified here.
-- What the laptop still needs: Mini's CUDA engine built `aarch64-windows` with MSVC ARM64 as nvcc's host compiler
-  (only gcc 14 has built these Inkling kernels), then the GB10 exactness and WDDM allocation-delta checks on an N1X.
-  TensorFold **already implements** WDDM-pool admission via `cuMemGetInfo_v2` (`docs/WINDOWS.md`, lines 167–173);
-  this needs a Mini-specific device receipt, not a new admission path. The kernels target the same `sm_121`. No N1X
-  run of Mini exists from anyone. Card 188's recipe README has the build and test details.
+- An Inkling-capable Windows ARM64 CUDA build does ship: llama.cpp pre-release
+  [b12406](https://github.com/ggml-org/llama.cpp/releases/tag/b12406) adds Inkling 2 (text and vision) and publishes
+  `llama-b12406-bin-win-cuda-13.5-arm64.zip`. Its converter dequantizes the packed NVFP4/MXFP8 experts, and its notes
+  say real-checkpoint conversion is untested; it carries none of Strata's levers, and no N1X tok/s for it is known
+  here.
+- TensorFold's own Mini engine builds and passes its checks natively on the N1X, unmerged: card 243's laptop run 1 at
+  `b2ddc3de` (`docs/recipes/inkling-2-mini-cuda/README.md` on `feat/243-inkling-2-mini-runs-on-net-s-rtx-spark-l`)
+  gives build exit 0, `inkling2-serving` 3/3 and `inkling2-mini-ref` 0 of 32 tokens differing; its serve step stopped
+  before any tok/s.
+- What the laptop still needs: a 1/4-stream tok/s receipt for Mini on the N1X (243's run 2), its own measured
+  bandwidth roof, and the GB10 levers below brought over and tuned. TensorFold **already implements** WDDM-pool
+  admission via `cuMemGetInfo_v2` (`docs/WINDOWS.md`, lines 167–173). The kernels target the same `sm_121`.
 
 ## Follow-up cards, in order
 
@@ -226,22 +234,23 @@ For 207 (GB10):
    residual 1.36× solo ratio after the pack-byte ceiling is shared with weight-read utilisation (30.7 ms versus a
    ≈20 ms floor), not a measured or hard upper bound on drafting. Strata `--draft off` at the same pack and bench
    is required to isolate it; no drafting gain at 4 streams.
-3. **Native fp4 grouped experts at M ≥ 24, and FP8 KV for 64 resident streams.** Put Mini's NVFP4 experts on
-   `mma4.cuh`'s `mxf4nvf4` with device-built expert tiles; 64 lanes already run (job `top-975292aaf4c0`), so what
-   remains is Strata's FP8 KV from 16 slots in place of Mini's bf16 per-slot KV, to hold 64 streams at longer
-   context. Touches `zig/kernels/cuda/inkling2/experts.cu`, `mini_model.zig`. Gain: unmeasured on matched workloads;
-   TensorFold's 589.8–593.0 at c=64 already exceeds Strata SQ-10's 382.5 in the unmatched receipt, so those rates
-   cannot bound the fp4 gain.
+3. **Native fp4 grouped experts at M ≥ 24, and FP8 KV for 64 resident streams.** Give `Nvfp4Experts.run` /
+   `runPrompt` (`zig/kernels/cuda/nvfp4_experts.cu`, `zig/src/cuda/experts.zig`) an `mxf4nvf4` entry on `mma4.cuh`
+   with the soft caps, and `Mxfp8Experts.run` (`fp8_experts.cu`) a `mxf8f6f4` one; 64 lanes
+   already run (job `top-975292aaf4c0`), so what remains is Strata's FP8 KV from 16 slots in place of Mini's bf16
+   per-slot KV, to hold 64 streams at longer context. Touches those kernels, `mini_visit.zig`'s `moe` (the M ≥ 24
+   switch) and `mini_model.zig`. Gain: unmeasured on matched workloads; TensorFold's 589.8–593.0 at c=64 already
+   exceeds Strata SQ-10's 382.5 in the unmatched receipt, so those rates cannot bound the fp4 gain.
 
 For 202 (RTX Spark laptop, Windows-native, N1X-tuned):
 
-1. **Build and validate Mini's CUDA engine `aarch64-windows`.** MSVC ARM64 as nvcc's host, CUDA 13.4
-   `windows-arm64` redistributables; run GB10 exactness and WDDM allocation-delta checks on the N1X. Pool admission
-   is already implemented. Gain: enables Mini, but tok/s is unmeasured on N1X.
+1. **Validate Mini's CUDA engine `aarch64-windows` at speed.** 243's run 1 already builds and passes the exactness
+   checks on the N1X; what remains is run 2's 1/4-stream tok/s, the WDDM allocation-delta check, and a merge. Gain:
+   a measured N1X baseline; no source cited here gives an N1X tok/s for Inkling 2 Mini.
 2. **Bring 207's quantised trunk and CUDA DSpark tree to the N1X.** Measure its own bandwidth roof: GB10-class
    silicon does not guarantee 273 GB/s sustained in a laptop. Gain: the trunk's byte ratio raises a bandwidth roof
    up to 1.69× (before quality gating); drafting is unmeasured and depends on N1X acceptance and utilisation.
 3. **Bring 207's grouped-fp4 experts and 64-lane path to N1X, then tune.** Measure the M ≥ 24 tensor-core crossover,
    the WDDM pool's resident stream count, and tree size by acceptance and bytes per emitted token. Gain: unmeasured
    at laptop batch sizes; the GB10 64-stream receipts use different workloads and provide no transferable multiplier.
-   This would be the first Windows ARM64 Inkling engine anyone ships.
+   This is what no shipped Windows ARM64 Inkling build (Strata's absent one, llama.cpp b12406's) carries.
