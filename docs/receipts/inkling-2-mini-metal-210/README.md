@@ -45,6 +45,14 @@ of gate and up before softcapped SwiGLU; the other arithmetic stays float64. The
 `/tmp/tensorfold-model.lock` only while the Metal model runs, then closes the model before the two host passes; the
 full gate took 13 minutes (mostly CPU). The Debug host suite skips this slow test; the ReleaseFast step runs it.
 
+## CUDA compile records
+
+The TOP `docs/recipes/inkling-2-mini-cuda/limits-job.sh` compile-only run at `0b71ebdb8` printed the real
+nvcc register, static shared-memory and thread-bound records on sm_80/86/89/120/121 for the ten
+`inkling2_modelopt` and `inkling2_loop_math` launches. The stale-record audit expectedly exited 1 with 40 mismatches;
+those `RECORD` lines replaced the zero placeholders in `inkling2_experts_records.zig`. The subsequent local
+`zig build test test-golden` passed (1,038/1,038 steps, 9,183 passed, 92 skipped).
+
 ## Files
 
 `cells.jsonl`: each cell of the three bench runs (bench_concurrent's medians, its `alone` and `serial` counts; the
