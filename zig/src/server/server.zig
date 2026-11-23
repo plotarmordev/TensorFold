@@ -136,19 +136,7 @@ pub const Server = struct {
             return error.InvalidVisionMarkers;
         };
         srv.video_decoder = @import("input_types.zig").decodes(srv.info.vision); // no decoder: video parts are a 400, never a 500
-        srv.voices = .{ .gpa = gpa, .io = io, .dir = config.voice.dir };
-        if (srv.info.speech == null and (config.voice.dir != null or config.voice.inline_voices or config.voice.manage)) return error.VoicesRequireSpeech;
-        const engine_voices = if (srv.info.speech) |sp| sp.voices else &.{};
-        if (engine_voices.len > 0) {
-            // the engine's own catalog answers by index: inline objects and admin edits the store never reaches it
-            if (config.voice.inline_voices or config.voice.manage) return error.EngineOwnedVoices;
-            // the server's own copy: an idle unload frees the engine's names while /v1/voices still lists them
-            const voices = try srv.arena.allocator().alloc(@import("drama_voice.zig").Voice, engine_voices.len);
-            for (engine_voices, voices) |name, *voice| voice.* = .{ .name = try srv.arena.allocator().dupe(u8, name), .references = &.{} };
-            srv.engine_voices = voices;
-            try srv.voices.swap(voices);
-        } else if (config.voice.dir) |dir| try srv.voices.load(dir);
-        _ = try srv.voices.select(srv.arena.allocator(), config.voice.default, "default");
+        try @import("speech_voices.zig").start(srv, gpa, io, config);
         if (!srv.info.capability(.text_generation)) {
             if (config.cortheon) return error.CortheonRequiresTextGeneration;
             return srv;

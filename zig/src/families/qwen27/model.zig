@@ -93,11 +93,20 @@ pub const Model = struct {
         defer a.free(path);
         const text = try std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(16 << 20));
         defer a.free(text);
+        const gen_path = try std.fs.path.join(a, &.{ dir, "generation_config.json" });
+        defer a.free(gen_path);
+        // generation_config.json beside config.json: a missing file is none, any other read failure is the loader's
+        const generation = std.Io.Dir.cwd().readFileAlloc(io, gen_path, a, .limited(1 << 20)) catch |e| switch (e) {
+            error.FileNotFound => null,
+            else => return e,
+        };
+        defer if (generation) |g| a.free(g);
         var problem: cfg.Problem = .{};
-        const c = cfg.parseWhy(a, text, null, &problem) catch |e| {
+        const c = parseServed(a, text, generation, &problem) catch |e| {
             if (problem.len != 0) std.log.err("{s}: {s}", .{ path, problem.text() });
             return e;
         };
+        if (c.tied_head and ranks != 1) return error.TiedHeadNeedsOneRank;
         var local = c;
         const shard = if (ranks == 1) cfg.Shard{ .rank = 0, .ranks = 1, .global = c, .local = local } else try cfg.split(&local, rank, ranks, mode);
         try supported(shard.global);
@@ -252,6 +261,11 @@ const sizes = [_]Size{
     .{ .hidden = 5120, .intermediate = 17408, .layers = 64, .heads = 24, .v_heads = 48 },
     .{ .hidden = 4096, .intermediate = 12288, .layers = 32, .heads = 16, .v_heads = 32 },
 };
+
+/// The served config: a dense tied head is admitted only under TF_QWEN27_TIED_HEAD=1.
+pub fn parseServed(a: std.mem.Allocator, text: []const u8, generation: ?[]const u8, problem: *cfg.Problem) !cfg.Config {
+    return cfg.parseTied(a, text, generation, problem, try platform.environment.read(bool, @import("tied_head.zig").flag, false));
+}
 
 fn qualifiedSize(c: cfg.Config) bool {
     for (sizes) |z| if (c.hidden == z.hidden and c.intermediate == z.intermediate and c.layers == z.layers and c.heads == z.heads and c.v_heads == z.v_heads) return true;

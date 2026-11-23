@@ -86,6 +86,7 @@ pub const usage =
     \\  marks MODEL IDS_FILE N PATTERNS   states kept inside chunks against chunks cut at the same rows, byte for byte
     \\  prompt-cuts MODEL IDS_FILE   a prompt keeping states inside chunks and at their ends (background passes too), and resumed from each, equals one uncut pass
     \\  prompt-segments MODEL IDS_FILE   a prompt run as 2 to 4 staggered segments a call equals one uncut pass, byte for byte
+    \\  qwen-prefill-cap MODEL IDS_FILE   a 12,000-row Qwen prompt cut at 512 rows beside a live stream equals its uncut pass: logits and 64 greedy tokens, byte for byte
     \\  cached-plans-tp2 MODEL IDS_FILE   rank-zero cached plans and prompt resumes with the existing expert rank
     \\  shared-fork MODEL         the latent MoE's shared expert on the side stream (held back), lone and in shared windows of 2/4/8 streams, against one stream, byte for byte
     \\  recapture MODEL           graphs captured again while another sequence is bound: both keep their sampling rules
@@ -102,6 +103,7 @@ pub const usage =
     \\  native-fp                 -Dnative-fp-decode: hardware e2m1/e4m3 pair decode equals software on every finite input
     \\  affine4-decode            affine-4 decode at the Qwen3.5 shapes: row counts and segmented launches byte for byte
     \\  absorb-batch              DFlash2 absorb projections over 1/4/8/16 streams' rows in one pass vs each alone, byte for byte
+    \\  wide-rounds               Nemotron Lightning dense calls at 17-32 rows vs 16-row calls (affine-4, NVFP4), byte for byte
     \\  w4a8                      int8-activation prompt matmuls on affine-4 tiles: float64 of their formula, rows (synthetic)
     \\  carveout [MiB] [card]     GB10 display memory: round trips and bandwidth (SKIP without the card)
     \\  nvfp4 <dir>               NVFP4 projections against recorded lane-matmul and prompt-GEMM fixture bytes

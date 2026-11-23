@@ -83,6 +83,7 @@ Diagnostics quote and escape the supplied text so it cannot create another termi
 | `TF_GLM_WORLD` | GLM-5.3-Flash on CUDA: a whole rank count from 1 through 4294967295, set with `TF_GLM_RANK`; unset with it gives one rank |
 | `TF_NEMOTRON_RANK` | Nemotron 3.5 Super on CUDA: a whole rank index from 0 through 4294967295, set with `TF_NEMOTRON_WORLD`; unset with it gives one rank |
 | `TF_NEMOTRON_WORLD` | Nemotron 3.5 Super on CUDA: a whole rank count from 1 through 4294967295, set with `TF_NEMOTRON_RANK`; unset with it gives one rank |
+| `TF_NEMOTRON_WIDE_ROUNDS` | Exactly `0` or `1`, checked when the CUDA backend starts; default off. `1` lets Nemotron's shared rounds hold 16 streams and 32 rows on GB10 (one rank, non-latent, not Bolt, no `--precision checkpoint`, no bf16 experts, no Sliding Weights or saved lessons; refused with a log line naming why), each row's bits as in two 16-row rounds; a lone stream's window is unchanged |
 | `TF_MINIMAX_RANK` | MiniMax-M3.1-Flash on CUDA: a whole rank index, 0 or 1 at two ranks, set with `TF_MINIMAX_WORLD`; unset with it gives one rank |
 | `TF_MINIMAX_WORLD` | MiniMax-M3.1-Flash on CUDA: a whole rank count, 2 at CUDA, set with `TF_MINIMAX_RANK`; unset with it gives one rank |
 | `TF_PROMPT_ROWS` | Native serving: a multiple of 16 from 128 through 2048; unset keeps the chip/family default |
@@ -97,6 +98,7 @@ Diagnostics quote and escape the supplied text so it cannot create another termi
 | `TF_QWEN27_SLOT_RESUME` | Qwen3.8-27B on Metal: exactly `0` or `1`; `0` stops slot 0 resuming a later prompt; unset or blank keeps it on |
 | `TF_QWEN27_METAL_KV_PAGES` | Qwen3.8-27B on Metal: exactly `0` or `1`; `1` puts keys and values in core-pool pages (refused on Macs with tensor units); unset or blank is `0` |
 | `TF_QWEN27_JOIN` | Qwen3.8-27B on Metal before M5: exactly `0` or `1`; `1` runs a window's rows in pairs over the keys below it in the decode tail attention (same replies); unset or blank is `1` |
+| `TF_QWEN27_TIED_HEAD` | Dense Qwen on Metal: exactly `0` or `1`; `1` lets a checkpoint with a tied head load on the 27B engine, its head read from the embedding (one Mac, no draft head, qualified shapes only); unset or blank is `0` |
 | `TF_QWEN35_METAL_KV_PAGES` | Qwen 3.5 on Metal: exactly `0` or `1`; `1` puts the streams' keys and values in core-pool pages; unset or blank is `0` |
 | `GLM_EHPROJ_NAX` | GLM-5.3-Flash on Metal: exactly `0` or `1`; `0` serves the MTP head's prompt eh_proj on the scalar kernel; default 1, the tile kernel where it builds |
 | `TF_DSV41_SMALL` | DeepSeek-V4.1 on Metal: exactly `0` or `1`; `1` reads the checkpoint's config at its own small shapes (the served smoke test's tiny model); default 0 |
@@ -177,6 +179,7 @@ stops the start with the variable, the supplied text and the accepted forms.
 | `TF_FLASHNEXT_KEEP_INPASS` | Exactly `0` or `1`; default on |
 | `TF_FLASHNEXT_FIRST_EARLY` | Exactly `0` or `1`; default on |
 | `TF_FLASHNEXT_GPU_TOPK` | Exactly `0` or `1`; default on |
+| `TF_FLASHNEXT_BATCH_GDN_WIDE` | Exactly `0` or `1`; default off. Metal batch segments of 8 or 16 rows use non-replay GDN when enabled |
 | `TF_FLASHNEXT_GDN_FUSED` | Exactly `0` or `1`; default on |
 | `TF_FLASHNEXT_GDN_LANES` | Exactly `0` or `1`; default on |
 | `TF_FLASHNEXT_BATCH_HEADS` | Exactly `0` or `1`; default on |

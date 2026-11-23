@@ -4,12 +4,68 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Tests: a GB10 check compares Qwen CUDA prompts run in one pass against 512-row capped cuts with a second stream live, byte for byte and over the next 64 greedy tokens (#N).
+
+- Flash Next on Metal: `TF_FLASHNEXT_BATCH_GDN_WIDE=1` runs 8- and 16-row batch segments on the existing non-replay GDN kernel instead of the recorded pipe; off by default until the M3 and M5 checks (#N).
+
+
+
+- Host status: the lane host's status read copies a snapshot the engine thread publishes, so a monitoring client polling the status no longer holds the lock every decode round takes; a torn read retries and the round waits for no reader (#3200).
+
+- Qwen3.8-27B family on Metal: tied embedding heads are accepted, binding the output projection to the embedding weights; small tied Qwen shapes still wait for their own size qualification (#N).
+
+- Server: `tensorfold capabilities --json` now lists `TENSORFOLD_PARALLEL` and the other environment variables `serve` honours, so the desktop app's Engine variables page accepts them (#N, fixes #3684).
+
+- Tests: host tests record where capped prompt chunks cut while another stream is live, family by family (#N).
+
+- Tests: the lone-driver third-prompt test no longer hangs when its poller is descheduled (#4783).
+
+- Lanes: the opt-in shared price log also covers the shared-drafts grant path (#4686). Thanks @eXsoR65.
+
+- Qwen3.8-27B on Metal: Macs with tensor units that are not Ultras (an M5 Max, for example) now take 8-bit prompt chunks in row blocks, one dispatch for many 16-row windows, as Ultras already did, instead of re-reading the weights for every 16-row window; Ultras are unchanged (#3280, refs #2851). Thanks to @scchumbletech.
+
+
+
+- Metal: Nemotron, Qwen3.8-27B and LFM2 build their prompt pick kernels from one source, with tokens unchanged (#4739). Thanks @jschmied.
+
+- Draft depth: a lone stream with a fixed-block drafter, such as Inkling 2 Mini's DSpark, is now priced for the full block it runs, as shared rounds already were, so single requests propose full blocks (#4457). Thanks @gilby.
+
+- Docs: the runbook says GLM-5.3-Flash on Metal shares 16 rows between streams, so drafts fill only the rows left over (#4722). Thanks @SashaMIT.
+
+- Docs: the credits say the native CUDA engine serves EXL3 packs (#4743). Thanks @Bizuayeu.
+
+- Metal: Nemotron's offline build uses the shared expert kernel sources, and two duplicate files are gone; the kernels are unchanged (#4738). Thanks @jschmied.
+
+
+
+- Docs: a plan for Inkling 2 Mini on CUDA and Metal in slices a contributor can claim (#4274). Thanks @akol1.
+
+- Docs: the Flash Next HIP recipe adds the measured four-rank serve path and fixes its receipt link (#4669). Thanks @timmyit.
+
+- Desktop: the app changelog lists the Room, Kanban and saved-bot changes (#4376). Thanks @garvrao80.
+
+- Speech: Drama 3 voice startup and listing move into one module, and speech sampling can take a caller's defaults and top-k ceiling; existing limits are unchanged (#4609). Thanks @BobClawblaw.
+
+- Tests: the CUDA Idol decoders' contract reference rounds tiled attention's P to fp16 at each 64-key tile's running maximum, as the kernel and torch's CUDA flash and memory-efficient attention do, instead of at the final maximum, which went red at 16x1000x65 on an RTX 5090; a host test checks it against an fp32 online-softmax simulation, and the decoder self attention's gate 4 computes its alike keys' outputs once instead of for all 8,192 tokens (#4508, after #1858). Thanks to @AIFlowML.
+
+- Docs: the optimization ledger's cells catch up with PRs that landed since it was last updated (#4580). Thanks @jschmied.
+
+- Unlimited-OCR-2: a cancelled request now stops before image encoding, between images and between decoder prefill chunks instead of running the whole prefill; uncancelled replies are unchanged (#N).
+
+- Lane host: under stepped prefill, a waiting stream no longer pins its kept prompt state, so another stream's cache can't be allocated past the budget; an evicted state is looked up again before the first call. Tokens unchanged (#4751).
+
+- Tests: a per-template tool-call conformance test renders tool definitions, round-trips calls and results, keeps multi-call order and rejects malformed calls for every chat template family we ship (#N).
+
+- Server web fetches: hostname lookup now uses the shared bounded resolver, so a request's deadline holds even when the system lookup is slow, and long answer lists are read while they arrive (#N).
+
+- Qwen 3.5 and 3.8: one EOS rule for every family reader, and qwen27 now reads `generation_config.json`, so its stop tokens match the served set on the ten configs that declare `<|im_end|>` (#4678). Thanks @devopsfortunato.
+
+- Nemotron on CUDA: `TF_NEMOTRON_WIDE_ROUNDS=1` (opt-in) runs decode rounds of up to 16 streams; +2% to +6% at 16 streams on a GB10, tokens unchanged; off changes nothing.
+
 - macOS: the native server links `memcpy` from libSystem again (Hy4-flash config parsing no longer pulls in compiler-rt), and two macOS-only tests match current behaviour.
 
 - Metal: the row projection picks its narrow or wide kernel per chip (generation plus Pro/Max/Ultra), so an M5 Max no longer runs 8-row and wider windows on the kernel that is slower there; M5 Ultra and unlisted chips are unchanged, tokens unchanged (refs #3396). Thanks to @Spectre056 for the M5 Max measurements.
 - Metal: a stream whose setup fails partway no longer leaves the prompt cache smaller by its bytes in Llama, Ripple, Spark2.5, Flint, Step-5 and MiniMax-M3.
-
-
 
 - CUDA: `TF_CUDA_POOL_AFTER_WARMUP=1` (opt-in) sizes dense Qwen3.5's still-empty KV page pool again after warm-up, from the free memory then measured under the same reserve and cap, so pages the first plan held back for warm-up become KV capacity; `/memory` reports the decision; tokens are unchanged, and other modes keep today's pool (#4591).
 
@@ -21,8 +77,6 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 - Lanes: drafted lone streams in families that opt in to copy pricing are priced as in 1.3.3 again; up to 2.5% faster at 4 code streams on M3 and M5 Ultra with the DFlash2 drafter, level elsewhere, tokens unchanged.
 - Lane host: score requests and server shutdown wait on their own conditions, so neither can hang when a timed waiter on a shared condition times out with a wake pending.
-
-
 
 - Flash Next on Metal: `TF_FN_GX_GATEUP_MB2=1` (opt-in) decodes each expert's gate/up weights once for two rows; about 2% faster at 4 code streams on an M5 Ultra, tokens unchanged (refs #1486).
 
@@ -48,6 +102,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Sessions: the tier thread's job runner can no longer lose a wakeup and sleep with a job queued (which could hang a request's settle or the store's teardown when async I/O is on).
 
 - Qwen3.5/3.8 on CUDA: `TF_Q35_DFLASH_ABSORB_BATCH=1` (opt-in) absorbs a DFlash2 round's streams in one pass, reading the drafter's weights once a round; about 1-2% faster at 4 streams on GB10, tokens unchanged.
+
 
 ## 1.3.4
 
