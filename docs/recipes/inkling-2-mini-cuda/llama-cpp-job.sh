@@ -5,9 +5,11 @@
 # The job has no network: the Desk staged llama-cpp-stage.sh's folder (binaries and GGUF) in the pilot folder, checked
 # here against the digests pinned below (the tarballs' are the release's published ones). The release is built on
 # glibc 2.38 and the job image's is older, so the binaries run under the loader and glibc of the Arm GNU 14.3 sysroot
-# that ../minimax-h3-cuda/toolchain-stage.sh staged; the host is unchanged. The server runs the mainline
-# recipe (all layers on the GPU, 4 slots of 8192 tokens, the GGUF's chat template); llama-bench adds its own
-# tg128/pp512 line. Logs and receipts land in /work/out/inkling2-llama-cpp.
+# that ../minimax-h3-cuda/toolchain-stage.sh staged; the host is unchanged. Setup checks, unpacks and starts the
+# server on the mainline recipe (all layers on the GPU, 4 slots of 8192 tokens, the GGUF's chat template); the
+# measurement (llama-bench's own tg128/pp512 line beside the idle server, then 1 and 4 streams) reruns this script as
+# `measure` under its own 10-minute cap, and both phases log their duration. Logs and receipts land in
+# /work/out/inkling2-llama-cpp.
 set -eu
 tag=b12628
 pilot=/assets/drama3-pilot
@@ -17,6 +19,18 @@ gguf=$stage/Inkling-2-Mini-IQ4_NL.gguf
 llama=llama-$tag-bin-ubuntu-cuda-13.5-arm64.tar.gz
 cudart=cudart-llama-$tag-bin-ubuntu-cuda-13.5-arm64.tar.gz
 out=/work/out/inkling2-llama-cpp
+if [ "${1-}" = measure ]; then
+    # ggml loads its backends from the executable's or the working directory; under an explicit loader only the latter holds
+    (cd "$bin" && "$ld" --library-path "$libs" ./llama-bench -m "$gguf" -ngl 99 -fa 1 -p 512 -n 128 -r 3) \
+        >"$out/llama-bench.txt" 2>&1 || { cat "$out/llama-bench.txt" >&2; exit 1; }
+    cat "$out/llama-bench.txt"
+    for level in 1 4; do
+        python3 tools/bench_concurrent.py http://127.0.0.1:8189 inkling-2-mini --levels "$level" --tokens 256 --reps 3 \
+            --temperatures 0 --label "llama-cpp-gb10-$level" --output "$out/streams-$level.json"
+    done
+    exit
+fi
+start=$(date +%s)
 [ -f "$gguf" ] || { echo "missing $gguf: the Desk stages llama-cpp-stage.sh's folder" >&2; exit 1; }
 (cd "$stage" && sha256sum -c --quiet) <<EOF
 2a6f7d5c65b511871cb6dbf7d610dd68767b18cfcc9a82218c432e1a838cb558  $llama
@@ -33,11 +47,8 @@ ld=$(find /work/llama-cpp/$gcc -name ld-linux-aarch64.so.1 | head -1)
 libs=$bin:$(dirname "$(find /work/llama-cpp -name 'libcudart.so*' | head -1)")
 for lib in libc.so.6 libstdc++.so.6; do libs=$libs:$(dirname "$(find /work/llama-cpp/$gcc -name $lib | head -1)"); done
 libs=$libs:$(dirname "$(ldconfig -p | awk '/libcuda.so.1 /{print $NF; exit}')")
+export bin ld libs
 nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
-# ggml loads its backends from the executable's or the working directory; under an explicit loader only the latter holds
-(cd "$bin" && "$ld" --library-path "$libs" ./llama-bench -m "$gguf" -ngl 99 -fa 1 -p 512 -n 128 -r 3) \
-    >"$out/llama-bench.txt" 2>&1 || { cat "$out/llama-bench.txt" >&2; exit 1; }
-cat "$out/llama-bench.txt"
 (cd "$bin" && exec "$ld" --library-path "$libs" ./llama-server -m "$gguf" -ngl 99 -c 32768 -np 4 --jinja \
     --host 127.0.0.1 --port 8189 --alias inkling-2-mini) >"$out/server.log" 2>&1 &
 server=$!
@@ -53,10 +64,10 @@ while time.monotonic() < deadline:
         time.sleep(min(1, max(0, deadline - time.monotonic())))
 raise SystemExit("llama-server did not answer /health in 10 min")
 EOF
-for level in 1 4; do
-    python3 tools/bench_concurrent.py http://127.0.0.1:8189 inkling-2-mini --levels "$level" --tokens 256 --reps 3 \
-        --temperatures 0 --label "llama-cpp-gb10-$level" --output "$out/streams-$level.json"
-done
+echo "setup: $(($(date +%s) - start)) s"
+start=$(date +%s)
+timeout 600 sh "$0" measure
+echo "measure: $(($(date +%s) - start)) s"
 python3 - "$out" <<'EOF'
 import json, sys
 agg = {}
