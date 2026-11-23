@@ -8,6 +8,9 @@ import sys
 
 
 def outside(root, path):
+    # Shell command substitution strips trailing newlines, so the callers would use another path than the one checked.
+    if "\n" in str(path):
+        sys.exit("ZIG_LOCAL_CACHE_DIR must not contain a newline")
     path = Path(path)
     if not path.is_absolute():
         sys.exit("ZIG_LOCAL_CACHE_DIR must be absolute")
@@ -17,6 +20,11 @@ def outside(root, path):
         if folder.exists() and os.path.samestat(os.stat(folder), root):
             sys.exit("ZIG_LOCAL_CACHE_DIR must be outside the checkout")
     return path
+
+
+def shared_cache(root):
+    """The checked shared cache: ZIG_LOCAL_CACHE_DIR, else $HOME/.cache/tensorfold/zig."""
+    return outside(root, os.environ.get("ZIG_LOCAL_CACHE_DIR") or Path.home() / ".cache/tensorfold/zig")
 
 
 if __name__ == "__main__":
