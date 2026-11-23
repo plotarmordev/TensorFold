@@ -1,8 +1,8 @@
 # Inkling 2 Mini: what makes Strata fast, and what TensorFold lacks
 
 Card 209. A read of [Strata](https://github.com/Niko1221/Strata) (MIT, © Niko1221) at
-[v0.2.20](https://github.com/Niko1221/Strata/releases/tag/v0.2.20) (`4920a3a4be`, engine `strata-inkling` 0.1.66)
-and [v0.2.19](https://github.com/Niko1221/Strata/releases/tag/v0.2.19) (`8fffdbf4a3`, 0.1.65, the release that
+[v0.2.20](https://github.com/Niko1221/Strata/releases/tag/v0.2.20) (commit `a34979fc94`, engine `strata-inkling` 0.1.66)
+and [v0.2.19](https://github.com/Niko1221/Strata/releases/tag/v0.2.19) (commit `c6f6427d9d`, 0.1.65, the release that
 published the numbers), set against TensorFold's Inkling 2 code on `main` and on card 188's branch
 (`feat/188-inkling-2-mini-runs-whole-on-our-spark-g`, the only TensorFold path that serves Mini). No Strata code is
 taken; if a follow-up card ports any of it, that card credits Strata in `THIRD_PARTY_NOTICES.md` by name and link.
@@ -52,14 +52,16 @@ separated by these receipts.
 
 ## The levers
 
-States: **in TensorFold** (serving Mini on 188's branch), **partial**, **missing**, **n/a**. Gains are ceiling
-estimates, not measurements.
+States: **in TensorFold** (serving Mini on 188's branch), **missing**, **n/a**. Gains are ceiling estimates, not
+measurements.
 
 ### 1. W=4 on-GPU beam-tree DSpark — missing on CUDA
 
 Strata: the drafter is embedded in the pack (3 layers, Block-8, taps 5/23/41/48 mixed by `softmax(fuse_weight)`,
-a rank-256 Markov RNN head) and runs entirely on GPU. Base candidates come from a 4-bit screening plane and a radix
-top-K, and the RNN head scores only those rows (`engine/src/inkling2/cuda/ink_dspark.cuh`, header lines 1–11).
+a rank-256 Markov RNN head) and runs entirely on GPU. Base candidates come from an 8-bit screening plane of the
+unembedding (`unembed_screen.q8`, scored by `k_dspark_screen_dp4a7`; the header comment's "4-bit" is stale) and a
+radix top-K, and the RNN head scores only those rows (`engine/src/inkling2/cuda/ink_dspark.cuh`, lines 9–10 and
+1543–1550).
 `emit_draft_beam_tree` captures all 7 beam steps in one CUDA graph (W ≤ `kInkMaxBeam` = 4). `draft_beam_tree` picks
 3–16 nodes by maximising expected emits over an expert-union cost `1 + 4.2·(1 − (15/16)^M)`. One 48-visit
 `forward_tree_verify` pass checks the tree; device argmax IDs are copied back for the host tree walk, then
@@ -75,9 +77,11 @@ TensorFold: the config parses Mini's MTP head and `names.zig` maps every tensor 
 
 Would touch: a new `zig/src/families/inkling2/dspark.zig` behind `zig/src/core/lanes/drafter.zig` and a new
 `zig/kernels/cuda/inkling2/dspark.cu`. Only the proposal block can follow the Metal kernels: 188's Metal drafter is
-chain-only (`metal/dspark.zig` `absorbFn` returns `TreesNotBuilt` for tree rows), and Mini's CUDA verify takes chains
-only (`mini_backend.zig` `verify`: `ChainsOnly`, `StructuresUnsupported`, `NoHeldDrafts`; `mini_model.zig` `Chain`).
-The beam tree is new work, listed under follow-up 2.
+chain-only (`metal/dspark.zig`: `absorbFn` returns `TreesNotBuilt` for tree rows, its `factsFn` leaves `trees` and
+`tree_nodes` at 0, and its vtable sets no `tree` callback), and Mini's CUDA backend takes chains only
+(`mini_backend.zig`: `verify` refuses held drafts, parents and masks; `keep` refuses a shorter path with
+`Inkling2MiniNoRollback` and a non-identity path with `ChainsOnly`). The beam tree is new work, specified under
+follow-up 2.
 Gain: unmeasured separately. The 1.36× residual solo gap after the SQ-10 byte ratio includes both drafting and
 roof utilisation (Strata's 74.4 tok/s with drafting versus TensorFold's 32.5 without); neither component is
 identified without a Strata `--draft off` control at the same pack and prompt. No multi-stream drafting gain:
@@ -100,14 +104,17 @@ Would touch: nothing for Mini; it already keeps the readout to ids.
 Gain: none left to take. Strata's own batched copy (51 MB a step at c=64) costs about 1 ms against TensorFold's
 measured ≈108 ms c=64 step (64 streams / 590 tok/s), under 1%, so it is not a source of either engine's rate.
 
-### 3. fp4 tensor-core MoE — partial
+### 3. fp4 tensor-core MoE — missing
 
 Strata: `ink_moe_fp4_sm120.cu` is compiled for `sm_120a`/`sm_121a`. SF4 experts (e2m1 with an e4m3 scale per 16
 weights, layers 0–19, 44 of 48 visits) run on `mma.sync…kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64`, and MX8
 (layers 20–23) on `kind::mxf8f6f4`. Pack bytes are already in MMA operand order ("zero bit-reordering"). `k_ink_moe_bin`
-builds the grouped expert tiles on device, so it can be captured in a graph. These kernels run at M ≥ 24 rows (c=32,
-c=64, prefill: `ink_moe_cuda.cuh`, lines 3251–3253). At M ≤ 16 (solo decode and every verify tree), 4-lane kernels read
-each weight byte once across all rows. SQ-10/SQ-15 use INT8 tensor cores (M ≥ 16) and `dp4a` below that.
+builds the grouped expert tiles on device, so it can be captured in a graph. These kernels, and the INT8 tensor-core
+path SQ-10/SQ-15 use, run only at M ≥ 24 rows (c=32, c=64, prefill: `launch_ink_moe_dispatch_only` in
+[`ink_moe_cuda.cuh`](https://github.com/Niko1221/Strata/blob/v0.2.20/engine/src/inkling2/cuda/ink_moe_cuda.cuh),
+lines 3252–3254 and 3328). Below that (solo decode and every verify tree of up to 16 rows) SF4/MX8 run on CUDA
+cores: `k_ink_moe_gu_sf4_mx8<1>` reads each weight once for one row, and `<4>` rereads it once per four-row group;
+the S_K and GGUF codecs use `dp4a` the same way.
 
 TensorFold: the native block-scaled FP4 mma exists (`zig/kernels/cuda/mma4.cuh`, the same instruction) but only
 Nemotron uses it (`zig/kernels/cuda/ck_experts.cu`). On 188's branch Mini's experts go through the shared grouped
@@ -121,8 +128,9 @@ model's EXL3 path; Mini does not run it.
 Would touch: `zig/kernels/cuda/nvfp4_experts.cu` (an `mxf4nvf4` entry on `mma4.cuh`, keeping the soft caps) behind
 `Nvfp4Experts.run` / `runPrompt` in `zig/src/cuda/experts.zig`, the same for `fp8_experts.cu` / `Mxfp8Experts.run` on
 `kind::mxf8f6f4`, and `mini_visit.zig`'s `moe` to pick it when a call has M ≥ 24 rows (c=32, c=64 decode, prompts).
-Gain: none solo (Strata itself uses byte-once kernels there). At c=64: unmeasured. No receipt isolates tensor-core
-from CUDA-core expert math; Strata's c=64 aggregate over its solo rate also folds in batching and loses drafting.
+Gain: none solo. At M = 1 every expert weight is read once whatever the math unit, and Strata itself keeps CUDA cores
+below M = 24. At c=64: unmeasured. No receipt isolates tensor-core from CUDA-core expert math; Strata's c=64
+aggregate over its solo rate also folds in batching and loses drafting.
 
 ### 4. SQ packs — missing
 
@@ -155,16 +163,33 @@ Would touch: `zig/src/families/inkling2/mini_model.zig` (188's branch, `Model.ca
 lever 1 lands.
 Gain: taken (5.7×). The last third of the roof (30.7 ms → ≈20 ms a token, up to 1.5×) is profiling, not graphs.
 
-### 6. 64-slot batching — partial
+### 6. 64-slot batching — in TensorFold
 
-Strata: 64 slots, 64-token KV pages, FP8 KV from 16 slots, and one decode token from every slot each round
+Strata: 64 slots, 64-token KV pages, and one decode token from every slot each round
 (`engine/src/inkling2/ink_batch.h`, `ink_serve.h`). Only 8 of 48 visits keep global KV, so 64 resident slots are cheap.
 
 TensorFold: lanes and paged KV are general (`zig/src/core/lane_host.zig`, `zig/src/core/kv_pool.zig`). Mini on 188
-already serves 64 batched streams (job `top-975292aaf4c0`), but holds bf16 KV per slot.
+already serves 64 batched streams in one forward a round (job `top-975292aaf4c0`).
 
-Would touch: `zig/src/families/inkling2/mini_model.zig` for FP8 KV at higher residency and context.
-Gain: rides on levers 3 and 5. On TOP, Strata's SQ-10 does 382.5 tok/s at 64 streams, 5.1× its solo rate (below).
+Would touch: nothing.
+Gain: taken. On TOP, TensorFold's c=64 control (589.8–593.0 tok/s) is 18× its solo rate; Strata's SQ-10 does 382.5,
+5.1× its own (below).
+
+### 7. FP8 KV — missing
+
+Strata: paged KV in FP16 or FP8 E4M3 (`engine/src/inkling2/ink_batch.h`, `KvDtype`: 32 KiB a token of global KV in
+FP16, 16 KiB in FP8, 160 / 80 MiB for the full sliding windows), chosen per server by `kv_dtype`; INT8/4-bit K8V8 and
+K8V4 go further.
+
+TensorFold: Mini holds bf16 KV per slot (`mini_model.zig`: 40 sliding rings of 1,024 tokens, 8 whole caches). With
+8 KV heads × 128 (Mini's `config.json`), each visit stores 4 KiB of K and V a token in bf16.
+
+Would touch: `zig/src/families/inkling2/mini_model.zig` (cache allocation) and the attention reads in
+`zig/src/families/inkling2/mini_visit.zig`.
+Gain: cache bytes halve. A stream at context L holds 4 KiB × (40·min(L, 1024) + 8·L): 416 MiB at L = 8,192 in bf16
+(26 GiB for 64 streams), 208 MiB in FP8, so twice the streams or context fit the same memory. Decode reads those
+bytes every step: at the end of Strata's bench (L = 320) that is 60 MiB a stream, 3.75 GiB for 64 streams a step,
+of which FP8 saves 1.9 GiB, more at longer context.
 
 ## Strata's engine on TOP, next to ours: measured
 
@@ -202,8 +227,10 @@ lever:
 - **Four streams, TensorFold leads 1.21×.** Strata's DSpark fast path is one greedy stream only; at 4 it falls back
   to plain batched decode and loses 3.06× per stream relative to solo, where 188's graphed batch loses 9%.
   Graphs and batching (levers 5 and 6) are where TensorFold is already ahead on these runs.
-- **64 streams:** Strata's SQ-10 reaches 382.5, not the published 1,145, which is the SQ-20 pack's row. TensorFold's
-  589.8–593.0 control is 1.54–1.55× higher on its different HTTP workload; this is not a matched comparison.
+- **64 streams:** Strata's SQ-10 reaches 382.5, not the published 1,145, which is the SQ-20 pack's row; it is also
+  only 47% of Strata's published same-pack SQ-10 row (805.8), unexplained here. Card 242 owns the SQ-20 and SQ-10
+  remeasurement. TensorFold's 589.8–593.0 control is 1.54–1.55× higher on its different HTTP workload; this is not
+  a matched comparison.
 
 ## Windows on ARM: Inkling builds exist; none is Strata's or tuned for the N1X
 
@@ -212,13 +239,17 @@ lever:
   [issue #4579, "ARM64 Windows (RTX Spark)"](https://github.com/Niko1221/Strata/issues/4579), is open.
 - The only Strata build on the N1X is a community fork,
   [strata-n1x-Zackyzq](https://github.com/zackyangzeqi-spec/strata-n1x-Zackyzq), for DeepSeek-V4.1-Flash, not Inkling.
-- Inkling 2 Mini runs on a shipped Windows ARM64 CUDA build: llama.cpp pre-release
+- Inkling 2 Mini runs on llama.cpp's shipped `win-cuda-13.5-arm64` pre-releases.
   [b12600](https://github.com/ggml-org/llama.cpp/releases/tag/b12600) adds Mini (`model : Inkling 2 Mini`, #32694;
-  [b12406](https://github.com/ggml-org/llama.cpp/releases/tag/b12406) was the full Inkling 2 only), and
+  [b12406](https://github.com/ggml-org/llama.cpp/releases/tag/b12406) was the full Inkling 2 only);
   [b12611](https://github.com/ggml-org/llama.cpp/releases/tag/b12611)
-  ([#32704](https://github.com/ggml-org/llama.cpp/pull/32704)) fixes Mini's looped NVFP4 expert scales, so b12611
-  or later is the first Mini-correct one for NVFP4-scaled GGUFs. Both publish `win-cuda-13.5-arm64`. It carries none
-  of Strata's levers, and no N1X tok/s for it is known here.
+  ([#32704](https://github.com/ggml-org/llama.cpp/pull/32704)) fixes Mini's looped NVFP4 expert scales; and
+  [b12641](https://github.com/ggml-org/llama.cpp/releases/tag/b12641)
+  ([#32799](https://github.com/ggml-org/llama.cpp/pull/32799), `ignore_merges` for inkling2) brings tokenizer
+  parity, the first fully correct Mini build. [b12642](https://github.com/ggml-org/llama.cpp/releases/tag/b12642)
+  ([#32807](https://github.com/ggml-org/llama.cpp/pull/32807)) also fixes stale expert copies in Mini's shared
+  looped layers when experts stay on the host (`--n-cpu-moe`). llama.cpp has its own parallel batching; this study
+  did not audit which of its kernels Mini takes on Blackwell, and no N1X tok/s for it is known here.
 - TensorFold's own Mini engine builds and passes its checks natively on the N1X, unmerged: card 243's laptop run 1 at
   `b2ddc3de` (`docs/recipes/inkling-2-mini-cuda/README.md` on `feat/243-inkling-2-mini-runs-on-net-s-rtx-spark-l`)
   gives build exit 0, `inkling2-serving` 3/3 and `inkling2-mini-ref` 0 of 32 tokens differing; its serve step stopped
@@ -234,25 +265,31 @@ For 207 (GB10):
 1. **A quantised trunk (a TensorFold pack).** Pack the bf16 attention to 8-bit rows and the experts below 4 bits,
    gated on top-1/KL against the checkpoint. Touches `mini_model.zig` and `zig/src/cuda/nvfp4.zig`. Gain: a roof from
    49 to ≈83 tok/s (the bytes ratio, 1.69× of the measured 2.29× solo gap), at every stream count.
-2. **CUDA DSpark beam tree for Mini.** No tree exists to port: 188's Metal DSpark and Mini's CUDA verify are both
+2. **CUDA DSpark beam tree for Mini.** No tree exists to port: 188's Metal DSpark and Mini's CUDA backend are both
    chain-only. Build (a) the CUDA proposal block from the Metal kernels as a chain drafter first, then (b) a W ≤ 4 beam
    tree on device: per-step top-W expansion over the block's logits, node selection by expected emits against the
-   expert-union cost (Strata's `draft_beam_tree`), held as `drafter.zig`'s tree (`Absorb.rows`, held drafts and
-   parents). Contracts to change: `mini_backend.zig` `verify` must accept `parents`, masks and held drafts instead of
-   refusing them; `mini_model.zig` `Chain` / `forward` and `mini_visit.zig` `Rows.stage` need per-row parents and a
-   tree attention mask (positions by depth); the short-conv and KV state must commit only the accepted path (Strata's
-   `k_ink_commit_kv_all48` / `k_ink_commit_sconv_all48`); `metal/dspark.zig` drops `TreesNotBuilt` once Metal follows.
+   expert-union cost (Strata's `draft_beam_tree`). Contracts to change:
+   - Drafter (`drafter.zig`): the CUDA drafter reports `Facts.trees` / `tree_nodes`, accepts `Absorb.rows`, and
+     implements the `tree` callback returning drafts and parents; `metal/dspark.zig` does the same and drops
+     `TreesNotBuilt` once Metal follows.
+   - Verify (`mini_backend.zig` `verify`): accept held drafts, `parents` and masks instead of refusing them;
+     `mini_model.zig` `Chain` / `forward` and `mini_visit.zig` `Rows.stage` take per-row parents and a tree
+     attention mask (positions by depth).
+   - Accepted path (`mini_backend.zig` `keep`): accept a path shorter than the window and non-identity row indices;
+     commit only those rows to KV and short-conv state (Strata's `k_ink_commit_kv_all48` /
+     `k_ink_commit_sconv_all48`), which needs the conv states to keep the pre-window rows they now discard.
+
    All under the conformance ledger's tree = chain = plain rule. Gain: unmeasured; the
    residual 1.36× solo ratio after the pack-byte ceiling is shared with weight-read utilisation (30.7 ms versus a
    ≈20 ms floor), not a measured or hard upper bound on drafting. Strata `--draft off` at the same pack and bench
    is required to isolate it; no drafting gain at 4 streams.
-3. **Native fp4 grouped experts at M ≥ 24, and FP8 KV for 64 resident streams.** Give `Nvfp4Experts.run` /
-   `runPrompt` (`zig/kernels/cuda/nvfp4_experts.cu`, `zig/src/cuda/experts.zig`) an `mxf4nvf4` entry on `mma4.cuh`
-   with the soft caps, and `Mxfp8Experts.run` (`fp8_experts.cu`) a `mxf8f6f4` one; 64 lanes
-   already run (job `top-975292aaf4c0`), so what remains is Strata's FP8 KV from 16 slots in place of Mini's bf16
-   per-slot KV, to hold 64 streams at longer context. Touches those kernels, `mini_visit.zig`'s `moe` (the M ≥ 24
-   switch) and `mini_model.zig`. Gain: unmeasured on matched workloads; TensorFold's 589.8–593.0 at c=64 already
-   exceeds Strata SQ-10's 382.5 in the unmatched receipt, so those rates cannot bound the fp4 gain.
+3. **Native fp4 grouped experts at M ≥ 24, and FP8 KV.** Give `Nvfp4Experts.run` / `runPrompt`
+   (`zig/kernels/cuda/nvfp4_experts.cu`, `zig/src/cuda/experts.zig`) an `mxf4nvf4` entry on `mma4.cuh` with the soft
+   caps, and `Mxfp8Experts.run` (`fp8_experts.cu`) a `mxf8f6f4` one, picked by `mini_visit.zig`'s `moe` at M ≥ 24;
+   then FP8 KV in `mini_model.zig` (lever 7). Gain: the fp4 math is unmeasured on matched workloads (TensorFold's
+   589.8–593.0 at c=64 already exceeds Strata SQ-10's 382.5 in the unmatched receipt, so those rates cannot bound
+   it); FP8 KV halves cache bytes, ≈1.9 GiB of a c=64 step's reads at L ≈ 320 and twice the resident streams or
+   context.
 
 For 202 (RTX Spark laptop, Windows-native, N1X-tuned):
 
@@ -265,4 +302,4 @@ For 202 (RTX Spark laptop, Windows-native, N1X-tuned):
 3. **Bring 207's grouped-fp4 experts and 64-lane path to N1X, then tune.** Measure the M ≥ 24 tensor-core crossover,
    the WDDM pool's resident stream count, and tree size by acceptance and bytes per emitted token. Gain: unmeasured
    at laptop batch sizes; the GB10 64-stream receipts use different workloads and provide no transferable multiplier.
-   This is what no shipped Windows ARM64 Inkling build (Strata's absent one, llama.cpp b12611's) carries.
+   No shipped Windows ARM64 Inkling build cited here (llama.cpp's, 243's unmerged one) publishes N1X-tuned numbers.
