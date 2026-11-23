@@ -47,8 +47,9 @@ cat <<'EOF'
   "--bench --native PATH [--parallel 1..64] [--gpus 1|2] [--ep-split F] [--vram-reserve-mib N] [--cpu-threads N]
    [--kv auto|fp16|fp8|k8v8|k8v4] [--prompt-len N] [--gen N]"
   The pack card (https://huggingface.co/strata-engine/Inkling-2-Mini-Strata, "How speeds were measured") gives
-  "DGX Spark GB10 128 GB | SQ-20 / SQ-10 | 46.1 / 74.3 | 1,145.1 / 805.8 with 64", thinking off, "the total written
-  across that many requests running together"; it names neither the engine version, the flags nor the context.
+  "| DGX Spark GB10 128 GB | SQ-20 / SQ-10 | 2,197 / 2,070 | 46.1 / 74.3 | 1,145.1 / 805.8 with 64 |" (prompt
+  speed, one request, many at once), "Measured with thinking off", many at once being "the total written across
+  that many requests running together"; it names neither the engine version, the flags nor the context.
 [settings] own bench: --bench --native PACK --parallel N --gen 256, nothing else set.
   KV dtype: --kv auto, fp16 below 16 slots and fp8 from 16 (each [bench] line prints the one used).
   --parallel N: N slots, every slot decodes one token a step in one batched forward.
@@ -59,16 +60,16 @@ cat <<'EOF'
 [settings] HTTP bench: Strata's server (strata-control 0.1.65, serve/server.py) with the run config its setup
   writes ("parallel": N slots, "drafting": "dspark", --max-context 32768, its default), under
   tools/bench_concurrent.py: N requests at once, 256 tokens, temperature 0, ignore_eos, --reps 3 (the tool's
-  medians), no warmup request. Two cells a level: "same" sends tools/bench_prompts.json's first prompt on every
-  stream, "different" sends request i that file's prompt i % 16.
+  medians), one 16-token warm-up request a cell. Two cells a level: "same" sends tools/bench_prompts.json's first
+  prompt on every stream, "different" sends request i that file's prompt i % 16 (at 64, each prompt on 4 streams).
 EOF
 
 bench() { # bench CELL PACK STREAMS [FLAG...]: one --bench run, its [bench] line to stdout and $out/CELL.txt
     cell=$1 pack=$2 streams=$3
     shift 3
-    "$strata" --bench --native "$pack" --parallel "$streams" --gen 256 "$@" >"$out/bench.log" 2>&1 ||
-        { tail -20 "$out/bench.log"; exit 1; }
-    grep '^\[bench\]' "$out/bench.log" | tee -a "$out/$cell.txt"
+    "$strata" --bench --native "$pack" --parallel "$streams" --gen 256 "$@" >"$out/bench.log" 2>&1 &&
+        grep '^\[bench\]' "$out/bench.log" >>"$out/$cell.txt" || { tail -20 "$out/bench.log"; exit 1; }
+    tail -1 "$out/$cell.txt"
 }
 median() { sed 's/.*decode=\([0-9.]*\) tps.*/\1/' "$out/$1.txt" | sort -n | sed -n 2p; }
 for name in sq20 sq10; do
@@ -91,6 +92,7 @@ awk -v got="$(median sq10-64)" -v want="$published" 'BEGIN {
 
 if [ -z "$server" ]; then
     echo "[http] not run: strata-control 0.1.65 (serve/server.py) is not staged under $pilot/strata-inkling-sq20"
+    exit 1
 else
     control=$(dirname "$(dirname "$server")")
     python=$control/python/bin/python3
