@@ -2,10 +2,11 @@
 # llama.cpp b12628 serving Inkling 2 Mini (ggml-org IQ4_NL) on TOP's GB10 with the harness and settings of
 # TensorFold 188's run-script.sh, so its 1- and 4-stream numbers sit next to ours:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/llama-cpp-job.sh
-# The job has no network: llama-cpp-stage.sh put the release binaries and the GGUF in the pilot folder. The release is
-# built on glibc 2.38 and the job image's is older, so the binaries run under the loader and glibc of the Arm GNU 14.3
-# sysroot that ../minimax-h3-cuda/toolchain-stage.sh staged; the host is unchanged. The server runs the mainline recipe
-# (all layers on the GPU, 4 slots of 8192 tokens, the GGUF's chat template); llama-bench adds its own tg128/pp512 line.
+# The job has no network: the Desk staged llama-cpp-stage.sh's folder (binaries, GGUF, pinned SHA256SUMS) in the pilot
+# folder. The release is built on glibc 2.38 and the job image's is older, so the binaries run under the loader and
+# glibc of the Arm GNU 14.3 sysroot that ../minimax-h3-cuda/toolchain-stage.sh staged; the host is unchanged. The
+# server runs the mainline recipe (all layers on the GPU, 4 slots of 8192 tokens, the GGUF's chat template);
+# llama-bench adds its own tg128/pp512 line.
 # Logs and receipts land in /work/out/inkling2-llama-cpp.
 set -eu
 tag=b12628
@@ -14,7 +15,7 @@ stage=$pilot/llama-cpp-$tag
 gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
 gguf=$stage/Inkling-2-Mini-IQ4_NL.gguf
 out=/work/out/inkling2-llama-cpp
-[ -f "$gguf" ] || { echo "missing $gguf: run llama-cpp-stage.sh" >&2; exit 1; }
+[ -f "$gguf" ] || { echo "missing $gguf: the Desk stages llama-cpp-stage.sh's folder" >&2; exit 1; }
 (cd "$stage" && sha256sum -c --quiet SHA256SUMS)
 echo "7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $pilot/cuda-build-toolchain/$gcc.tar.xz" | sha256sum -c --quiet
 rm -rf "$out" /work/llama-cpp
