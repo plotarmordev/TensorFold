@@ -6,3 +6,5 @@
   checks mode bits only on POSIX, and `tf-qwen3-asr` times with `std.Io`'s clock instead of `clock_gettime`.
 - `tf-muse` builds on Windows: one rank and `MUSE_PAIR` run there, while `TF_TP_WORLD` and `follow` refuse with
   `MuseSparkTpPlatform`, as the native server already does, since fabric/tp's sockets and verbs are POSIX.
+- The H3-Image "selftest scratch" test opens its folder iterable, so `zig build test` lists it on Linux
+  (it failed on TOP's Spark at the merge base too).

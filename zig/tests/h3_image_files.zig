@@ -53,7 +53,7 @@ test "selftest scratch: a run, passing or failing, removes its own folder and ke
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const parent = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     try tmp.dir.writeFile(io, .{ .sub_path = "sentinel", .data = "keep" });
