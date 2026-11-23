@@ -76,6 +76,10 @@ nvcc register, static shared-memory and thread-bound records on sm_80/86/89/120/
 those `RECORD` lines replaced the zero placeholders in `inkling2_experts_records.zig`. The subsequent local
 `zig build test test-golden` passed (1,038/1,038 steps, 9,183 passed, 92 skipped).
 
+At `d29431d5f` the same job's contract step on TOP's GB10 (sm_121) passed `tf_ink2_topk` gates 1-4 with the new
+rule, a row out of non-NaN candidates picking -1 at weight 0 (8 shapes exact, five runs byte-identical); its planted
+unbiased control went red as planted, and the live limits match the record (36 registers, 384 shared bytes).
+
 ## Files
 
 `cells.jsonl`: each cell of the three bench runs (bench_concurrent's medians, its `alone` and `serial` counts; the
