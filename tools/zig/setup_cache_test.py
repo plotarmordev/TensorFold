@@ -1,4 +1,4 @@
-"""A card checkout's Zig cache and standalone tool outputs stay outside it, apart from other checkouts' outputs."""
+"""A card checkout's Zig cache, installs and standalone tool outputs stay outside it, apart from other checkouts'."""
 import os
 from pathlib import Path
 import shutil
@@ -10,15 +10,15 @@ ROOT = Path(__file__).resolve().parents[2]
 BUILD = """const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("scratch.zig"),
-        .target = b.graph.host,
-    }) });
-    b.step("test", "").dependOn(&b.addRunArtifact(tests).step);
+    const scratch = b.createModule(.{ .root_source_file = b.path("scratch.zig"), .target = b.graph.host });
+    b.installArtifact(b.addExecutable(.{ .name = "scratch", .root_module = scratch }));
+    b.step("test", "").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = scratch })).step);
 }
 """
 # std.testing.tmpDir writes under the working directory's .zig-cache whatever ZIG_LOCAL_CACHE_DIR says.
 SCRATCH = """const std = @import("std");
+
+pub fn main() void {}
 
 test "scratch file" {
     var tmp = std.testing.tmpDir(.{});
@@ -53,7 +53,7 @@ class SetupCacheTests(unittest.TestCase):
     def setup_cache(self, root):
         return subprocess.run([root / "tools/zig/setup_cache.sh"], env=self.env, capture_output=True, text=True)
 
-    def test_plain_build_from_a_clean_checkout_writes_only_to_the_shared_cache(self):
+    def test_plain_build_from_a_clean_checkout_writes_only_outside_it(self):
         zig = os.environ.get("ZIG") or shutil.which("zig")
         if not zig:
             self.skipTest("no Zig compiler found (set ZIG, or put zig on PATH)")
@@ -66,25 +66,30 @@ class SetupCacheTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         plain = {key: value for key, value in self.env.items() if key != "ZIG_LOCAL_CACHE_DIR"}
         plain["ZIG_GLOBAL_CACHE_DIR"] = str(self.work / "global")
-        result = subprocess.run([zig, "build", "test"], cwd=root, env=plain, capture_output=True, text=True, timeout=600)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual({path for path in root.rglob("*")} - before, {root / ".zig-cache"})
+        for step in ("install", "test"):
+            result = subprocess.run([zig, "build", step], cwd=root, env=plain, capture_output=True, text=True, timeout=600)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual({path for path in root.rglob("*")} - before, {root / ".zig-cache", root / "zig-out"})
         self.assertEqual(os.readlink(root / ".zig-cache"), str(self.cache))
         self.assertTrue(any((self.cache / "o").iterdir()), "the build's objects are in the shared cache")
         self.assertTrue((self.cache / "tmp").is_dir(), "the test's scratch directory is in the shared cache")
+        installed = (root / "zig-out").resolve()
+        self.assertEqual(installed.parent.parent, self.cache / "checkouts")
+        self.assertTrue((installed / "bin/scratch").is_file(), "the default install is in the shared cache")
 
-    def test_setup_keeps_an_existing_cache_or_link(self):
-        kept = self.checkout("built")
-        (kept / ".zig-cache").mkdir()
-        (kept / ".zig-cache/object").write_text("built")
-        linked = self.checkout("linked")
-        (linked / ".zig-cache").symlink_to(self.work / "elsewhere")
-        for root in (kept, linked):
-            self.assertNotEqual(self.setup_cache(root).returncode, 0)
-        self.assertEqual((kept / ".zig-cache/object").read_text(), "built")
-        self.assertEqual(os.readlink(linked / ".zig-cache"), str(self.work / "elsewhere"))
+    def test_setup_keeps_an_existing_folder_or_link(self):
+        for name in (".zig-cache", "zig-out"):
+            kept = self.checkout(f"built-{name}")
+            (kept / name).mkdir()
+            (kept / name / "object").write_text("built")
+            linked = self.checkout(f"linked-{name}")
+            (linked / name).symlink_to(self.work / "elsewhere")
+            for root in (kept, linked):
+                self.assertNotEqual(self.setup_cache(root).returncode, 0)
+            self.assertEqual((kept / name / "object").read_text(), "built")
+            self.assertEqual(os.readlink(linked / name), str(self.work / "elsewhere"))
 
-    def test_concurrent_tool_builds_from_two_checkouts_keep_their_own_executables(self):
+    def test_concurrent_builds_from_two_checkouts_keep_their_own_outputs(self):
         stubs = self.work / "stubs"
         stubs.mkdir()
         for name, text in (("zig", STUB_ZIG), ("xcrun", "#!/bin/sh\necho /sdk\n")):
@@ -98,6 +103,9 @@ class SetupCacheTests(unittest.TestCase):
         for tool in TOOLS:
             outputs = self.cache.glob(f"checkouts/*/tf-{tool.replace('_', '-')}")
             self.assertEqual(sorted(Path(output.read_text().strip()) for output in outputs), roots)
+        for root in roots:
+            self.assertEqual(self.setup_cache(root).returncode, 0)
+            self.assertEqual(((root / "zig-out").resolve().parent / "tf-bf16-topk").read_text().strip(), str(root))
 
 
 if __name__ == "__main__":
