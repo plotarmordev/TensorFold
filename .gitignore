@@ -23,7 +23,7 @@ zig-out/
 .qwen4-device-*/
 
 # A card's own scratch: GPU job logs, bench outputs, tars, nsys reports. It goes with the card's worktree.
-/.scratch/
+.scratch/
 
 # A build tool that crashes leaves a core dump in the tree.
 /core

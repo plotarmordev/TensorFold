@@ -9,7 +9,7 @@ The ATC instructions below and in the linked contributor workflows apply only to
 
 Put GPU job logs and fetches, bench outputs, tars, logs and nsys reports in `.scratch/` at the worktree root, never in `/tmp` or `/private/tmp`.
 Git ignores the folder, and it is deleted along with the worktree when the card is done or dropped.
-Run tools that make temporary files with `TMPDIR="$PWD/.scratch"` in front of the command, after `mkdir -p .scratch`; macOS `mktemp -d` ignores `TMPDIR` without `-t`, so give it a template such as `.scratch/run.XXXXXX`.
+Run tools that make temporary files with `TMPDIR="$PWD/.scratch"` in front of the command, after `mkdir -p .scratch` (a missing folder sends Python back to `/tmp`).
 The shared lock files (`/tmp/tensorfold-model.lock`, `/tmp/tensorfold-speech.lock`) stay where they are.
 
 ## Ask the human before installing or publishing
