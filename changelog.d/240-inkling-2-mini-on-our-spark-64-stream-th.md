@@ -1,0 +1,1 @@
+Inkling 2 Mini CUDA attention stages aligned 64-key K/V pages into shared memory with bulk async copies on sm_90+ while retaining the guarded loads on older SMs. The TOP receipt compares control and candidate token bytes and measures 64-stream decode at 1K and 8K context.

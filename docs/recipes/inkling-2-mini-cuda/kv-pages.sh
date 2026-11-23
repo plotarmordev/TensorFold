@@ -10,14 +10,25 @@
 # not a counter. Any failed request stops the job. The compile records print last.
 set -eu
 . docs/recipes/inkling-2-mini-cuda/setup.sh
+mkdir -p /work/attn-usage
+for arm in candidate control; do
+    define=$([ "$arm" = control ] && echo "-DTF_INK2_KV_LOADS=1" || echo -O3)
+    /usr/local/cuda/bin/nvcc -fatbin -std=c++20 --expt-relaxed-constexpr -O3 $define -I zig/kernels/cuda \
+        -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_86,code=sm_86 -gencode=arch=compute_89,code=sm_89 \
+        -gencode=arch=compute_120,code=sm_120 -gencode=arch=compute_121,code=sm_121 -o "/work/attn-usage/$arm.fatbin" \
+        zig/kernels/cuda/inkling2/attention.cu
+    /usr/local/cuda/bin/cuobjdump --dump-resource-usage "/work/attn-usage/$arm.fatbin" | awk -v arm="$arm" '
+        /arch = / { arch = $3 } /Function tf_ink2_attn/ { fn = $2 } /REG:|SHARED:/ && fn { print "RESULT", arm, arch, fn, $0 }'
+done
 "$bin/tf-cuda-test" kernel-contract "inkling2 attn"
 NVCC_PREPEND_FLAGS="$NVCC_PREPEND_FLAGS -DTF_INK2_KV_LOADS=1" ZIG_LOCAL_CACHE_DIR=/work/zig-control-cache \
     zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/control
-control=/work/control/native/bin
-cmp "$control/tensorfold-native" "$bin/tensorfold-native" >/dev/null && {
+control=/work/control
+cmp "$control/native/bin/tensorfold-native" /work/sm121/native/bin/tensorfold-native >/dev/null && {
     echo "the control build repeated the candidate's binary" >&2; exit 1;
 }
-"$control/tf-cuda-test" kernel-contract "inkling2 attn"
+"$control/bin/tf-cuda-test" kernel-contract "inkling2 attn"
+"$bin/tf-cuda-test" kernel-contract "inkling2_attn"
 prompts() {
     python3 - "$out" "$1" "$2" <<'PY'
 import json, random, sys, urllib.request
@@ -59,7 +70,7 @@ for _ in range(900):
         time.sleep(1)
 raise SystemExit('server did not answer /v1/models in 15 min')
 PY
-    [ -f "$out/prompts-$context.json" ] || prompts "$context" "$([ "$context" = 1024 ] && echo 860 || echo 8000)"
+    [ -f "$out/prompts-$context.json" ] || prompts "$context" "$([ "$context" = 1024 ] && echo 860 || echo 7800)"
     python3 tools/bench_concurrent.py http://127.0.0.1:8188 inkling-2-mini --levels 64 --tokens 128 --reps 3 \
         --temperatures 0 --prompts "$out/prompts-$context.json" --label "$context-$name" \
         --output "$out/$context-$name.json" >/dev/null
@@ -71,8 +82,15 @@ summary() {
     python3 - "$out" "$1" <<'PY'
 import json, statistics, sys
 out, context = sys.argv[1], int(sys.argv[2])
+cells = {arm: json.load(open(f'{out}/{context}-{arm}.json'))['cells'][0]
+         for arm in ('control-1', 'candidate', 'control-2')}
+for rep in range(3):
+    hashes = [[q['token_sha256'] for q in cells[arm]['reps'][rep]['evidence']] for arm in cells]
+    if any(h is None for row in hashes for h in row) or len(hashes[0]) != 64 or not (hashes[0] == hashes[1] == hashes[2]):
+        raise SystemExit(f'{context} rep {rep + 1}: control/candidate token bytes differ')
+print(f'PASS {context}: 192/192 stream replies byte-identical across control/candidate/control')
 for arm in ('control-1', 'candidate', 'control-2'):
-    cell, = json.load(open(f'{out}/{context}-{arm}.json'))['cells']
+    cell = cells[arm]
     if cell['failed'] or cell['unmeasured'] or not cell['timing_valid']:
         raise SystemExit(f'{context} {arm}: {cell["failed"]} failed, {cell["unmeasured"]} unmeasured requests')
     reps = cell['reps']
@@ -86,18 +104,7 @@ PY
 }
 for context in 1024 8192; do
     for arm in control-1 candidate control-2; do
-        arm "$context" "$arm" "$([ "$arm" = candidate ] && echo "$bin/tensorfold-native" || echo "$control/tensorfold-native")"
+        arm "$context" "$arm" "$([ "$arm" = candidate ] && echo /work/sm121/native/bin/tensorfold-native || echo "$control/native/bin/tensorfold-native")"
     done
     summary "$context"
 done
-mkdir -p /work/attn-usage
-for arm in candidate control; do
-    define=$([ "$arm" = control ] && echo "-DTF_INK2_KV_LOADS=1" || echo -O3)
-    /usr/local/cuda/bin/nvcc -fatbin -std=c++20 --expt-relaxed-constexpr -O3 $define -I zig/kernels/cuda \
-        -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_86,code=sm_86 -gencode=arch=compute_89,code=sm_89 \
-        -gencode=arch=compute_120,code=sm_120 -gencode=arch=compute_121,code=sm_121 -o "/work/attn-usage/$arm.fatbin" \
-        zig/kernels/cuda/inkling2/attention.cu
-    /usr/local/cuda/bin/cuobjdump --dump-resource-usage "/work/attn-usage/$arm.fatbin" | awk -v arm="$arm" '
-        /arch = / { arch = $3 } /Function tf_ink2_attn/ { fn = $2 } /^ *REG:/ && fn { printf "RESULT %s usage %s %s %s %s\n", arm, arch, fn, $1, $3; fn = "" }'
-done
-"$bin/tf-cuda-test" kernel-contract "inkling2_attn" || echo "limits: the records predate this build"
