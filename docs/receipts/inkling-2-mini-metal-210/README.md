@@ -32,7 +32,7 @@ reply is identical to the fresh one.
 ## Exactness
 
 With `TF_INKLING2_METAL_DIR` and `TF_INKLING2_DSPARK_DIR` set to the checkpoint, the `test-inkling2-metal-host` test
-binary passes all 85 of its tests on the device (175 s), among them:
+binary passed 85 device tests (175 s) in the earlier receipt; it now skips the slow float64 gate in Debug. These include:
 
 - `Mini Metal serving matches the host reference token for token`: the first turn, a fresh second turn and the
   same turn restored from the prompt cache each equal the host reference, logprobs included;
