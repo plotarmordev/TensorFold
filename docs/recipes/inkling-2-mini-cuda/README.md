@@ -31,6 +31,9 @@ Bandwidth limit: a decoded token reads about 5.55 GB of weights (core layers 3 p
 whole unembedding), so 273 GB/s caps one stream near 49 tok/s; 32.5 tok/s is 66% of it. #4387's own engine, removed
 here, gave 5.7 tok/s at one stream and 9.4 at four on the same GB10 (job `top-0759755a0515`).
 
+Job `top-9defa53c0bfc` at `2a37918af` reran it with the planted control's new exit: the control's 6 of 32 differing
+tokens exit non-zero and the script goes on, ending 0 with 33.8 tok/s at one stream and 121.4 at four (3.59x).
+
 ## RTX Spark (N1X): native Windows ARM64 on Net's laptop
 
 `n1x-run.ps1` runs the same checkpoint (`C:\models\Inkling-2-Mini-ed40e7da62`) on the laptop through its Codync bot
