@@ -1,12 +1,8 @@
 //! Inkling 2 on CUDA: Small's kernels (attention, glue) and Mini (inkling2_loop) at one rank: config, plan, weights,
 //! the loop's gates and messages, the forward over 48 visit slots a stream.
 
-pub const image = @import("image.zig");
-pub const vision = @import("vision.zig");
 pub const kernels = @import("kernels.zig");
 pub const ops = @import("ops.zig");
-pub const experts = @import("experts.zig");
-pub const modelopt = @import("modelopt.zig");
 pub const config = @import("config.zig");
 pub const plan = @import("plan.zig");
 pub const names = @import("names.zig");
@@ -24,12 +20,8 @@ pub const native = @import("mini_native.zig");
 pub const model_type = "inkling2";
 
 test {
-    _ = image;
-    _ = vision;
     _ = kernels;
     _ = ops;
-    _ = experts;
-    _ = modelopt;
     _ = native;
     _ = loop;
     _ = config;
