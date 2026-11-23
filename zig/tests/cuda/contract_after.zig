@@ -3,15 +3,20 @@ const std = @import("std");
 const g = @import("core").contract.gates;
 const check = @import("check.zig");
 
-/// Keeps the kernels whose name holds one of `only`'s words; empty keeps every one.
-pub fn keep(kernels: *std.ArrayList(g.Kernel), only: []const []const u8) void {
-    if (only.len == 0) return;
+/// Keeps the kernels whose name holds one of `only`'s words (empty keeps every one), then `shard`'s share of them.
+pub fn keep(kernels: *std.ArrayList(g.Kernel), only: []const []const u8, shard: g.Shard) void {
     var kept: usize = 0;
-    for (kernels.items) |k| for (only) |w| if (std.mem.indexOf(u8, k.spec.name, w) != null) {
-        kernels.items[kept] = k;
-        kept += 1;
-        break;
-    };
+    var named: usize = 0;
+    for (kernels.items) |k| {
+        if (only.len > 0) for (only) |w| {
+            if (std.mem.indexOf(u8, k.spec.name, w) != null) break;
+        } else continue;
+        if (shard.has(named)) {
+            kernels.items[kept] = k;
+            kept += 1;
+        }
+        named += 1;
+    }
     kernels.shrinkRetainingCapacity(kept);
 }
 

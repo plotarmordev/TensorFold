@@ -79,16 +79,19 @@ const images = struct {
     pub const h3_image_modulation align(16) = @embedFile("fatbin_h3_image_modulation").*;
 };
 
-/// Gates 1-4 on every registered CUDA kernel and each control at its own gate, then gate 5; `only`: contract_after.zig.
-pub fn run(gpu: check.Gpu, only: []const []const u8) !void {
+/// Gates 1-4 on every registered CUDA kernel and each control at its own gate, then gate 5; `words`: a leading
+/// "I/N" is this process's shard of them, the rest contract_after.zig's `only`.
+pub fn run(gpu: check.Gpu, words: []const []const u8) !void {
+    const shard: ?g.Shard = if (words.len > 0) g.Shard.parse(words[0]) else null;
+    const only = words[@intFromBool(shard != null)..];
     var t: g.Tally = .{};
     var t0 = check.now(gpu.io);
-    const gates = registered(gpu, only, &t0, &t);
-    try @import("contract_finish.zig").run(gpu, only, t, t0, gates);
+    const gates = registered(gpu, only, shard orelse .{}, &t0, &t);
+    try @import("contract_finish.zig").run(gpu, only, shard orelse .{}, t, t0, gates);
 }
 
 // The registered owners and modules end here, before the standalone suites allocate their working sets.
-fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96, tally: *g.Tally) !void {
+fn registered(gpu: check.Gpu, only: []const []const u8, shard: g.Shard, t0: *i96, tally: *g.Tally) !void {
     const a = gpu.gpa;
     if (!kk.available) return error.BuiltWithoutKernels;
     if (!options.controls) {
@@ -642,6 +645,6 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96, tally: *g.Tall
     defer families.deinit();
     try @import("contract_dump.zig").run(a, kernels.items);
     t0.* = check.now(gpu.io);
-    @import("contract_after.zig").keep(&kernels, only);
+    @import("contract_after.zig").keep(&kernels, only, shard);
     try g.runAll(a, kernels.items, 0x6b63, tally);
 }

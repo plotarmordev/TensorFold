@@ -338,6 +338,29 @@ pub const Tally = struct {
     }
 };
 
+/// One of `of` processes that between them run a list once: this one takes every `of`-th item, from `at`.
+pub const Shard = struct {
+    at: usize = 0,
+    of: usize = 1,
+
+    /// "I/N" (I from 1 to N), else null: any other word names kernels.
+    pub fn parse(word: []const u8) ?Shard {
+        const cut = std.mem.indexOfScalar(u8, word, '/') orelse return null;
+        const i = std.fmt.parseInt(usize, word[0..cut], 10) catch return null;
+        const n = std.fmt.parseInt(usize, word[cut + 1 ..], 10) catch return null;
+        return if (i >= 1 and i <= n) .{ .at = i - 1, .of = n } else null;
+    }
+
+    pub fn has(s: Shard, i: usize) bool {
+        return i % s.of == s.at;
+    }
+
+    /// The shard that also runs what is not divided: the standalone suites and the offline audit.
+    pub fn first(s: Shard) bool {
+        return s.at == 0;
+    }
+};
+
 pub fn one(a: std.mem.Allocator, which: Gate, k: Kernel, seed: u64) !Verdict {
     return switch (which) {
         .nonfinite => nonfinite(a, k, seed),

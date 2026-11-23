@@ -141,6 +141,20 @@ test "contract architecture: modern gate 3 retains bit equality and rejects a pl
     }
 }
 
+test "kernel-contract shards: N of them run each kernel once, and only I/N is a shard" {
+    for ([_]usize{ 1, 3, 8 }) |n| for (0..20) |i| {
+        var owners: usize = 0;
+        var word: [8]u8 = undefined;
+        for (1..n + 1) |at| {
+            const s = g.Shard.parse(try std.fmt.bufPrint(&word, "{d}/{d}", .{ at, n })).?;
+            try std.testing.expectEqual(at == 1, s.first());
+            if (s.has(i)) owners += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), owners);
+    };
+    for ([_][]const u8{ "0/4", "5/4", "1/0", "h3d", "sm_120/121", "2/", "/2" }) |w| try std.testing.expect(g.Shard.parse(w) == null);
+}
+
 test {
     _ = @import("contract_exl3_grouped_ref.zig");
     _ = @import("contract_nvfp4_waves_test.zig");

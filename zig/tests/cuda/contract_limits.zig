@@ -55,11 +55,13 @@ pub fn image(name: []const u8) error{UnknownContractImage}![]const u8 {
     return error.UnknownContractImage;
 }
 
-/// Gate 5 on this GPU, each record against the loaded function; `only`: the launches so named, no offline audit.
-pub fn live(gpu: check.Gpu, only: []const []const u8) !usize {
+/// Gate 5 on this GPU, each record against the loaded function; `only`: the launches so named, no offline audit;
+/// `shard`: its share of those launches, the audit and the driver's two figures on the first.
+pub fn live(gpu: check.Gpu, only: []const []const u8, shard: contract.gates.Shard) !usize {
     var n: usize = 0;
-    if (only.len == 0) n = try registry.checkCuda(gpu.gpa, &registry.all_cuda, false);
-    if (only.len == 0) std.debug.print("{s} limits: {d} registered CUDA launches against sm_80/86/89/120/121, {d} problems\n", .{ if (n == 0) "PASS" else "FAIL", registry.all_cuda.len, n });
+    const whole = only.len == 0 and shard.first();
+    if (whole) n = try registry.checkCuda(gpu.gpa, &registry.all_cuda, false);
+    if (whole) std.debug.print("{s} limits: {d} registered CUDA launches against sm_80/86/89/120/121, {d} problems\n", .{ if (n == 0) "PASS" else "FAIL", registry.all_cuda.len, n });
     const sm: u32 = @intCast(try gpu.ctx.capability());
     const t = limits.target(sm) orelse {
         std.debug.print("N/A  limits live: sm_{d} is not a target the records cover\n", .{sm});
@@ -72,12 +74,13 @@ pub fn live(gpu: check.Gpu, only: []const []const u8) !usize {
         .{ "most shared bytes a block (opt-in)", .max_shared_memory_per_block_optin, t.smem_optin },
         .{ "threads a block", .max_threads_per_block, t.threads },
     };
-    for (dev) |d| {
+    if (shard.first()) for (dev) |d| {
         const got: u32 = @intCast(try gpu.ctx.attribute(d[1]));
         if (got != d[2]) n += 1;
         std.debug.print("{s} limits live sm_{d} {s}: the driver says {d}, the table {d}\n", .{ if (got == d[2]) "PASS" else "FAIL", sm, d[0], got, d[2] });
-    }
+    };
     var said: ?limits.Nvcc = null;
+    var named: usize = 0;
     for (registry.all_cuda ++ registry.cuda_controls) |r| {
         const control = std.mem.startsWith(u8, r.launch.name, "control");
         if (only.len > 0) for (only) |w| {
@@ -85,6 +88,8 @@ pub fn live(gpu: check.Gpu, only: []const []const u8) !usize {
         } else continue;
         if (!control and t.sm < r.launch.min_sm) continue;
         if (!control and at != null and registry.targetDecision(r, t, r.usage[at.?]) != .applicable) continue;
+        defer named += 1;
+        if (!shard.has(named)) continue;
         const bytes = image(r.launch.image) catch |err| {
             std.debug.print("FAIL kernel-contract: unknown image name: {s}\n", .{r.launch.image});
             return err;
