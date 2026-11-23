@@ -161,6 +161,11 @@ pub const Cohort = struct {
     logits: mtl.Pipeline,
     pack: mtl.Pipeline,
 
+    pub fn load(device: mtl.Device, text: []const u8) !Cohort {
+        const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
+        defer lib.deinit();
+        return fromLibrary(device, lib);
+    }
     pub fn fromLibrary(device: mtl.Device, lib: mtl.Library) !Cohort {
         const qkv = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_cohort_qkv", false);
         errdefer qkv.deinit();
