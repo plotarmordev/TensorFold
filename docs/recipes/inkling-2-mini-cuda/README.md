@@ -44,3 +44,16 @@ Linux route. From #1010 (`5b1f10812`) and #2107:
   has built them so far) and one load of the 18.9 GiB single-shard checkpoint through Windows' threaded reads.
 - For Mini under WSL2, I need neither: it is the Linux build with gcc 14. Only the pool reading above differs.
 - Either way, the GB10's exactness checks must be repeated on the N1X. No N1X run of Mini exists yet.
+
+## Hill-climb and ceilings
+
+`hillclimb.sh` runs `setup.sh`'s build and gates, then the decode ceilings from `ceiling.py`, then fresh servers in
+the order control, `TF_NVFP4_DECODE_WARPS=1`, control, `TF_QMMF_HALF_BELOW=0`, control at 1 and 64 streams, with
+medians and a kept/rejected verdict for each lever in `/work/out/inkling2/ledger.jsonl`.
+
+Job `top-e1194166f521` at `8adbd7cc4` gave the ceilings without drafts at 273 GB/s: 5.55 GB a round and 49.2 tok/s
+at one stream, 32.67 GB a round and 534.8 tok/s total at 64 streams. Both sit under Strata v0.2.19's GB10 figures
+(74.3 tok/s at one stream, 1,145.1 at 64), which come with its DSpark drafts. With no draft path, this engine cannot
+reach them. The same job's gates passed: the serving checks, 0 of 32 greedy tokens off the float64 reference, and
+the planted control at 6 of 32. Its bench stopped on a liveness-check bug, fixed in `505ffbc48`. No lever has been
+measured yet.
