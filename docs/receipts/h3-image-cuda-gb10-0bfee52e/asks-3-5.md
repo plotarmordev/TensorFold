@@ -53,9 +53,16 @@ the controls are four `qwen35` nonfinite gates (`head 18 element 0: finite where
 and `contract_q35_attn.zig` are the same as on Ash's main. The same job's five-SM audit again reports `105 problems`:
 stale records on 44 launches, none H3, all in `limits-stale-top-a4a49aacbcd1.txt`.
 
+Job `top-0376995bc84e` (`plant-203.sh` at `14ba0ed56`, `kernel-contract @window_rows -tf_md_conv3x3`) was meant to run
+those remaining suites. It started on 23 Nov at 21:30:26 and ended with exit 137 about 56 minutes later. Its log holds
+only the build's compiler warnings: the script prints `contract.log` after the contract ends, and the job was killed
+before that, so it gives no gate line, no SUMMARY and no per-suite time. The full contract therefore remains partial.
+Never run on this head: the rest of `window_rows`'s paged cases, GLM, MLA, q35 contiguous, MTP rows, weight-only and
+family-set, and with them the run's SUMMARY. None of these is an H3 suite.
+
 ## CI on #3733
 
-At `e27a4ecf4` (23 Nov), every job passes: `zig`, `zig-b`, `zig-windows`, `zig-macos-dev-tools`, `fmt`, `pytest`,
+At `2f5e1ca37` (23 Nov), every job passes: `zig`, `zig-b`, `zig-windows`, `zig-macos-dev-tools`, `fmt`, `pytest`,
 `release-paths (ubuntu-24.04)`, `comfyui-moss-installer` and `benchmark-clients` on Ubuntu and Windows.
 `host-nightly-linux` and `host-nightly-macos` are skipped. At `64fdb3215`, `zig` was red at lean check on a two-line
 comment in `contract_limits.zig` from this branch. Ash's main is not red there, and `e27a4ecf4` fixes it.
