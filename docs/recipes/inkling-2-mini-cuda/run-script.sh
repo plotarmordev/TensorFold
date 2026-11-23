@@ -4,6 +4,8 @@
 # The job has no network: the Desk put the checkpoint in the pilot folder as Inkling-2-Mini, and the toolchain
 # archives of ../minimax-h3-cuda/toolchain-stage.sh beside it. Logs and the 1/4-stream receipt land in /work/out/inkling2.
 set -eu
+# TOP's GPU slot is 10 minutes: the whole job, build included, runs under timeout and exits with its status
+[ -n "${INKLING2_TIMED:-}" ] || INKLING2_TIMED=1 exec timeout 600 sh "$0" "$@"
 pilot=/assets/drama3-pilot
 staged=$pilot/cuda-build-toolchain
 zig=zig-aarch64-linux-0.17.0
@@ -50,13 +52,13 @@ server=$!
 trap 'kill $server 2>/dev/null || :' EXIT
 python3 - <<'EOF'
 import time, urllib.request
-for _ in range(900):
+for _ in range(180):
     try:
         urllib.request.urlopen("http://127.0.0.1:8188/v1/models", timeout=5)
         raise SystemExit(0)
     except OSError:
         time.sleep(1)
-raise SystemExit("server did not answer /v1/models in 15 min")
+raise SystemExit("server did not answer /v1/models in 3 min")
 EOF
 mem "server loaded"
 for level in 1 4; do

@@ -23,7 +23,8 @@ these settings, not a benchmark.
 | 1 | 0.076 s / 0.036 s | 196.8 tok/s | 32.9 / 32.8 tok/s | 32.9 / 32.8 tok/s | 0 |
 | 4 | 0.189 s / 0.090 s | 82.3 tok/s | 29.9 / 30.2 tok/s | 118.7 / 120.1 tok/s | 0 |
 
-The 4-stream gate takes each level's better prompt: 120.1 over 32.9 tok/s, 3.65x.
+The 4-stream gate takes each level's better prompt: 120.1 over 32.9 tok/s, 3.65x. Every stream sends the same prompt,
+so the four streams route to the same experts; mixed traffic may give a lower 4-stream rate.
 
 Checks in the same job: the CUDA engine matched the host reference token for token, fresh and resumed prompts gave
 identical logits and tokens, and two lanes in shared rounds kept their tokens; 0 of 32 greedy tokens differed from
