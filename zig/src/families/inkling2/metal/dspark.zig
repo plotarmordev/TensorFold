@@ -405,7 +405,8 @@ pub const Drafter = struct {
         }
     }
 
-    /// Share block and unembed launches before stepping across all greedy streams.
+    /// Share block and unembed launches before stepping across all greedy streams; a lone stream keeps the chain the
+    /// depth rule measured, which skips the cohort's packing launches.
     fn holdCohort(d: *Drafter, items: []const dr.Hold) !void {
         var depths: [k.cohort_streams]u32 = undefined;
         for (items, 0..) |item, i| depths[i] = @min(item.depth, hold_depth);
@@ -415,17 +416,12 @@ pub const Drafter = struct {
         defer pool.pop();
         const cb = d.target.queue.commandBuffer();
         const e = cb.compute(.serial);
-        d.encodeCohort(e, items, &order);
-        const c = &d.cohort_state;
-        const held = Ref{ .buf = d.chain_tokens, .off = 0 };
-        for (order.active, 0..) |streams, step| {
-            if (streams == 0) break;
-            const current = if (step % 2 == 0) c.state else c.next_state;
-            const next = if (step % 2 == 0) c.next_state else c.state;
-            k.cohortStep(&d.cohort, e, at(current, 0), at(c.kappa, 0), r(d.weights.weights.rnn), r(d.weights.weights.markov_w1), at(c.z, 0), at(next, 0), at(c.lambda, 0), held, @intCast(step), streams);
-            k.cohortLogits(&d.cohort, e, at(c.base, 0), at(d.weights.phi, 0), at(d.weights.beta, 0), at(c.lambda, 0), at(c.logits, 0), @intCast(order.first[step]), streams);
-            k.cohortPick(&d.cohort, e, at(c.logits, 0), held, @intCast(step), streams);
-        }
+        if (items.len == 1) {
+            @memset(d.scratch.state.slice(u16, state.rank), 0);
+            tokens[0] = items[0].pending;
+            const lane = d.contexts.getPtr(items[0].stream).?;
+            d.encodeChain(e, &d.scratch, lane, .{ .buf = d.chain_tokens, .off = 0 }, items[0].pending, items[0].position - 1, depths[0]);
+        } else d.encodeSteps(e, items, &order);
         e.end();
         cb.commit();
         try failed(cb, "cohort hold");
@@ -437,6 +433,21 @@ pub const Drafter = struct {
                 lane.held[step] = token;
             }
             lane.held_len = depths[item];
+        }
+    }
+
+    /// The cohort's shared block and unembed launches, then one step, logits and pick launch set per recurrent depth.
+    fn encodeSteps(d: *Drafter, e: mtl.ComputeEncoder, items: []const dr.Hold, order: *const k.Order) void {
+        d.encodeCohort(e, items, order);
+        const c = &d.cohort_state;
+        const held = Ref{ .buf = d.chain_tokens, .off = 0 };
+        for (order.active, 0..) |streams, step| {
+            if (streams == 0) break;
+            const current = if (step % 2 == 0) c.state else c.next_state;
+            const next = if (step % 2 == 0) c.next_state else c.state;
+            k.cohortStep(&d.cohort, e, at(current, 0), at(c.kappa, 0), r(d.weights.weights.rnn), r(d.weights.weights.markov_w1), at(c.z, 0), at(next, 0), at(c.lambda, 0), held, @intCast(step), streams);
+            k.cohortLogits(&d.cohort, e, at(c.base, 0), at(d.weights.phi, 0), at(d.weights.beta, 0), at(c.lambda, 0), at(c.logits, 0), @intCast(order.first[step]), streams);
+            k.cohortPick(&d.cohort, e, at(c.logits, 0), held, @intCast(step), streams);
         }
     }
 
