@@ -38,9 +38,12 @@ binary passes all 85 of its tests on the device (175 s), among them:
   same turn restored from the prompt cache each equal the host reference, logprobs included;
 - `Mini Metal opt-in DSpark drafting preserves target tokens and rolls back exactly`.
 
-Not yet on the Mac: card 188's float64 gate (`tf-cuda-test inkling2-mini-ref`, 32 greedy tokens against a
-teacher-forced float64 host forward, with a planted control that drops the cross-pass messages). Its reference,
-`mini_ref.zig`, lives on the CUDA branch and reads that branch's config, plan and NVFP4 factor; it is not ported here.
+`TF_INKLING2_METAL_DIR=$HOME/models/Inkling-2-Mini zig build test-inkling2-metal-float64` passes the official-checkpoint
+Metal gate: 0 of 32 greedy tokens differ from the teacher-forced float64 host reference, while the planted control
+without cross-pass messages disagrees. The host reference follows the shipped Metal expert activation's bf16 rounding
+of gate and up before softcapped SwiGLU; the other arithmetic stays float64. The test holds
+`/tmp/tensorfold-model.lock` only while the Metal model runs, then closes the model before the two host passes; the
+full gate took 13 minutes (mostly CPU). The Debug host suite skips this slow test; the ReleaseFast step runs it.
 
 ## Files
 

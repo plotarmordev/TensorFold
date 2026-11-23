@@ -40,6 +40,10 @@ pub fn tests(b: *std.Build, target: std.Build.ResolvedTarget, test_step: *std.Bu
     const metal_run = b.addRunArtifact(b.addTest(.{ .root_module = module(b, target, .Debug, "zig/src/inkling2_metal_host_test.zig") }));
     b.step("test-inkling2-metal-host", "Inkling 2 Mini Metal launch plans and arithmetic references").dependOn(&metal_run.step);
     test_step.dependOn(&metal_run.step);
+    // The float64 reference walks every weight on the host: optimized, and only that test.
+    const float64 = b.addTest(.{ .root_module = module(b, target, .ReleaseFast, "zig/src/inkling2_metal_host_test.zig"), .filters = &.{"float64 reference"} });
+    b.step("test-inkling2-metal-float64", "Inkling 2 Mini on Metal against the float64 host reference (TF_INKLING2_METAL_DIR)").dependOn(&b.addRunArtifact(float64).step);
+    test_step.dependOn(&float64.step);
     const native = b.addObject(.{ .name = "inkling2-native", .root_module = module(b, target, .Debug, "zig/inkling2_native_compile.zig") });
     _ = native.getEmittedBin();
     b.step("compile-inkling2-native-host", "Analyze the actual Inkling 2 Mini native opener without shaders or devices").dependOn(&native.step);
