@@ -146,7 +146,6 @@ pub fn explain(_: ?*anyopaque, err: anyerror) ?[]const u8 {
     return switch (err) {
         error.Inkling2MiniLoopsFixed => "--loops: Inkling 2 Mini runs the passes its loop_config names (3 over layers 6 to 17); serve without --loops",
         error.Inkling2MiniImages => "images: Inkling 2 Mini on CUDA reads text only until its vision slice (C6) lands; send text parts only",
-        error.Inkling2MiniNoRollback => "Inkling 2 Mini could not restore the verified window's requested prefix",
         error.Inkling2NotLooped => "Inkling 2 Small (model_type inkling2) has no CUDA engine yet: this one serves inkling2_loop",
         error.Inkling2WeightMap => "the checkpoint's tensors differ from what its config.json implies (the log names each one)",
         error.Inkling2Nvfp4Denominator => "an NVFP4 expert's outer_scale_denominator is not 2688, the one the checkpoint's factors are checked against",
@@ -195,7 +194,7 @@ test "Inkling 2 Mini open: --loops and captured kernels are refused by name befo
 }
 
 test "every refusal of its own is worded, the rest left to the server" {
-    for ([_]anyerror{ error.Inkling2MiniLoopsFixed, error.Inkling2MiniImages, error.Inkling2MiniNoRollback, error.Inkling2NotLooped, error.Inkling2WeightMap, error.Inkling2Nvfp4Denominator, error.PastContext, error.NoFreeSlot, error.NoDraftHead, error.StructuresUnsupported, error.CapturedKernels, error.ParallelPastRound, error.ParallelPastMemory, error.NoStreamFits }) |e| {
+    for ([_]anyerror{ error.Inkling2MiniLoopsFixed, error.Inkling2MiniImages, error.Inkling2NotLooped, error.Inkling2WeightMap, error.Inkling2Nvfp4Denominator, error.PastContext, error.NoFreeSlot, error.NoDraftHead, error.StructuresUnsupported, error.CapturedKernels, error.ParallelPastRound, error.ParallelPastMemory, error.NoStreamFits }) |e| {
         try std.testing.expect(explain(null, e) != null);
     }
     try std.testing.expect(explain(null, error.OutOfMemory) == null);
