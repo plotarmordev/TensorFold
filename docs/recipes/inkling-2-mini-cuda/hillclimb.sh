@@ -8,7 +8,9 @@
 # Every arm's numbers land in /work/out/inkling2/ledger.jsonl.
 set -eu
 . docs/recipes/inkling-2-mini-cuda/setup.sh
-gbps=$("$bin/tf-cuda-test" carveout 2>&1 | sed -n 's/.*device->device \([0-9]*\);.*/\1/p')
+"$bin/tf-cuda-test" carveout >"$out/carveout.log" 2>&1 || :
+cat "$out/carveout.log"
+gbps=$(sed -n 's/.*device->device \([0-9]*\);.*/\1/p' "$out/carveout.log")
 echo "measured device->device copy: ${gbps:-unmeasured} GB/s"
 python3 docs/recipes/inkling-2-mini-cuda/ceiling.py "$model" "${gbps:-273}" 1 64
 arm() {
@@ -24,7 +26,12 @@ for _ in range(900):
         urllib.request.urlopen("http://127.0.0.1:8188/v1/models", timeout=5)
         raise SystemExit(0)
     except OSError:
-        if os.waitpid(int(sys.argv[1]), os.WNOHANG)[0]:
+        # the server is the shell's child, not ours: a zombie or a gone pid has exited
+        try:
+            state = open(f"/proc/{sys.argv[1]}/stat").read().rsplit(")", 1)[1].split()[0]
+        except FileNotFoundError:
+            state = "Z"
+        if state == "Z":
             raise SystemExit("the server exited before answering")
         time.sleep(1)
 raise SystemExit("server did not answer /v1/models in 15 min")
