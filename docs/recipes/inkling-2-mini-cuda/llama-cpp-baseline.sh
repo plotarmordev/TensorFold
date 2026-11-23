@@ -1,17 +1,16 @@
 #!/bin/sh
 # llama.cpp CUDA baseline for run-script.sh's receipt: Unsloth's 16.6 GB UD-Q4_K_M GGUF on TOP's GB10, served by the
-# llama-server llama-cpp-build.sh left in /work/llama-build. compare.sh runs both.
+# llama-server llama-cpp-build.sh left in /work/llama-build, on the staged toolchain's loader. compare.sh runs both.
 set -eu
 pilot=/assets/drama3-pilot
 gguf=$pilot/inkling-gguf/Inkling-2-Mini-UD-Q4_K_M.gguf
 out=/work/out/inkling2-llama
-export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 rm -rf "$out"
 mkdir -p "$out"
 mem() { echo "$1: host $(awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {printf "used %d MiB, available %d MiB", (t - a) / 1024, a / 1024}' /proc/meminfo); GPU $(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | tr '\n' ' ')"; }
 mem "before the server"
 # run-script.sh's settings: 4 streams of 8,192 positions each
-/work/llama-build/bin/llama-server -m "$gguf" --jinja -ngl 99 -c 32768 --parallel 4 --host 127.0.0.1 --port 8189 \
+sh /work/llama-build/llama-server.sh -m "$gguf" --jinja -ngl 99 -c 32768 --parallel 4 --host 127.0.0.1 --port 8189 \
     --no-webui >"$out/server.log" 2>&1 &
 server=$!
 trap 'status=$?; kill $server 2>/dev/null || :; [ $status = 0 ] || { echo "llama-server log, last 60 lines:"; tail -n 60 "$out/server.log"; }' EXIT

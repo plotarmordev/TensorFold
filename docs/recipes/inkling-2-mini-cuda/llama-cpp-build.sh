@@ -24,5 +24,16 @@ cuda_lib=/usr/local/cuda/targets/sbsa-linux/lib
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,$cuda_lib:$cuda_lib/stubs:/usr/lib/aarch64-linux-gnu" \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF >/dev/null
 /work/$cmake/bin/cmake --build /work/llama-build -j "$(nproc)" --target llama-server >/dev/null
-# loads every shared library the server needs: a loader error shows here, before the measured part
-LD_LIBRARY_PATH=$cuda_lib /work/llama-build/bin/llama-server --version
+# The staged gcc links against its own glibc 2.40 and libstdc++, newer than the job image's (GLIBC_2.38 and
+# GLIBCXX_3.4.32 missing), so the server runs on the toolchain's loader. --library-path, unlike LD_LIBRARY_PATH, reaches
+# only this process and wins over the driver libraries' RUNPATH, so librt (GLIBC_PRIVATE) matches its libc; the image's
+# directory comes last, for libcuda and what else only the driver ships.
+rt=/work/$gcc/aarch64-none-linux-gnu/libc
+loader="$rt/lib/ld-linux-aarch64.so.1 --library-path $rt/lib64:$rt/usr/lib64:/work/llama-build/bin:$cuda_lib:/usr/lib/aarch64-linux-gnu"
+echo "exec $loader /work/llama-build/bin/llama-server \"\$@\"" >/work/llama-build/llama-server.sh
+# a loader error, or a glibc or libstdc++ library resolved from the image, shows here, before the measured part
+if $loader --list /work/llama-build/bin/llama-server | grep -E '^\s*lib(c|m|rt|dl|pthread|stdc\+\+|gcc_s|gomp)\.so' | grep -v "$rt/"; then
+    echo "the libraries above resolved outside the toolchain's $rt" >&2
+    exit 1
+fi
+sh /work/llama-build/llama-server.sh --version

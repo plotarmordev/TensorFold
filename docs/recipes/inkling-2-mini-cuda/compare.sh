@@ -14,5 +14,6 @@ start=$(date +%s)
 sh "$here/llama-cpp-build.sh"
 echo "build: $(($(date +%s) - start)) s"
 start=$(date +%s)
-timeout 600 python3 "$here/peak-memory.py" llama-server sh "$here/llama-cpp-baseline.sh"
+# llama-server runs as the toolchain's loader (llama-cpp-build.sh), so that is the program peak-memory.py watches
+timeout 600 python3 "$here/peak-memory.py" ld-linux-aarch64.so.1 sh "$here/llama-cpp-baseline.sh"
 echo "measure: $(($(date +%s) - start)) s"
