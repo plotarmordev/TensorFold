@@ -37,6 +37,15 @@ fn putRows(a: Allocator, d: Value, settled: Value, key: []const u8) Allocator.Er
     if (settled.get("positions")) |at| try d.object.put(a, "logprob_positions", try rowsOf(a, key, at.get(key).?));
 }
 
+/// A per-depth tally as a JSON array, the first depth first, through the deepest drafted.
+fn depthCounts(a: Allocator, counts: []const u32) Allocator.Error!Value {
+    var n = counts.len;
+    while (n > 0 and counts[n - 1] == 0) n -= 1;
+    const out = try a.alloc(Value, n);
+    for (counts[0..n], out) |c, *slot| slot.* = try json.intValue(a, c);
+    return .{ .array = out };
+}
+
 pub const Generation = struct {
     srv: *Server,
     a: Allocator,
@@ -414,6 +423,8 @@ pub const Generation = struct {
         try spec.put(a, "rounds", try json.intValue(a, s.rounds));
         try spec.put(a, "drafted", try json.intValue(a, s.drafted));
         try spec.put(a, "accepted", try json.intValue(a, s.accepted));
+        try spec.put(a, "depth_drafted", try depthCounts(a, &s.depth_drafted));
+        try spec.put(a, "depth_accepted", try depthCounts(a, &s.depth_accepted));
         try spec.put(a, "acceptance_rate", .{ .float = if (s.drafted > 0) @as(f64, @floatFromInt(s.accepted)) / @as(f64, @floatFromInt(s.drafted)) else 0 });
         try spec.put(a, "tokens_per_round", .{ .float = if (s.rounds > 0) @as(f64, @floatFromInt(g.collected.items.len)) / @as(f64, @floatFromInt(s.rounds)) else 0 });
         const counters = try a.dupe(u8, m.telemetry); // parsed strings point into it: it outlives the box

@@ -5,6 +5,9 @@ pub const Stats = struct {
     grammar: ?@import("lanes").grammar_time.Sum = null,
     drafted: u64 = 0,
     accepted: u64 = 0,
+    /// Head chain rows drafted and kept at each depth, the first depth first.
+    depth_drafted: [@import("lanes").shape.max_depth]u32 = @splat(0),
+    depth_accepted: [@import("lanes").shape.max_depth]u32 = @splat(0),
     /// The narrowest verify window of the reply's rounds (drafted replies: 2 or more).
     min_rows: u32 = 0,
     prefill_widths: []const u32 = &.{},
