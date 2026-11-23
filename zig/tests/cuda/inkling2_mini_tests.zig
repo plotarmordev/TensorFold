@@ -1,13 +1,15 @@
-//! Inkling 2 Mini on the released checkpoint at one rank: greedy tokens, a prompt cut in chunks against one chunk
-//! (resumed == fresh), and four streams decoding together against each alone (concurrent == solo).
+//! Inkling 2 Mini on the released checkpoint: greedy tokens, chunked/resumed prompts, concurrent decoding,
+//! and forced draft acceptance/rejection against no-draft greedy output after the float64 reference check.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
+const lanes = @import("lanes");
 const ink = @import("inkling2");
 const check = @import("check.zig");
 const Gpu = check.Gpu;
 
 const mm = ink.mini_model;
+const Mini = ink.mini_backend.Mini;
 
 pub const Rig = struct {
     gpu: Gpu,
@@ -92,6 +94,59 @@ fn decode(r: *Rig, slot: usize, first: []const f32, p0: usize, out: []u32) !void
         defer r.gpu.gpa.free(row);
         out[i] = argmax(row);
     }
+}
+
+/// Forced chains alternate first-row rejection, partial acceptance and full acceptance; every draw matches greedy.
+fn forcedDrafts(r: *Rig, prompt: []const u32, plain: []const u32) !void {
+    if (plain.len < 8) return error.MiniDraftCheckTooShort;
+    const gpa = r.gpu.gpa;
+    var draws = try ink.mini_backend.Draws.load(r.gpu.d);
+    defer draws.deinit();
+    var target = try Mini.init(gpa, r.gpu.d, &r.m, &r.k, &draws, r.s, r.w.config.image_token);
+    defer target.deinit();
+    const b = target.backend();
+    var stream = try lanes.Stream.init(gpa, .{ .id = "mini-forced-drafts", .prompt = prompt, .max_new = @intCast(plain.len) });
+    defer stream.deinit(gpa);
+    defer b.release(&stream);
+    try b.prefill(&stream);
+    try check.expect(try b.read(try b.first(&stream, prompt.len)) == plain[0], "inkling2 mini forced drafts: first greedy token differs", .{});
+
+    const drafted = try gpa.alloc(u32, plain.len);
+    defer gpa.free(drafted);
+    drafted[0] = plain[0];
+    var at: usize = 0;
+    var rounds: usize = 0;
+    var rejected: usize = 0;
+    var partial: usize = 0;
+    var full: usize = 0;
+    while (at + 1 < plain.len) : (rounds += 1) {
+        const n = @min(4, plain.len - at - 1);
+        var tokens: [3]u32 = undefined;
+        var positions: [4]u64 = undefined;
+        var got: [4]u32 = undefined;
+        var echoed: [3]u32 = undefined;
+        const path = [4]u32{ 0, 1, 2, 3 };
+        for (0..n) |j| positions[j] = prompt.len + at + j + 1;
+        for (0..n - 1) |j| tokens[j] = plain[at + j + 1];
+        const reject_at: ?usize = if (rounds % 3 == 2 or n == 1) null else @min(rounds % 3, n - 2);
+        if (reject_at) |j| tokens[j] = (tokens[j] + 1) % r.w.config.text.unpadded_vocab;
+        const w: lanes.backend.Window = .{ .stream = &stream, .pending = drafted[at], .held = 0, .tokens = tokens[0 .. n - 1], .parents = null, .positions = positions[0..n] };
+        var verified = [1]lanes.backend.Verified{.{ .sampled = got[0..n], .drafts = echoed[0 .. n - 1] }};
+        try b.verify(&.{w}, &verified);
+        var keep: usize = 1;
+        while (keep < n and tokens[keep - 1] == got[keep - 1]) : (keep += 1) {}
+        if (reject_at) |j| try check.expect(keep == j + 1, "inkling2 mini forced draft at row {d} was not rejected", .{j + 1});
+        try b.keep(&.{w}, &.{path[0..keep]});
+        for (got[0..keep], 0..) |t, j| drafted[at + j + 1] = t;
+        if (keep < n) {
+            rejected += 1;
+            if (keep > 1) partial += 1;
+        } else full += 1;
+        at += keep;
+    }
+    try check.expect(rejected > 0 and partial > 0 and full > 0, "inkling2 mini forced drafts missed a keep/reject case", .{});
+    try check.expect(std.mem.eql(u32, drafted, plain), "inkling2 mini forced drafts differ from plain greedy tokens", .{});
+    check.pass("inkling2 mini forced drafts == no drafts: {d} greedy tokens, {d} rejected windows ({d} partial), {d} fully kept", .{ plain.len, rejected, partial, full });
 }
 
 /// tf-cuda-test inkling2-mini DIR N TEXT: greedy, resumed == fresh, concurrent == solo, decode speed at 1 and 4.
@@ -276,4 +331,5 @@ pub fn reference(gpu: Gpu, model: []const u8, count_text: []const u8, text: []co
     std.debug.print("RESULT inkling2 mini vs float64 reference{s}: {d} of {d} greedy tokens differ, smallest reference margin {d:.4}: \"{s}\"\n", .{ if (plant) " (PLANTED: no messages)" else "", differ, count, smallest, said });
     if (plant) return check.expect(differ > 0, "inkling2 mini planted control: the reference without messages still agrees", .{});
     try check.expect(differ == 0, "inkling2 mini greedy == reference: {d} of {d} tokens differ", .{ differ, count });
+    try forcedDrafts(&rig, ids, all[ids.len..]);
 }
