@@ -289,16 +289,18 @@ pub fn pheads(in: In, s: Sum, want: []f64, mag: []f64, fused: bool) void {
         for (&terms, src) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(&terms) / @as(f64, @floatFromInt(D)) + in.eps);
         var v: [128]f64 = undefined;
-        for (&v, src, w) |*o, xv, wv| o.* = if (in.mode == 0) bf(wv * bf(xv * inv)) else bf(xv * inv * wv);
+        for (&v, src, w) |*o, xv, wv| o.* = xv * inv * wv;
         var o = v;
+        var m: [128]f64 = terms;
         if (in.rotary) for (0..D) |ch| {
             const table_at = r * 64 + ch % 64;
             const other = if (ch < 64) -v[ch + 64] else v[ch - 64];
-            o[ch] = bf(v[ch] * in.f[table_at]) + bf(other * in.g[table_at]);
+            o[ch] = v[ch] * in.f[table_at] + other * in.g[table_at];
+            m[ch] = @abs(v[ch] * in.f[table_at]) + @abs(other * in.g[table_at]);
         };
         for (0..D) |i| {
             want[at + i] = o[i];
-            mag[at + i] = terms[i];
+            mag[at + i] = m[i];
         }
     };
 }
@@ -354,6 +356,12 @@ pub fn add(in: In, want: []f64, mag: []f64) void {
         o.* = bf(x + bf(y));
         m.* = 0;
     }
+}
+
+/// The scattered and spliced rows' destinations: idx.len distinct rows of an x buffer of `rows`, spread
+/// evenly. A gate may raise the scattered count (gate 1's 5 of 8), so every one stays below `rows`.
+pub fn spread(idx: []u32, rows: usize) void {
+    for (idx, 0..) |*v, i| v.* = @intCast(i * rows / idx.len);
 }
 
 /// h3p_scatter_add: x rows idx[i] = bf16(x + y[i]); a x [rows*n] in place, b y [k*n], ints idx [k].
@@ -443,4 +451,32 @@ pub fn mproject(in: In, s: Sum, want: []f64, mag: []f64) void {
         want[r * in.n + o] = bf(s.of(&lanes) + in.d[o]);
         mag[r * in.n + o] = magOf(row[0..in.k]);
     };
+}
+
+test "scatter_add and splice keep their rows inside x at gate 1's raised count" {
+    // gate 1 raises served[0]'s 4 scattered rows to 5 while x keeps 8: 2i placed row 4 at 8, past x
+    const a = std.testing.allocator;
+    const x_rows = 8;
+    const n = 4;
+    var idx: [5]u32 = undefined;
+    spread(&idx, x_rows);
+    for (idx, 0..) |v, i| {
+        try std.testing.expect(v < x_rows);
+        if (i > 0) try std.testing.expect(v > idx[i - 1]);
+    }
+    const x = try a.alloc(f64, x_rows * n);
+    defer a.free(x);
+    @memset(x, 1);
+    const y = try a.alloc(f64, idx.len * n);
+    defer a.free(y);
+    @memset(y, 2);
+    const want = try a.alloc(f64, x_rows * n);
+    defer a.free(want);
+    const mag = try a.alloc(f64, x_rows * n);
+    defer a.free(mag);
+    const in: In = .{ .a = x, .b = y, .ints = &idx, .rows = x_rows, .n = n, .k = idx.len };
+    scatterAdd(in, want, mag);
+    for (idx) |v| try std.testing.expectEqual(3, want[v * n]);
+    splice(in, want, mag);
+    for (idx) |v| try std.testing.expectEqual(2, want[v * n]);
 }

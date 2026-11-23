@@ -36,9 +36,9 @@ fn rowChain(s: c.Shape) usize {
 fn headChain(_: c.Shape) usize {
     return 128 + 2;
 }
-/// attention's sequential key dots of 128, then the weight and value sums over the keys (one a row) in order.
+/// attention's sequential key dots of 128, then the weight and value sums over the keys in order.
 fn attnChain(s: c.Shape) usize {
-    return 128 + s.rows + 2;
+    return 128 + s.k + 2;
 }
 /// linear's sequential dot over k.
 fn dotK(s: c.Shape) usize {
@@ -55,7 +55,7 @@ pub fn spec(w: Which) c.Spec {
     return switch (w) {
         .norm_qwen => .{ .name = "cuda h3 image prompt h3p_norm qwen", .accum = .f32, .depth = rowChain, .ops = 6, .mids = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 256, .k = 256 }, .{ .rows = 77, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .norm_h3 => .{ .name = "cuda h3 image prompt h3p_norm h3", .accum = .f32, .depth = rowChain, .ops = 6, .mids = 0, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 256, .k = 256 }, .{ .rows = 77, .n = 1024, .k = 1024 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
-        .heads_rotary => .{ .name = "cuda h3 image prompt h3p_heads rotary", .accum = .f32, .depth = headChain, .ops = 8, .mids = 4, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 128, .k = 128 }, .{ .rows = 77, .n = 128, .k = 128 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
+        .heads_rotary => .{ .name = "cuda h3 image prompt h3p_heads rotary", .accum = .f32, .depth = headChain, .ops = 8, .mids = 3, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 128, .k = 128 }, .{ .rows = 77, .n = 128, .k = 128 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .heads_fused => .{ .name = "cuda h3 image prompt h3p_heads fused qkv", .accum = .f32, .depth = headChain, .ops = 8, .mids = 1, .out = .bf16, .in_place = true, .served = &.{ .{ .rows = 8, .n = 128, .k = 128 }, .{ .rows = 77, .n = 128, .k = 128 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = norm_why } },
         .attention_causal => .{ .name = "cuda h3 image prompt h3p_attention causal", .accum = .f32, .depth = attnChain, .ops = 8, .mids = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 128, .k = 8 }, .{ .rows = 77, .n = 128, .k = 77 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = att_why } },
         .attention_fused => .{ .name = "cuda h3 image prompt h3p_attention all rows", .accum = .f32, .depth = attnChain, .ops = 8, .mids = 1, .out = .bf16, .served = &.{ .{ .rows = 8, .n = 128, .k = 8 }, .{ .rows = 77, .n = 128, .k = 77 } }, .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = att_why } },
@@ -256,15 +256,17 @@ pub const Prm = struct {
                 self.outs = s.rows * q_row;
             },
             .attention_causal, .attention_fused => {
-                // q [rows, 4*128], k/v [rows, 2*128], one key a row; causal for the text model, all rows for the refiner.
+                // q [rows, 4*128], k/v [rows, 2*128]; causal for the text model, all rows for the refiner.
+                // Every row is a query and a key: the sequence is the shape's k keys (gate 4 trims rows, not keys).
+                const rows = s.k;
                 const heads = 4;
                 const kv = 2;
                 const causal = self.which == .attention_causal;
-                const q = try self.values(s.rows * heads * 128, -2, 2, fill, rng, true, true);
-                const k = try self.values(s.rows * kv * 128, -2, 2, .random, rng, true, false);
-                const v = try self.values(s.rows * kv * 128, 0, 2, .random, rng, true, false);
-                self.in = .{ .a = q, .b = k, .d = v, .rows = s.rows, .n = s.n, .k = s.k, .heads = heads, .kv_heads = kv, .head = 128, .q_row = heads * 128, .k_row = kv * 128, .scale = 1.0 / @sqrt(128.0), .causal = causal };
-                self.rows = s.rows;
+                const q = try self.values(rows * heads * 128, -2, 2, fill, rng, true, true);
+                const k = try self.values(rows * kv * 128, -2, 2, .random, rng, true, false);
+                const v = try self.values(rows * kv * 128, 0, 2, .random, rng, true, false);
+                self.in = .{ .a = q, .b = k, .d = v, .rows = rows, .n = s.n, .k = s.k, .heads = heads, .kv_heads = kv, .head = 128, .q_row = heads * 128, .k_row = kv * 128, .scale = 1.0 / @sqrt(128.0), .causal = causal };
+                self.rows = rows;
                 self.heads = heads;
                 self.kv_heads = kv;
                 self.q_row = heads * 128;
@@ -272,8 +274,8 @@ pub const Prm = struct {
                 _ = try self.upload(q, true);
                 _ = try self.upload(k, true);
                 _ = try self.upload(v, true);
-                _ = try self.output(s.rows * heads * 128 * 2);
-                self.outs = s.rows * heads * 128;
+                _ = try self.output(rows * heads * 128 * 2);
+                self.outs = rows * heads * 128;
             },
             .glu_qwen, .glu_h3 => {
                 const mode: u32 = if (self.which == .glu_qwen) 0 else 1;
@@ -300,7 +302,7 @@ pub const Prm = struct {
                 const x = try self.values(s.k * s.n, -2, 2, fill, rng, true, true);
                 const y = try self.values(s.rows * s.n, -2, 2, .random, rng, true, false);
                 const idx = try al.alloc(u32, s.rows);
-                for (idx, 0..) |*v, i| v.* = @intCast((i * s.k) / s.rows);
+                ref.spread(idx, s.k);
                 rng.shuffle(u32, idx);
                 self.in = .{ .a = x, .b = y, .ints = idx, .rows = s.k, .n = s.n, .k = s.rows };
                 _ = try self.inPlace(x, true);
@@ -326,7 +328,7 @@ pub const Prm = struct {
                 const x = try self.values(s.k * s.n, -2, 2, fill, rng, true, true);
                 const rows_ = try self.values(s.rows * s.n, -2, 2, .random, rng, true, false);
                 const pads = try al.alloc(u32, s.rows);
-                for (pads, 0..) |*v, i| v.* = @intCast((i * s.k) / s.rows);
+                ref.spread(pads, s.k);
                 rng.shuffle(u32, pads);
                 self.in = .{ .a = x, .b = rows_, .ints = pads, .rows = s.k, .n = s.n, .k = s.rows };
                 _ = try self.inPlace(x, true);
@@ -459,6 +461,16 @@ pub const Prm = struct {
 
     pub fn reference(self: *Prm, want: []f64, mag: []f64) !void {
         return self.compute(.{}, want, mag);
+    }
+
+    /// Rotary's roundings (the normed values' and both products') are each relative to a product, and the
+    /// products may cancel in their sum: the spec's per-value terms, relative to |want|, also cover the
+    /// products' magnitude (`mag`) that the sum hides.
+    pub fn bounds(self: *Prm, want: []const f64, mag: []const f64, allow: []f64) !void {
+        if (self.which != .heads_rotary) return;
+        const s = spec(self.which);
+        const per = s.ops * 0x1p-24 + s.mids * 0x1p-8;
+        for (allow, want, mag) |*l, w, m| l.* += per * (m - @abs(w));
     }
 
     pub fn simulate(self: *Prm, acc: c.Accum, order: g.Order, out: []f64) !void {

@@ -68,15 +68,17 @@ waits make the request slower than an unprofiled one, so the kernel seconds are 
 At startup the server puts every weight file it maps (text encoder, refiner, transformer, step heads) and the decoder's
 bf16 weights in one residency set on the three stages' queues (`holdWeights`), and prints the GiB it holds: 117.6 on
 the release folder, the refiner's shard counted twice since it is mapped twice. macOS unwires GPU memory idle for a
-second or two, so without the set each stage's first commit re-wires its weights on every request. Weights past 70% of
-RAM, or a macOS without residency sets, leave the server running as before. There is no keepalive: a request after a
-pause of more than a second or two re-wires once, in its prompt (about 1.4 s more, measured after 20 and 60 s).
+second or two, so without the set each stage's first commit re-wires its weights on every request. An idle ticker
+commits a tiny command buffer every 400 ms between requests so the set stays wired across pauses. If the weights
+cannot be held resident (past 70% of RAM, or a macOS without residency sets) or the idle ticker cannot start, it exits
+instead of serving unwarmed.
 
 Run `zig build test-h3-image-server -Doptimize=Debug` or `-Doptimize=ReleaseSafe` for the synthetic resident gates.
-Both pass all four tests: fresh/reused latent parity across prompt and layout changes, failed-bind cleanup including
-the final tag allocation, over-long-line recovery, and the shared serializer's scratch cleanup. Picture fixtures use
-the aligned safetensors serializer so these checks run with alignment safety enabled. The line-reader gate checks
-that the next request is read, not full image generation after an oversized line.
+Both pass the resident gates, among them: fresh/reused latent parity across prompt and layout changes and after an
+idle pause the ticker spans, failed-bind cleanup including the final tag allocation, over-long-line recovery, both
+fail-closed startup refusals, and the shared serializer's scratch cleanup. Picture fixtures use the aligned
+safetensors serializer so these checks run with alignment safety enabled. The line-reader gate checks that the next
+request is read, not full image generation after an oversized line.
 
 ## Edit, end to end
 
@@ -1407,6 +1409,64 @@ The window confirms the quiet round at six steps: even on pure step GPU time (9.
 4-byte loads yield no served gain, so the code stays reverted. Neither side reached the quiet baseline's 10.8 s
 normal / 7.8 s fast totals under this host load (8.8-45.0); the best warm totals in the window were main 12.40 s and
 head 12.32 s at six steps, and main 11.00 s (`timing_valid=false`; 11.62 s valid) and head 12.20 s in fast mode.
+
+### Card 184: the int8 weights packed in fragment order, kept
+
+Card 150's table puts the int8 product at 25-28% of its path's ceiling, each B fragment gathered as eight scalar
+reads. Bind now quantizes every block's four projections straight into the order the MMA's right operand takes them
+(`h3_packed` in `h3_gemm.metal`, `packedAt` in `kernels.zig`): each 32-row band, then each 16-deep K step, holds 32
+lanes of 16 bytes, a lane's two 16 x 16 fragments for one `mma_16x32`. `h3_gemm_32x64_i8` loads them as one 16-byte
+read where main made eight; A, the fold order and every value are main's. `h3_quantize_rows` takes a fourth parameter
+(nonzero writes packed); the step's own input quantizers stay row-major.
+
+Isolated replays, the same harness as card 150 (`tools/zig/metal_bench.swift`, main's kernel against this card's on the
+same int8 operands, head's B packed by `packedAt`), warm medians of eight command buffers in µs, three sets a side
+under `/tmp/tensorfold-model.lock`; every output byte-identical to main's on all four shapes:
+
+| `h3_gemm_32x64_i8` launch | Shape M x N x K | Card 150 | main, set 1 | head, set 1 | main, set 2 | head, set 2 |
+|---|---|---:|---:|---:|---:|---:|
+| qkv | 4,120 x 21,504 x 5,376 | 6.88 ms | 9.16 ms | 5.82 ms (-36%) | 17.45 ms | 13.63 ms (-22%) |
+| attention out | 4,120 x 5,376 x 7,168 | 2.54 ms | 3.15 ms | 2.81 ms (-11%) | 6.45 ms | 4.97 ms (-23%) |
+| fc1 (gate+value) | 4,120 x 28,672 x 5,376 | 9.13 ms | 15.35 ms | 7.40 ms (-52%) | 22.88 ms | 17.81 ms (-22%) |
+| fc2 | 4,120 x 5,376 x 14,336 | 5.22 ms | 5.27 ms | 4.10 ms (-22%) | 13.00 ms | 10.04 ms (-23%) |
+
+Set 1 ran at load 92-95, set 2 at 26-41 while another card's resident server shared the GPU, so neither is a quiet
+rate; within a set, head beats main on every shape and every one of the three runs.
+
+Card 184's own served A/B (ReleaseFast `tf-h3-image-server`, main `bc1012c35` against this card's head, card 34's
+pilot cold then harbour, meadow and steam warm and unseen) found no window where both sides started under load 8:
+seven sessions ran at load 5.6-40.8, and the one quiet main start was followed by head at 20. Its latents and PNGs
+were sha1-identical between the builds, the pilot's latent `776b443a…` (card 135's pin) and PNG `85098fa9…`, but its
+timings are not counted. The kept decision rests on card 197's quiet pairs below. Receipts for the isolated replays
+and the loaded sessions (`bench.py`, `bench-load92.log`, `bench.log`, `session.sh`, `contract.log`, the sessions'
+server output and `loads.txt`) are in `h3-image-runs/184`, outside the repo.
+
+Card 197 repeated the served A/B in a quiet window with the same builds and session method on three prompts none of
+them had seen (a lighthouse, a fish market, a glacier cave). Three pairs alternated main and head, and each session
+started only once no TensorFold build or model run was going and the 1-minute load was under 8. All 24 latents and
+PNGs are sha1-identical between the builds, the pilot's still `776b443a…` / `85098fa9…`, and every step is
+`timing_valid=true`. Seconds of the six steps, cold then the three warm (total in brackets):
+
+| Session | Load | pilot (cold) | lighthouse | market | glacier |
+|---|---|---|---|---|---|
+| main | 4.5 → 5.0 | 9.23 (11.00) | 9.33 (10.80) | 9.33 (10.82) | 9.35 (10.84) |
+| head | 4.9 → 5.5 | 7.67 (9.65) | 7.63 (9.31) | 7.63 (9.32) | 7.66 (9.46) |
+| main | 5.5 → 9.8 | 9.69 (11.80) | 9.34 (10.91) | 9.33 (10.83) | 9.69 (11.84) |
+| head | 7.3 → 6.0 | 8.13 (10.11) | 7.63 (9.32) | 7.63 (9.33) | 7.63 (9.34) |
+| main | 5.6 → 4.1 | 9.22 (11.14) | 9.34 (10.87) | 9.34 (10.89) | 9.35 (10.90) |
+| head | 4.1 → 7.0 | 8.37 (12.96) | 7.71 (9.96) | 7.64 (9.57) | 8.03 (9.97) |
+
+Medians over the nine warm pictures a side, in seconds, with each stage's range in brackets:
+
+| Build | prompt | case | bind | six steps | decoder | total |
+|---|---|---|---|---|---|---|
+| main | 0.22 (0.22-0.22) | 0.01 (0.00-0.02) | 0.66 (0.62-0.71) | 9.34 (9.33-9.69) | 0.62 (0.61-1.28) | 10.87 (10.80-11.84) |
+| head | 0.22 (0.22-0.38) | 0.01 (0.00-0.02) | 0.85 (0.84-1.01) | 7.63 (7.63-8.03) | 0.62 (0.61-0.88) | 9.34 (9.31-9.97) |
+
+The 1.71 s step gain is over four times either side's spread, and head's bind costs 0.19 s of it back. Head's last
+cold took 2.98 s to bind as load rose, and its pilot's steps ran 8.37 s. Receipts
+(`gate.sh`, `session.sh`, the prompts, server output, latents, PNGs and `loads.txt`) are in `h3-image-runs/197`,
+outside the repo. Pair 1 there is left out: main started at load 9.4.
 
 ### Card 151: a faster `h3_attention`, measured and reverted
 
