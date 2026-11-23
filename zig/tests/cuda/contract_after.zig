@@ -3,9 +3,9 @@ const std = @import("std");
 const g = @import("core").contract.gates;
 const check = @import("check.zig");
 
-/// Whether `only` names kernels to keep: without plain words (none, or only `-word`s) the run is a full one.
+/// Whether `only` names kernels to keep: without plain words (none, or only `-word`s and `@word`s) the run is a full one.
 pub fn filtered(only: []const []const u8) bool {
-    for (only) |w| if (!std.mem.startsWith(u8, w, "-")) return true;
+    for (only) |w| if (!std.mem.startsWith(u8, w, "-") and !std.mem.startsWith(u8, w, "@")) return true;
     return false;
 }
 
@@ -21,10 +21,16 @@ pub fn wanted(name: []const u8, only: []const []const u8) bool {
     return named;
 }
 
-/// Keeps the kernels `wanted` keeps; empty keeps every one.
+/// Keeps the kernels `wanted` keeps, from the first whose name holds an `@word` on (a run resumed there); empty keeps every one.
 pub fn keep(kernels: *std.ArrayList(g.Kernel), only: []const []const u8) void {
+    var from: usize = 0;
+    for (only) |w| if (std.mem.startsWith(u8, w, "@")) {
+        from = for (kernels.items, 0..) |k, i| {
+            if (std.mem.indexOf(u8, k.spec.name, w[1..]) != null) break i;
+        } else kernels.items.len;
+    };
     var kept: usize = 0;
-    for (kernels.items) |k| if (wanted(k.spec.name, only)) {
+    for (kernels.items[from..]) |k| if (wanted(k.spec.name, only)) {
         kernels.items[kept] = k;
         kept += 1;
     };
