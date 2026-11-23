@@ -232,25 +232,63 @@ Then, from a clean checkout of `8365021a7` on the same laptop, run by its only o
 - `tf-cuda-test` (sm_121, 48 SMs, 51,816 MiB), passed / failed, 29/0 in all: `smoke` 8/0, `glue` 1/0 (1473 of 1473
   byte-equal), `sample` 2/0 (2880 draws, none differ), `quant-ref` 4/0 (worst 0.510 of its tolerance), `affine8` 1/0
   (worst 0.338), `modelopt` 6/0, `exlr8` 7/0 (worst 0.1084).
-- `zig build kernel-contract -Dsm=121 -Dnvcc=%CUDA_PATH%\bin\nvcc.exe` did not finish: `tf-cuda-test
-  kernel-contract` ended with exit code 5, which the program never returns (0, 1 or 2), and printed no SUMMARY
-  line, so the standalone suites and gate 5 have no result. Counted from the gate lines it printed: 525 PASS, 47
-  planted controls red, 26 N/A and 12 FAIL, every FAIL in MiniMax-H3's image kernels (the laptop quoted 11 of the
-  12 lines) and none in another family's, Inkling 2's included.
-  - Seven `shapes` lines are one to four bf16 steps from float64, at 1.01 to 1.81 of their bound: `h3d_embed`,
-    `h3d_rms_norm`, `h3d_layer_norm`, `h3d_attention`, `h3p_norm` (qwen and h3) and `h3p_heads rotary`. Two `sums`
-    lines (`h3d_layer_norm`, `h3d_attention`) leave the bound. These kernels pass their nonfinite and repeat gates.
-    None of the nine is Windows': Linux sm_121 on TOP gave the same lines and ratios at `137959df8` (and the `h3d`
-    ones at `2915d6f7`, `docs/recipes/minimax-h3-cuda.md`, card 144).
-  - Two `sums` lines, `h3p_attention` causal and all rows, said "refused a served shape" on any OS: gate 4 cuts the
-    77-row shape to 4 rows, and their `prepare` refused fewer rows than K. The kernel's keys are its rows, so
-    `prepare` no longer reads K and the depth bound counts rows.
-  - Two of the N/A lines said MLP128's "cluster path needs sm_90 or newer, this GPU is sm_121". The skip is right
-    (those kinds run on sm_120 alone); the line now says so.
-- Superseded, not this branch's receipt: an earlier serve from `09ea6dd6e` with the `__noinline__` change by hand
-  (`mlx-community/Qwen3.5-2B-MLX-4bit`, 145.9 tok/s at the server) predates every fix above, and the checkpoint is
-  gone from the laptop; nothing is downloaded there without its owner's say. The laptop's serving speed is measured
-  on Inkling 2 Mini (card 202).
+- `zig build kernel-contract -Dsm=121 -Dnvcc=%CUDA_PATH%\bin\nvcc.exe` ended with exit code 5, which the program
+  never returns, and no SUMMARY line: 525 PASS, 47 planted controls red, 26 N/A and 12 FAIL, every FAIL in
+  MiniMax-H3's image kernels. None of the 12 was Windows', and the exit was the test's heap:
+  - Gate 1 grows `h3p_scatter_add` and `h3p_splice`'s 4-row shape to 5 rows, and their indices `2i` wrote past the
+    8-row buffer (TOP's Linux run at `137959df8` died after `h3p_add` with "double free or corruption"); they now
+    spread over its rows.
+  - Nine `shapes` and `sums` lines (`h3d_embed`, `h3d_rms_norm`, `h3d_layer_norm`, `h3d_attention`, `h3p_norm`,
+    `h3p_heads` rotary, at 1.01 to 1.81 of their bound) were the references: six ended in a bf16 rounding of their
+    own, so one tie the kernel's fp32 rounded the other way put them a whole output step away, where the bound
+    allows half. They end unrounded now, `h3p_norm` qwen's throughout, and `h3p_heads` rotary declares its four bf16
+    points. Linux sm_121 on TOP gave the same lines and ratios, and with these changes
+    [`contract-job.sh`](recipes/minimax-h3-cuda/contract-job.sh) there (`top-b6b76efdc239` at `ba92e161f`) gives "26
+    kernels: 26 pass gates 1-4, 0 fail, 0 known findings; 0 limit problems", exit 0. That is Linux's result, not
+    this laptop's.
+  - Two `h3p_attention` `sums` lines "refused a served shape" on any OS: gate 4 cuts the 77-row shape to 4 rows and
+    `prepare` refused fewer rows than K. The kernel's keys are its rows, so `prepare` no longer reads K.
+  - `h3p_norm`'s 1024 static shared bytes (recorded 4) come from the `__align__(1024)` shared array
+    `h3_int8_tma.cuh` adds to its image; the records say 1024. MLP128's two N/A lines now name its sm_120-only tile.
+
+The same laptop reran a clean checkout of `3332b7305` detached (2026-11-23), again through `codync@rtx-spark`:
+
+- `zig build native install -Dsm=121 -Dstrip=true` exits 0 in 530 s.
+- `tf-cuda-test`: all eight suites exit 0 (`info`: CUDA 13050, sm_121, 48 SMs, 51,816 MiB; `smoke` 8/8; `glue` 1473
+  of 1473 byte-equal; `sample` 2/2, 2880 draws, none differ).
+- `zig build kernel-contract -Dsm=121` exits 1, 185 of 187 build steps, with no overall SUMMARY line. Gates 1 to 4
+  and the standalone suites ran to their end (the last of them printed "SUMMARY prompt_swiglu: 3 pass, 0 fail; 2
+  controls red, 0 missed"); gate 5 (`limits live`) stopped at its first failed lookup, so the launches after it,
+  the gate 1-4 tally and the limit count have no result:
+
+  ```text
+  error: cuModuleGetFunction: CUDA_ERROR_NOT_FOUND (500) named symbol not found
+  error: kernel symbol not in module: _ZN6tfl2pf15segments_kernelILb1EEEvPKlij
+  FAIL kernel-contract: NotFound
+  ```
+
+- 985 FAIL lines: 281 planted controls, red as planted, and 704 on the laptop's sm_121 Windows build: 471 limits
+  (470 `limits live`), 74 nonfinite, 65 shapes, 62 repeat, 30 sums, and the abort's two. The receipt counts them by
+  gate; a count by family needs the laptop's log.
+- MiniMax-H3: 179 PASS and one numeric FAIL, the 12 lines of `8365021a7` gone: "h3m_sinusoid: at 8x256x1 output 8
+  is -2.091842e-1 where float64 gives -2.091841e-1: 1.25 of its bound". `3332b7305` does not hold main's later
+  bound for that kernel (`c6557d036`, the f32 angle's error), so that bound is untested on Windows.
+
+No model has replied from a clean committed build: an earlier serve from `09ea6dd6e` with the `__noinline__` change
+by hand (`mlx-community/Qwen3.5-2B-MLX-4bit`, 145.9 tok/s at the server) predates every fix above, and the
+checkpoint is gone from the laptop. Still to run there, from the `3332b7305` build, once its owner allows the
+download:
+
+```bat
+git rev-parse HEAD
+zig-out\native\bin\tensorfold-native pull mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3
+zig-out\native\bin\tensorfold-native serve mlx-community/Qwen3.5-2B-MLX-4bit --name qwen2b --context 8192 --no-thinking
+curl -fsS http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" ^
+  -d "{\"model\":\"qwen2b\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in one sentence.\"}],\"max_tokens\":128,\"temperature\":0}"
+```
+
+Its receipt is the commit, the reply's text and `tensorfold.tokens_per_second`, and the server's `[tensorfold] done`
+line (`tok/s=`).
 
 Inkling 2 Mini is not served on any OS yet: `zig/src/families/inkling2` has kernels, ops and the host-side config,
 names, plan and prompt, which `tf-cuda-test`'s contracts use (they compile for `aarch64-windows-gnu`). For Windows it
@@ -266,16 +304,17 @@ needs:
    the cache and streams.
 5. Its CUDA sources in CUDA's qualifiers (`__noinline__`, `__forceinline__`), not GCC attributes: only a build with
    nvcc and cl.exe, such as this laptop's, rejects them.
-6. The kernel contract finished on this laptop, the only run that qualifies its kernels there. The exit code 5
-   before SUMMARY was the test's heap: TOP's run at `137959df8` died the same way ("double free or corruption")
-   after `h3p_add`. Gate 1 grows `h3p_scatter_add` and `h3p_splice`'s 4-row shape to 5 rows, and their indices `2i`
-   then wrote past the 8-row buffer; they now spread over its rows. The nine `h3d` and `h3p` lines above were the
-   references, not the kernels: six ended in a bf16 rounding of their own, so one tie the kernel's fp32 rounded the
-   other way put them a whole output step away, where the bound allows half; they now end unrounded, as the bound's
-   last term is the kernel's own rounding. `h3p_norm` qwen's reference is unrounded throughout (its one mid rounding
-   is its spec's `mids`), and `h3p_heads` rotary declares the four bf16 points before its sum. `h3p_norm`'s 1024
-   static shared bytes (recorded 4) come from the `__align__(1024)` shared array `h3_int8_tma.cuh` adds to its
-   image; the records say 1024. [`contract-job.sh`](recipes/minimax-h3-cuda/contract-job.sh) on TOP's GB10:
-   `top-3766b21da521` at `85600bfca` gave "26 kernels: 25 pass gates 1-4, 1 fail; 0 limit problems", the rotary line
-   at 1.00 of its bound; `top-b6b76efdc239` at `ba92e161f`, with its four points, "26 kernels: 26 pass gates 1-4, 0
-   fail, 0 known findings; 0 limit problems", exit 0. The laptop's own rerun is still to come.
+6. Kernel names that mean the same on Windows. Of the 759 mangled names the engine and its contract look up, 49
+   spell `long` or `unsigned long` (`l`, `m`): `tfl2pf::segments_kernel` and `dsv41_l2pace::paced_kernel`, which
+   GLM's and DeepSeek's L2 prefetch load, and DeepSeek's `x3ld`, `x3pf`, `dense3`, `exl3_linear` and `exl3x`
+   kernels. Their sources say `int64_t`, which is `long long` under cl.exe, so the name nvcc gives them there
+   probably differs; that is not confirmed from the module's symbols. None is Inkling 2's, but the contract cannot
+   reach its SUMMARY on Windows until the first of them resolves.
+7. Gate 5 records for sm_121 on Windows. The 470 `limits live` lines are the laptop's nvcc and cl.exe against
+   figures recorded on GB10 Linux. Fifteen are MiniMax-H3's (`h3_norm`, `h3_swiglu`, `h3_attention`, `h3_topk`,
+   `h3_quantize`, `h3_norm_quant`, `h3_norm_quant_fp4`, `h3_swiglu_rows`, `h3d_rms_norm`, `h3d_layer_norm`,
+   `h3d_heads`, `h3p_norm`, `h3p_attention`, `h3m_sinusoid`, `h3m_project`): registers off by 1 to 4, static shared
+   bytes recorded 128 where the laptop's image has 1024 (`h3_norm`, `h3_quantize`, `h3_norm_quant`,
+   `h3_norm_quant_fp4`), and `h3_attention` recorded 0 where it has 49,152.
+8. The 231 nonfinite, shapes, repeat and sums lines read by family from the laptop's log, and `h3m_sinusoid` rerun
+   with `c6557d036`'s bound: until then no family's kernels are qualified on Windows by this contract.
