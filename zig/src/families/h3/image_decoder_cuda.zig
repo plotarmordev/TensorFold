@@ -276,21 +276,51 @@ pub const Decoder = struct {
 
     /// One pass: `stages` on the tiles whose first cells (row, column) are `origins`.
     pub fn pass(d: *Decoder, origins: []const [2]u32, stages: Stages) !Timing {
+        try d.ctx.makeCurrent();
+        var flight = try Flight.init(d);
+        defer flight.deinit();
+        errdefer cuda.completion.drain(&d.driver, d.queue, "H3 image decoder pass did not drain");
+        try d.enqueue(&flight, origins, stages, null);
+        return flight.settle();
+    }
+
+    /// A pass in flight: its timing events, and the pinned rows `decode` reads its tiles from.
+    const Flight = struct {
+        begin: cuda.Event,
+        end: cuda.Event,
+        started: f64 = 0,
+        rows: ?cuda.HostBuffer = null,
+
+        fn init(d: *Decoder) !Flight {
+            var begin = try cuda.Event.init(&d.driver, true);
+            errdefer begin.deinit();
+            return .{ .begin = begin, .end = try cuda.Event.init(&d.driver, true) };
+        }
+
+        fn deinit(f: *Flight) void {
+            if (f.rows) |*r| r.free();
+            f.end.deinit();
+            f.begin.deinit();
+        }
+
+        /// Waits for the pass (and its rows' copy) and returns its wall since enqueue and its GPU seconds.
+        fn settle(f: *Flight) !Timing {
+            try f.end.synchronize();
+            return .{ .wall = seconds() - f.started, .gpu = @as(f64, try cuda.Event.elapsedMs(f.begin, f.end)) / 1e3 };
+        }
+    };
+
+    /// Queues one pass without waiting on it; `rows` (pinned) receives proj_out's rows before `flight.end`.
+    fn enqueue(d: *Decoder, flight: *Flight, origins: []const [2]u32, stages: Stages, rows: ?[]u8) !void {
         if (d.scratch == null or origins.len == 0 or origins.len > d.batch) return error.H3BadTiles;
         if (stages.from > stages.to or stages.to > d.plan.layers) return error.H3BadTiles;
         for (origins) |o| {
             if (o[0] + d.h > d.rows or o[1] + d.w > d.cols) return error.H3BadTiles;
         }
-        try d.ctx.makeCurrent();
-        // Drain queued work before destroying events on error.
-        var begin = try cuda.Event.init(&d.driver, true);
-        defer begin.deinit();
-        var end = try cuda.Event.init(&d.driver, true);
-        defer end.deinit();
-        errdefer cuda.completion.drain(&d.driver, d.queue, "H3 image decoder pass did not drain");
-        try d.scratch.?.upload(d.view.origins, std.mem.sliceAsBytes(origins));
-        const started = seconds();
-        try begin.record(d.queue);
+        // stream-ordered: the previous pass read its origins before this copy lands
+        try d.scratch.?.uploadAsync(d.view.origins, std.mem.sliceAsBytes(origins), d.queue.handle);
+        flight.started = seconds();
+        try flight.begin.record(d.queue);
         if (d.profile) d.mark = seconds();
         const s: Shape = .{ .tiles = @intCast(origins.len), .h = @intCast(d.h), .w = @intCast(d.w), .tokens = @intCast(d.tokens), .rows = @intCast(d.rows), .cols = @intCast(d.cols), .m = @intCast(origins.len * d.tokens) };
         if (stages.embed) {
@@ -314,16 +344,15 @@ pub const Decoder = struct {
             try d.launch("h3d_layer_norm", .{ .x = s.m, .y = 1, .z = 1 }, .{ .x = 256 }, 0, &a);
             try d.lap("norms");
             _ = try d.gemm(s, d.view.xn, d.plan.tail(.proj_w), d.plan.tail(.proj_b), null, d.view.out, host.patch, W);
+            if (rows) |r| try d.scratch.?.downloadAsync(d.view.out, r[0 .. origins.len * d.tokens * host.patch * 2], d.queue.handle);
         }
-        try end.record(d.queue);
-        try end.synchronize();
+        try flight.end.record(d.queue);
         d.passed = origins.len;
-        return .{ .wall = seconds() - started, .gpu = @as(f64, try cuda.Event.elapsedMs(begin, end)) / 1e3 };
     }
 
-    /// y = bf16(x w^T + b): --tc asks cuBLASLt's bias epilogue for that one rounding straight into `y`
-    /// (no LayerScale) or into `wide`, where it waits for `resNorm` as the residual's u; a shape whose
-    /// algorithm won't fuse, and --exact's h3d_linear, keep the fp32 acc and h3d_finish's roundings.
+    /// y = bf16(x w^T + b): --tc asks cuBLASLt for an algorithm with the bias epilogue, that one rounding straight
+    /// into `y` (no LayerScale) or into `wide`, where it waits for `resNorm` as the residual's u; a shape with no
+    /// such algorithm, and --exact's h3d_linear, keep the fp32 acc and h3d_finish's roundings.
     /// Returns the residual's scale offset when the product is pending a `resNorm`.
     fn gemm(d: *Decoder, s: Shape, x: usize, w: usize, b: usize, scale: ?usize, y: usize, n: usize, k: usize) !?usize {
         // h3d_linear loads K eight at a time
@@ -334,7 +363,7 @@ pub const Decoder = struct {
         p.mode = @intFromBool(scale != null);
         if (d.fast) {
             const gemms = &d.gemms.?;
-            const plan = try gemms.plan(s.m, @intCast(n), @intCast(k), .bf16, .bias);
+            const plan = try gemms.planFused(s.m, n, k);
             if (plan.epilogue == .bias) {
                 try plan.runBias(d.dev(x), d.param(w), d.param(b), d.dev(if (scale == null) y else d.view.wide), gemms.workspace.ptr, tc_workspace_bytes, d.queue.handle);
                 try d.lap("products");
@@ -409,7 +438,8 @@ pub const Decoder = struct {
 
     /// The decoded picture [3, 16 rows, 16 cols] (normalised) of a raw latent: tiles in batches, blended in fp32.
     /// A `bands` sink (or null) is called as `bands.final(rows)` once the picture's first `rows` rows are final: its
-    /// passes then end at each tile row, so the sink can take a band while the GPU decodes the next.
+    /// passes then end at each tile row, so the sink can take a band while the GPU decodes the next. Two passes
+    /// are in flight: the GPU runs one while the host unpatchifies and places the other's tiles from pinned rows.
     pub fn decode(d: *Decoder, a: std.mem.Allocator, c: *const vae.Config, raw: []const f32, rows: usize, cols: usize, layers: usize, batch: usize, out: []f32, bands: anytype) !Timing {
         const t = try host.tiles(a, c, rows, cols);
         if (layers > d.plan.layers) return error.H3BadTiles;
@@ -420,30 +450,43 @@ pub const Decoder = struct {
         var assembly = try vae.Assembler.init(a, t.rows, t.cols, 3, out);
         const tile = try a.alloc(f32, 3 * t.h * t.w * vae.cell_pixels * vae.cell_pixels);
         const origins = try a.alloc([2]u32, per);
+        var flights: [2]Flight = undefined;
+        var ready: usize = 0;
+        defer for (flights[0..ready]) |*f| f.deinit();
+        errdefer cuda.completion.drain(&d.driver, d.queue, "H3 image decoder passes did not drain");
+        for (&flights) |*f| {
+            f.* = try Flight.init(d);
+            ready += 1;
+            f.rows = try cuda.HostBuffer.alloc(&d.driver, per * d.tokens * host.patch * 2);
+        }
+        // [first tile, tiles) of the pass in each flight, waiting for the host
+        var held: [2]?[2]usize = .{ null, null };
         var took: Timing = .{};
+        const started = seconds();
         var k: usize = 0;
-        while (k < t.total()) {
-            const row_end = if (banded) (k / t.cols.len + 1) * t.cols.len else t.total();
-            const n = @min(per, row_end - k);
-            for (origins[0..n], 0..) |*o, i| {
-                const at = t.at(k + i);
-                o.* = .{ @intCast(at.row), @intCast(at.col) };
+        var slot: usize = 0;
+        while (k < t.total() or held[slot ^ 1] != null) : (slot ^= 1) {
+            if (k < t.total()) {
+                const row_end = if (banded) (k / t.cols.len + 1) * t.cols.len else t.total();
+                const n = @min(per, row_end - k);
+                for (origins[0..n], 0..) |*o, i| {
+                    const at = t.at(k + i);
+                    o.* = .{ @intCast(at.row), @intCast(at.col) };
+                }
+                try d.enqueue(&flights[slot], origins[0..n], .{ .to = layers }, flights[slot].rows.?.bytes);
+                held[slot] = .{ k, n };
+                k += n;
             }
-            const one = try d.pass(origins[0..n], .{ .to = layers });
-            took.wall += one.wall;
-            took.gpu += one.gpu;
-            const projected_rows = try d.projected();
-            for (0..n) |i| {
-                try host.unpatchify(projected_rows[i * d.tokens * host.patch ..][0 .. t.h * t.w * host.patch], t.h, t.w, tile);
-                const at = t.at(k + i);
-                try assembly.place(at.r, at.c, tile);
-            }
-            k += n;
-            if (banded and k == row_end) {
-                const r = k / t.cols.len;
+            const prev = held[slot ^ 1] orelse continue;
+            held[slot ^ 1] = null;
+            took.gpu += (try flights[slot ^ 1].settle()).gpu;
+            try d.place(&assembly, t, flights[slot ^ 1].rows.?.slice(u16), prev[0], prev[1], tile);
+            if (banded and (prev[0] + prev[1]) % t.cols.len == 0) {
+                const r = (prev[0] + prev[1]) / t.cols.len;
                 try bands.final(if (r == t.rows.len) assembly.height else t.rows[r].start);
             }
         }
+        took.wall = seconds() - started;
         if (d.profile) {
             var seen: f64 = 0;
             for (profile_stages, d.spent) |name, spent| {
@@ -453,5 +496,14 @@ pub const Decoder = struct {
             std.debug.print("  outside the stages: {d:.2} s\n", .{took.gpu - seen});
         }
         return took;
+    }
+
+    /// Tiles [first, first + n)'s proj_out `rows` unpatchified and placed into `assembly`.
+    fn place(d: *const Decoder, assembly: *vae.Assembler, t: host.Tiles, rows: []const u16, first: usize, n: usize, tile: []f32) !void {
+        for (0..n) |i| {
+            try host.unpatchify(rows[i * d.tokens * host.patch ..][0 .. t.h * t.w * host.patch], t.h, t.w, tile);
+            const at = t.at(first + i);
+            try assembly.place(at.r, at.c, tile);
+        }
     }
 };

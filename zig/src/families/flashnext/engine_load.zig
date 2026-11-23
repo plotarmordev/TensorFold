@@ -48,6 +48,7 @@ pub fn loadConfigured(gpa: Allocator, io: std.Io, model_dir: []const u8, dump_di
     try window.validate(speed_up != null or platform.c.getenv("TF_FLASHNEXT_TP") != null);
     try load_admission.check(gpa, io, model_dir);
     try @import("readout_fused.zig").refuse("Metal", @import("readout_fused.zig").on());
+    try @import("fused_split.zig").refuse("Metal", try @import("fused_split.zig").on());
     const memory = @import("flashnext_memory");
     const weights = try memory.weightBytes(@import("core").checkpoint_host, gpa, io, model_dir);
     var inventory = try memory.weights_plan.read(@import("core").checkpoint_host.Checkpoint, @import("core").quant.mlx, gpa, io, model_dir);
@@ -207,7 +208,7 @@ fn finishLoad(context: Construction, r: *Run) !*Engine {
     }
     const m = try arena.create(Model);
     m.* = .{ .r = r, .cap = r.window.capacity, .layers = undefined, .mix = undefined, .head = undefined, .embed = undefined, .ple = undefined, .t = undefined };
-    r.sb_index = try platform.environment.read(bool, "TF_FLASHNEXT_SCALE_INDEX", true) and r.fsr == null and !r.device.tensorUnits();
+    r.sb_index = try platform.environment.read(bool, "TF_FLASHNEXT_SCALE_INDEX", true) and r.fsr == null;
     for (0..LAYERS) |i| {
         const linear = i % 4 != 3;
         var L: Layer = .{ .ahc = try hcOf(r, "L{d}.ahc", .{i}), .mhc = try hcOf(r, "L{d}.mhc", .{i}), .linear = linear, .proj = undefined, .out = undefined, .router = try r.loadf("L{d}.moe.router", .{i}), .ex = undefined };
