@@ -1,9 +1,9 @@
 # Inkling 2 Mini (revision ed40e7da62) whole on an RTX Spark N1X laptop, native Windows ARM64, run by its Codync bot:
-#   powershell -ExecutionPolicy Bypass -File docs\recipes\inkling-2-mini-cuda\n1x-run.ps1 -Step build|check|control|serve
+#   powershell -ExecutionPolicy Bypass -File docs\recipes\inkling-2-mini-cuda\n1x-run.ps1 -Step fatbins|build|check|control|serve
 # From a clean checkout with `vcvarsall arm64` set up and CUDA_PATH naming the windows-arm64 toolkit. Installs, downloads
-# and deletes nothing outside .\zig-out and $env:TEMP\inkling2-n1x. Each step after a warm build stops inside 10 minutes.
+# and deletes nothing outside .\zig-out and $env:TEMP\inkling2-n1x. Each step stops itself inside 10 minutes.
 param(
-    [Parameter(Mandatory)][ValidateSet('build', 'check', 'control', 'serve')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('fatbins', 'build', 'check', 'control', 'serve')][string]$Step,
     [string]$Model = 'C:\models\Inkling-2-Mini-ed40e7da62'
 )
 $ErrorActionPreference = 'Stop'
@@ -34,9 +34,22 @@ Write-Output "power plan: $(powercfg /getactivescheme)"
 $test = 'zig-out\bin\tf-cuda-test.exe'
 $server = 'zig-out\native\bin\tensorfold-native.exe'
 
-if ($Step -eq 'build') {
-    Run zig @('build', 'install', 'native', '-Dsm=121', "-Dnvcc=$env:CUDA_PATH\bin\nvcc.exe", '-Doptimize=ReleaseFast')
-    exit 0
+# A cold build ran 15 min in one piece (run 2), so it is two steps: nvcc's 147 kernel images, then the Zig products over
+# them from the cache. Each stops at 9 min; a step cut off resumes from the cache when it runs again.
+if ($Step -in 'fatbins', 'build') {
+    $targets = if ($Step -eq 'fatbins') { @('fatbins') } else { @('install', 'native') }
+    $argv = $targets + @('-Dsm=121', "`"-Dnvcc=$env:CUDA_PATH\bin\nvcc.exe`"", '-Doptimize=ReleaseFast')
+    Write-Output "> zig build $argv"
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $zig = Start-Process -FilePath zig -ArgumentList (@('build') + $argv) -PassThru -NoNewWindow
+    $null = $zig.Handle # without a handle taken now, .NET Framework loses the exit code once the process ends
+    if (-not $zig.WaitForExit(540000)) {
+        & taskkill /T /F /PID $zig.Id | Out-Null
+        Write-Output "EXIT=timeout after 9 min: run -Step $Step again to resume from the cache"
+        exit 1
+    }
+    Write-Output ("EXIT={0} in {1:N0} s" -f $zig.ExitCode, $clock.Elapsed.TotalSeconds)
+    exit $zig.ExitCode
 }
 
 $text = 'The three laws of thermodynamics, explained for a curious student:'

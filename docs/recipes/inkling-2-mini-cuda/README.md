@@ -40,10 +40,10 @@ tokens exit non-zero and the script goes on, ending 0 with 33.8 tok/s at one str
 `codync@rtx-spark`, relayed by the Desk, one step a run. It installs and downloads nothing; the laptop has PowerShell
 but no Python or WSL, so the 1/4-stream client is the script's own, not `bench_concurrent.py`.
 
-1. `-Step build`: `zig build install native -Dsm=121 -Doptimize=ReleaseFast` with the CUDA 13.5 `windows-arm64` nvcc and
-   `cl.exe` arm64 (`vcvarsall arm64`). 189's Windows fixes are on this branch (`__noinline__` in `glm_index_rope.cuh`,
-   `/wd4819`, POSIX file modes and COM `@alignCast` in the server, no `tf-muse`). A cold zig cache took 647 s (run 1)
-   and 901 s (run 2); a rebuild after a pull reuses the cache.
+1. `-Step fatbins`, then `-Step build`: `zig build fatbins`, then `zig build install native`, both `-Dsm=121
+   -Doptimize=ReleaseFast` with the CUDA 13.5 `windows-arm64` nvcc and `cl.exe` arm64 (`vcvarsall arm64`). 189's
+   Windows fixes are on this branch (`__noinline__` in `glm_index_rope.cuh`, `/wd4819`, POSIX file modes and COM
+   `@alignCast` in the server, no `tf-muse`). Each stops at 9 min; a cut-off step resumes from the zig cache.
 2. `-Step check`: 188's GB10 checks unchanged, so the laptop's output is held to the host reference the same way:
    `kernel-contract "inkling2 loop"`, `inkling2-serving` and `inkling2-mini-ref` (32 greedy tokens equal to the float64
    reference).
@@ -56,8 +56,9 @@ What differs from the GB10 and is not copied from it:
 
 - `nvidia-smi` there also lists an NVIDIA NPU, so the script finds the N1X by name and queries only its index;
   `memory.used` over every device gave an array and stopped run 1's serve step.
-- The host float64 reference takes 226 s on the laptop, so the planted control is its own step: run 2 ran both in
-  one step for 11 min 10 s.
+- A cold build took 647 s (run 1) and 901 s (run 2) in one piece, over a run's 10 minutes, so nvcc's kernel images are
+  their own step. The host float64 reference takes 226 s on the laptop, so the planted control is its own step: run 2
+  ran both in one step for 11 min 10 s.
 - The serve step times replies from the server's log, not the client: run 2's client read the stream line by line and
   spawned `nvidia-smi` per line, which put it at 6.7 tok/s at one stream while the server decoded at 32.2.
 - Memory is the WDDM pool the firmware gives CUDA (51,816 MiB on this laptop), not `/proc/meminfo`; admission reads it
