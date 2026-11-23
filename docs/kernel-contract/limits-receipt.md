@@ -2,9 +2,10 @@
 
 Job `top-57fa0d391dec` ran [`limits-job.sh`](limits-job.sh) on TOP at `4db907f60104076f8e12f4c4840c7f1ecfa9b8b4`
 (main `2945c7d29` plus that script). nvcc 13.0 built the images, and its `-Xptxas -v` resources are in
-[`limits-top-57fa0d391dec.log`](limits-top-57fa0d391dec.log). The job found 41 stale launches across 12 families; the
-other problems in its count were the 11 planted controls going RED. Each `RECORD` line was copied unedited into
-`zig/src/core/contract/measurements/main_130.zig`.
+[`limits-top-57fa0d391dec.log`](limits-top-57fa0d391dec.log). The job found 41 stale launches across 12 families,
+and its 10 planted control checks went RED. Each `RECORD` line was copied unedited into
+`zig/src/core/contract/measurements/main_130.zig`. A second run of the same job, `top-d1695968b646` at
+`cde1626bd9ce901f191a7f1d468f4aaf8d558ffb`, found no stale launches and exited 0, and all 10 control checks were still RED.
 
 Why each family moved:
 
