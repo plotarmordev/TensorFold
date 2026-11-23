@@ -45,28 +45,12 @@ One stream's depths follow each round's timing, so drafted rows per depth move b
 per-depth ratios do not compare; its total kept rows (535, 539, 538 code; 441, 440, 457 chat) do not regress. At
 sixteen admitted streams the depth rule drafts one row.
 
-## Against the other engines
+## Against #4618's published figures
 
-`engines.sh` (`--levels 1,4,64 --reps 3 --tokens 256 --temperatures 0`; TensorFold `--context 16384 --parallel 64`,
-the window that fits 64 lanes), end-to-end tok/s, medians of three (a reply that arrives as one text piece has no
-decode time, so only end to end compares):
-
-| code / chat | TensorFold, DSpark | oMLX 0.8.2, MTP | ratio |
-|---|---|---|---|
-| 1 stream | **113.7 / 86.2** | 13.5 / 36.2 | 8.4x / 2.4x |
-| 4 streams | **293.9 / 240.0** | 39.2 / 48.3 | 7.5x / 5.0x |
-| 64 streams | **344.3 / 236.2** | 200.0 / 184.5 | 1.7x / 1.3x |
-
-- oMLX serves its own 4-bit build (`Inkling-2-Mini-oQ4e-mtp`, about 17 GB) with MTP drafting on; TensorFold serves the
-  official NVFP4/MXFP8 checkpoint. oMLX ran at load average 70-90; in this branch's first session (load 14-40) it
-  reached 45.1 / 8.3, 107.0 / 79.1 and 209.3 / 227.6, still under ours at every cell but 64 chat streams (1.02x).
-- #4618 on this Mac (its own clients, `--parallel 4 --context 16384`): oMLX 0.8.1 with DSpark 72.5 tok/s on one chat
-  stream and 126.6 on four; TensorFold's #4618 head 123.4 code / 91.5 chat on one stream, 281.1 / 223.0 on four.
-- Strata and llama.cpp were not measured here: neither is installed, and running them needs their installers and
-  weights (Strata's app and SQ packs; llama.cpp b12406 or later, which added Inkling 2, and an Inkling GGUF) put on this
-  Mac, which is the owner's call. Strata's own model card publishes, for an M5 Max 128 GB, 100.0-114.5 tok/s on one
-  request and 597.2 with 64. The one-request figure is under ours; the 64-request figure is above ours (344.3 code /
-  236.2 chat) on a smaller chip, so at 64 streams the fastest-engine line stays open until Strata runs on this Mac.
+#4618 published TensorFold's Inkling 2 Mini at 123.4 code / 91.5 chat tok/s on one stream and 281.1 / 223.0 on four,
+on this Mac with its own clients; those are its published figures, not measured here. This branch's candidate gives
+121.9 / 93.4 on one stream and 317.2 / 259.5 on four. Other engines at 1, 4 and 64 streams are card "ink mac
+engines"'s receipt.
 
 ## Exactness
 
@@ -90,5 +74,5 @@ row copies for `pack`. Each control plants one stream's or row's wrong index and
 
 ## Files
 
-`cells.jsonl`: each cell of the five sessions; `bench.sh` and `engines.sh` reproduce them (`MODEL` names the
-checkpoint, `OUT` the scratch folder, `OMLX` the oMLX binary).
+`cells.jsonl`: each cell of the three sessions; `bench.sh` reproduces them (`MODEL` names the checkpoint, `OUT` the
+scratch folder).
