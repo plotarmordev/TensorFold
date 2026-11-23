@@ -298,6 +298,11 @@ pub const Model = struct {
         return @import("cuda_validation.zig").read(self, in, 0, in.tiles);
     }
 
+    /// The int8 qkv product normalizes, rotates and lays out the heads itself at MiniMax's 48 rotary angles.
+    pub fn fusedHeads(self: *const Model, rot: u32) bool {
+        return self.int8 != null and rot == 48;
+    }
+
     /// Every block over the stream, in place; returns once the GPU has finished.
     pub fn forward(self: *Model, in: *const Inputs) !f64 {
         const started = seconds();
@@ -354,7 +359,7 @@ pub const Model = struct {
         const lay4 = if (self.fp4) |t| try t.layout(self, rows) else null;
         const iq: u64 = if (lay) |l| l.xq else if (lay4) |l| l.q else 0;
         const is: u64 = if (lay) |l| l.xs else if (lay4) |l| l.s else 0;
-        const fused_heads = self.int8 != null and in.rot == 48;
+        const fused_heads = self.fusedHeads(in.rot);
         for (self.blocks[0..count], 0..) |*b, index| {
             const tab = in.tables + index * table_bytes;
             const par = index & 1;

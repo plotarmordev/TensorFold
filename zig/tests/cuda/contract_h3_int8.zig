@@ -308,6 +308,8 @@ pub const GemmTma = struct {
     rig: rig_.Rig,
     mode: Mode,
     mod: cuda.Module,
+    /// The heads control: one fused output word flipped after the launch, which gate 1 must catch.
+    planted: bool = false,
     enc: Encode,
     arena: std.heap.ArenaAllocator,
     shape: c.Shape = undefined,
@@ -324,7 +326,9 @@ pub const GemmTma = struct {
     }
 
     pub fn kernel(t: *GemmTma) g.Kernel {
-        return .{ .spec = gemmTmaSpec(t.mode), .ctx = t, .vt = if (t.mode == .heads) &vt_heads else &vt, .control = if (t.mode == .control) .shapes else null };
+        var spec = gemmTmaSpec(t.mode);
+        if (t.planted) spec.name = "control: h3_heads_int8_tma with one output word flipped";
+        return .{ .spec = spec, .ctx = t, .vt = if (t.mode == .heads) &vt_heads else &vt, .control = if (t.mode == .control) .shapes else if (t.planted) .nonfinite else null };
     }
 
     const vt = g.hooks(GemmTma);
@@ -346,11 +350,15 @@ pub const GemmTma = struct {
         return 3 * t.headCount() * t.headSlots() * 128 * 2;
     }
 
-    fn checkHeads(ctx: *anyopaque, _: g.Gate) !?[]const u8 {
+    fn checkHeads(ctx: *anyopaque, gate: g.Gate) !?[]const u8 {
         const t: *GemmTma = @ptrCast(@alignCast(ctx));
-        const want = try t.replaced();
+        // the rig downloads into one host buffer: keep the baseline's bytes before the fused output overwrites them
+        const want = try t.arena.allocator().dupe(u8, try t.replaced());
         const got = try t.rig.bytes(t.dev[4], t.headBytes());
-        return if (std.mem.eql(u8, got, want)) null else "fused norm or rotary differs from h3_gemm_int8_tma + h3_heads";
+        if (!std.mem.eql(u8, got, want)) return "fused norm or rotary differs from h3_gemm_int8_tma + h3_heads";
+        if (gate != .nonfinite) return null;
+        for (0..got.len / 2) |i| if (c.classOf(c.read(.bf16, got, i)) != .finite) return null;
+        return "no output is non-finite: the planted values prove nothing";
     }
 
     fn outColumns(t: *const GemmTma) usize {
@@ -480,6 +488,10 @@ pub const GemmTma = struct {
         } else if (t.mode == .heads) {
             try t.fillOutput(t.dev[4], t.headBytes());
             try t.productHeads(t.dev[4]);
+            if (t.planted) {
+                const b: cuda.DeviceBuffer = .{ .d = t.rig.gpu.d, .ptr = t.dev[4], .len = 2 };
+                try b.fill8(0x3f, t.rig.s.handle);
+            }
         } else try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[4]);
         try t.rig.s.synchronize();
     }

@@ -330,11 +330,12 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     defer h3_fp4.deinit();
     try kernels.append(a, h3_fp4.kernel());
     // the TMA products' encoder needs sm_90+; contract them on GB10 only: the plain product, fc1's
-    // SwiGLU epilogue against the plain product then h3_swiglu, and the control at a width off whole tiles
-    var h3_tma: [4]h3_int8_k.GemmTma = undefined;
+    // SwiGLU epilogue against the plain product then h3_swiglu, the fused heads, the control at a width off whole
+    // tiles, and the fused heads with one output word flipped
+    var h3_tma: [5]h3_int8_k.GemmTma = undefined;
     const h3_tma_live = cap == 121;
-    if (h3_tma_live) for (&h3_tma, [_]h3_int8_k.Mode{ .plain, .swiglu, .heads, .control }) |*t, mode| {
-        t.* = .{ .rig = .{ .gpu = gpu, .s = s }, .mode = mode, .mod = h3_mod, .enc = try h3_int8_k.encoder(gpu.d), .arena = std.heap.ArenaAllocator.init(a) };
+    if (h3_tma_live) for (&h3_tma, [_]h3_int8_k.Mode{ .plain, .swiglu, .heads, .control, .heads }, 0..) |*t, mode, i| {
+        t.* = .{ .rig = .{ .gpu = gpu, .s = s }, .mode = mode, .mod = h3_mod, .planted = i == 4, .enc = try h3_int8_k.encoder(gpu.d), .arena = std.heap.ArenaAllocator.init(a) };
     };
     defer if (h3_tma_live) for (&h3_tma) |*t| t.deinit();
     if (h3_tma_live) for (&h3_tma) |*t| try kernels.append(a, t.kernel());

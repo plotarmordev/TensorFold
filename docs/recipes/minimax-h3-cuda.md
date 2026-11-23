@@ -1552,11 +1552,13 @@ V is written in slot order. No shared tile or second TMA ring pass is added. The
 launches `h3_heads_int8_tma`; other rotary widths retain the independent `h3_heads` pass.
 
 `contract_h3_int8` mode `heads` compares every q/k/v byte against the original pipeline for grouped layouts,
-including a partial 256-row tile, padding slots, nonfinite products, and exact bf16 rounding. The launch record
-fixes the fused kernel at 256 threads, 99,360 opt-in shared bytes, and at most 255 registers. The reproducible
-same-job driver is `bench-178-ab.sh`; its reverse patch reconstructs merge parent
-`a03e5c4595bb22f45436b2f1e5073d9e58f26ace` (Zig tree
-`9fa1f41ca6c1029251ad09b47f36424f3cc5875d`) for the baseline half.
+including a partial 256-row tile, padding slots, nonfinite products, and exact bf16 rounding; its control flips one
+fused output word and must go red at gate 1. The launch record fixes the fused kernel at 256 threads, 99,360 opt-in
+shared bytes, and at most 255 registers. With the fused product, geometry allocates no `qkvc` rows (236 MB at
+4,120 rows). The same-job driver is `bench-178-ab.sh`, one prompt a job through `bench-178-{fox,harbour,meadow,steam}.sh`
+so each stops within 600 s, with the contract gates in `check-178.sh`; its reverse patch reconstructs merge parent
+`a03e5c4595bb22f45436b2f1e5073d9e58f26ace` (Zig tree `9fa1f41ca6c1029251ad09b47f36424f3cc5875d`) for the baseline
+half.
 
 TOP job `top-8ee513cc8609` at `d0784afc6` passed the fused contract's four shape cases, nonfinite and repeat gates,
 and its live launch limit (255 registers). The same job ran cold fox and three warm runs each of fox, harbour,

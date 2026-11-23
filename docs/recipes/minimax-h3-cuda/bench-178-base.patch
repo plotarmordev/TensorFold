@@ -1,5 +1,5 @@
 diff --git a/zig/kernels/cuda/h3.cu b/zig/kernels/cuda/h3.cu
-index 2b378e66a..0a53e33a1 100644
+index 2b378e66a..9be9821e3 100644
 --- a/zig/kernels/cuda/h3.cu
 +++ b/zig/kernels/cuda/h3.cu
 @@ -493,6 +493,12 @@ __global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma(
@@ -16,7 +16,7 @@ index 2b378e66a..0a53e33a1 100644
          const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
          const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
 diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
-index 06c1131d2..a5e364201 100644
+index 06c1131d2..698f9dcf0 100644
 --- a/zig/kernels/cuda/h3_int8_tma.cuh
 +++ b/zig/kernels/cuda/h3_int8_tma.cuh
 @@ -285,6 +285,82 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
@@ -251,21 +251,23 @@ index 06c1131d2..a5e364201 100644
  using PromptTile = GemmConfig<64, 64, 4>;
  
 diff --git a/zig/src/core/contract/registry_media.zig b/zig/src/core/contract/registry_media.zig
-index dcb13d7ce..f7d940a6a 100644
+index dcb13d7ce..6892581e7 100644
 --- a/zig/src/core/contract/registry_media.zig
 +++ b/zig/src/core/contract/registry_media.zig
-@@ -76,6 +76,7 @@ pub const cuda_pending = [_]CudaRecord{
+@@ -75,8 +75,9 @@ pub const cuda_pending = [_]CudaRecord{
+ /// The picture's TMA products (h3_int8_tma.cuh): sm_121's usage from GB10's live check; sm_120's
  /// pending the five-SM limits job.
  pub const cuda_tma_pending = [_]CudaRecord{
 -    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(222) },
+-    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(219) },
 +    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(224) },
 +    .{ .launch = .{ .name = "h3 h3_heads_int8_tma", .symbol = "h3_heads_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(255) },
--    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(219) },
 +    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(225) },
      .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = @import("registry.zig").none },
  };
+ 
 diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
-index 0e1fa22e9..09871d857 100644
+index 0e1fa22e9..d47b26a04 100644
 --- a/zig/src/families/h3/cuda.zig
 +++ b/zig/src/families/h3/cuda.zig
 @@ -28,7 +28,7 @@ const scale_m = 4;
@@ -285,15 +287,27 @@ index 0e1fa22e9..09871d857 100644
          try self.function("h3_swiglu_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
          // the legacy default stream: work queued by the caller's framework comes first
          self.stream = .{ .d = d, .handle = null };
-@@ -353,6 +354,7 @@ pub const Model = struct {
+@@ -297,6 +298,11 @@ pub const Model = struct {
+         return @import("cuda_validation.zig").read(self, in, 0, in.tiles);
+     }
+ 
++    /// The int8 qkv product normalizes, rotates and lays out the heads itself at MiniMax's 48 rotary angles.
++    pub fn fusedHeads(self: *const Model, rot: u32) bool {
++        return self.int8 != null and rot == 48;
++    }
++
+     /// Every block over the stream, in place; returns once the GPU has finished.
+     pub fn forward(self: *Model, in: *const Inputs) !f64 {
+         const started = seconds();
+@@ -353,6 +359,7 @@ pub const Model = struct {
          const lay4 = if (self.fp4) |t| try t.layout(self, rows) else null;
          const iq: u64 = if (lay) |l| l.xq else if (lay4) |l| l.q else 0;
          const is: u64 = if (lay) |l| l.xs else if (lay4) |l| l.s else 0;
-+        const fused_heads = self.int8 != null and in.rot == 48;
++        const fused_heads = self.fusedHeads(in.rot);
          for (self.blocks[0..count], 0..) |*b, index| {
              const tab = in.tables + index * table_bytes;
              const par = index & 1;
-@@ -360,18 +362,32 @@ pub const Model = struct {
+@@ -360,18 +367,32 @@ pub const Model = struct {
              if (index == 0) try self.norm(in.x, b.norms.ptr, tab, tab, in.line, -1, scale_a, shift_a, iq, is) else try self.norm(in.x, b.norms.ptr, tab - table_bytes, tab, in.line, gate_m, scale_a, shift_a, iq, is);
              try self.lap("norms", &mark);
              if (self.int8) |t| {
@@ -332,12 +346,50 @@ index 0e1fa22e9..09871d857 100644
                  const at = own0 * slot_tile * head_dim * 2;
                  var args: cuda.Args = .{};
                  for ([_]u64{ g.qkvc, b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
-@@ -435,5 +451,4 @@ pub const Model = struct {
+@@ -435,5 +456,4 @@ pub const Model = struct {
              try self.launch("h3_gate_add", .{ .x = @intCast(rows) }, 256, 0, &args);
          }
      }
 -
  };
+diff --git a/zig/src/families/h3/cuda_geometry.zig b/zig/src/families/h3/cuda_geometry.zig
+index d2f055bd4..1a344dca8 100644
+--- a/zig/src/families/h3/cuda_geometry.zig
++++ b/zig/src/families/h3/cuda_geometry.zig
+@@ -13,6 +13,8 @@ pub const Geometry = struct {
+     tiles: usize = 0,
+     prefix: usize = 0,
+     keep: usize = 0,
++    /// The int8 product writes q, k and v straight to their tiles: no qkvc rows.
++    fused: bool = false,
+     buffers: [24]cuda.DeviceBuffer = undefined,
+     used: usize = 0,
+     y: u64 = 0,
+@@ -66,7 +68,8 @@ pub fn prepare(self: *Model, in: *const Model.Inputs, p: @import("cuda_validatio
+     const row_of = try @import("cuda_packing.zig").read(self, in, p);
+     defer self.gpa.free(row_of);
+     const g = &self.geometry;
+-    const same = g.rows == in.rows and g.tiles == in.tiles and g.prefix == p.prefix and g.keep == p.keep;
++    const fused = self.fusedHeads(in.rot);
++    const same = g.rows == in.rows and g.tiles == in.tiles and g.prefix == p.prefix and g.keep == p.keep and g.fused == fused;
+     if (same) {
+         const map: cuda.DeviceBuffer = .{ .d = &self.driver, .ptr = g.row_of, .len = row_of.len * 4, .borrowed = true };
+         try map.upload(0, std.mem.sliceAsBytes(row_of));
+@@ -76,7 +79,7 @@ pub fn prepare(self: *Model, in: *const Model.Inputs, p: @import("cuda_validatio
+     releaseCompleted(self);
+     g.y = try buffer(self, p.buffers[0], false);
+     g.xn = try buffer(self, p.buffers[1], false);
+-    g.qkvc = try buffer(self, p.buffers[2], false);
++    g.qkvc = if (fused) 0 else try buffer(self, p.buffers[2], false);
+     g.tq = try buffer(self, p.buffers[3], true);
+     g.tk = try pair(self, p.buffers[4], true);
+     g.tv = try pair(self, p.buffers[5], true);
+@@ -100,4 +103,5 @@ pub fn prepare(self: *Model, in: *const Model.Inputs, p: @import("cuda_validatio
+     g.tiles = in.tiles;
+     g.prefix = p.prefix;
+     g.keep = p.keep;
++    g.fused = fused;
+ }
 diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
 index 712685e8c..64a319539 100644
 --- a/zig/src/families/h3/cuda_int8.zig
@@ -388,7 +440,7 @@ index 712685e8c..64a319539 100644
      pub fn warm(t: *Int8, self: *Model, rows: usize) !void {
          try t.reserve(self, rows);
 diff --git a/zig/tests/cuda/contract_h3_int8.zig b/zig/tests/cuda/contract_h3_int8.zig
-index ee7c72293..3ddfddcef 100644
+index ee7c72293..9eca2ffb6 100644
 --- a/zig/tests/cuda/contract_h3_int8.zig
 +++ b/zig/tests/cuda/contract_h3_int8.zig
 @@ -220,6 +220,20 @@ fn encodeTiled(enc: Encode, map: *TensorMap, ptr: u64, rows: usize, k: usize, bo
@@ -421,7 +473,7 @@ index ee7c72293..3ddfddcef 100644
  
  /// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact; SwiGLU's
  /// is h3_swiglu's on the plain product's [gate | up] halves, bit for bit.
-@@ -247,26 +261,42 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
+@@ -247,27 +261,43 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
              .{ .rows = 300, .n = 512, .k = 256 }, // a partial M tile, two tiles and K blocks
              .{ .rows = 256, .n = 2 * mlp, .k = hidden }, // fc1's real fan-out
          },
@@ -455,19 +507,29 @@ index ee7c72293..3ddfddcef 100644
          },
          .served = served,
 -        .replaces = if (mode == .swiglu) "h3_gemm_int8_tma then h3_swiglu" else null,
+-        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
 +        .replaces = switch (mode) {
 +            .swiglu => "h3_gemm_int8_tma then h3_swiglu",
 +            .heads => "h3_gemm_int8_tma then h3_heads",
 +            else => null,
 +        },
--        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
 +        .sums = .{ .bf16 = 0, .f16 = 0, .exact = false, .why = if (mode == .heads)
 +            "int32 dots are exact; dequantization, normalized values, bf16 cosine/sine and each rotary product round to bf16 before the final bf16 pack; norm sums are fp32"
 +        else
 +            "mma.sync sums the codes' products in int32, exact to a bit; fp32 carries only the acc * xs * ws fold and the bf16 store" },
      };
  }
-@@ -285,8 +312,8 @@ pub const GemmTma = struct {
+ 
+@@ -278,6 +308,8 @@ pub const GemmTma = struct {
+     rig: rig_.Rig,
+     mode: Mode,
+     mod: cuda.Module,
++    /// The heads control: one fused output word flipped after the launch, which gate 1 must catch.
++    planted: bool = false,
+     enc: Encode,
+     arena: std.heap.ArenaAllocator,
+     shape: c.Shape = undefined,
+@@ -285,8 +317,8 @@ pub const GemmTma = struct {
      wq: []i8 = &.{},
      xs: []f32 = &.{},
      ws: []f32 = &.{},
@@ -478,12 +540,14 @@ index ee7c72293..3ddfddcef 100644
  
      pub fn deinit(t: *GemmTma) void {
          t.rig.deinit();
-@@ -294,10 +321,34 @@ pub const GemmTma = struct {
+@@ -294,10 +326,40 @@ pub const GemmTma = struct {
      }
  
      pub fn kernel(t: *GemmTma) g.Kernel {
 -        return .{ .spec = gemmTmaSpec(t.mode), .ctx = t, .vt = &vt, .control = if (t.mode == .control) .shapes else null };
-+        return .{ .spec = gemmTmaSpec(t.mode), .ctx = t, .vt = if (t.mode == .heads) &vt_heads else &vt, .control = if (t.mode == .control) .shapes else null };
++        var spec = gemmTmaSpec(t.mode);
++        if (t.planted) spec.name = "control: h3_heads_int8_tma with one output word flipped";
++        return .{ .spec = spec, .ctx = t, .vt = if (t.mode == .heads) &vt_heads else &vt, .control = if (t.mode == .control) .shapes else if (t.planted) .nonfinite else null };
      }
  
      const vt = g.hooks(GemmTma);
@@ -505,16 +569,20 @@ index ee7c72293..3ddfddcef 100644
 +        return 3 * t.headCount() * t.headSlots() * 128 * 2;
 +    }
 +
-+    fn checkHeads(ctx: *anyopaque, _: g.Gate) !?[]const u8 {
++    fn checkHeads(ctx: *anyopaque, gate: g.Gate) !?[]const u8 {
 +        const t: *GemmTma = @ptrCast(@alignCast(ctx));
-+        const want = try t.replaced();
++        // the rig downloads into one host buffer: keep the baseline's bytes before the fused output overwrites them
++        const want = try t.arena.allocator().dupe(u8, try t.replaced());
 +        const got = try t.rig.bytes(t.dev[4], t.headBytes());
-+        return if (std.mem.eql(u8, got, want)) null else "fused norm or rotary differs from h3_gemm_int8_tma + h3_heads";
++        if (!std.mem.eql(u8, got, want)) return "fused norm or rotary differs from h3_gemm_int8_tma + h3_heads";
++        if (gate != .nonfinite) return null;
++        for (0..got.len / 2) |i| if (c.classOf(c.read(.bf16, got, i)) != .finite) return null;
++        return "no output is non-finite: the planted values prove nothing";
 +    }
  
      fn outColumns(t: *const GemmTma) usize {
          return if (t.mode == .swiglu) t.shape.n / 2 else t.shape.n;
-@@ -307,6 +358,7 @@ pub const GemmTma = struct {
+@@ -307,6 +369,7 @@ pub const GemmTma = struct {
          const width: usize = switch (t.mode) {
              .plain => 128,
              .swiglu => 256,
@@ -522,7 +590,7 @@ index ee7c72293..3ddfddcef 100644
              .control => 8,
          };
          if (shape.k % 128 != 0 or shape.n % width != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
-@@ -335,12 +387,33 @@ pub const GemmTma = struct {
+@@ -335,12 +398,33 @@ pub const GemmTma = struct {
          t.dev[1] = try t.rig.input(std.mem.sliceAsBytes(t.xs));
          t.dev[2] = try t.rig.input(std.mem.sliceAsBytes(t.wq));
          t.dev[3] = try t.rig.input(std.mem.sliceAsBytes(t.ws));
@@ -557,7 +625,7 @@ index ee7c72293..3ddfddcef 100644
          }
          return true;
      }
-@@ -360,6 +433,40 @@ pub const GemmTma = struct {
+@@ -360,6 +444,40 @@ pub const GemmTma = struct {
          try cuda.launch.launch(try tmaFunction(t.mod, name), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
      }
  
@@ -598,13 +666,17 @@ index ee7c72293..3ddfddcef 100644
      pub fn run(t: *GemmTma) !void {
          if (t.mode == .swiglu) {
              var args: cuda.Args = .{};
-@@ -367,12 +474,26 @@ pub const GemmTma = struct {
+@@ -367,12 +485,30 @@ pub const GemmTma = struct {
              args.add(@as(c_int, @intCast(t.shape.k)));
              try cuda.launch.launch(try t.mod.function("h3_swiglu_rows"), .{ .grid = .{ .x = @intCast(t.shape.n / 2) }, .block = .{ .x = 256 } }, t.rig.s, &args);
              try t.product("h3_swiglu_int8_tma", t.dev[5], t.dev[6], t.dev[4]);
 +        } else if (t.mode == .heads) {
 +            try t.fillOutput(t.dev[4], t.headBytes());
 +            try t.productHeads(t.dev[4]);
++            if (t.planted) {
++                const b: cuda.DeviceBuffer = .{ .d = t.rig.gpu.d, .ptr = t.dev[4], .len = 2 };
++                try b.fill8(0x3f, t.rig.s.handle);
++            }
          } else try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[4]);
          try t.rig.s.synchronize();
      }
@@ -625,7 +697,7 @@ index ee7c72293..3ddfddcef 100644
          try t.product("h3_gemm_int8_tma", t.dev[2], t.dev[3], t.dev[7]);
          var args: cuda.Args = .{};
          for ([_]u64{ t.dev[7], t.dev[8] }) |p| args.add(p);
-@@ -382,13 +503,21 @@ pub const GemmTma = struct {
+@@ -382,13 +518,21 @@ pub const GemmTma = struct {
      }
  
      pub fn count(t: *GemmTma) usize {
@@ -649,18 +721,23 @@ index ee7c72293..3ddfddcef 100644
          const n = t.shape.n;
          const cols = t.outColumns();
 diff --git a/zig/tests/cuda/contract_tests.zig b/zig/tests/cuda/contract_tests.zig
-index 87eb83ac6..8e54a9489 100644
+index 87eb83ac6..1cd07134e 100644
 --- a/zig/tests/cuda/contract_tests.zig
 +++ b/zig/tests/cuda/contract_tests.zig
-@@ -331,9 +331,9 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
+@@ -330,11 +330,12 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
+     defer h3_fp4.deinit();
      try kernels.append(a, h3_fp4.kernel());
      // the TMA products' encoder needs sm_90+; contract them on GB10 only: the plain product, fc1's
-     // SwiGLU epilogue against the plain product then h3_swiglu, and the control at a width off whole tiles
+-    // SwiGLU epilogue against the plain product then h3_swiglu, and the control at a width off whole tiles
 -    var h3_tma: [3]h3_int8_k.GemmTma = undefined;
-+    var h3_tma: [4]h3_int8_k.GemmTma = undefined;
++    // SwiGLU epilogue against the plain product then h3_swiglu, the fused heads, the control at a width off whole
++    // tiles, and the fused heads with one output word flipped
++    var h3_tma: [5]h3_int8_k.GemmTma = undefined;
      const h3_tma_live = cap == 121;
 -    if (h3_tma_live) for (&h3_tma, [_]h3_int8_k.Mode{ .plain, .swiglu, .control }) |*t, mode| {
-+    if (h3_tma_live) for (&h3_tma, [_]h3_int8_k.Mode{ .plain, .swiglu, .heads, .control }) |*t, mode| {
-         t.* = .{ .rig = .{ .gpu = gpu, .s = s }, .mode = mode, .mod = h3_mod, .enc = try h3_int8_k.encoder(gpu.d), .arena = std.heap.ArenaAllocator.init(a) };
+-        t.* = .{ .rig = .{ .gpu = gpu, .s = s }, .mode = mode, .mod = h3_mod, .enc = try h3_int8_k.encoder(gpu.d), .arena = std.heap.ArenaAllocator.init(a) };
++    if (h3_tma_live) for (&h3_tma, [_]h3_int8_k.Mode{ .plain, .swiglu, .heads, .control, .heads }, 0..) |*t, mode, i| {
++        t.* = .{ .rig = .{ .gpu = gpu, .s = s }, .mode = mode, .mod = h3_mod, .planted = i == 4, .enc = try h3_int8_k.encoder(gpu.d), .arena = std.heap.ArenaAllocator.init(a) };
      };
      defer if (h3_tma_live) for (&h3_tma) |*t| t.deinit();
+     if (h3_tma_live) for (&h3_tma) |*t| try kernels.append(a, t.kernel());
