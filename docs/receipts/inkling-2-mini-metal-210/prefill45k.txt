@@ -1,0 +1,4 @@
+prompt 46221 ttft 19.02s prefill 2430 tok/s; again ttft 0.16s cached 46080 same True
+prompt 46190 ttft 18.94s prefill 2439 tok/s; again ttft 0.15s cached 46080 same True
+prompt 46155 ttft 18.91s prefill 2441 tok/s; again ttft 0.14s cached 46080 same True
+median prefill 2439 tok/s
