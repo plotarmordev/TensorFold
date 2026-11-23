@@ -1,0 +1,1 @@
+Document published Inkling 2 Mini serving recipes for SGLang, vLLM and llama.cpp, their hardware-labelled speed evidence, and the TensorFold GB10/Metal/Windows N1X lever gaps and ceiling-bound priorities. Add a reproducible GB10 llama.cpp comparison job and offline staging script.
