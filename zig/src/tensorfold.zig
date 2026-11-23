@@ -32,7 +32,6 @@ pub const npy = @import("core/npy.zig");
 pub const picture = @import("core/picture/picture.zig");
 pub const audio = @import("core/audio.zig");
 pub const ids_json = @import("core/ids_json.zig");
-pub const json_read = @import("core/json_read.zig");
 pub const lanes = @import("lanes");
 pub const inkling2_native = @import("inkling2_native.zig");
 pub const inkling2_metal_host = @import("families/inkling2/metal/metal.zig");

@@ -8,6 +8,8 @@ const Model = @import("model.zig").Model;
 const backend = @import("backend.zig");
 const st = @import("state.zig");
 const dspark = @import("dspark.zig");
+const core = @import("core");
+const mini_ref = @import("../mini_ref.zig");
 
 const gpa = std.testing.allocator;
 const io = std.testing.io;
@@ -480,4 +482,54 @@ test "Mini Metal fills a prompt a chunk a call to the whole pass's first row and
     const whole_row = try b.firstRow(&whole);
     try std.testing.expectEqual(whole_first, try b.read(try b.first(&stepped, ids.len)));
     try expectFirstRow(whole_row, try b.firstRow(&stepped));
+}
+
+/// Greedy tokens after `ids` on the device into `out`, and the float64 reference over the same config and plan; the
+/// model is released before the reference reads `weights` on the host.
+fn greedy(dir: []const u8, ids: []const u32, out: []u32, weights: *core.checkpoint.Checkpoint) !mini_ref.Ref {
+    const lock = try std.Io.Dir.cwd().createFile(io, "/tmp/tensorfold-model.lock", .{ .truncate = false });
+    defer lock.close(io);
+    try lock.lock(io, .exclusive);
+    const model = try Model.load(gpa, io, dir);
+    defer model.deinit();
+    const target = try backend.Metal.init(gpa, model, .{ .capacity = context, .streams = 1, .budget = st.cacheBytes(context) });
+    defer target.deinit();
+    const b = target.backend();
+    var s = try lanes.Stream.init(gpa, .{ .id = "float64-reference", .prompt = ids, .max_new = @intCast(out.len), .drafts = false });
+    defer s.deinit(gpa);
+    try b.prefill(&s);
+    defer b.release(&s);
+    out[0] = try b.read(try b.first(&s, ids.len));
+    for (1..out.len) |i| out[i] = try b.read(try b.queue(&s, .{ .value = out[i - 1] }, ids.len + i));
+    return .{ .gpa = gpa, .c = model.config, .p = model.weight_plan, .ck = weights };
+}
+
+/// Generated positions where the reference's pick is not the token the device drew.
+fn differences(picks: []const mini_ref.Pick, all: []const u32, prompt_len: usize, report: bool) usize {
+    var differ: usize = 0;
+    for (prompt_len - 1..picks.len) |i| if (picks[i].id != all[i + 1]) {
+        differ += 1;
+        if (report) std.debug.print("DIFF Mini Metal position {d}: device {d}, float64 {d}, margin {d:.4}\n", .{
+            i + 1, all[i + 1], picks[i].id, picks[i].margin,
+        });
+    };
+    return differ;
+}
+
+test "Mini Metal greedy matches the float64 reference over 32 tokens, and a reference without messages does not" {
+    // The reference walks every weight on the host in float64: minutes optimized, hours in a Debug build.
+    if (@import("builtin").mode == .debug) return error.SkipZigTest;
+    const dir = try checkpoint();
+    const prompt_len = 16;
+    var all: [prompt_len + 32]u32 = undefined;
+    @memcpy(all[0..prompt_len], &prompt(prompt_len, 7));
+    var weights = try core.checkpoint.Checkpoint.openModel(gpa, io, dir);
+    defer weights.close();
+    var reference = try greedy(dir, all[0..prompt_len], all[prompt_len..], &weights);
+    var picks: [all.len - 1]mini_ref.Pick = undefined;
+    try reference.run(all[0 .. all.len - 1], &picks);
+    try std.testing.expectEqual(@as(usize, 0), differences(&picks, &all, prompt_len, true));
+    reference.plant = true;
+    try reference.run(all[0 .. all.len - 1], &picks);
+    try std.testing.expect(differences(&picks, &all, prompt_len, false) > 0);
 }
