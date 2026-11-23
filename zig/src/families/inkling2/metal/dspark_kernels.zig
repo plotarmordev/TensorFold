@@ -15,6 +15,9 @@ pub const Ref = @import("inkling2_metal_ref").Ref;
 pub const PositionArgs = extern struct { base: u32 };
 pub const ContextArgs = extern struct { base: u32, rows: u32, ring: u32 };
 pub const AttentionArgs = extern struct { committed: u32, ring: u32, local: u32, from: u32 };
+pub const UnitsArgs = extern struct { committed: u32, ring: u32, first: u32, chunk: u32, chunks: u32 };
+/// The keys a threadgroup of the tensor-unit attention takes: a multiple of 64.
+pub const units_chunk: u32 = 256;
 pub const TokenArgs = extern struct { token: u32 };
 pub const CountArgs = extern struct { count: u32 };
 pub const BaseArgs = extern struct { rows: u32, vocab: u32 };
@@ -120,6 +123,55 @@ pub const Pipelines = struct {
     }
 };
 
+/// The greedy chain's two kernels, outside `Pipelines`: its entries are the block's `Kind`s one for one.
+pub const Chain = struct {
+    step: mtl.Pipeline,
+    pick: mtl.Pipeline,
+
+    pub fn load(device: mtl.Device, text: []const u8) !Chain {
+        const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
+        defer lib.deinit();
+        const step = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_chain_step", false);
+        errdefer step.deinit();
+        return .{ .step = step, .pick = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_chain_pick", false) };
+    }
+    pub fn deinit(c: *Chain) void {
+        c.pick.deinit();
+        c.step.deinit();
+        c.* = undefined;
+    }
+};
+
+/// The block attention on the tensor units, outside `Pipelines`: a chunk's partial sums, then their fold.
+pub const Units = struct {
+    partials: mtl.Pipeline,
+    merge: mtl.Pipeline,
+
+    pub fn load(device: mtl.Device, text: []const u8) !Units {
+        const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
+        defer lib.deinit();
+        const partials = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_attn_units", false);
+        errdefer partials.deinit();
+        return .{ .partials = partials, .merge = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_attn_merge", false) };
+    }
+    pub fn deinit(u: *Units) void {
+        u.merge.deinit();
+        u.partials.deinit();
+        u.* = undefined;
+    }
+};
+
+/// The first key a block reads and the chunks its retained context spans.
+pub fn unitsSpan(committed: u32, local: bool, from: u32) struct { first: u32, chunks: u32 } {
+    const first = @max(from, if (local and committed > 1024) committed - 1024 else 0);
+    return .{ .first = first, .chunks = if (committed == first) 0 else (committed - 1) / units_chunk - first / units_chunk + 1 };
+}
+
+/// The partial store a block's attention needs: a float pair and 128 sums a (row, head) and chunk.
+pub fn unitsBytes(chunks: usize) usize {
+    return 8 * 24 * chunks * (8 + 128 * 4);
+}
+
 fn bind(e: mtl.ComputeEncoder, refs: []const Ref) void {
     for (refs, 0..) |r, slot| e.setBuffer(r.buf, r.off, slot);
 }
@@ -172,6 +224,30 @@ pub fn attend(p: *const Pipelines, e: mtl.ComputeEncoder, q: Ref, block_k: Ref, 
     groups(e, 8 * 24, 128);
 }
 
+/// `attend` on the tensor units; `partials` is FP32 scratch of `unitsBytes` of the context's chunks.
+pub fn attendUnits(u: *const Units, e: mtl.ComputeEncoder, q: Ref, block_k: Ref, block_v: Ref, context_k: Ref, context_v: Ref, partials: Ref, out: Ref, committed: u32, ring_capacity: u32, local: bool, from: u32) void {
+    std.debug.assert(ring_capacity > 0 and ring_capacity % 64 == 0 and from <= committed);
+    const span = unitsSpan(committed, local, from);
+    const args = UnitsArgs{ .committed = committed, .ring = ring_capacity, .first = span.first, .chunk = units_chunk, .chunks = span.chunks };
+    const sums = Ref{ .buf = partials.buf, .off = partials.off + 8 * 24 * @as(usize, span.chunks) * 8 };
+    if (span.chunks != 0) {
+        e.setPipeline(u.partials);
+        bind(e, &.{ q, context_k, context_v, sums, partials });
+        e.setValue(args, 5);
+        e.dispatchGroups(mtl.Size.of(span.chunks, 8, 1), mtl.Size.of(64, 1, 1));
+    }
+    mergeUnits(u, e, q, block_k, block_v, partials, out, args);
+}
+
+/// The fold alone: the block's own keys, then the partials of `args.chunks` chunks in order.
+pub fn mergeUnits(u: *const Units, e: mtl.ComputeEncoder, q: Ref, block_k: Ref, block_v: Ref, partials: Ref, out: Ref, args: UnitsArgs) void {
+    const sums = Ref{ .buf = partials.buf, .off = partials.off + 8 * 24 * @as(usize, args.chunks) * 8 };
+    e.setPipeline(u.merge);
+    bind(e, &.{ q, block_k, block_v, sums, partials, out });
+    e.setValue(args, 6);
+    groups(e, 8 * 24, 128);
+}
+
 /// Normalization consumes the FP32 residual sum, independently of the rounded BF16 residual store.
 pub fn residualNorm(p: *const Pipelines, e: mtl.ComputeEncoder, x: Ref, residual: Ref, weight: Ref, new_residual: Ref, normalized: Ref, rows: u32, init: bool) void {
     std.debug.assert(rows > 0);
@@ -207,13 +283,31 @@ pub fn recurrentStep(p: *const Pipelines, e: mtl.ComputeEncoder, state: Ref, kap
     threads(e, rank, 256);
 }
 
+/// recurrentStep on the token `held[step]` holds: the chain's previous draft, read on the GPU.
+pub fn chainStep(c: *const Chain, e: mtl.ComputeEncoder, state: Ref, kappa_row: Ref, rnn_weight: Ref, markov_w1: Ref, z: Ref, next_state: Ref, lambda: Ref, held: Ref, step: u32) void {
+    e.setPipeline(c.step);
+    bind(e, &.{ state, kappa_row, rnn_weight, markov_w1, z, next_state, lambda });
+    e.setValue(TokenArgs{ .token = step }, 7);
+    e.setBuffer(held.buf, held.off, 8);
+    threads(e, rank, 256);
+}
+
+/// held[step + 1] = the first greatest of a row of final logits: one threadgroup of 1,024.
+pub fn chainPick(c: *const Chain, e: mtl.ComputeEncoder, logits: Ref, held: Ref, step: u32) void {
+    e.setPipeline(c.pick);
+    bind(e, &.{ logits, held });
+    e.setValue(TokenArgs{ .token = step }, 2);
+    groups(e, 1, 1024);
+}
+
 /// Raw U*y rows round once to BF16, with no target unembedding softcap.
 pub fn base(p: *const Pipelines, e: mtl.ComputeEncoder, unembed: Ref, y: Ref, out: Ref, rows: u32, vocabulary_count: u32) void {
     std.debug.assert(rows > 0 and vocabulary_count > 0 and vocabulary_count <= vocab);
     e.setPipeline(p.base);
     bind(e, &.{ unembed, y, out });
     e.setValue(BaseArgs{ .rows = rows, .vocab = vocabulary_count }, 3);
-    threads(e, @as(usize, rows) * vocabulary_count, 256);
+    std.debug.assert(rows <= 7);
+    groups(e, (@as(usize, vocabulary_count) + 7) / 8, 256);
 }
 /// Folded Phi/beta correction and target-style 30 tanh softcap, restricted to Mini's 200058 logits.
 pub fn finalLogits(p: *const Pipelines, e: mtl.ComputeEncoder, base_values: Ref, phi: Ref, beta: Ref, lambda: Ref, out: Ref) void {
