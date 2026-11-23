@@ -1,1 +1,1 @@
-- MiniMax-H3-Image CUDA: measured q/k RMS normalization and rotary in the int8 TMA qkv epilogue with byte-identical pictures, then reverted it because warm 2048² runs were not faster than main.
+- MiniMax-H3-Image CUDA: fuse q/k RMS normalization and rotary into the int8 TMA QKV epilogue, removing the separate 0.95 s heads pass. All 13 TOP A/B latents and PNGs stayed byte-identical; the 12 warm 2048² runs totaled 133.77 s against main's 138.65 s.

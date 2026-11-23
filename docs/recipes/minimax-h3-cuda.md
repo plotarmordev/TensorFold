@@ -1558,6 +1558,28 @@ same-job driver is `bench-178-ab.sh`; its reverse patch reconstructs merge paren
 `a03e5c4595bb22f45436b2f1e5073d9e58f26ace` (Zig tree
 `9fa1f41ca6c1029251ad09b47f36424f3cc5875d`) for the baseline half.
 
+TOP job `top-8ee513cc8609` at `d0784afc6` passed the fused contract's four shape cases, nonfinite and repeat gates,
+and its live launch limit (255 registers). The same job ran cold fox and three warm runs each of fox, harbour,
+meadow and steam on both sides. All 13 latent files and all 13 PNGs were byte-identical. The candidate's 12 warm
+walls total **133.77 s** against main's **138.65 s** (means 11.15 and 11.55 s); it ships. QKV pays about 0.52 s for
+the fused work while removing the 0.95 s separate pass.
+
+| Run | Prompt | Candidate wall s | Main wall s | Candidate QKV s | Main QKV s | Candidate heads s | Main heads s |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 1 (cold) | fox | 154.36 | 151.85 | 2.14 | 1.63 | 0.00 | 0.94 |
+| 2 | fox | 11.09 | 11.41 | 2.17 | 1.65 | 0.00 | 0.94 |
+| 3 | fox | 11.10 | 11.52 | 2.17 | 1.67 | 0.00 | 0.94 |
+| 4 | fox | 11.07 | 11.50 | 2.17 | 1.66 | 0.00 | 0.95 |
+| 5 | harbour | 11.26 | 11.71 | 2.17 | 1.65 | 0.00 | 0.94 |
+| 6 | harbour | 11.10 | 11.50 | 2.19 | 1.65 | 0.00 | 0.94 |
+| 7 | harbour | 11.08 | 11.57 | 2.18 | 1.67 | 0.00 | 0.94 |
+| 8 | meadow | 11.26 | 11.71 | 2.18 | 1.67 | 0.00 | 0.95 |
+| 9 | meadow | 11.04 | 11.53 | 2.18 | 1.67 | 0.00 | 0.94 |
+| 10 | meadow | 11.10 | 11.47 | 2.18 | 1.66 | 0.00 | 0.95 |
+| 11 | steam | 11.25 | 11.65 | 2.18 | 1.66 | 0.00 | 0.95 |
+| 12 | steam | 11.11 | 11.49 | 2.19 | 1.65 | 0.00 | 0.95 |
+| 13 | steam | 11.31 | 11.59 | 2.23 | 1.67 | 0.00 | 0.97 |
+
 ### Card 181: the norms' AdaLN tables in bf16, read a lane's four values at once — measured, no gain shown
 
 I stored the AdaLN tables as bf16 (`h3m_project` already rounded every value to bf16 before writing it to an f32
