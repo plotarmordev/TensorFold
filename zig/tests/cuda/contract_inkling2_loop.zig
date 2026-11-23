@@ -15,57 +15,6 @@ const eps = ref.eps;
 const mix_shapes = [_]c.Shape{ .{ .rows = 1, .n = hidden, .k = 3 }, .{ .rows = 3, .n = hidden, .k = 2 } };
 const gate_shapes = [_]c.Shape{ .{ .rows = 1, .n = hidden, .k = rank }, .{ .rows = 3, .n = hidden, .k = rank } };
 
-/// Raw outputs use the old loop contract's FP32 tolerance; BF16 references include their final rounding.
-pub fn Checked(comptime T: type) type {
-    return struct {
-        const Self = @This();
-        inner: ref.Gated(T),
-        rig: *rig_.Rig = undefined,
-        msg: [200]u8 = undefined,
-
-        pub fn deinit(self: *Self) void {
-            self.inner.deinit();
-        }
-        pub fn kernel(self: *Self) g.Kernel {
-            self.rig = &self.inner.rig;
-            return .{ .spec = self.inner.k.spec(), .ctx = self, .vt = &vt, .control = self.inner.k.control() };
-        }
-        const vt = g.hooks(Self);
-        pub fn prepare(self: *Self, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
-            return self.inner.prepare(shape, fill, seed);
-        }
-        pub fn run(self: *Self) !void {
-            try self.inner.run();
-        }
-        pub fn count(self: *Self) usize {
-            return self.inner.count();
-        }
-        pub fn reference(self: *Self, want: []f64, mag: []f64) !void {
-            try self.inner.reference(want, mag);
-        }
-        pub fn bounds(self: *Self, want: []const f64, mag: []const f64, allow: []f64) !void {
-            try self.inner.bounds(want, mag, allow);
-        }
-        pub fn simulate(self: *Self, acc: c.Accum, order: g.Order, out: []f64) !void {
-            try self.inner.simulate(acc, order, out);
-        }
-        pub fn check(self: *Self, _: g.Gate) !?[]const u8 {
-            const a = self.rig.gpu.gpa;
-            const buf = try a.alloc(f64, 2 * self.count());
-            defer a.free(buf);
-            const want = buf[0..self.count()];
-            try self.reference(want, buf[self.count()..]);
-            const got = try self.rig.outputBytes();
-            for (want, 0..) |w, i| {
-                const x = c.read(self.inner.k.spec().out, got, i);
-                const ok = if (std.math.isNan(w)) std.math.isNan(x) else if (!std.math.isFinite(w)) x == w else std.math.isFinite(x) and @abs(x - w) <= 1e-4 * (1 + @abs(w));
-                if (!ok) return try std.fmt.bufPrint(&self.msg, "output {d}: {e} where {e} is due", .{ i, x, w });
-            }
-            return null;
-        }
-    };
-}
-
 fn stressBank(i: usize) f32 {
     return if ((i * 37 + i / 7) % 5 == 0) 384 else 256;
 }
@@ -338,15 +287,15 @@ const groups = .{ "mixes", "gates" };
 pub const Set = struct {
     k: loop.Kernels = undefined,
     loaded: bool = false,
-    mixes: [3]Checked(Mix) = undefined,
-    gates: [4]Checked(Gate) = undefined,
+    mixes: [3]ref.Gated(Mix) = undefined,
+    gates: [4]ref.Gated(Gate) = undefined,
 
     pub fn init(set: *Set, gpu: check.Gpu, s: cuda.Stream, a: std.mem.Allocator, list: *std.ArrayList(g.Kernel)) !void {
         set.k = try loop.Kernels.load(gpu.d);
         set.loaded = true;
         const rig: rig_.Rig = .{ .gpu = gpu, .s = s };
-        for (&set.mixes, 0..) |*x, i| x.* = .{ .inner = .{ .rig = rig, .k = .{ .kern = &set.k, .f32_partial = i == 1, .aliased = i == 2 } } };
-        for (&set.gates, 0..) |*x, i| x.* = .{ .inner = .{ .rig = rig, .k = .{ .kern = &set.k, .stage = @fromBackingInt(@intCast(i % 3)), .wrong_slot = i == 3 } } };
+        for (&set.mixes, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = &set.k, .f32_partial = i == 1, .aliased = i == 2 } };
+        for (&set.gates, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = &set.k, .stage = @fromBackingInt(@intCast(i % 3)), .wrong_slot = i == 3 } };
         inline for (groups) |field| for (&@field(set, field)) |*x| try list.append(a, x.kernel());
     }
     pub fn deinit(set: *Set) void {
