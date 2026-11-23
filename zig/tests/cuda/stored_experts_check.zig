@@ -311,7 +311,7 @@ pub fn rows64(gpu: Gpu, s: st.Stored, layer: usize) !void {
         }
         var off: usize = 0; // experts without their rows in whole `tile`-row items
         for (chosen, 0..) |on, e| {
-            if (rows_of[e] != (if (on) tokens else 0) or items_of[e] != (if (on) per else 0)) off += 1;
+            if (rows_of[e] != (if (on) @as(usize, tokens) else 0) or items_of[e] != (if (on) @as(usize, per) else 0)) off += 1;
         }
         try check.expect(bound[ti] == grouped.maxItems(pairs, st.experts, tile) and held[ti] == st.top * per and counts[1] == st.top and bad == 0 and off == 0, "layer {d}, tile {d}: launch bound {d}, {d} items held over {d} experts, {d} misplaced, {d} experts not covered", .{ layer, tile, bound[ti], held[ti], counts[1], bad, off });
         var act = try cuda.DeviceBuffer.alloc(gpu.d, act_len);
