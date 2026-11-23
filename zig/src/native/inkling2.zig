@@ -123,6 +123,7 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
     if (drafter) |d| {
         try d.setContext(@intCast(window));
         h.metal.drafter = d;
+        try d.measure();
         h.drafted = try lanes.drafted.Drafted.init(gpa, h.metal.backend(), d.drafter());
         h.drafted.?.first_rows = true;
     }

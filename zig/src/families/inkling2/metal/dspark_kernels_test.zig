@@ -31,7 +31,8 @@ test "DSpark symbols, records, ABIs and disabled contraction are exact" {
         try t.expectEqual(record.threads, record.reserved);
         const threadgroup: u32 = switch (kind) {
             .fuse_taps => 32,
-            .block_qkv, .context_kv, .attention, .residual_norm => 16,
+            .block_qkv, .context_kv, .residual_norm => 16,
+            .attention => 528,
             else => 0,
         };
         try t.expectEqual(threadgroup, record.tg_memory);
@@ -44,7 +45,7 @@ test "DSpark symbols, records, ABIs and disabled contraction are exact" {
     try t.expectEqual(@as(usize, 4), @sizeOf(k.CountArgs));
     try t.expectEqual(@as(usize, 8), @sizeOf(k.BaseArgs));
     try t.expect(std.mem.indexOf(u8, shader, "#pragma METAL fp contract(off)") != null);
-    try t.expect(std.mem.indexOf(u8, shader, "DSP_SCALE = 0x1.6a09e6p-7f") != null);
+    try t.expect(std.mem.indexOf(u8, shader, "DSP_SCALE = 0x1.6a09e6p-4f") != null);
 }
 
 test "raw base projection rounds the dot without applying target softcap" {
@@ -151,4 +152,16 @@ test "folded correction rounds bias then logits before the thirty softcap" {
     try t.expect(@abs(capped) < @abs(logit));
     const saturated = bf(30.0 * std.math.tanh(@as(f64, 1000) / 30.0));
     try t.expect(saturated <= 30 and saturated > 29.9);
+}
+
+test "the tensor-unit attention spans the kept keys in whole chunks, and none without a key" {
+    try t.expectEqual(@as(u32, 0), k.unitsSpan(0, false, 0).chunks);
+    try t.expectEqual(@as(u32, 0), k.unitsSpan(700, false, 700).chunks);
+    try t.expectEqual(@as(u32, 1), k.unitsSpan(1, false, 0).chunks);
+    try t.expectEqual(@as(u32, 3), k.unitsSpan(2 * k.units_chunk + 1, false, 0).chunks);
+    const sliding = k.unitsSpan(5000, true, 3);
+    try t.expectEqual(@as(u32, 3976), sliding.first);
+    try t.expectEqual((4999 / k.units_chunk) - (3976 / k.units_chunk) + 1, sliding.chunks);
+    try t.expectEqual(@as(u32, 4000), k.unitsSpan(5000, true, 4000).first);
+    try t.expectEqual(@as(usize, 8 * 24 * 2 * 520), k.unitsBytes(2));
 }
