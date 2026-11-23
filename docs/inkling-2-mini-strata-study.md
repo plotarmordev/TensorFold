@@ -1,0 +1,207 @@
+# Inkling 2 Mini: what makes Strata fast, and what TensorFold lacks
+
+Card 209. A read of [Strata](https://github.com/Niko1221/Strata) (MIT, © Niko1221) at
+[v0.2.20](https://github.com/Niko1221/Strata/releases/tag/v0.2.20) (`4920a3a4be`, engine `strata-inkling` 0.1.66)
+and [v0.2.19](https://github.com/Niko1221/Strata/releases/tag/v0.2.19) (`8fffdbf4a3`, 0.1.65, the release that
+published the numbers), set against TensorFold's Inkling 2 code on `main` and on card 188's branch
+(`feat/188-inkling-2-mini-runs-whole-on-our-spark-g`, the only TensorFold path that serves Mini). No Strata code is
+taken; if a follow-up card ports any of it, that card credits Strata in `THIRD_PARTY_NOTICES.md` by name and link.
+
+## The numbers are two packs, not one configuration
+
+From the speed table of Strata's pack card,
+[strata-engine/Inkling-2-Mini-Strata](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata): thinking off,
+one-stream rows with DSpark drafting on; the card states neither the engine version nor the context.
+
+| Machine | Pack | Solo decode | c=64 total |
+|---|---|---|---|
+| RTX 5090 | SQ-10 (10.47 GB) | **250.3** tok/s | 3,010.4 |
+| RTX 5090 | SQ-20 (19.35 GB) | 198.9 | **4,089.7** |
+| DGX Spark GB10 | SQ-10 | **74.3** | 805.8 |
+| DGX Spark GB10 | SQ-20 | 46.1 | **1,145.1** |
+
+The headline pairs (250 / 4,090, 74.3 / 1,145) each mix two packs. The c=64 rows come from `--bench`, which seeds every
+slot with the same 16-token prompt and first token (`engine/src/inkling2/cuda/ink_cuda_main.cu`, lines 392–427), so the
+64 streams route to largely the same experts; diverse traffic would score lower.
+
+TensorFold's only Mini measurement is card 188's job `top-0759755a0515` at `2301ab379` (bf16 trunk, the checkpoint's
+NVFP4 experts, `--context 8192`, greedy, 256 tokens): **5.7 tok/s at 1 stream, 9.4 tok/s total at 4**. The 13×
+in the card's title is 74.3 / 5.7, Strata's best GB10 solo row against ours.
+
+## Ceiling math on GB10 (273 GB/s)
+
+Mini: 24 physical layers, the middle 12 looped three times (48 visits a token), 128 experts top-8, hidden 2,304,
+vocab 200,058.
+
+| Weights a token reads | Bytes / token | Plain decode ceiling |
+|---|---|---|
+| TensorFold, checkpoint as stored (card 188's count) | 5.55 GB | 49 tok/s |
+| Strata SQ-20 (bf16 attention, SF4/MX8 experts) | ≈5.42 GB | ≈50 tok/s |
+| Strata SQ-10 (Q8_ROW attention, 2–3-bit experts) | ≈3.29 GB | ≈83 tok/s |
+
+SQ-20's 46.1 tok/s sits at 92% of its plain ceiling and SQ-10's 74.3 at 90% of its ceiling, with drafting on; both numbers
+are bandwidth-bound. Our 5.7 tok/s is 12% of the same ceiling: 175 ms a token against a ≈20 ms weight-read floor.
+The gap comes from launch overhead and unbatched work, not bandwidth (card 188's receipt: about 1,350 launches a token
+[INFERENCE, not profiled]). The ordering below follows from that: get to the bandwidth roof first, then lower the roof.
+
+## The levers
+
+States: **in TensorFold** (serving Mini on 188's branch), **partial**, **missing**, **n/a**. Gains are ceiling
+estimates, not measurements.
+
+### 1. W=4 on-GPU beam-tree DSpark — missing on CUDA
+
+Strata: the drafter is embedded in the pack (3 layers, Block-8, taps 5/23/41/48 mixed by `softmax(fuse_weight)`,
+a rank-256 Markov RNN head) and runs entirely on GPU. Base candidates come from a 4-bit screening plane and a radix
+top-K, and the RNN head scores only those rows (`engine/src/inkling2/cuda/ink_dspark.cuh`, header lines 1–11).
+`emit_draft_beam_tree` captures all 7 beam steps in one CUDA graph (W ≤ `kInkMaxBeam` = 4). `draft_beam_tree` picks
+3–16 nodes by maximising expected emits over an expert-union cost `1 + 4.2·(1 − (15/16)^M)`. One 48-visit
+`forward_tree_verify` pass checks the tree, the argmax and tree walk run on device, and `k_ink_commit_kv_all48` /
+`k_ink_commit_sconv_all48` commit only the accepted path (`ink_cuda_backend.cu::dspark_spec_step_greedy`, lines
+758–830). This fast path is one stream, greedy, no penalties (`ink_serve.h`, lines 762–810). Sampled streams use exact
+rejection sampling on the host.
+
+TensorFold: the config parses Mini's MTP head and `names.zig` maps every tensor (`zig/src/families/inkling2/config.zig`
+`parseMtp`, `names.zig`), but no CUDA drafter exists. 188's branch has a Metal DSpark
+(`zig/src/families/inkling2/metal/dspark*.zig`, `zig/kernels/metal/inkling2/dspark.metal`); its CUDA engine
+(`inkling2_loop`) has no draft path. Elsewhere TensorFold drafts on GPU with chains by default and opt-in trees
+(`zig/src/families/qwen3_5/cuda_mtp_tree.zig`, `zig/src/families/deepseek_v41/draft/tree.zig`).
+
+Would touch: a new `zig/src/families/inkling2/dspark.zig` behind `zig/src/core/lanes/drafter.zig`, and a new
+`zig/kernels/cuda/inkling2/dspark.cu`, ported from the Metal kernels.
+Gain: once at the roof, Strata's tree turns a ≈50 tok/s plain ceiling into 74.3 on the smaller pack. On the same
+bytes, expect 1.5–2× solo [INFERENCE: Strata publishes no drafting-off GB10 row, so its acceptance per sweep is
+unmeasured]. Before the roof it buys little, because each verify sweep costs what a token costs now.
+
+### 2. Zero-logits device-to-host — partial
+
+Strata: greedy verify runs `head_argmax_exact` (`ink_runner.cuh`, line ~3502) through an L2-norm screen, 4,096 bf16
+candidates and an exact rescore, then copies only M int32 ids back (comment: 0.14 ms on a 5090, bit-exact for M ≤ 32).
+The batched and sampled path still copies full rows into pinned memory (`ink_cuda_backend.cu::emit_selected_logits`,
+B × 200,058 × 4 bytes, 51 MB a step at c=64).
+
+TensorFold: `tf_ink2_top1` (greedy) and `tf_ink2_race1` (keyed Gumbel race) already pick on device
+(`zig/kernels/cuda/inkling2/ops.cu`, `zig/src/families/inkling2/ops.zig`). The rest of the engine reads back
+row-best or top-k candidates only (`zig/src/families/flashnext/cuda_draw_batch.zig`).
+
+Would touch: `zig/src/families/inkling2/mini_backend.zig` on 188's branch (keep the readout to ids).
+Gain: about 1 ms of 55.9 ms a step at c=64, and nothing solo. Strata's batched path does not have this either, so it
+is not a source of its lead.
+
+### 3. fp4 tensor-core MoE — partial
+
+Strata: `ink_moe_fp4_sm120.cu` is compiled for `sm_120a`/`sm_121a`. SF4 experts (e2m1 with an e4m3 scale per 16
+weights, layers 0–19, 44 of 48 visits) run on `mma.sync…kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64`, and MX8
+(layers 20–23) on `kind::mxf8f6f4`. Pack bytes are already in MMA operand order ("zero bit-reordering"). `k_ink_moe_bin`
+builds the grouped expert tiles on device, so it can be captured in a graph. These kernels run at M ≥ 24 rows (c=32,
+c=64, prefill: `ink_moe_cuda.cuh`, lines 3251–3253). At M ≤ 16 (solo decode and every verify tree), 4-lane kernels read
+each weight byte once across all rows. SQ-10/SQ-15 use INT8 tensor cores (M ≥ 16) and `dp4a` below that.
+
+TensorFold: the native block-scaled FP4 mma exists (`zig/kernels/cuda/mma4.cuh`, the same instruction) but only
+Nemotron uses it (`zig/kernels/cuda/ck_experts.cu`). 188's Inkling experts take exl3-arithmetic grouped tiles
+(`zig/kernels/cuda/inkling2/experts.cu` on 188's branch). The NVFP4 expert kernels used by other families decode fp4
+into bf16 mma (`zig/kernels/cuda/nvfp4_experts.cu`).
+
+Would touch: `zig/kernels/cuda/inkling2/experts.cu` and `zig/src/families/inkling2/experts.zig` (188's branch), on
+`mma4.cuh`.
+Gain: none solo (Strata itself uses byte-once kernels there). At c=64 it is the difference between tensor-core and
+CUDA-core expert math: Strata's SQ-20 c=64 is 1,145 / 46.1 ≈ 25× its solo rate.
+
+### 4. SQ packs — missing
+
+Strata: `.strata` v1.1 (`engine/include/strata/artifact/strata_reader.hpp`) has a zstd JSON manifest, a trunk section
+with the drafter, an expert directory with per-expert codecs (`WFmt`: S1_25…S8_K, SF4, MX8, Q8_ROW) and 4 KiB-aligned
+expert bodies in kernel byte order. It is read with `fread` into 64 MiB pinned chunks (no mmap), loop-weighted experts
+first. SQ-N is the pack's size in GB for Inkling: SQ-20 is lossless SF4/MX8, SQ-15 has 96.68% top-1 and SQ-10 has
+92.35% (`terminal/strata_control/inkling_fit.py`).
+
+TensorFold: broad formats (EXL3, MLX affine 2–8 bit, pre-swizzled NVFP4 in `zig/src/cuda/nvfp4.zig`), but Mini loads
+its checkpoint as stored, with a bf16 trunk.
+
+Would touch: `zig/src/families/inkling2/mini_model.zig` (188's branch), reusing `zig/src/cuda/nvfp4.zig` /
+`modelopt.zig` packing for a quantised trunk.
+Gain: lowers the roof. SQ-10-class bytes lift the ceiling from 49 to ≈83 tok/s (1.7×), at a measured quality cost
+that a TensorFold pack has to gate on its own.
+
+### 5. CUDA graphs — in TensorFold, unmeasured on Mini
+
+Strata: `GraphKey {M, mode, taps, kv_dtype}` (`ink_runner.cuh`, lines 1757–1761). It captures the whole 48-visit body
+(`emit_48_visits`) per decode shape, per verify-tree size and per batch B = 1…64, so c=64 is one `forward_batched(64)`
+replay a step.
+
+TensorFold: `zig/src/cuda/graph_cache.zig` is general. 188's head moved Mini onto jschmied's #4441 engine with graphs,
+fused input projections and one batched forward for every stream's rows. The 5.7 / 9.4 receipt predates that move,
+from #4387's ungraphed loop engine.
+
+Would touch: nothing new. Re-measure 188's head with `docs/recipes/inkling-2-mini-cuda/run-script.sh`.
+Gain: up to ≈8.6× solo (175 ms → the ≈20 ms floor), the largest single lever, if the graph removes the launch gaps.
+
+### 6. 64-slot batching — partial
+
+Strata: 64 slots, 64-token KV pages, FP8 KV from 16 slots, and one decode token from every slot each round
+(`engine/src/inkling2/ink_batch.h`, `ink_serve.h`). Only 8 of 48 visits keep global KV, so 64 resident slots are cheap.
+
+TensorFold: lanes and paged KV are general (`zig/src/core/lane_host.zig`, `zig/src/core/kv_pool.zig`). 188 serves
+`--parallel 4` with batched rows; it has not run at 64.
+
+Would touch: 188's `mini_backend.zig` lane admission and `kv_pool` attach.
+Gain: rides on levers 3 and 5. Strata's c=64 runs at 15× its own SQ-10 solo rate on GB10.
+
+## Strata's engine on TOP, next to ours: staged, not yet measured
+
+The run uses Strata's own linux-aarch64 build as shipped, with no host changes. `strata-inkling` 0.1.66 bundles
+`libcublas`, `libcublasLt`, `libcudart` and `libgomp` and needs only the driver (≥ 580.65) and glibc.
+
+- [`recipes/strata-inkling/strata-stage.sh`](recipes/strata-inkling/strata-stage.sh): the Desk fetches the engine
+  tarball (sha256 `a01f0e1f…`, from the release's `SHA256SUMS.txt`) and the SQ-10 pack (sha256 `ac4d452a…`) and puts
+  them in TOP's pilot folder as `strata-inkling-0.1.66/`. The GPU job has no network, and `top-menu fetch hf` only
+  copies models already on a Spark.
+- [`recipes/strata-inkling/strata-job.sh`](recipes/strata-inkling/strata-job.sh): through `swarm gpu-run`, the
+  engine's `--bench` at 1, 4 and 64 streams with 256 generated tokens, then `--selfcheck`.
+
+This step did not stage the pack. It downloaded at 2.6–3 MB/s here, about an hour for the 10.47 GB pack before the
+upload to TOP, which is past this card's time box. The 1- and 4-stream rows below wait for that job.
+
+| GB10, 1 stream / 4 streams total | Source |
+|---|---|
+| TensorFold 5.7 / 9.4 tok/s | job `top-0759755a0515`, card 188 at `2301ab379` |
+| Strata SQ-10 — / — | `strata-job.sh`, pending staging |
+
+## Windows on ARM: nobody ships Inkling 2 Mini fast there
+
+- Strata ships no Windows ARM64 build. v0.2.19 and v0.2.20 have `windows-x86_64` engines only. `install.ps1` refuses
+  any non-AMD64 Windows ("a Windows on ARM PC … has no engine for ARM processors"), and
+  [issue #4579, "ARM64 Windows (RTX Spark)"](https://github.com/Niko1221/Strata/issues/4579), is open.
+- The only Strata build on the N1X is a community fork,
+  [strata-n1x-Zackyzq](https://github.com/zackyangzeqi-spec/strata-n1x-Zackyzq), for DeepSeek-V4.1-Flash, not Inkling.
+- CUDA itself runs there. CUDA 13.4 ships Windows ARM64 nvcc, cudart and cuBLAS, and NVIDIA's
+  [RTX Spark guide](https://build.nvidia.com/rtx-spark/running-llamacpp) builds llama.cpp natively. Ollama and LM
+  Studio ship WoA CUDA builds too. None carries Strata's levers, and whether any runs Inkling 2 is unverified here.
+- What the laptop needs that nobody has: an Inkling engine built `aarch64-windows` with MSVC ARM64 as nvcc's host
+  compiler (only gcc 14 has built TensorFold's Inkling kernels), admission from the WDDM pool through
+  `cuMemGetInfo_v2` rather than `/proc/meminfo`, and the GB10 exactness checks repeated on an N1X. The kernel images
+  are the same `sm_121`. No N1X run of Mini exists from anyone. Card 188's recipe README has the full list.
+
+## Follow-up cards, in order
+
+For 207 (GB10):
+
+1. **Measure 188's graphed engine and close the launch gap.** Run `run-script.sh` at 188's head. If solo is still
+   far from 49 tok/s, profile with the CUPTI preload and capture the whole 48-visit step in one graph per batch size,
+   as Strata's `emit_48_visits` does. Touches `mini_backend.zig`, `mini_visit.zig`. Gain: up to 8.6× solo.
+2. **CUDA DSpark beam tree for Mini.** Port 188's Metal DSpark to CUDA with W ≤ 4, adaptive tree nodes, one verify
+   sweep and on-device commit, under the conformance ledger's tree = chain = plain rule. Touches new
+   `inkling2/dspark.zig` and `zig/kernels/cuda/inkling2/dspark.cu`. Gain: 1.5–2× solo once at the roof.
+3. **Native fp4 grouped experts at M ≥ 24, then a quantised trunk.** Put Mini's NVFP4 experts on `mma4.cuh`'s
+   `mxf4nvf4` with device-built expert tiles, and run 64 streams. Then pack the bf16 attention to 8-bit rows, gated
+   on top-1/KL against the checkpoint. Touches `zig/kernels/cuda/inkling2/experts.cu`, `mini_model.zig`. Gain: c=64
+   throughput (Strata ≈25× its solo rate), and a roof from 49 to ≈83 tok/s.
+
+For 202 (RTX Spark laptop, Windows-native, N1X-tuned):
+
+1. **Build Mini's CUDA engine `aarch64-windows`.** MSVC ARM64 as nvcc's host, CUDA 13.4 `windows-arm64`
+   redistributables, WDDM-pool admission. Run the GB10 exactness checks on the N1X.
+2. **Bring 207's cards 1 and 2 to the N1X** and measure the laptop's own bandwidth roof. GB10-class silicon does not
+   guarantee 273 GB/s sustained in a laptop power envelope.
+3. **Tune per N1X**: tree size by measured acceptance and bytes per emitted token, and the stream count the WDDM pool
+   admits. This is the first Windows ARM64 Inkling engine anyone ships.
