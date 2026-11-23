@@ -113,6 +113,22 @@ Release archives include the native executable, runtime assets and license notic
 [Packaging](packaging/README.md) lists the flat fatbin set and optional captured CUDA files required by `dist`.
 Compile success alone does not qualify a GPU or checkpoint.
 
+### Keep checkouts small
+
+Zig keeps every build of every revision in the local cache and never prunes it, so a worktree's `.zig-cache` grows past
+15 GB after a few days of `zig build test`; a fresh full build plus tests needs about 4 GB of cache on its own.
+With many worktrees, point the local cache at one shared folder outside them; Zig locks its cache, so concurrent builds
+can share it, and identical builds in different worktrees reuse each other's objects:
+
+```sh
+export ZIG_LOCAL_CACHE_DIR="$HOME/.cache/tensorfold/zig"
+```
+
+The `tools/zig/*_build.sh` scripts and the packaging check follow the same variable. Install with
+`--prefix DIR` to keep `zig-out` out of the checkout too. Model weights, GGUF files, fixtures (`TF_FIXTURES_DIR`) and
+job output belong outside the checkout as well; pass their paths as arguments instead of staging copies in the tree.
+Delete the shared folder to reclaim its space when no build is running.
+
 ## Exactness and precision
 
 A draft is accepted only when it equals the same engine's plain token.
