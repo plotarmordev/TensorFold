@@ -13,6 +13,13 @@ in `tools/bench_concurrent.py` at 1 and 4 streams, or 4 streams giving under 1.5
 receipt also sets one stream's decode against GB10's bandwidth limit: the weight bytes a token reads (from the
 checkpoint's headers) over 273 GB/s.
 
+`dspark.sh` checks Mini's DSpark draft head (`mtp.safetensors`) alone. It builds, then runs `tf-cuda-test inkling2-dspark`:
+the head absorbs 1,100 seeded context rows, makes seven greedy drafts with each pick fed back on the device, and
+checks every step's logits within 2% RMS of the float64 host reference. The planted context-blind reference must fail.
+At `816d47102` (job on TOP's GB10, build 525 s, measure 113 s), the worst step was 0.41% and 0 of 7 picks differed.
+The planted run reached 29.8%, with 6 of 7 picks differing. Absorb plus draft took 37 ms, including the 1,100-row
+absorb; this is not a draft-step timing.
+
 ## Receipt: TOP's GB10, one capped run
 
 Job `top-16bffb6ca094` at `9f542e6fa`, `--context 8192`, greedy, 256 tokens, 3 reps, medians. This is one run with
