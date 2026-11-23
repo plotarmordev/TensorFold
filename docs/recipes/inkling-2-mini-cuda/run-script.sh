@@ -41,11 +41,14 @@ python3 -c 'import random; r = random.Random(4387); print(" ".join(str(r.randran
 "$bin/tf-cuda-test" inkling2-serving "$model" "$out/ids.txt"
 text="The three laws of thermodynamics, explained for a curious student:"
 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text"
-# the planted control must go red: tf-cuda-test exits non-zero when its tokens differ
-if INKLING2_REF_PLANT=1 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text"; then
+# the planted control must go red with its own differing tokens: a load or CUDA failure also exits non-zero
+if INKLING2_REF_PLANT=1 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text" 2>"$out/control.log"; then
     echo "planted control stayed green" >&2
     exit 1
 fi
+cat "$out/control.log" >&2
+grep -Eq '\(PLANTED: no messages\): [1-9][0-9]* of 32 greedy tokens differ' "$out/control.log" ||
+    { echo "planted control failed before comparing tokens" >&2; exit 1; }
 mem() { echo "$1: host $(awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {printf "used %d MiB, available %d MiB", (t - a) / 1024, a / 1024}' /proc/meminfo); GPU $(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | tr '\n' ' ')"; }
 mem "before the server"
 /work/sm121/native/bin/tensorfold-native serve "$model" --backend cuda --host 127.0.0.1 --port 8188 \
