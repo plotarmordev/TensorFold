@@ -200,6 +200,21 @@ pub const Mod = struct {
         return self.compute(.{}, want, mag);
     }
 
+    /// h3m_sinusoid's error is on its f32 angle, which cos and sin pass on at a slope of at most 1, so the
+    /// generic bound (relative to the output) misses it where cos or sin nears zero. In units u = 2^-24 of
+    /// relative error: x = logf(1e4) c / half takes logf's 1 ulp (2u) and two roundings (2u), so x is off by
+    /// 4u|x|; expf turns that into 4u|x| relative and adds its own 2 ulps (4u); t * freq rounds once (u).
+    /// The angle is off by (4|x| + 5) u of itself, and the output may move by that much.
+    pub fn bounds(self: *Mod, _: []const f64, _: []const f64, allow: []f64) !void {
+        if (self.which != .sinusoid) return;
+        const half = self.in.n / 2;
+        for (allow, 0..) |*l, i| {
+            const x = @log(10000.0) * @as(f64, @floatFromInt(i % self.in.n % half)) / @as(f64, @floatFromInt(half));
+            const angle = self.in.a[i / self.in.n] * @exp(-x);
+            l.* += (4 * x + 5) * 0x1p-24 * @abs(angle);
+        }
+    }
+
     pub fn simulate(self: *Mod, acc: c.Accum, order: g.Order, out: []f64) !void {
         const a = self.rig.gpu.gpa;
         const mag = try a.alloc(f64, out.len);
