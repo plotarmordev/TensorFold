@@ -16,9 +16,9 @@ Why each family moved:
 
 | Family | Launches | Reason |
 | --- | --- | --- |
-| drama3 | 2 | merged change: #32 edited `drama3.cu` after `d3_cfg_mix` was recorded; #115 recorded `d3_router_compact` |
+| drama3 | 2 | merged change: #33 and #32 added `d3_router_compact` and `d3_cfg_mix` pending, never measured |
 | exl3_experts | 4 | merged change: #52 left `tf_exl3_prompt_gu` and `tf_exl3_prompt_down` pending and #115 added their two k6 launches unmeasured |
-| flashnext_hcn | 3 | unknown: recorded in #108, source unchanged since |
+| flashnext_hcn | 3 | toolchain: #108 recorded nvcc 13.3's values, and nvcc 13.0 builds these three launches differently |
 | flashnext_mtp | 1 | merged change: #57 folded the non-finite checks into `fn_row_topk` after its record |
 | glm_glue | 1 | merged change: #87 and #122 edited `tf_glm_dsel_merge` in `glm_index_decode.cuh` after #57 recorded it |
 | muse_dflash2 | 2 | merged change: #87 recorded only nvcc 13.3's sm_121 values |
@@ -27,7 +27,7 @@ Why each family moved:
 | nemo_audio | 2 | toolchain: #74 recorded nvcc 13.2's values, and nvcc 13.0 builds these two launches differently |
 | qmm_prefill | 1 | merged change: #11 moved shared device primitives into `cuda/common` after the record |
 | qmmf | 1 | unknown: recorded in #141, source unchanged since |
-| qwen35 | 3 | merged change: #11 rewrote the GDN slot scan in `qwen35_slots.cuh` after the records; #53 edited it again |
+| qwen35 | 3 | merged change: #53 edited the one-row rollback in `q35_slots` (`qwen35_slots.cuh`) after #11 recorded it |
 
 The four EXL3 prompt launches were reported as pending at every release (`exl3_prompt_pending.zig`), so their 13.0
 receipt only applies because `usageFor` now checks 13.0's receipts first. Other releases keep them pending.
