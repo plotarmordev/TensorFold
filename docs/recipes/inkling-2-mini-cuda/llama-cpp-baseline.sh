@@ -19,9 +19,13 @@ EOF
 tar -C /work -xJf "$staged/$gcc.tar.xz"
 tar -C /work -xzf "$llama/$cmake.tar.gz"
 cc=/work/$gcc/bin/aarch64-none-linux-gnu
+cuda_lib=/usr/local/cuda/targets/sbsa-linux/lib
+export LD_LIBRARY_PATH=$cuda_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+# the staged gcc's ld searches only its own sysroot: point it at the toolkit and the host driver for libggml-cuda's needs
 /work/$cmake/bin/cmake -S "$llama/llama.cpp-b12611" -B /work/llama-build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121 \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="$cc-gcc" -DCMAKE_CXX_COMPILER="$cc-g++" \
     -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc -DCMAKE_CUDA_HOST_COMPILER="$cc-g++" -DLLAMA_OPENSSL=OFF \
+    -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,$cuda_lib:$cuda_lib/stubs:/usr/lib/aarch64-linux-gnu" \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF >/dev/null
 /work/$cmake/bin/cmake --build /work/llama-build -j "$(nproc)" --target llama-server >/dev/null
 rm -rf "$out"
