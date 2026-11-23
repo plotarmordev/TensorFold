@@ -4,16 +4,13 @@
 GPU door. The job has no network, so the checkpoint must already sit in the pilot folder as `Inkling-2-Mini` (or
 `models/Inkling-2-Mini`); the script refuses and lists the Inkling configs under `/assets` when it does not.
 
-The server is #4387's engine (`inkling2.native`, model type `inkling2_loop`) with jschmied's three load and
-attention fixes from his #4387 comments; #4441's engine (`inkling2.mini_native`) rides along for its float64
-reference. The script fails on any of: `tf-cuda-test inkling2-serving` (#4387's checks), `tf-cuda-test
-inkling2-mini-ref` (32 greedy tokens equal to the float64 host reference), that reference's planted control staying
-green, a failed stream in `tools/bench_concurrent.py` at 1 and 4 streams, or 4 streams giving under 1.5 times one
-stream's total tok/s. The receipt also sets one stream's decode against GB10's bandwidth limit: the weight bytes a
-token reads (from the checkpoint's headers) over 273 GB/s.
-
-Each `--parallel` stream gets its own lane: a complete sequence state (cache and forward scratch, about 1.5 GiB at an
-8K window) and CUDA stream over the shared weights. A shared round queues every lane's forward before it waits on any.
+The server is jschmied's #4441 engine (`inkling2.native`, model type `inkling2_loop`, on his #4364 and #4365): graphs,
+fused input projections and one batched forward for every stream's rows in a round. #4387's checks run against it.
+The script fails on any of: `tf-cuda-test inkling2-serving` (#4387's checks), `tf-cuda-test inkling2-mini-ref` (32
+greedy tokens equal to the float64 host reference), that reference's planted control staying green, a failed stream
+in `tools/bench_concurrent.py` at 1 and 4 streams, or 4 streams giving under 1.5 times one stream's total tok/s. The
+receipt also sets one stream's decode against GB10's bandwidth limit: the weight bytes a token reads (from the
+checkpoint's headers) over 273 GB/s.
 
 ## Receipt: TOP's GB10, one capped run
 
@@ -44,6 +41,7 @@ Linux route. From #1010 (`5b1f10812`) and #2107:
   WDDM pool through `cuMemGetInfo_v2`, and `nvidia-smi`'s NPU row is filtered out.
 - Under WSL2 `/proc/meminfo` is WSL's RAM (about 30 GiB of 128 GB), not the GPU's 96 GB WDDM pool; with
   `WSL_DISTRO_NAME` set, admission reads the CUDA pool instead (`TENSORFOLD_UNIFIED_HOST_COUNTS` overrides it).
-- For Mini, I need three things before it builds and serves there: the Inkling CUDA kernels compiled by MSVC's
-  front end (only nvcc with gcc 14 has built them so far), one load of the 18.9 GiB single-shard checkpoint
-  through Windows' threaded reads, and the GB10's exactness checks repeated on the N1X. No N1X run of Mini exists yet.
+- For Mini on native Windows, I need the Inkling CUDA kernels compiled with MSVC as nvcc's host front end (only gcc 14
+  has built them so far) and one load of the 18.9 GiB single-shard checkpoint through Windows' threaded reads.
+- For Mini under WSL2, I need neither: it is the Linux build with gcc 14. Only the pool reading above differs.
+- Either way, the GB10's exactness checks must be repeated on the N1X. No N1X run of Mini exists yet.

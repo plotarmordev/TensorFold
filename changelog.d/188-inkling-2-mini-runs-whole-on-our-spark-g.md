@@ -1,14 +1,13 @@
-# Inkling 2 Mini on CUDA: upstream #4387 with jschmied's #4364, #4365 and #4441, and a whole-model run on TOP
+# Inkling 2 Mini on CUDA: jschmied's #4441 engine registered, with #4387's checks and a whole-model run on TOP
 
-- Merges Ash's #4387 and jschmied's C1 (#4364), C3 (#4365) and H2 + C4 (#4441) with their commits; #4387's engine
-  serves `inkling2_loop`, with jschmied's three fixes (layer-sized plan, one sliding-norm upload, raw gate and sink).
-- `docs/recipes/inkling-2-mini-cuda/run-script.sh` runs the original checkpoint on TOP's GB10: #4387's serving
-  checks, the float64 reference and its planted control, then first-token time, prompt speed, decode speed and
-  memory at 1 and 4 streams. The recipe's README notes what RTX Spark (Windows and WSL2) needs.
-- Mini prompt snapshots save and restore each key head's ring rows: the CUDA caches are head-major, and the
-  row-major copy left restored prompts' logits off from a fresh prefill.
-- Mini loop messages now store `[core][role][row][c]` planes, matching each controller's role offset across multi-row prompt chunks; the CUDA reference checks the same served layout.
-- The sampled CUDA serving reference widens the same BF16 logits the device sampler consumes, while retaining exact comparisons of the original FP32 logits.
-- Mini CUDA serves `--parallel N` streams at once: each lane owns its sequence state and CUDA stream over shared
-  weights, and a shared round queues every lane's forward before it waits. Before, the server admitted N requests
-  to one lane and failed the others with `NoFreeSlot`. The TOP receipt adds the bandwidth limit and a 4-stream gate.
+- Merges Ash's #4387 and jschmied's C1 (#4364), C3 (#4365) and H2 + C4 (#4441) with their commits. `inkling2_loop`
+  is now served by #4441's engine (graphs, fused input projections, every stream's rows in one forward); #4387's
+  separate loop engine is removed, so CUDA no longer advertises structured output it refused.
+- #4387's serving checks (device draws against host selection, fresh against resumed prompts, two streams in shared
+  rounds against each alone) run against #4441's engine. Copy drafting is not checked: that engine has no draft path yet.
+- `docs/recipes/inkling-2-mini-cuda/run-script.sh` runs the original checkpoint on TOP's GB10: the serving checks,
+  the float64 reference and its planted control, then first-token time, prompt speed, decode speed, memory
+  (`/proc/meminfo`) and the bandwidth limit at 1 and 4 streams; 4 streams must give 1.5 times one stream's total.
+  The recipe's README notes what RTX Spark (native Windows and WSL2) needs.
+- Metal Mini admission budgets a target state for every stream, so concurrent full-window requests no longer run out
+  of state; the Metal checkpoint check reads the first logprob row after the first token.
