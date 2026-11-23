@@ -4,6 +4,7 @@
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/strata-inkling/strata-sq20-1.sh
 # and likewise strata-sq20-4.sh, strata-sq20-64.sh, strata-sq10-1.sh, strata-sq10-4.sh, strata-sq10-64.sh; they set
 # STRATA_PACK (sq20 or sq10) and STRATA_STREAMS (1, 4 or 64). Unset, this script runs every pack and level.
+# strata-http-sq20.sh and strata-http-sq10.sh set STRATA_OWN=0: one pack's HTTP bench at every level, no own bench.
 # Each pack, under the engine's own `--bench` and, behind Strata's server, under our HTTP bench
 # (tools/bench_concurrent.py), medians of 3. The receipt counts only if SQ-10 at 64 lands within 10% of the
 # 805.8 tok/s of Strata's pack card; the sq10-64 job's [gate] line says which.
@@ -36,25 +37,36 @@ bench() { # bench CELL PACK STREAMS [FLAG...]: one --bench run, its [bench] line
     tail -1 "$out/$cell.txt"
 }
 median() { sed 's/.*decode=\([0-9.]*\) tps.*/\1/' "$out/$1.txt" | sort -n | sed -n 2p; }
-summary() { # summary REPORT: one [http] line a cell; fails on a failed or unmeasured request
+summary() { # summary REPORT: one [http] line a cell; fails on a failed or unmeasured request, naming why
     python3 - "$1" <<'EOF'
 import json, sys
 report = json.load(open(sys.argv[1]))
 for cell in report["cells"]:
     prompt = [r["prompt_tokens"] for rep in cell["reps"] for r in rep["requests"] if r.get("prompt_tokens")] or [0]
-    print("[http] %s, %d streams: %.1f tok/s total, %.1f a stream (medians of 3); prompt %d-%d tokens, %d output "
-          "tokens asked, thinking %s, failed %d, unmeasured %d, timing_valid %s" % (
-              report["label"], cell["streams"], cell["aggregate_tps"], cell["per_stream_tps"], min(prompt),
-              max(prompt), report["tokens"], "/".join(cell["thinking_modes"]), cell["failed"], cell["unmeasured"],
+    print("[http] %s, %d streams: %.1f tok/s total, %.1f a stream (medians of 3); end to end %s tok/s (usage tokens "
+          "over the makespan, prefill included); prompt %d-%d tokens, %d output tokens asked, thinking %s, failed %d, "
+          "unmeasured %d, timing_valid %s" % (
+              report["label"], cell["streams"], cell["aggregate_tps"], cell["per_stream_tps"],
+              "%.1f" % cell["end_to_end_tps"] if cell["end_to_end_tps"] else "-", min(prompt), max(prompt),
+              report["tokens"], "/".join(cell["thinking_modes"]), cell["failed"], cell["unmeasured"],
               cell["timing_valid"]))
     if cell["failed"] or cell["unmeasured"]:
+        # decode is timed only over 4+ text pieces with first < last (tools/bench_concurrent.py): show what came
+        rep = cell["reps"][0]
+        for evidence, times in zip(rep["evidence"], rep["client_intervals"]):
+            offsets = times["chunk_offsets_s"] or []
+            print("[http]   request: %s, finish %s, %s usage tokens, %d text pieces at %s s of %s s" % (
+                evidence["completion"], evidence["finish_reasons"], evidence["tokens"], len(offsets),
+                [round(t, 2) for t in offsets[:3] + offsets[-1:]],
+                times["elapsed_s"] and round(times["elapsed_s"], 2)))
         sys.exit(1)
 EOF
 }
-measure() { # every pack and level asked for, own bench then HTTP bench
+measure() { # every pack and level asked for, own bench (unless STRATA_OWN=0) then HTTP bench
     for name in $packs; do
         eval "pack=\$$name"
         for streams in $levels; do
+            [ "${STRATA_OWN:-1}" = 1 ] || continue
             for rep in 1 2 3; do bench "$name-$streams" "$pack" "$streams"; done
             echo "[own] $name at $streams streams: median $(median "$name-$streams") tok/s total"
         done
@@ -73,8 +85,8 @@ measure() { # every pack and level asked for, own bench then HTTP bench
 {"exe": "$strata", "args": ["--native", "$pack", "--max-context", "32768"], "cwd": "/work", "arch": "inkling2_loop",
  "tokenizer": "$out/tokenizer-$name", "model_name": "$name", "drafting": "dspark", "parallel": $streams}
 EOF
-            PYTHONPATH=$control:$control/tools "$python" "$server" --engine strata --config "$out/$name.json" \
-                --port 8242 --no-api-key >"$out/server-$name-$streams.log" 2>&1 &
+            STRATA_DEBUG=1 PYTHONPATH=$control:$control/tools "$python" "$server" --engine strata \
+                --config "$out/$name.json" --port 8242 --no-api-key >"$out/server-$name-$streams.log" 2>&1 &
             pid=$!
             until python3 -c 'import urllib.request as u; u.urlopen("http://127.0.0.1:8242/v1/models")' 2>/dev/null; do
                 kill -0 "$pid" 2>/dev/null || { tail -30 "$out/server-$name-$streams.log"; exit 1; }
@@ -84,7 +96,8 @@ EOF
                 python3 tools/bench_concurrent.py http://127.0.0.1:8242 "$name" --levels "$streams" --tokens 128 \
                     --reps 3 --temperatures 0 --prompts "$out/$cell.json" --label "$name $cell" \
                     --output "$out/http-$name-$streams-$cell.json" >"$out/http.log"
-                summary "$out/http-$name-$streams-$cell.json"
+                summary "$out/http-$name-$streams-$cell.json" ||
+                    { grep '^\[strata\]' "$out/server-$name-$streams.log" | tail -12; kill "$pid"; exit 1; }
             done
             kill "$pid"
             wait "$pid" || :
