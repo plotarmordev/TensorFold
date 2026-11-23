@@ -37,33 +37,54 @@ tokens exit non-zero and the script goes on, ending 0 with 33.8 tok/s at one str
 ## RTX Spark (N1X): native Windows ARM64 on Net's laptop
 
 `n1x-run.ps1` runs the same checkpoint (`C:\models\Inkling-2-Mini-ed40e7da62`) on the laptop through its Codync bot
-`codync@rtx-spark`, relayed by the Desk, one step a run; check and serve stop well inside 10 minutes. It installs and
-downloads nothing; the laptop has PowerShell but no Python or WSL, so the 1/4-stream client is the script's own, not
-`bench_concurrent.py`.
+`codync@rtx-spark`, relayed by the Desk, one step a run. It installs and downloads nothing; the laptop has PowerShell
+but no Python or WSL, so the 1/4-stream client is the script's own, not `bench_concurrent.py`.
 
 1. `-Step build`: `zig build install native -Dsm=121 -Doptimize=ReleaseFast` with the CUDA 13.5 `windows-arm64` nvcc and
    `cl.exe` arm64 (`vcvarsall arm64`). 189's Windows fixes are on this branch (`__noinline__` in `glm_index_rope.cuh`,
-   `/wd4819`, POSIX file modes and COM `@alignCast` in the server, no `tf-muse`). A clean build took 647 s there; a
-   rebuild after a pull reuses the cache.
+   `/wd4819`, POSIX file modes and COM `@alignCast` in the server, no `tf-muse`). A cold zig cache took 647 s (run 1)
+   and 901 s (run 2); a rebuild after a pull reuses the cache.
 2. `-Step check`: 188's GB10 checks unchanged, so the laptop's output is held to the host reference the same way:
-   `kernel-contract "inkling2 loop"`, `inkling2-serving`, `inkling2-mini-ref` (32 greedy tokens equal to the float64
-   reference) and its planted control, which must go red.
-3. `-Step serve`: one server at `--parallel 4 --context 8192`, greedy 256-token streams at 1 and 4, first token and
-   decode a stream, total decode, ready time, and the peak of the WDDM pool (`nvidia-smi memory.used`, sampled while
-   decoding) and the server's working set.
+   `kernel-contract "inkling2 loop"`, `inkling2-serving` and `inkling2-mini-ref` (32 greedy tokens equal to the float64
+   reference).
+3. `-Step control`: the reference's planted control, which must exit non-zero with its tokens differing.
+4. `-Step serve`: one server at `--parallel 4 --context 8192`, greedy 256-token replies at 1 and 4 streams; first token
+   and decode per stream come from the server's own `done` lines, with the ready time, the WDDM pool's peak
+   (`nvidia-smi -lms 500` in its own process) and the server's peak working set.
 
 What differs from the GB10 and is not copied from it:
 
 - `nvidia-smi` there also lists an NVIDIA NPU, so the script finds the N1X by name and queries only its index;
   `memory.used` over every device gave an array and stopped run 1's serve step.
+- The host float64 reference takes 226 s on the laptop, so the planted control is its own step: run 2 ran both in
+  one step for 11 min 10 s.
+- The serve step times replies from the server's log, not the client: run 2's client read the stream line by line and
+  spawned `nvidia-smi` per line, which put it at 6.7 tok/s at one stream while the server decoded at 32.2.
 - Memory is the WDDM pool the firmware gives CUDA (51,816 MiB on this laptop), not `/proc/meminfo`; admission reads it
   through `cuMemGetInfo_v2`. The 20 GB checkpoint leaves about 20 GiB of it for the cache and four streams.
 - The power cap (42-49 W at about 2.1 GHz in HP Performance mode, near 1.4 GHz in power saving, from the 2026-11-04
   receipt in [WINDOWS.md](../../WINDOWS.md)) bounds decode, so each run prints the power plan, limit and SM clock.
-- The bandwidth limit uses the laptop's own measured rate, not GB10's 273 GB/s.
 
-Run 1 at `b2ddc3de` (clean tree): build exit 0 in 647 s; check: `kernel-contract "inkling2 loop"` 5/5 pass with both
-controls red, `inkling2-serving` 3/3 pass (resumed equals fresh), `inkling2-mini-ref` 0 of 32 tokens differ (smallest
-margin 0.110, 224.7 s), the planted control 6 of 32 differ; serve: ready in 55.3 s (19.82 GiB, 4 streams, 16 GiB prompt
-cache, WDDM pool 2.7 to 23.3 GiB), first completion 200, then the NPU row above stopped the script before any tok/s.
-The 1/4-stream receipt waits on run 2.
+Run 1 at `b2ddc3de` (clean tree): build exit 0; check passed as in run 2; serve was ready in 55.3 s, then the NPU row
+above stopped the script before any tok/s.
+
+### Receipt: run 2 at `2a37918af`, one capped run
+
+Desk request `bb869e9b` on `codync@rtx-spark`, clean clone (`git status --porcelain` empty before and after the build),
+`powershell -ExecutionPolicy Bypass -File docs\recipes\inkling-2-mini-cuda\n1x-run.ps1 -Step <step>`. This is one run
+with these settings, not a benchmark.
+
+| Step | Exit | Time | Result |
+|---|---|---|---|
+| `build` | 0 | 15 min 1 s (cold cache) | no error lines |
+| `check` (with the control, as it then was) | 0 | 11 min 10 s | `kernel-contract "inkling2 loop"` 5/5 pass gates 1-4, 2/2 controls red; `inkling2-serving` PASS (CUDA equals the host reference token for token, fresh equals resumed, admission); `inkling2-mini-ref` 0 of 32 tokens differ (smallest margin 0.110, 226 s); planted control 6 of 32 differ, exit 1 |
+| `serve` | 0 | | ready in 58.4 s: 19.82 GiB model, 4 streams x 0.49 GiB at 8192, 16 GiB prompt cache |
+
+| Streams | First token | Decode a stream | Total decode | Failed |
+|---|---|---|---|---|
+| 1 | 0.104 s | 32.2 tok/s | 32.2 tok/s | 0 |
+| 4 | 0.096-0.357 s | 28.8 / 29.1 / 29.4 / 29.7 tok/s | 117.0 tok/s (3.63x) | 0 |
+
+Times are the server's `done` lines (256 tokens each, `finish=length`). Peak GPU memory: the WDDM pool's largest
+sample was 23,335 MiB (run 1 sampled 2.7 GiB before the server). The N1X decoded one stream as fast as GB10 (32.2
+against 32.5 tok/s) and four streams at 117.0 against 117.8.
