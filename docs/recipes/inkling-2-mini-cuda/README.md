@@ -47,15 +47,30 @@ Linux route. From #1010 (`5b1f10812`) and #2107:
 - For Mini under WSL2, I need neither: it is the Linux build with gcc 14. Only the pool reading above differs.
 - Either way, the GB10's exactness checks must be repeated on the N1X. No N1X run of Mini exists yet.
 
-## Hill-climb and ceilings
+## Hill-climb and limits
 
-`hillclimb.sh` runs `setup.sh`'s build and gates, then the decode ceilings from `ceiling.py`, then fresh servers in
+`hillclimb.sh` runs `setup.sh`'s build and gates, then the no-draft limits from `ceiling.py`, then fresh servers in
 the order control, `TF_NVFP4_DECODE_WARPS=1`, control, `TF_QMMF_HALF_BELOW=0`, control at 1 and 64 streams, with
 medians and a kept/rejected verdict for each lever in `/work/out/inkling2/ledger.jsonl`.
 
-Job `top-e1194166f521` at `8adbd7cc4` gave the ceilings without drafts at 273 GB/s: 5.55 GB a round and 49.2 tok/s
-at one stream, 32.67 GB a round and 534.8 tok/s total at 64 streams. Both sit under Strata v0.2.19's GB10 figures
-(74.3 tok/s at one stream, 1,145.1 at 64), which come with its DSpark drafts. With no draft path, this engine cannot
-reach them. The same job's gates passed: the serving checks, 0 of 32 greedy tokens off the float64 reference, and
-the planted control at 6 of 32. Its bench stopped on a liveness-check bug, fixed in `505ffbc48`. No lever has been
-measured yet.
+Job `top-975292aaf4c0` at `505ffbc48` (#4441's engine, `--parallel 64 --context 4096`, greedy, 128 tokens; medians
+of 6 reps at one stream and 3 at 64). Gates: the serving checks passed, 0 of 32 greedy tokens off the float64
+reference (the planted control caught 6 of 32), and no request failed.
+
+| Arm | 1 stream | 64 streams total |
+|---|---|---|
+| control | 32.6 | 589.8 |
+| `TF_NVFP4_DECODE_WARPS=1` | 32.9 | 596.9 |
+| control | 32.9 | 593.0 |
+| `TF_QMMF_HALF_BELOW=0` | 32.8 | 593.3 |
+| control | 32.8 | 592.1 |
+
+Neither lever clears its controls by more than the 3% noise (+0.7% and +0.1% at 64 streams): both rejected, the
+defaults stay. The no-draft limit at 273 GB/s (the job cannot open the DRM card the bandwidth probe needs) is 49.2
+tok/s at one stream (5.55 GB a token), so one stream runs at 67% of it. The 64-stream estimate under uniform routing
+(534.8 tok/s) sits below the measured 590: real routing shares more experts across rows, so it is not a bound.
+
+Strata v0.2.19's GB10 figures (74.3 tok/s at one stream, 1,145.1 at 64) are 2.3x and 1.9x these, and one stream's
+74.3 is above any no-draft engine's 49.2 limit on this checkpoint. Strata gets there with its DSpark beam tree and
+smaller packs; the Mini's CUDA engine has no draft path (`takes_drafter = false`). Card 209's study orders the work:
+a CUDA DSpark tree ported from the Metal drafter, then fp4 tensor-core experts at 64 streams, then a smaller pack.

@@ -1,8 +1,9 @@
-"""Inkling 2 Mini's decode ceiling on a bandwidth: python3 ceiling.py MODEL GBPS [STREAMS...].
+"""Inkling 2 Mini's no-draft decode limit on a bandwidth: python3 ceiling.py MODEL GBPS [STREAMS...].
 
 A round of N streams reads every non-expert weight once (the core layers once a pass, the unembedding whole, the
 embedding only a row each, left out) and, a visit, the experts any of its N rows routes to: under uniform routing a
-share 1 - (1 - k/E)^N of them. Total tok/s is N rows over that read time, with no drafts and no KV.
+share 1 - (1 - k/E)^N of them. Total tok/s is N rows over that read time, with no drafts and no KV. One stream's
+figure is a hard ceiling; past one, real routing overlaps more than uniform, so the figure is an estimate, not a bound.
 """
 import glob
 import json
@@ -38,4 +39,4 @@ if __name__ == "__main__":
     model, gbps = sys.argv[1], float(sys.argv[2])
     for n in map(int, sys.argv[3:] or ["1"]):
         b = round_bytes(model, n)
-        print(f"RESULT inkling2 mini ceiling {n} stream(s): {b / 1e9:.2f} GB a round, {n * gbps * 1e9 / b:.1f} tok/s total at {gbps:.0f} GB/s")
+        print(f"RESULT inkling2 mini no-draft limit {n} stream(s): {b / 1e9:.2f} GB a round, {n * gbps * 1e9 / b:.1f} tok/s total at {gbps:.0f} GB/s")

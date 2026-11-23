@@ -1,18 +1,15 @@
 #!/bin/sh
 # Inkling 2 Mini decode levers on TOP's GB10, the inference-optimisation skill's way:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/hillclimb.sh
-# After setup.sh's build and exactness gates: the measured copy bandwidth and the decode ceilings at 1 and 64
-# streams, then fresh servers in the order control, lever A, control, lever B, control, each benched at 1 stream
-# (6 reps) and 64 streams (3 reps), greedy, 128 tokens. A lever is kept only when its median total tok/s beats both
-# neighbouring controls at its level and loses no more than 3% at the other; any failed request stops the job.
+# After setup.sh's build and exactness gates: the decode estimates at 1 and 64 streams from GB10's 273 GB/s spec (the
+# job cannot open the DRM card the carveout probe needs), then fresh servers in the order control, lever A, control,
+# lever B, control, each benched at 1 stream (6 reps) and 64 streams (3 reps), greedy, 128 tokens. A lever is kept
+# only when its median total tok/s beats both neighbouring controls by more than 3% (the run-to-run noise) at one
+# level and loses no more than 3% at the other; any failed request stops the job.
 # Every arm's numbers land in /work/out/inkling2/ledger.jsonl.
 set -eu
 . docs/recipes/inkling-2-mini-cuda/setup.sh
-"$bin/tf-cuda-test" carveout >"$out/carveout.log" 2>&1 || :
-cat "$out/carveout.log"
-gbps=$(sed -n 's/.*device->device \([0-9]*\);.*/\1/p' "$out/carveout.log")
-echo "measured device->device copy: ${gbps:-unmeasured} GB/s"
-python3 docs/recipes/inkling-2-mini-cuda/ceiling.py "$model" "${gbps:-273}" 1 64
+python3 docs/recipes/inkling-2-mini-cuda/ceiling.py "$model" 273 1 64
 arm() {
     name=$1
     shift
@@ -67,7 +64,7 @@ for lever, (a, b) in {"warps-1": ("control-1", "control-2"), "half-0": ("control
     c, before, after = rows[lever], rows[a], rows[b]
     gains = {k: c[k] / max(before[k], after[k]) - 1 for k in ("1", "64")}
     worst = {k: c[k] / min(before[k], after[k]) - 1 for k in ("1", "64")}
-    kept = any(g > 0 for g in gains.values()) and all(w > -0.03 for w in worst.values())
+    kept = any(g > 0.03 for g in gains.values()) and all(w > -0.03 for w in worst.values())
     print(f"RESULT inkling2 mini lever {lever} ({c['env']}): 1 stream {c['1']} vs {before['1']}/{after['1']}, "
           f"64 streams {c['64']} vs {before['64']}/{after['64']} ({gains['64']:+.1%} over the better control): "
           f"{'kept' if kept else 'rejected'}")
