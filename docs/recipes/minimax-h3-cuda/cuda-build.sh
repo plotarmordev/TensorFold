@@ -12,7 +12,8 @@
 # H3_BUILD=limits builds the five SMs' images and kernel-contract-limits alone, no CLI or tf-cuda-test: the audit
 # as its own job, never inside a timed bench.
 # H3_BUILD=contract builds tf-cuda-test for sm_121 alone and runs gates 1-4 on the kernels H3_CONTRACT's
-# words name (`kernel-contract WORD...`, "h3 int8" unset): contract-job.sh asks for the decoder suite.
+# words name (`kernel-contract WORD...`, "h3 int8" unset), as H3_SHARDS processes side by side (unset: one), and
+# exits 1 when any does: contract-job.sh asks for the decoder suite.
 # Later TOP jobs read either folder from the pilot folder once the Desk returns it there:
 #   ssh top-menu "job fetch ID" | tar -x -C DIR
 #   tar -C DIR/out -c tensorfold-fatbins-SHA | ssh top-menu "put top tensorfold-fatbins-SHA"
@@ -53,7 +54,14 @@ if [ "${H3_BUILD:-}" = limits ]; then
 fi
 if [ "${H3_BUILD:-}" = contract ]; then
     zig build install fatbins kernel-contract-fatbins -Dsm=121 -Dnvcc=$nvcc -Doptimize=ReleaseFast --prefix /work/contract
-    exec /work/contract/bin/tf-cuda-test kernel-contract ${H3_CONTRACT:-h3 int8}
+    pids=
+    for i in $(seq "${H3_SHARDS:-1}"); do
+        /work/contract/bin/tf-cuda-test kernel-contract "$i/${H3_SHARDS:-1}" ${H3_CONTRACT:-h3 int8} &
+        pids="$pids $!"
+    done
+    status=0
+    for pid in $pids; do wait "$pid" || status=1; done
+    exit "$status"
 fi
 # -Dfatbins takes images holding the one SASS profile, so sm_121 is built apart from the audit's five SMs
 zig build fatbins tf-h3-image-prompt-cuda tf-h3-image-cuda tf-h3-image-decoder-cuda \

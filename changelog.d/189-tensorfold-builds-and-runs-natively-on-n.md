@@ -22,3 +22,5 @@
 - The kernel contract's `d3_cfg_mix` takes gate 1's five rows as more logits (it refused any row count but one, on
   every OS). `kernel-contract` prints its SUMMARY when a suite or gate 5 stops it too, marked "(stopped early)", and
   a COUNT line after each kernel; `zig build kernel-contract -Dcontract-only=WORD` runs the kernels so named.
+- `tf-cuda-test kernel-contract I/N [WORD...]` runs every N-th kernel and gate 5 launch, so N processes side by side
+  put a contract run on N cores (it was one thread: 2 h 40 min on the N1X); `contract-job.sh` runs its four on TOP.

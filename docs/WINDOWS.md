@@ -293,6 +293,11 @@ Since that run:
 - `kernel-contract` prints SUMMARY when a suite or gate 5 stops it too, marked "(stopped early)", and a COUNT line
   after each kernel. `zig build kernel-contract -Dcontract-only=WORD` (repeatable) passes the words
   `tf-cuda-test kernel-contract WORD...` already took: the kernels and launches so named, without the suites.
+- `tf-cuda-test kernel-contract I/N [WORD...]` runs every N-th of those kernels and launches, so N processes started
+  side by side cover a run once on N cores. Each prints its own COUNT lines and a SUMMARY marked "(shard I/N)"; the
+  first also runs what is not divided (the suites and the offline audit, on a run with no words). The run passes
+  when every shard exits 0. `zig build` runs its Run steps one at a time, so the caller starts the processes
+  (`docs/recipes/minimax-h3-cuda/cuda-build.sh` does, for `H3_SHARDS`).
 
 On TOP's GB10 (sm_121, Linux, nvcc 13.0) at `03e9b18df`, `kernel-contract h3d h3p d3_cfg_mix` passes gates 1-4 on
 all 27 kernels: `d3_cfg_mix` "3 non-finite and 20482 finite outputs match the float64 classes", with a COUNT line
@@ -328,10 +333,15 @@ needs:
    registers", is the planted control `tf_ctl_heavy`, red as planted and not counted. Which of the 1013 are launches
    that do not fit and which are stale records takes the laptop's log: fix the first, and give the second a record
    keyed to that nvcc and host target from the run's own figures. Do not copy older Linux figures or guess values.
+   Two parts of the 1013 need no laptop: the offline audit, which a full run adds on any OS, counts 203 problems
+   over the 1755 records at this branch's head, and 172 of the 1748 launches live on sm_121 have no recorded
+   registers for an nvcc 13.5 image (99 for 13.3, 7 for 13.0), which gate 5 counts as it did `d3_cfg_mix` on TOP.
 8. Three of 844 kernels fail gates 1-4 at `2d0a39ce3`. `d3_cfg_mix` was the test's (above); the receipt does not
    name the other two. Its other FAIL lines are of kernels with a declared known finding, which print FAIL
    and then KNOWN on every OS: qwen35 decode attention ("a NaN key in one of a row's several chunks leaves the row
    finite", bf16 and fp8 cache, MT2) and `tf_glm_scores` ("relu is fmaxf(x, 0) ... a NaN dot scores 0 where float64
    keeps the NaN"). Making those propagate NaN changes served kernels on every OS, which this card did not do.
-9. The contract on every core. It is one thread and one CUDA stream, and the words filter only after every kernel's
-   fixture is built, so a full run cannot fit a short laptop window; `-Dcontract-only` runs one family at a time.
+9. A full contract inside a laptop window. It is one thread and one CUDA stream a process, so shards (above) are
+   how it uses more cores, but the words and the shard filter only after every kernel's fixture is built: each
+   process pays that build and holds its GPU memory, which N processes multiply. Run one family at a time
+   (`kernel-contract I/N WORD`), and raise N only while the 40 GiB CUDA share holds.
