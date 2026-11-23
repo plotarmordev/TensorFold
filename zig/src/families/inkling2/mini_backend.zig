@@ -1,6 +1,6 @@
 //! Inkling 2 Mini behind lanes.Backend: a cache slot a stream (48 visit slots), a prompt chunk a step, one forward
-//! a round of one-row windows over every stream. No draft head yet (C5) and no copy drafts: a conv state has no
-//! rollback here, so every window keeps all its rows.
+//! a round of windows over every stream. Drafted windows save exact conv inputs and their pre-window states so a
+//! rejected suffix can be undone; positional K/V rows are simply overwritten by the next accepted window.
 const std = @import("std");
 const cuda = @import("cuda");
 const lanes = @import("lanes");
@@ -68,6 +68,7 @@ const Lane = struct {
     slot: usize,
     len: u64 = 0, // positions [0, len) hold this stream's keys and its conv states are at len
     base: u64 = 0, // the length the last verify started from
+    row0: usize = 0, // the last verify's first row in the shared conv histories
     rows: std.ArrayList(u32) = .empty, // the last verify's row tokens
     last: u64, // the prompt's last row's fp32 logits (the first draw reads them)
     rule: u64, // sample.cu's Rule, when the stream samples
@@ -349,6 +350,7 @@ pub const Mini = struct {
         var at: usize = 0;
         for (windows, 0..) |w, i| {
             const l = x.lanes.getPtr(w.stream).?;
+            l.row0 = at;
             try x.drawRows(l, x.m.s.logits, at, l.rows.items.len, w.positions[0], ring + at, i);
             at += l.rows.items.len;
         }
@@ -366,13 +368,16 @@ pub const Mini = struct {
         }
     }
 
-    /// Every window keeps all its rows: the conv states hold no history to roll back to (no drafts are offered).
+    /// Keep a nonempty identity prefix. A fully kept window needs no work; a rejected suffix restores every
+    /// conv site from its pre-window backup and exact input history, then the next window overwrites K/V rows.
     fn keep(ptr: *anyopaque, windows: []const be.Window, paths: []const []const u32) anyerror!void {
         const x = self(ptr);
         for (windows, paths) |w, path| {
             const l = x.lanes.getPtr(w.stream) orelse return error.UnknownStream;
-            if (path.len != l.rows.items.len) return error.Inkling2MiniNoRollback;
-            for (path, 0..) |r, i| if (r != i) return error.ChainsOnly;
+            if (path.len == 0 or path.len > l.rows.items.len) return error.EmptyPath;
+            for (path, 0..) |r, j| if (r != j) return error.ChainsOnly;
+            if (path.len < l.rows.items.len) try x.m.rewind(x.k, x.s, l.slot, l.row0, path.len);
+            l.len = l.base + path.len;
         }
     }
 
