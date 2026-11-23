@@ -31,18 +31,29 @@ Bandwidth limit: a decoded token reads about 5.55 GB of weights (core layers 3 p
 whole unembedding), so 273 GB/s caps one stream near 49 tok/s; 32.5 tok/s is 66% of it. #4387's own engine, removed
 here, gave 5.7 tok/s at one stream and 9.4 at four on the same GB10 (job `top-0759755a0515`).
 
-## RTX Spark (N1X): what differs and what must change
+## RTX Spark (N1X): native Windows ARM64 on Net's laptop
 
-I see the same chip and memory model as the GB10: sm_121 and one unified pool, so the `-Dsm=121` kernel images are
-the same. What differs is the host. RTX Spark runs Windows on Arm, with WSL2 as the
-Linux route. From #1010 (`5b1f10812`) and #2107:
+`n1x-run.ps1` runs the same checkpoint (`C:\models\Inkling-2-Mini-ed40e7da62`) on the laptop through its Codync bot
+`codync@rtx-spark`, relayed by the Desk, one step a run, each under 10 minutes. It installs and downloads nothing; the
+laptop has PowerShell but no Python or WSL, so the 1/4-stream client is the script's own, not `bench_concurrent.py`.
 
-- Native Windows builds as `aarch64-windows` with VS 2022 Build Tools' ARM64 C++ tools (`vcvarsall arm64`) as nvcc's
-  host compiler and the CUDA 13.4 `windows-arm64` redistributables (winget has no arm64 installer). Admission reads the
-  WDDM pool through `cuMemGetInfo_v2`, and `nvidia-smi`'s NPU row is filtered out.
-- Under WSL2 `/proc/meminfo` is WSL's RAM (about 30 GiB of 128 GB), not the GPU's 96 GB WDDM pool; with
-  `WSL_DISTRO_NAME` set, admission reads the CUDA pool instead (`TENSORFOLD_UNIFIED_HOST_COUNTS` overrides it).
-- For Mini on native Windows, I need the Inkling CUDA kernels compiled with MSVC as nvcc's host front end (only gcc 14
-  has built them so far) and one load of the 18.9 GiB single-shard checkpoint through Windows' threaded reads.
-- For Mini under WSL2, I need neither: it is the Linux build with gcc 14. Only the pool reading above differs.
-- Either way, the GB10's exactness checks must be repeated on the N1X. No N1X run of Mini exists yet.
+1. `-Step build`: `zig build install native -Dsm=121 -Doptimize=ReleaseFast` with the CUDA 13.5 `windows-arm64` nvcc and
+   `cl.exe` arm64 (`vcvarsall arm64`). 189's Windows fixes are on this branch (`__noinline__` in `glm_index_rope.cuh`,
+   `/wd4819`, POSIX file modes and COM `@alignCast` in the server, no `tf-muse`). A clean build took 530-629 s there.
+2. `-Step check`: 188's GB10 checks unchanged, so the laptop's output is held to the host reference the same way:
+   `kernel-contract "inkling2 loop"`, `inkling2-serving`, `inkling2-mini-ref` (32 greedy tokens equal to the float64
+   reference) and its planted control, which must go red.
+3. `-Step serve`: one server at `--parallel 4 --context 8192`, greedy 256-token streams at 1 and 4, first token and
+   decode a stream, total decode, ready time, and the peak of the WDDM pool (`nvidia-smi memory.used`, sampled while
+   decoding) and the server's working set.
+
+What differs from the GB10 and is not copied from it:
+
+- Memory is the WDDM pool the firmware gives CUDA (51,816 MiB on this laptop), not `/proc/meminfo`; admission reads it
+  through `cuMemGetInfo_v2`. The 20 GB checkpoint leaves about 20 GiB of it for the cache and four streams.
+- The power cap (42-49 W at about 2.1 GHz in HP Performance mode, near 1.4 GHz in power saving, from the 2026-11-04
+  receipt in [WINDOWS.md](../../WINDOWS.md)) bounds decode, so each run prints the power plan, limit and SM clock.
+- The bandwidth limit uses the laptop's own measured rate, not GB10's 273 GB/s.
+
+No laptop run of this branch has returned yet: the receipt (exact commands, exit codes, 1/4-stream tok/s, first-token
+time, peak memory) and any N1X tuning wait on the Desk's relay to `codync@rtx-spark`.
