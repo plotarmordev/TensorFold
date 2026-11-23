@@ -10,8 +10,9 @@ link() {
         echo "move the existing $1 out of the checkout first" >&2
         exit 1
     fi
-    # -n: a concurrent run's fresh link is not followed, so no link lands inside the target.
-    [ -L "$root/$1" ] || ln -sn "$2" "$root/$1" 2>/dev/null || true
+    # -n: a concurrent run's fresh link is not followed, so no link lands inside the target;
+    # a lost race leaves that link, any other failure is retried to show ln's own error.
+    [ -L "$root/$1" ] || ln -sn "$2" "$root/$1" 2>/dev/null || [ -L "$root/$1" ] || ln -sn "$2" "$root/$1"
     [ "$(readlink "$root/$1")" = "$2" ] || { echo "different $1 link already exists" >&2; exit 1; }
 }
 link .zig-cache "$cache"

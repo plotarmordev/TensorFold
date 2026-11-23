@@ -2,7 +2,7 @@
 set -eu
 : "${ZIG:?set ZIG to the installed pinned 0.17.0 compiler}"
 [ "$($ZIG version)" = "0.17.0" ]
-bf16_topk_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+bf16_topk_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 cd "$bf16_topk_root"
 bf16_topk_sdk=$(xcrun --sdk macosx --show-sdk-path)
 ZIG_LOCAL_CACHE_DIR=$(python3 tools/zig/outside_checkout.py "$bf16_topk_root" "${ZIG_LOCAL_CACHE_DIR:-$HOME/.cache/tensorfold/zig}")

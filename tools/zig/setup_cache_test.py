@@ -125,7 +125,7 @@ class SetupCacheTests(unittest.TestCase):
         root = self.checkout("card")
         home = self.work / "home"
         home.mkdir()
-        env = {key: value for key, value in self.stubs().items() if key not in ("ZIG_LOCAL_CACHE_DIR", "ZIG_GLOBAL_CACHE_DIR")}
+        env = {key: value for key, value in self.stubs().items() if key not in ("ZIG_LOCAL_CACHE_DIR", "ZIG_GLOBAL_CACHE_DIR", "PYTHONDONTWRITEBYTECODE")}
         env["HOME"] = str(home)
         *builds, package = self.entry_points(root, env)
         for result in builds:
@@ -135,6 +135,7 @@ class SetupCacheTests(unittest.TestCase):
         self.assertEqual(len(list(cache.glob("checkouts/*/tf-*"))), len(TOOLS))
         self.assertEqual(len(list(cache.glob("package-repeat-*"))), 1)
         self.assertEqual(list(root.iterdir()), [root / "tools"])
+        self.assertEqual(list(root.rglob("*.pyc")), [])
 
     def test_plain_build_from_a_clean_checkout_writes_only_outside_it(self):
         zig = os.environ.get("ZIG") or shutil.which("zig")

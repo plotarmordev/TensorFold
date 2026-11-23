@@ -2,7 +2,7 @@
 set -eu
 : "${ZIG:?set ZIG to the installed pinned 0.17.0 compiler}"
 [ "$($ZIG version)" = "0.17.0" ]
-draft_ops_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+draft_ops_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 cd "$draft_ops_root"
 draft_ops_sdk=$(xcrun --sdk macosx --show-sdk-path)
 ZIG_LOCAL_CACHE_DIR=$(python3 tools/zig/outside_checkout.py "$draft_ops_root" "${ZIG_LOCAL_CACHE_DIR:-$HOME/.cache/tensorfold/zig}")
