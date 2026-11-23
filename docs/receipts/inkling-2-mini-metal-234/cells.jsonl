@@ -46,3 +46,9 @@
 {"label": "omlx-2", "prompt": "chat", "streams": 1, "aggregate_tps": 24.8, "reps": [23.5, 24.8, 40.0], "failed": 0, "unmeasured": 0, "tokens_per_round": 5.02, "round_gap_p50_ms": 172.387}
 {"label": "omlx-2", "prompt": "chat", "streams": 4, "aggregate_tps": 35.6, "reps": [43.2, 35.6, 26.1], "failed": 0, "unmeasured": 0, "tokens_per_round": 2.004, "round_gap_p50_ms": 165.604}
 {"label": "omlx-2", "prompt": "chat", "streams": 64, "aggregate_tps": 203.3, "reps": [157.0, 206.6, 203.3], "failed": 0, "unmeasured": 0, "tokens_per_round": 1.796, "round_gap_p50_ms": 215.899}
+{"label": "tensorfold64", "prompt": "code", "streams": 1, "aggregate_tps": 115.4, "reps": [96.5, 117.7, 115.4], "failed": 0, "unmeasured": 0, "tokens_per_round": 3.368, "round_gap_p50_ms": 29.145}
+{"label": "tensorfold64", "prompt": "code", "streams": 4, "aggregate_tps": 239.8, "reps": [239.8, 273.5, 194.3], "failed": 0, "unmeasured": 0, "tokens_per_round": 2.813, "round_gap_p50_ms": 39.687}
+{"label": "tensorfold64", "prompt": "code", "streams": 64, "aggregate_tps": 399.1, "reps": [456.4, 399.1, 309.3], "failed": 0, "unmeasured": 0, "tokens_per_round": 1.0, "round_gap_p50_ms": 121.998}
+{"label": "tensorfold64", "prompt": "chat", "streams": 1, "aggregate_tps": 90.2, "reps": [89.5, 90.2, 91.5], "failed": 0, "unmeasured": 0, "tokens_per_round": 2.438, "round_gap_p50_ms": 28.002}
+{"label": "tensorfold64", "prompt": "chat", "streams": 4, "aggregate_tps": 221.8, "reps": [221.8, 186.3, 224.1], "failed": 0, "unmeasured": 0, "tokens_per_round": 2.327, "round_gap_p50_ms": 39.692}
+{"label": "tensorfold64", "prompt": "chat", "streams": 64, "aggregate_tps": 306.6, "reps": [229.4, 306.6, 311.2], "failed": 0, "unmeasured": 0, "tokens_per_round": 1.02, "round_gap_p50_ms": 163.319}
