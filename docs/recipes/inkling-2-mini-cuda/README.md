@@ -34,12 +34,14 @@ here, gave 5.7 tok/s at one stream and 9.4 at four on the same GB10 (job `top-07
 ## RTX Spark (N1X): native Windows ARM64 on Net's laptop
 
 `n1x-run.ps1` runs the same checkpoint (`C:\models\Inkling-2-Mini-ed40e7da62`) on the laptop through its Codync bot
-`codync@rtx-spark`, relayed by the Desk, one step a run, each under 10 minutes. It installs and downloads nothing; the
-laptop has PowerShell but no Python or WSL, so the 1/4-stream client is the script's own, not `bench_concurrent.py`.
+`codync@rtx-spark`, relayed by the Desk, one step a run; check and serve stop well inside 10 minutes. It installs and
+downloads nothing; the laptop has PowerShell but no Python or WSL, so the 1/4-stream client is the script's own, not
+`bench_concurrent.py`.
 
 1. `-Step build`: `zig build install native -Dsm=121 -Doptimize=ReleaseFast` with the CUDA 13.5 `windows-arm64` nvcc and
    `cl.exe` arm64 (`vcvarsall arm64`). 189's Windows fixes are on this branch (`__noinline__` in `glm_index_rope.cuh`,
-   `/wd4819`, POSIX file modes and COM `@alignCast` in the server, no `tf-muse`). A clean build took 530-629 s there.
+   `/wd4819`, POSIX file modes and COM `@alignCast` in the server, no `tf-muse`). A clean build took 647 s there; a
+   rebuild after a pull reuses the cache.
 2. `-Step check`: 188's GB10 checks unchanged, so the laptop's output is held to the host reference the same way:
    `kernel-contract "inkling2 loop"`, `inkling2-serving`, `inkling2-mini-ref` (32 greedy tokens equal to the float64
    reference) and its planted control, which must go red.
@@ -49,11 +51,16 @@ laptop has PowerShell but no Python or WSL, so the 1/4-stream client is the scri
 
 What differs from the GB10 and is not copied from it:
 
+- `nvidia-smi` there also lists an NVIDIA NPU, so the script finds the N1X by name and queries only its index;
+  `memory.used` over every device gave an array and stopped run 1's serve step.
 - Memory is the WDDM pool the firmware gives CUDA (51,816 MiB on this laptop), not `/proc/meminfo`; admission reads it
   through `cuMemGetInfo_v2`. The 20 GB checkpoint leaves about 20 GiB of it for the cache and four streams.
 - The power cap (42-49 W at about 2.1 GHz in HP Performance mode, near 1.4 GHz in power saving, from the 2026-11-04
   receipt in [WINDOWS.md](../../WINDOWS.md)) bounds decode, so each run prints the power plan, limit and SM clock.
 - The bandwidth limit uses the laptop's own measured rate, not GB10's 273 GB/s.
 
-No laptop run of this branch has returned yet: the receipt (exact commands, exit codes, 1/4-stream tok/s, first-token
-time, peak memory) and any N1X tuning wait on the Desk's relay to `codync@rtx-spark`.
+Run 1 at `b2ddc3de` (clean tree): build exit 0 in 647 s; check: `kernel-contract "inkling2 loop"` 5/5 pass with both
+controls red, `inkling2-serving` 3/3 pass (resumed equals fresh), `inkling2-mini-ref` 0 of 32 tokens differ (smallest
+margin 0.110, 224.7 s), the planted control 6 of 32 differ; serve: ready in 55.3 s (19.82 GiB, 4 streams, 16 GiB prompt
+cache, WDDM pool 2.7 to 23.3 GiB), first completion 200, then the NPU row above stopped the script before any tok/s.
+The 1/4-stream receipt waits on run 2.
