@@ -6,8 +6,10 @@
 # installed: its built-in `--bench` (DSpark drafting as the engine defaults it) at 1, 4 and 64 streams, 256 generated
 # tokens each, then `--selfcheck`. Logs land in /work/out/strata-inkling; the `[bench]` lines go to stdout.
 # The binary needs glibc 2.38 and GLIBCXX 3.4.32, newer than the job image's, so it runs under the loader, glibc and
-# libstdc++ of Arm's GNU 14.3 toolchain that the Desk staged for cuda-build.sh, unpacked in /work.
+# libstdc++ of Arm's GNU 14.3 toolchain that the Desk staged for cuda-build.sh, unpacked in /work. Setup (checksums,
+# unpack) logs its own "setup: N s"; only the measurement runs under `timeout 600` and logs "measure: N s".
 set -eu
+start=$(date +%s)
 dir=/assets/drama3-pilot/strata-inkling-pack
 pack=$dir/Inkling-2-Mini-SQ-10.strata
 engine=$(find "$dir" -name strata-inkling -type f | head -1)
@@ -30,16 +32,24 @@ loader=$(find "/work/$gcc" -name ld-linux-aarch64.so.1 | head -1)
 libc=$(dirname "$(find "/work/$gcc" -name libc.so.6 | head -1)")
 libstdcxx=$(dirname "$(find "/work/$gcc" -name libstdc++.so.6 | head -1)")
 libs=$engine_dir:$libc:$libstdcxx:/usr/lib/aarch64-linux-gnu
-strata() { "$loader" --library-path "$libs" "$engine" "$@"; }
 mkdir -p "$out"
-nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
-strata --version
+echo "setup: $(($(date +%s) - start)) s"
+export loader libs engine pack out
+start=$(date +%s)
 status=0
-for streams in 1 4 64; do
-    strata --bench --native "$pack" --parallel "$streams" --gen 256 \
-        >"$out/bench-$streams.log" 2>&1 || status=$?
-    grep '^\[bench\]' "$out/bench-$streams.log" || { tail -20 "$out/bench-$streams.log"; status=1; }
-done
-strata --selfcheck --native "$pack" >"$out/selfcheck.log" 2>&1 || status=$?
-tail -5 "$out/selfcheck.log"
+timeout 600 sh -eu -c '
+    strata() { "$loader" --library-path "$libs" "$engine" "$@"; }
+    nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
+    strata --version
+    status=0
+    for streams in 1 4 64; do
+        strata --bench --native "$pack" --parallel "$streams" --gen 256 \
+            >"$out/bench-$streams.log" 2>&1 || status=$?
+        grep "^\[bench\]" "$out/bench-$streams.log" || { tail -20 "$out/bench-$streams.log"; status=1; }
+    done
+    strata --selfcheck --native "$pack" >"$out/selfcheck.log" 2>&1 || status=$?
+    tail -5 "$out/selfcheck.log"
+    exit "$status"
+' || status=$?
+echo "measure: $(($(date +%s) - start)) s"
 exit "$status"

@@ -73,8 +73,11 @@ TensorFold: the config parses Mini's MTP head and `names.zig` maps every tensor 
 (`inkling2_loop`) has no draft path. Elsewhere TensorFold drafts on GPU with chains by default and opt-in trees
 (`zig/src/families/qwen3_5/cuda_mtp_tree.zig`, `zig/src/families/deepseek_v41/draft/tree.zig`).
 
-Would touch: a new `zig/src/families/inkling2/dspark.zig` behind `zig/src/core/lanes/drafter.zig`, and a new
-`zig/kernels/cuda/inkling2/dspark.cu`, ported from the Metal kernels.
+Would touch: a new `zig/src/families/inkling2/dspark.zig` behind `zig/src/core/lanes/drafter.zig` and a new
+`zig/kernels/cuda/inkling2/dspark.cu`. Only the proposal block can follow the Metal kernels: 188's Metal drafter is
+chain-only (`metal/dspark.zig` `absorbFn` returns `TreesNotBuilt` for tree rows), and Mini's CUDA verify takes chains
+only (`mini_backend.zig` `verify`: `ChainsOnly`, `StructuresUnsupported`, `NoHeldDrafts`; `mini_model.zig` `Chain`).
+The beam tree is new work, listed under follow-up 2.
 Gain: unmeasured separately. The 1.36× residual solo gap after the SQ-10 byte ratio includes both drafting and
 roof utilisation (Strata's 74.4 tok/s with drafting versus TensorFold's 32.5 without); neither component is
 identified without a Strata `--draft off` control at the same pack and prompt. No multi-stream drafting gain:
@@ -127,7 +130,8 @@ Strata: `.strata` v1.1 (`engine/include/strata/artifact/strata_reader.hpp`) has 
 with the drafter, an expert directory with per-expert codecs (`WFmt`: S1_25…S8_K, SF4, MX8, Q8_ROW) and 4 KiB-aligned
 expert bodies in kernel byte order. It is read with `fread` into 64 MiB pinned chunks (no mmap), loop-weighted experts
 first. SQ-N is the pack's size in GB for Inkling: SQ-20 is lossless SF4/MX8, SQ-15 has 96.68% top-1 and SQ-10 has
-92.35% (`terminal/strata_control/inkling_fit.py`).
+92.35% on test prompts ("How close is it to the original?" on the pack card,
+[strata-engine/Inkling-2-Mini-Strata](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata)).
 
 TensorFold: broad formats (EXL3, MLX affine 2–8 bit, pre-swizzled NVFP4 in `zig/src/cuda/nvfp4.zig`), but Mini loads
 its checkpoint as stored, with a bf16 trunk.
@@ -208,11 +212,13 @@ lever:
   [issue #4579, "ARM64 Windows (RTX Spark)"](https://github.com/Niko1221/Strata/issues/4579), is open.
 - The only Strata build on the N1X is a community fork,
   [strata-n1x-Zackyzq](https://github.com/zackyangzeqi-spec/strata-n1x-Zackyzq), for DeepSeek-V4.1-Flash, not Inkling.
-- An Inkling-capable Windows ARM64 CUDA build does ship: llama.cpp pre-release
-  [b12406](https://github.com/ggml-org/llama.cpp/releases/tag/b12406) adds Inkling 2 (text and vision) and publishes
-  `llama-b12406-bin-win-cuda-13.5-arm64.zip`. Its converter dequantizes the packed NVFP4/MXFP8 experts, and its notes
-  say real-checkpoint conversion is untested; it carries none of Strata's levers, and no N1X tok/s for it is known
-  here.
+- Inkling 2 Mini runs on a shipped Windows ARM64 CUDA build: llama.cpp pre-release
+  [b12600](https://github.com/ggml-org/llama.cpp/releases/tag/b12600) adds Mini (`model : Inkling 2 Mini`, #32694;
+  [b12406](https://github.com/ggml-org/llama.cpp/releases/tag/b12406) was the full Inkling 2 only), and
+  [b12611](https://github.com/ggml-org/llama.cpp/releases/tag/b12611)
+  ([#32704](https://github.com/ggml-org/llama.cpp/pull/32704)) fixes Mini's looped NVFP4 expert scales, so b12611
+  or later is the first Mini-correct one for NVFP4-scaled GGUFs. Both publish `win-cuda-13.5-arm64`. It carries none
+  of Strata's levers, and no N1X tok/s for it is known here.
 - TensorFold's own Mini engine builds and passes its checks natively on the N1X, unmerged: card 243's laptop run 1 at
   `b2ddc3de` (`docs/recipes/inkling-2-mini-cuda/README.md` on `feat/243-inkling-2-mini-runs-on-net-s-rtx-spark-l`)
   gives build exit 0, `inkling2-serving` 3/3 and `inkling2-mini-ref` 0 of 32 tokens differing; its serve step stopped
@@ -228,9 +234,15 @@ For 207 (GB10):
 1. **A quantised trunk (a TensorFold pack).** Pack the bf16 attention to 8-bit rows and the experts below 4 bits,
    gated on top-1/KL against the checkpoint. Touches `mini_model.zig` and `zig/src/cuda/nvfp4.zig`. Gain: a roof from
    49 to ≈83 tok/s (the bytes ratio, 1.69× of the measured 2.29× solo gap), at every stream count.
-2. **CUDA DSpark beam tree for Mini.** Port 188's Metal DSpark to CUDA with W ≤ 4, adaptive tree nodes, one verify
-   sweep and on-device commit, under the conformance ledger's tree = chain = plain rule. Touches new
-   `zig/src/families/inkling2/dspark.zig` and `zig/kernels/cuda/inkling2/dspark.cu`. Gain: unmeasured; the
+2. **CUDA DSpark beam tree for Mini.** No tree exists to port: 188's Metal DSpark and Mini's CUDA verify are both
+   chain-only. Build (a) the CUDA proposal block from the Metal kernels as a chain drafter first, then (b) a W ≤ 4 beam
+   tree on device: per-step top-W expansion over the block's logits, node selection by expected emits against the
+   expert-union cost (Strata's `draft_beam_tree`), held as `drafter.zig`'s tree (`Absorb.rows`, held drafts and
+   parents). Contracts to change: `mini_backend.zig` `verify` must accept `parents`, masks and held drafts instead of
+   refusing them; `mini_model.zig` `Chain` / `forward` and `mini_visit.zig` `Rows.stage` need per-row parents and a
+   tree attention mask (positions by depth); the short-conv and KV state must commit only the accepted path (Strata's
+   `k_ink_commit_kv_all48` / `k_ink_commit_sconv_all48`); `metal/dspark.zig` drops `TreesNotBuilt` once Metal follows.
+   All under the conformance ledger's tree = chain = plain rule. Gain: unmeasured; the
    residual 1.36× solo ratio after the pack-byte ceiling is shared with weight-read utilisation (30.7 ms versus a
    ≈20 ms floor), not a measured or hard upper bound on drafting. Strata `--draft off` at the same pack and bench
    is required to isolate it; no drafting gain at 4 streams.
@@ -253,4 +265,4 @@ For 202 (RTX Spark laptop, Windows-native, N1X-tuned):
 3. **Bring 207's grouped-fp4 experts and 64-lane path to N1X, then tune.** Measure the M ≥ 24 tensor-core crossover,
    the WDDM pool's resident stream count, and tree size by acceptance and bytes per emitted token. Gain: unmeasured
    at laptop batch sizes; the GB10 64-stream receipts use different workloads and provide no transferable multiplier.
-   This is what no shipped Windows ARM64 Inkling build (Strata's absent one, llama.cpp b12406's) carries.
+   This is what no shipped Windows ARM64 Inkling build (Strata's absent one, llama.cpp b12611's) carries.
