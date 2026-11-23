@@ -44,18 +44,23 @@ fn encode(queue: mtl.Queue, cache: *const state.Cache, snap_buf: mtl.Buffer, sna
     var at: usize = 0;
     const len = if (snap) |image| image.at else cache.len;
     for (0..state.visit_slots) |slot| {
-        const live = if (cache.globals[slot]) len else @min(len, cache.ring(slot));
-        const n = live * state.kv_width * 2;
-        if (n != 0) if (snap) |image| {
-            e.copy(image.buf, at, cache.kv, cache.key_at[slot], n);
+        const ring = cache.ring(slot);
+        const live = if (cache.globals[slot]) len else @min(len, ring);
+        const head_stride = ring * 128 * 2;
+        const n = live * 128 * 2;
+        if (n != 0) for (0..8) |h| {
+            const off = h * head_stride;
+            if (snap) |image| {
+                e.copy(image.buf, at, cache.kv, cache.key_at[slot] + off, n);
+                at += n;
+                e.copy(image.buf, at, cache.kv, cache.value_at[slot] + off, n);
+            } else {
+                e.copy(cache.kv, cache.key_at[slot] + off, snap_buf, at, n);
+                at += n;
+                e.copy(cache.kv, cache.value_at[slot] + off, snap_buf, at, n);
+            }
             at += n;
-            e.copy(image.buf, at, cache.kv, cache.value_at[slot], n);
-        } else {
-            e.copy(cache.kv, cache.key_at[slot], snap_buf, at, n);
-            at += n;
-            e.copy(cache.kv, cache.value_at[slot], snap_buf, at, n);
         };
-        at += n;
     }
     if (snap) |image| e.copy(image.buf, at, cache.conv, 0, state.conv_bytes) else e.copy(cache.conv, 0, snap_buf, at, state.conv_bytes);
     e.end();
