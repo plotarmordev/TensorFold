@@ -694,10 +694,11 @@ on earlier heads, lost on every shape and is gone.
 
 The kernel-contract entries live in `contract_h3_int8.zig`. `cuda h3 int8 tma product h3_gemm_int8_tma`
 compares every output against the float64 formula, covering classes at the planted NaN row scale and infinite
-column scale, and values within the bound at four served shapes including `qkvc`'s real fan-out. `cuda h3 int8
-tma swiglu` runs fc1's served path (`h3_swiglu_rows` then `h3_swiglu_int8_tma`) and must match the plain product
-followed by `h3_swiglu` byte for byte, up to `fc1`'s real shape. The planted control launches the plain product at
-N = 392, a width cuBLASLt accepted, and must fail gate 3 on the columns the whole-tile grid leaves unwritten.
+column scale, and values within the bound at six served shapes including `qkvc`'s real fan-out and two partial
+last column tiles (16 × 392 × 128 and 300 × 1,352 × 256). `cuda h3 int8 tma swiglu` runs fc1's served path
+(`h3_swiglu_rows` then `h3_swiglu_int8_tma`) and must match the plain product followed by `h3_swiglu` byte for
+byte at four served shapes, a partial feature tile (300 × 776 × 256) and `fc1`'s real shape among them. Both
+sweep N in steps of 8. `check-204.sh` shows main's whole-tile grid failing each partial-tile shape on its own.
 
 The picture A/B is `bench-146-ab.sh` at `1a354cc9`, after card 145 merged (job `top-0c0de4c93177`, 21 November,
 exit 0, `H3_PROFILE=1`). Main is re-measured in the same job by reverse-applying `bench-146-base.patch`. Each

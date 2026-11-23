@@ -245,6 +245,7 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
         .swiglu => &.{
             .{ .rows = 16, .n = 256, .k = 128 }, // one feature tile
             .{ .rows = 300, .n = 512, .k = 256 }, // a partial M tile, two tiles and K blocks
+            .{ .rows = 300, .n = 776, .k = 256 }, // an 8-row (4-feature) edge tile past partial M and two K blocks
             .{ .rows = 256, .n = 2 * mlp, .k = hidden }, // fc1's real fan-out
         },
     };
@@ -258,10 +259,10 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
         .ops = 3,
         .out = .bf16,
         .nan = .{ .stated = "a nonfinite row or column scale reaches every output it multiplies, as h3_dequantize's did" },
+        // n % 8: a lane's eight output columns are one 16-byte store (SwiGLU's four features, one 8-byte store)
         .tiles = switch (mode) {
-            // n % 8: a lane's eight output columns are one 16-byte store
             .plain => .{ .{}, .{ .size = 128, .step = 8, .min = 8 }, .{ .size = 128, .step = 128, .min = 128 } },
-            .swiglu => .{ .{}, .{ .size = 256, .step = 256, .min = 256 }, .{ .size = 128, .step = 128, .min = 128 } },
+            .swiglu => .{ .{}, .{ .size = 256, .step = 8, .min = 8 }, .{ .size = 128, .step = 128, .min = 128 } },
         },
         .served = served,
         .replaces = if (mode == .swiglu) "h3_gemm_int8_tma then h3_swiglu" else null,
@@ -302,11 +303,7 @@ pub const GemmTma = struct {
     }
 
     pub fn prepare(t: *GemmTma, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
-        const width: usize = switch (t.mode) {
-            .plain => 8,
-            .swiglu => 256,
-        };
-        if (shape.k % 128 != 0 or shape.n % width != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
+        if (shape.k % 128 != 0 or shape.n % 8 != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
         t.rig.reset();
         _ = t.arena.reset(.retain_capacity);
         t.shape = shape;
