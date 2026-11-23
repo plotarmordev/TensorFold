@@ -293,7 +293,7 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
 // addresses stay in parameter space — a by-value copy would land in local space, which
 // cp.async.bulk.tensor refuses. N is a multiple of 8 (a lane's eight columns are one store); the
 // last column tile may be partial: TMA zero-fills its weight rows past n and its lanes past n skip
-// the epilogue.
+// the store.
 // GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
 // ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
 // fp32 rows are written unrounded. Its epilogue has no edge tile: N a multiple of BLOCK_N.
@@ -391,10 +391,8 @@ __device__ __forceinline__ void
         }
         #pragma unroll
         for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
-            const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
-            if (column >= n) {
-                continue; // the edge tile's lanes past n: their weight rows were zero-filled, their scales are not there
-            }
+            // An edge tile's lanes past n read the last scales (their sums are TMA's zero fill), never stored.
+            const int column = min(tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8, n - 8);
             #pragma unroll
             for (int slot = 0; slot < 4; slot++) {
                 const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
@@ -414,9 +412,6 @@ __device__ __forceinline__ void
         #pragma unroll
         for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
             const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
-            if (column >= n) {
-                continue;
-            }
             #pragma unroll
             for (int m_tile = 0; m_tile < Config::m_tiles; m_tile++) {
                 #pragma unroll
@@ -444,7 +439,7 @@ __device__ __forceinline__ void
                         words[3] = swapped;
                     }
                     const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
-                    if (row < m) {
+                    if (row < m && column < n) {
                         if constexpr (SWIGLU) {
                             // The lane's eight columns hold the (gate, up) pairs of features
                             // column / 2 to column / 2 + 3 (the weights' rows interleave pairwise).
