@@ -5,9 +5,10 @@
 # (tools/bench_concurrent.py), at 1, 4 and 64 streams, medians of 3. The receipt counts only if SQ-10 at 64 lands
 # within 10% of the 805.8 tok/s of Strata's pack card; the last line says which.
 # The job has no network. The Desk stages Strata v0.2.19 in the pilot folder strata-inkling-sq20/: the
-# strata-inkling 0.1.65 and strata-control 0.1.65 linux-aarch64 packages and both packs (card 209's
-# strata-inkling-pack/ is read for whatever is not there). The engine needs glibc 2.38 and GLIBCXX 3.4.32, newer than
-# the job image's, so it runs under the loader, glibc and libstdc++ of Arm's GNU 14.3 toolchain staged for cuda-build.
+# strata-inkling 0.1.65 and strata-control 0.1.65 linux-aarch64 packages, both packs and, beside the SQ-20 pack, the
+# pack repo's tokenizer.json (card 209's strata-inkling-pack/ is read for whatever is not there). The engine needs
+# glibc 2.38 and GLIBCXX 3.4.32, newer than the job image's, so it runs under the loader, glibc and libstdc++ of Arm's
+# GNU 14.3 toolchain staged for cuda-build.
 set -eu
 pilot=/assets/drama3-pilot
 out=/work/out/strata-inkling
@@ -61,9 +62,11 @@ cat <<'EOF'
   warmup: none, each run is one fresh process whose only pass is timed. 3 runs a cell, the median counts.
 [settings] HTTP bench: Strata's server (strata-control 0.1.65, serve/server.py) with the run config its setup
   writes ("parallel": N slots, "drafting": "dspark", --max-context 32768, its default), under
-  tools/bench_concurrent.py: N requests at once, 256 tokens, temperature 0, ignore_eos, --reps 3 (the tool's
-  medians), one 16-token warm-up request a cell. Two cells a level: "same" sends tools/bench_prompts.json's first
-  prompt on every stream, "different" sends request i that file's prompt i % 16 (at 64, each prompt on 4 streams).
+  tools/bench_concurrent.py: N requests at once on /v1/chat/completions, 256 tokens, temperature 0, ignore_eos,
+  --reps 3 (the tool's medians), one 16-token warm-up request a cell. Two cells a level, from the chat prompts of
+  tools/bench_prompts.json (its raw-completion prompts need /v1/completions, a route Strata's server does not
+  have): "same" sends the first on every stream, "different" sends request i prompt i % their count. Their text
+  and names follow; each [http] line gives its cell's prompt tokens and thinking mode.
 EOF
 
 bench() { # bench CELL PACK STREAMS [FLAG...]: one --bench run, its [bench] line to stdout and $out/CELL.txt
@@ -98,10 +101,38 @@ awk -v got="$(median sq10-64)" -v want="$published" 'BEGIN {
 }
 control=$(dirname "$(dirname "$server")")
 python=$control/python/bin/python3
-python3 -c 'import json, sys; json.dump(json.load(open("tools/bench_prompts.json"))[:1], sys.stdout)' >"$out/same.json"
+python3 - "$out" <<'EOF'
+import json, sys
+chat = [q for q in json.load(open("tools/bench_prompts.json")) if q["kind"] == "chat"]
+for cell, prompts in (("same", chat[:1]), ("different", chat)):
+    json.dump(prompts, open(f"{sys.argv[1]}/{cell}.json", "w"))
+print("[settings] same prompt, %s: %r" % (chat[0]["name"], chat[0]["prompt"]))
+print("[settings] different prompts (%d): %s" % (len(chat), ", ".join(q["name"] for q in chat)))
+EOF
+summary() { # summary REPORT: one [http] line a cell; fails on a failed or unmeasured request
+    python3 - "$1" <<'EOF'
+import json, sys
+report = json.load(open(sys.argv[1]))
+for cell in report["cells"]:
+    prompt = [r["prompt_tokens"] for rep in cell["reps"] for r in rep["requests"] if r.get("prompt_tokens")] or [0]
+    print("[http] %s, %d streams: %.1f tok/s total, %.1f a stream (medians of 3); prompt %d-%d tokens, %d output "
+          "tokens asked, thinking %s, failed %d, unmeasured %d, timing_valid %s" % (
+              report["label"], cell["streams"], cell["aggregate_tps"], cell["per_stream_tps"], min(prompt),
+              max(prompt), report["tokens"], "/".join(cell["thinking_modes"]), cell["failed"], cell["unmeasured"],
+              cell["timing_valid"]))
+    if cell["failed"] or cell["unmeasured"]:
+        sys.exit(1)
+EOF
+}
 for name in sq20 sq10; do
     eval "pack=\$$name"
-    "$python" "$control/tools/inkling_tokenizer.py" --strata "$pack" --out "$out/tokenizer-$name"
+    # as Control's setup does where its Python reads no zstd: the engine exports the pack's template, and its
+    # tokenizer when the pack embeds one; otherwise the pack repo's tokenizer.json is used
+    "$strata" --export-tokenizer "$pack" "$out/export-$name"
+    tokenizer=$out/export-$name/tokenizer.hf.json
+    [ -f "$tokenizer" ] || tokenizer=$(dirname "$sq20")/tokenizer.json
+    "$python" "$control/tools/inkling_tokenizer.py" --hf-json "$tokenizer" \
+        --template "$out/export-$name/chat_template.jinja" --out "$out/tokenizer-$name"
     for streams in 1 4 64; do
         cat >"$out/$name.json" <<EOF
 {"exe": "$strata", "args": ["--native", "$pack", "--max-context", "32768"], "cwd": "/work", "arch": "inkling2_loop",
@@ -114,10 +145,11 @@ EOF
             kill -0 "$pid" 2>/dev/null || { tail -30 "$out/server-$name-$streams.log"; exit 1; }
             sleep 2
         done
-        for prompts in "$out/same.json" tools/bench_prompts.json; do
+        for cell in same different; do
             python3 tools/bench_concurrent.py http://127.0.0.1:8242 "$name" --levels "$streams" --tokens 256 \
-                --reps 3 --temperatures 0 --prompts "$prompts" --label "$name $(basename "$prompts" .json)" \
-                --output "$out/http-$name-$streams-$(basename "$prompts")"
+                --reps 3 --temperatures 0 --prompts "$out/$cell.json" --label "$name $cell" \
+                --output "$out/http-$name-$streams-$cell.json" >"$out/http.log"
+            summary "$out/http-$name-$streams-$cell.json"
         done
         kill "$pid"
         wait "$pid" || :
