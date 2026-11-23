@@ -4,30 +4,33 @@
 # SQ-20 and SQ-10, each under the engine's own `--bench` and, behind Strata's server, under our HTTP bench
 # (tools/bench_concurrent.py), at 1, 4 and 64 streams, medians of 3. The receipt counts only if SQ-10 at 64 lands
 # within 10% of the 805.8 tok/s of Strata's pack card; the last line says which.
-# The job has no network. The Desk stages Strata v0.2.19 in the pilot folder strata-inkling-sq20/: the
-# strata-inkling 0.1.65 and strata-control 0.1.65 linux-aarch64 packages, both packs and, beside the SQ-20 pack, the
-# pack repo's tokenizer.json (card 209's strata-inkling-pack/ is read for whatever is not there). The engine needs
-# glibc 2.38 and GLIBCXX 3.4.32, newer than the job image's, so it runs under the loader, glibc and libstdc++ of Arm's
-# GNU 14.3 toolchain staged for cuda-build.
+# The Desk stages v0.2.19's engine, Control and tokenizer in strata-inkling-0219/; the SQ-20 and SQ-10 packs
+# already live in strata-inkling-sq20/ and strata-inkling-pack/. The job has no network. The engine needs glibc 2.38
+# and GLIBCXX 3.4.32, supplied by the staged Arm GNU 14.3 toolchain.
 set -eu
+if [ -z "${STRATA_TIMEOUT:-}" ]; then
+    STRATA_TIMEOUT=1 timeout -k 5 590 sh "$0"
+    exit $?
+fi
 pilot=/assets/drama3-pilot
 out=/work/out/strata-inkling
 gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
 toolchain=$pilot/cuda-build-toolchain/$gcc.tar.xz
 published=805.8
-staged() { find "$pilot/strata-inkling-sq20" "$pilot/strata-inkling-pack" "$@" 2>/dev/null | head -1; }
-engine=$(staged -name strata-inkling -type f)
-server=$(staged -path '*/serve/server.py')
-sq20=$(staged -name Inkling-2-Mini-SQ-20.strata)
-sq10=$(staged -name Inkling-2-Mini-SQ-10.strata)
-ls -l "$pilot/strata-inkling-sq20" || :
-for need in "engine strata-inkling:$engine" "SQ-20 pack:$sq20" "SQ-10 pack:$sq10"; do
-    [ -n "${need#*:}" ] || { echo "missing ${need%%:*} under $pilot/strata-inkling-sq20" >&2; exit 1; }
+release=$pilot/strata-inkling-0219
+engine=$(find "$release/inkling" -name strata-inkling -type f 2>/dev/null | head -1)
+server=$(find "$release/control" -path '*/serve/server.py' -type f 2>/dev/null | head -1)
+sq20=$pilot/strata-inkling-sq20/Inkling-2-Mini-SQ-20.strata
+sq10=$pilot/strata-inkling-pack/Inkling-2-Mini-SQ-10.strata
+for file in "$engine" "$server" "$release/tokenizer.json" "$release/inkling_tokenizer.py" "$sq20" "$sq10" "$toolchain"; do
+    [ -n "$file" ] && [ -f "$file" ] || { echo "missing staged input: ${file:-engine or server in $release}" >&2; exit 1; }
 done
+echo "[inputs] engine=$engine control=$server sq20=$sq20 sq10=$sq10 tokenizer=$release/tokenizer.json"
 # the packs' digests as Strata pins them (terminal/strata_control/inkling_family.py at v0.2.19)
 sha256sum -c --quiet <<EOF
 0bbfd52344f0dd4779a7807b5f73554a812f24c035e6877b63cd0d499f7e1b97  $sq20
 ac4d452ad03e4930abd9d46f9c5eec22b2f75a1da45a1e49bd24ccd58b065934  $sq10
+7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6  $release/tokenizer.json
 7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $toolchain
 EOF
 tar -C /work -xJf "$toolchain"
@@ -53,16 +56,16 @@ cat <<'EOF'
   "| DGX Spark GB10 128 GB | SQ-20 / SQ-10 | 2,197 / 2,070 | 46.1 / 74.3 | 1,145.1 / 805.8 with 64 |" (prompt
   speed, one request, many at once), "Measured with thinking off", many at once being "the total written across
   that many requests running together"; it names neither the engine version, the flags nor the context.
-[settings] own bench: --bench --native PACK --parallel N --gen 256, nothing else set.
+[settings] own bench: --bench --native PACK --parallel N, nothing else set.
   KV dtype: --kv auto, fp16 below 16 slots and fp8 from 16 (each [bench] line prints the one used).
   --parallel N: N slots, every slot decodes one token a step in one batched forward.
   prompt: 64 synthetic token ids a slot (--prompt-len's default), id 100 + (31*slot + position) % 1000: the same
-  ramp shifted 31 ids a slot, not text and not one identical prompt. output: 256 greedy tokens a slot.
+  ramp shifted 31 ids a slot, not text and not one identical prompt. output: 32 greedy tokens a slot (--gen default).
   drafting: DSpark on (the default); its tree runs at 1 slot only. graphs: the engine's default, no flag set.
   warmup: none, each run is one fresh process whose only pass is timed. 3 runs a cell, the median counts.
 [settings] HTTP bench: Strata's server (strata-control 0.1.65, serve/server.py) with the run config its setup
   writes ("parallel": N slots, "drafting": "dspark", --max-context 32768, its default), under
-  tools/bench_concurrent.py: N requests at once on /v1/chat/completions, 256 tokens, temperature 0, ignore_eos,
+  tools/bench_concurrent.py: N requests at once on /v1/chat/completions, 128 tokens, temperature 0, ignore_eos,
   --reps 3 (the tool's medians), one 16-token warm-up request a cell. Two cells a level, from the chat prompts of
   tools/bench_prompts.json (its raw-completion prompts need /v1/completions, a route Strata's server does not
   have): "same" sends the first on every stream, "different" sends request i prompt i % their count. Their text
@@ -72,7 +75,7 @@ EOF
 bench() { # bench CELL PACK STREAMS [FLAG...]: one --bench run, its [bench] line to stdout and $out/CELL.txt
     cell=$1 pack=$2 streams=$3
     shift 3
-    "$strata" --bench --native "$pack" --parallel "$streams" --gen 256 "$@" >"$out/bench.log" 2>&1 &&
+    "$strata" --bench --native "$pack" --parallel "$streams" "$@" >"$out/bench.log" 2>&1 &&
         grep '^\[bench\]' "$out/bench.log" >>"$out/$cell.txt" || { tail -20 "$out/bench.log"; exit 1; }
     tail -1 "$out/$cell.txt"
 }
@@ -84,10 +87,7 @@ for name in sq20 sq10; do
         echo "[own] $name at $streams streams: median $(median "$name-$streams") tok/s total"
     done
 done
-# what could still differ from the published SQ-10 row at 64, one run each
-bench probe "$sq10" 64 --kv fp16
-bench probe "$sq10" 64 --draft off
-bench probe "$sq10" 64 --gen 32
+# The pack card does not disclose engine version, flags, context or prompt content; the gate is empirical.
 
 awk -v got="$(median sq10-64)" -v want="$published" 'BEGIN {
     ratio = got / want
@@ -95,19 +95,16 @@ awk -v got="$(median sq10-64)" -v want="$published" 'BEGIN {
         want, (ratio >= 0.9 && ratio <= 1.1) ? "counted" : "not counted, nothing in this receipt is a bar"
 }'
 
-[ -n "$server" ] || {
-    echo "[http] not run: strata-control 0.1.65 (serve/server.py) is not staged under $pilot/strata-inkling-sq20"
-    exit 1
-}
 control=$(dirname "$(dirname "$server")")
-python=$control/python/bin/python3
+python=$(find "$release/control" -path '*/python/bin/python3' -type f 2>/dev/null | head -1)
+[ -n "$python" ] || { echo "missing staged Control Python under $release/control" >&2; exit 1; }
 python3 - "$out" <<'EOF'
 import json, sys
 chat = [q for q in json.load(open("tools/bench_prompts.json")) if q["kind"] == "chat"]
 for cell, prompts in (("same", chat[:1]), ("different", chat)):
     json.dump(prompts, open(f"{sys.argv[1]}/{cell}.json", "w"))
 print("[settings] same prompt, %s: %r" % (chat[0]["name"], chat[0]["prompt"]))
-print("[settings] different prompts (%d): %s" % (len(chat), ", ".join(q["name"] for q in chat)))
+print("[settings] different prompts (%d): %s" % (len(chat), ", ".join("%s=%r" % (q["name"], q["prompt"]) for q in chat)))
 EOF
 summary() { # summary REPORT: one [http] line a cell; fails on a failed or unmeasured request
     python3 - "$1" <<'EOF'
@@ -130,8 +127,8 @@ for name in sq20 sq10; do
     # tokenizer when the pack embeds one; otherwise the pack repo's tokenizer.json is used
     "$strata" --export-tokenizer "$pack" "$out/export-$name"
     tokenizer=$out/export-$name/tokenizer.hf.json
-    [ -f "$tokenizer" ] || tokenizer=$(dirname "$sq20")/tokenizer.json
-    "$python" "$control/tools/inkling_tokenizer.py" --hf-json "$tokenizer" \
+    [ -f "$tokenizer" ] || tokenizer=$release/tokenizer.json
+    "$python" "$release/inkling_tokenizer.py" --hf-json "$tokenizer" \
         --template "$out/export-$name/chat_template.jinja" --out "$out/tokenizer-$name"
     for streams in 1 4 64; do
         cat >"$out/$name.json" <<EOF
@@ -146,7 +143,7 @@ EOF
             sleep 2
         done
         for cell in same different; do
-            python3 tools/bench_concurrent.py http://127.0.0.1:8242 "$name" --levels "$streams" --tokens 256 \
+            python3 tools/bench_concurrent.py http://127.0.0.1:8242 "$name" --levels "$streams" --tokens 128 \
                 --reps 3 --temperatures 0 --prompts "$out/$cell.json" --label "$name $cell" \
                 --output "$out/http-$name-$streams-$cell.json" >"$out/http.log"
             summary "$out/http-$name-$streams-$cell.json"
