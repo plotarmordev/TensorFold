@@ -58,6 +58,19 @@ index 06c1131d2..4b1df7125 100644
                          if constexpr (SWIGLU) {
                              // The lane's eight columns hold the (gate, up) pairs of features
                              // column / 2 to column / 2 + 3 (the weights' rows interleave pairwise).
+diff --git a/zig/src/core/contract/registry_media.zig b/zig/src/core/contract/registry_media.zig
+index 6ba9b54d4..3310cab06 100644
+--- a/zig/src/core/contract/registry_media.zig
++++ b/zig/src/core/contract/registry_media.zig
+@@ -76,7 +76,7 @@ pub const cuda_pending = [_]CudaRecord{
+ /// (card 199's TOP check); sm_80 to sm_89 sit below their min_sm.
+ pub const cuda_tma_pending = [_]CudaRecord{
+     .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(222) },
+-    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(219) },
++    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(225) },
+     .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = sm12x(22) },
+ };
+ 
 diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
 index 712685e8c..76ca5c6a1 100644
 --- a/zig/src/families/h3/cuda_int8.zig
