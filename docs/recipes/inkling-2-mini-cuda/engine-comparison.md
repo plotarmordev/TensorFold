@@ -13,6 +13,17 @@ Research snapshot: 23 November 2026. **Mini**, not Inkling 2 Small: `thinkingmac
 
 No published Mini recipe specifies FP8 KV dtype on the three launches above: SGLang documents an MXFP8 KV capability, but the [Spark config](https://github.com/sgl-project/sglang/blob/main/docs/src/snippets/configs/thinkingmachines/inkling-2-mini.jsx) sets no KV flag; vLLM's [recipe](https://recipes.vllm.ai/thinkingmachines/Inkling-2-Mini) likewise sets none. No published Mini-specific prefill chunk-size setting was found in the SGLang or vLLM launches. A [patched 2× RTX 3090 port](https://gist.github.com/quidow/a7ee52fa117da27c4dc25c37dafd27fd) uses `--max-num-batched-tokens 1024` and BF16 KV, but is **not** the official recipe. llama.cpp exposes `-b`/`-ub` and `--cache-type-k`/`--cache-type-v`; the [2× T4 example](https://github.com/ggml-org/llama.cpp/issues/32718) uses `-b 2048 -ub 64`. These are workload tuning knobs, not measured Mini wins on GB10. DSpark acceptance is workload-dependent: [vLLM PR #69028](https://github.com/vllm-project/vllm/pull/69028) reports a mean of 3.58 tokens/step on GB200 GSM8K, whereas the [GB10 hands-on](https://dev.classmethod.jp/en/articles/dgx-spark-inkling-2-mini-first-touch/) saw only 16% of proposed tokens accepted in one interval.
 
+## llama.cpp next to TensorFold on TOP's GB10
+
+`llama-cpp-job.sh` at `7fe6eaa70` ran the mainline llama.cpp recipe on TOP's GB10 (driver 580.173.02) through `swarm gpu-run` with the same harness, prompts and settings as 188's `run-script.sh`: `tools/bench_concurrent.py`, 256 greedy tokens, 3 reps, the best cell per level. The release binaries run under the staged Arm GNU 14.3 glibc, because the job image's glibc predates 2.38; the host is unchanged. SGLang and vLLM need their container images on the GB10 and are not measured here.
+
+| Engine on GB10 | Weights | 1 stream | 4 streams (total, a stream) | Scaling |
+|---|---|---|---|---|
+| llama.cpp b12628, `-ngl 99 -c 32768 -np 4 --jinja` | ggml-org IQ4_NL, 16.41 GiB | **37.9** tok/s (chat), 37.7 (code) | **98.1**, 24.5 (code); 83.4, 20.9 (chat) | 2.59× |
+| TensorFold, [188 receipt](https://github.com/plotarmordev/TensorFold/blob/54bf2c7f0cf3f72e5ab9ef9d4449c81a260fc6e0/docs/recipes/inkling-2-mini-cuda/README.md) | official NVFP4/MXFP8 | **32.5** | **117.8** | 3.62× |
+
+llama.cpp leads at one stream by 5.4 tok/s (+17%) while reading a smaller, lossier quant (95.5% same top token against BF16); TensorFold leads at four by 19.7 tok/s (+20%). llama-bench on the same job: tg128 **38.50 ± 0.08**, pp512 **822.40 ± 11.63** tok/s.
+
 ## TensorFold lever inventory (on `feat/188` at `54bf2c7f0`, not `origin/main`)
 
 **P** = already implemented on that platform's Inkling Mini branch; **M** = missing, with the file to change; **N/A** = hardware-specific path not applicable. A portable CUDA implementation does **not** mean the native Windows ARM64 server builds/serves yet: the [188 receipt](https://github.com/plotarmordev/TensorFold/blob/54bf2c7f0cf3f72e5ab9ef9d4449c81a260fc6e0/docs/recipes/inkling-2-mini-cuda/README.md) says Inkling CUDA has only built with gcc 14 and needs MSVC/nvcc and native Windows checkpoint loading. Windows columns therefore say *unverified* where CUDA code could be reused. Paths are relative to the repository root; availability on `origin/main` is less (Mini serving lives on 188).
