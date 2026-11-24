@@ -40,7 +40,7 @@ pub fn moduleWith(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
 
 /// mailbox.cu as a fatbin: sm_120 (RTX PRO 6000), sm_121 (GB10), and compute_90 PTX for anything else.
 fn mailboxFatbin(b: *std.Build, nvcc: []const u8) std.Build.LazyPath {
-    const run = b.addSystemCommand(&.{ nvcc, "-fatbin", "-O3", "-std=c++17", "-gencode=arch=compute_120,code=sm_120", "-gencode=arch=compute_121,code=sm_121", "-gencode=arch=compute_90,code=compute_90", "-o" });
+    const run = @import("cuda_fatbin.zig").nvccRun(b, nvcc, &.{ "-fatbin", "-O3", "-std=c++17", "-gencode=arch=compute_120,code=sm_120", "-gencode=arch=compute_121,code=sm_121", "-gencode=arch=compute_90,code=compute_90", "-o" });
     const out = run.addOutputFileArg("tp_mailbox.fatbin");
     run.addFileArg(b.path("zig/src/fabric/tp/mailbox.cu"));
     _ = run.addFileInput(b.path("zig/src/fabric/tp/roce_device.cuh"));

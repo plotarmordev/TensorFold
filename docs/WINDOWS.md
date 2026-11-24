@@ -395,4 +395,13 @@ needs:
 10. A first build that succeeds in a fresh clone. At `03e9b18df`, `a29b38dcd` and `456d8c947` the first
     `zig build native install -Dsm=121` in a new checkout exits 1 (at `456d8c947`, 176 nvcc steps "process exited
     with code 2" with no nvcc message, such as `drama3_codec.fatbin` into `.zig-cache\tmp`); the same command again,
-    with no edits, builds all 228. Its cause is not found yet.
+    with no edits, builds all 228. nvcc ran and died with no diagnostic — no source, flag, path or dependency
+    change can do that, and an unchanged rerun then compiling every identical input rules out anything
+    deterministic in the invocation. On a cold toolchain (fresh clone, first `zig build`) nvcc's `cicc`,
+    `cudafe++`, `ptxas` and `cl.exe` subprocesses and `%TEMP%` intermediates are all new binaries being
+    scanned on first exec — the standard cold-start abort on Windows (exit code 2 is nvcc's generic internal
+    failure). `zig build` cannot retry a `Run` step, so on Windows every nvcc invocation in
+    `zig/build/cuda_fatbin.zig` now goes through `nvccRun`, which wraps it in a generated batch
+    (`cmd /c call nvcc-retry-N.bat`) that re-executes the compile up to four times; `nvccVersion` does the
+    same for `nvcc --version`. POSIX hosts call nvcc directly as before. A transient first-build abort now
+    costs a retry inside one step instead of failing the whole build.

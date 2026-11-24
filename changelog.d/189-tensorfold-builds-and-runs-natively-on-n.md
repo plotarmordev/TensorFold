@@ -8,6 +8,10 @@
 - `glm_index_rope.cuh` uses CUDA's `__noinline__`, not GCC's `__attribute__((noinline))`, which nvcc
   with cl.exe rejected in `glm_glue` and `glm_index`; Windows fatbins pass `/wd4819`, the flag that
   showed that error under the code-page warnings burying it.
+- The first `zig build native install` on a fresh Windows checkout died on 176 nvcc steps (exit code 2,
+  no diagnostic); an identical rerun then succeeded. On Windows every nvcc invocation now runs through a
+  generated retry batch (`zig/build/cuda_fatbin.zig`'s `nvccRun`, up to four attempts), so a cold-toolchain
+  abort no longer fails the first build. POSIX hosts are unchanged.
 - `docs/WINDOWS.md` records the N1X laptop's clean native build and eight passing `tf-cuda-test` suites. A prior kernel-contract run aborted at gate 5 on a missing LP64-mangled symbol; the contract now counts each missing image symbol as one limit failure and continues to its SUMMARY. The laptop's run at `456d8c947` passes gates 1-4 on all 844 kernels with 500 of 500 controls red; its 1013 limit problems are the missing nvcc 13.5 sm_121 records, outside this card. Model serving and tok/s are outside this card.
 - The kernel contract's `h3p_attention` takes gate 4's 4-row cut of its 77-row shape (its keys are its rows; it
   refused fewer rows than K on every OS), and MLP128's N/A line names its sm_120-only tile, not the sm_90 cluster.

@@ -22,7 +22,7 @@ pub fn images(b: *std.Build, nvcc: ?[]const u8, prebuilt: ?[]const u8) ?*const I
             path.* = if (std.Io.Dir.cwd().access(b.graph.io, file, .{})) |_| b.graph.cwdRelativePath(file) else |_| null;
         }
     } else if (nvcc) |compiler| {
-        const version = b.addSystemCommand(&.{ compiler, "--version" }).captureStdOut(.{});
+        const version = @import("cuda_fatbin.zig").nvccVersion(b, compiler);
         for (list.units, &result.units) |unit, *path| path.* = cuda_build.fatbin(b, compiler, version, unit, "121");
         for (list.optional, &result.optional) |unit, *path| path.* = cuda_build.fatbin(b, compiler, version, unit, "121");
     } else {

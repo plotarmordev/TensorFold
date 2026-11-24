@@ -6,7 +6,7 @@ const std = @import("std");
 /// selftest against the float64 host reference.
 pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, opts: @import("options.zig").Cuda, test_step: *std.Build.Step) void {
     const image = if (opts.nvcc) |nvcc|
-        @import("cuda_fatbin.zig").fatbin(b, nvcc, b.addSystemCommand(&.{ nvcc, "--version" }).captureStdOut(.{}), .{ .name = "h3_image_prompt", .flags = &.{"-O3"}, .min_sm = 80 }, opts.sms)
+        @import("cuda_fatbin.zig").fatbin(b, nvcc, @import("cuda_fatbin.zig").nvccVersion(b, nvcc), .{ .name = "h3_image_prompt", .flags = &.{"-O3"}, .min_sm = 80 }, opts.sms)
     else
         b.addWriteFiles().add("h3-image-prompt-compile-only.fatbin", "");
     const cuda = @import("cuda.zig").runtime(b, target, optimize, &.{});

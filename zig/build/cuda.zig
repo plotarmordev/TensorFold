@@ -60,11 +60,8 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     const sms = opts.sms;
     const strip = opts.strip;
     // the compiler's version text is an input of every fatbin, so a new nvcc rebuilds them all
-    const version: ?std.Build.LazyPath = if (prebuilt == null and nvcc != null) blk: {
-        const run = b.addSystemCommand(&.{ nvcc.?, "--version" });
-        run.has_side_effects = true;
-        break :blk run.captureStdOut(.{});
-    } else null;
+    const version: ?std.Build.LazyPath = if (prebuilt == null and nvcc != null)
+        @import("cuda_fatbin.zig").nvccVersion(b, nvcc.?) else null;
     var images: [kernels.len]?std.Build.LazyPath = @splat(null);
     const fatbin_step = b.step("fatbins", "Build and install the CUDA kernel fatbins alone");
     for (kernels, &images) |k, *image| {
@@ -82,11 +79,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
         b.step("check-pdl-loads", "No global read before a dependent launch's wait in the GLM images, qwen35 glue and qmmf (needs -Dnvcc)").dependOn(&check.step);
     }
     // MiniMax H3's kernel image: its library and the contract's runner take it
-    const h3_image = if (nvcc) |tool| fatbin(b, tool, version orelse blk: {
-        const run = b.addSystemCommand(&.{ tool, "--version" });
-        run.has_side_effects = true;
-        break :blk run.captureStdOut(.{});
-    }, .{ .name = "h3", .flags = &.{"-O3"} }, sms) else null;
+    const h3_image = if (nvcc) |tool| fatbin(b, tool, version orelse @import("cuda_fatbin.zig").nvccVersion(b, tool), .{ .name = "h3", .flags = &.{"-O3"} }, sms) else null;
     @import("h3_host.zig").library(b, target, optimize, h3_image);
     // MiniMax-H3-Image's decoder, prompt and modulation kernel images, built to the served flags, for the contract
     const h3_image_fatbins: [3]?std.Build.LazyPath = if (nvcc) |tool| .{
