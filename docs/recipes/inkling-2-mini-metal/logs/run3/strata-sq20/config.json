@@ -1,0 +1,3 @@
+{"exe": "/Users/agents/projects/capri/desk/jobs/tf250-engines/strata/strata-inkling", "args": ["--native", "/Users/agents/projects/capri/desk/jobs/tf250-engines/strata/Inkling-2-Mini-SQ-20.strata", "--max-context", "32768", "--kv", "fp16"], "cwd": "/tmp/ink2-engines-4/strata-sq20",
+ "arch": "inkling2_loop", "tokenizer": "/tmp/ink2-engines-4/strata-sq20/tokenizer", "model_name": "Inkling-2-Mini", "drafting": "dspark",
+ "parallel": 64, "log": "/tmp/ink2-engines-4/strata-sq20/engine.log"}

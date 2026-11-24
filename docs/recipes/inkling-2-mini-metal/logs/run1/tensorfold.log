@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+    print(json.load(open(sys.argv[1]))["quantization"])
+          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+KeyError: 'quantization'
+[settings] tensorfold 0962da4a7b8e94e661d913dc6d7f69e278567046: /Users/agents/models/Inkling-2-Mini, quant , KV bf16 (Metal's only)
+[settings] flags: serve --context 65536 --parallel 64 --drafter /Users/agents/models/Inkling-2-Mini (DSpark on)
+[tensorfold] setup: 18 s
+[tensorfold] measure: 270 s
+docs/recipes/inkling-2-mini-metal/engines.sh: line 108: pid: unbound variable

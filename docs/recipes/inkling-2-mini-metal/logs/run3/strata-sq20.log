@@ -1,0 +1,6 @@
+format=strata chat_template: 6868 bytes, tokenizer_json: 0 bytes
+tokenizer: vocab 200058, merges 424413, pre o200k, specials {'bos': 200028, 'eos': 200006, 'pad': 199999}
+[settings] strata-inkling 0.1.65 (Strata v0.2.19, macos-arm64-metal): /Users/agents/projects/capri/desk/jobs/tf250-engines/strata/Inkling-2-Mini-SQ-20.strata
+[settings] flags: {"exe": "/Users/agents/projects/capri/desk/jobs/tf250-engines/strata/strata-inkling", "args": ["--native", "/Users/agents/projects/capri/desk/jobs/tf250-engines/strata/Inkling-2-Mini-SQ-20.strata", "--max-context", "32768", "--kv", "fp16"], "cwd": "/tmp/ink2-engines-4/strata-sq20", "arch": "inkling2_loop", "tokenizer": "/tmp/ink2-engines-4/strata-sq20/tokenizer", "model_name": "Inkling-2-Mini", "drafting": "dspark", "parallel": 64, "log": "/tmp/ink2-engines-4/strata-sq20/engine.log"}; KV fp16, set rather than --kv auto
+[strata-sq20] setup: 39 s
+[strata-sq20] measure: 189 s
