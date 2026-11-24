@@ -136,13 +136,14 @@ fmt = lambda v: "-" if v is None else f"{v:.1f}"
 best = {}
 for path in sorted(p for e in sys.argv[2:] for p in glob.glob(f"{sys.argv[1]}/{e}/[0-9]*-*.json")):
     engine, cell = os.path.basename(os.path.dirname(path)), path.rsplit("-", 1)[1][:-5]
-    for c in json.load(open(path))["cells"]:
-        print(f"RESULT {engine} {c['streams']} streams {cell}: {fmt(c['aggregate_tps'])} tok/s total, "
-              f"{fmt(c['per_stream_tps'])} a stream (medians of 3), failed {c['failed']}, unmeasured {c['unmeasured']}")
+    for c in json.load(open(path))["cells"]:  # end_to_end_tps: usage tokens over the makespan, so it needs no stream timing
+        print(f"RESULT {engine} {c['streams']} streams {cell}: {fmt(c['end_to_end_tps'])} tok/s end to end, "
+              f"{fmt(c['aggregate_tps'])} streamed, {fmt(c['per_stream_tps'])} a stream (medians of 3), "
+              f"failed {c['failed']}, unmeasured {c['unmeasured']}, replies {c['completions']}")
         key = (c["streams"], cell)
-        if not c["failed"] and not c["unmeasured"] and (c["aggregate_tps"] or 0) > best.get(key, ("", 0))[1]:
-            best[key] = (engine, c["aggregate_tps"])
+        if c["timing_valid"] and not c["failed"] and c["end_to_end_tps"] > best.get(key, ("", 0))[1]:
+            best[key] = (engine, c["end_to_end_tps"])
 for (streams, cell), (engine, tps) in sorted(best.items()):
-    print(f"FASTEST {streams} streams {cell}: {engine}, {tps:.1f} tok/s total")
+    print(f"FASTEST {streams} streams {cell}: {engine}, {tps:.1f} tok/s end to end")
 EOF
 exit "$status"

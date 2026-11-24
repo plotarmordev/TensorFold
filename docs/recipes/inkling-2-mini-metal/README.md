@@ -51,8 +51,10 @@ The engines differ in these settings, and the receipt prints each one:
 | Strata SQ-20 / SQ-10 | Strata's own packs | `--kv auto`, read from the server log | DSpark (its default) | Control's `server.py`, `parallel 64`, `--max-context 32768` |
 
 Each engine logs `setup: N s` and `measure: N s` separately, to `OUT/ENGINE.log` (default `/tmp/ink2-engines`). The
-run ends with one `RESULT` line for each engine, level and cell, and one `FASTEST` line for each level and cell. A
-`FASTEST` line counts only cells with no failed or unmeasured request, and only among the engines that ran.
+run ends with one `RESULT` line for each engine, level and cell, and one `FASTEST` line for each level and cell.
+`FASTEST` ranks by bench_concurrent's `end_to_end_tps`: the usage's output tokens over the cell's whole makespan. This
+rate needs no stream timing, so it times Strata, whose stream drops the thinking (see the receipt). A `FASTEST` line
+counts only cells where every request completed with usage, and only the engines this invocation completed.
 
 ## Receipt
 
@@ -75,30 +77,32 @@ TensorFold's engine is the feat/210 head (`d29431d5f`); the commits after it cha
 `inkling2`: NVFP4 1×16 and MXFP8 32×32 groups, the rest bf16. Run 1 printed the quant as blank because the script
 read a missing key; `737b4a6b` reads `quant_method`.
 
-Aggregate tok/s, median of 3, 256 tokens a request, temperature 0:
+Tok/s end to end, median of 3. Each request asks for 256 tokens at temperature 0. In brackets: the streamed rate, our
+bench's usual figure.
 
 | Streams | Cell | TensorFold | llama.cpp IQ4_NL | Strata SQ-20 |
 |---|---|---|---|---|
-| 1 | same | **94.3** | 35.9 | unmeasured (3 of 3) |
-| 1 | diverse | **129.5** | 32.1 | (659.5, see below) |
-| 4 | same | **232.5** | 95.4 | unmeasured (12 of 12) |
-| 4 | diverse | **177.1** | 101.3 | (138.1, see below) |
-| 64 | same | **485.5** | 394.8 | unmeasured (102 requests) |
-| 64 | diverse | **405.7** | 312.0 | unmeasured (19 requests) |
+| 1 | same | **92.6** (94.3) | 35.4 (35.9) | 85.7 (unmeasured) |
+| 1 | diverse | **125.1** (129.5) | 31.8 (32.1) | 89.1 (burst) |
+| 4 | same | **229.2** (232.5) | 93.4 (95.4) | 134.7 (unmeasured) |
+| 4 | diverse | **175.9** (177.1) | 100.1 (101.3) | 96.5 (burst) |
+| 64 | same | **486.2** (485.5) | 384.1 (394.8) | 382.5 (unmeasured) |
+| 64 | diverse | **406.6** (405.7) | 291.3 (312.0) | 346.1 (unmeasured) |
 
-Every TensorFold and llama.cpp cell finished with no failed or unmeasured request.
+**Fastest engine measured on this Mac: TensorFold, at 1, 4 and 64 streams, on both cells**, ahead of llama.cpp b12655
+IQ4_NL and Strata v0.2.19 SQ-20. No request failed. Strata SQ-10 was not measured.
 
-**Fastest engine measured on this Mac: TensorFold, at 1, 4 and 64 streams, on both cells.** That compares TensorFold
-with llama.cpp. Strata was not timed: it is neither slower nor faster here.
+Every TensorFold and llama.cpp reply ran the full 256 tokens. Strata ignores `ignore_eos`, so 81 of its 207 diverse
+replies ended before 256 tokens (`finished` in the bench logs). Its end-to-end rate counts the tokens it
+did produce, so it is still a rate, but over shorter replies.
 
-Strata's figures are not timings. Its server finished every request with 256 tokens (`done: 256 tokens`, 420 in
-`server.log`), but the model spent them thinking. Strata control 0.1.65 silently discards every `<|content_thinking|>`
-span (`serve/inkling_dialect.py:189`, "Inkling-2-Mini has no thinking mode"), so the stream carried only the few text
-pieces after the thinking. `bench_concurrent.py` then saw too few pieces to time: all of the "same" cells and most
-64-stream requests are unmeasured. The 659.5 tok/s is the burst of those last pieces after a 2.5 s first token, not a
-decode rate. Strata's own log puts single-stream SQ-20 at 67 to 99 tok/s; our client did not check that count.
-Timing Strata needs a window of about 35 minutes for `engines.sh strata-sq20 strata-sq10`, with a client setting that
-keeps Strata's stream carrying the tokens it decodes. The Desk has not opened that window.
+Strata's streamed figures are not timings. Strata control 0.1.65 forces `reasoning_effort` to `none`
+(`serve/inkling_dialect.py:282`), yet the model still thinks. The control then silently discards every
+`<|content_thinking|>` span (`:189`), so the stream carries only the text after the thinking. `bench_concurrent.py`
+sees too few pieces to time. All "same" cells and some 64-stream diverse requests are unmeasured, and the 1- and
+4-stream diverse figures are bursts after a 2.5 s first token. No request setting changes that, so the verdict uses the
+end-to-end rate. `engines.sh` printed the streamed rates in the run; the end-to-end column was read from the same
+result files at `logs/run2/*/*.log` after the run, with the summary `engines.sh` now prints.
 
 Settings that differ between engines (see the table above):
 
