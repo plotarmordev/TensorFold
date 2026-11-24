@@ -83,14 +83,16 @@ function Timed([string[]]$argv, [string]$log, [switch]$FailOk) {
 
 $text = 'The three laws of thermodynamics, explained for a curious student:'
 if ($Step -eq 'check') {
-    # 188's GB10 checks as they are: the served kernels, #4387's serving checks, the float64 reference
+    # 188's GB10 checks as they are: the served kernels, #4387's serving checks, the float64 reference. Its sampled
+    # case=1 is a known engine defect (card 263), so its exit is returned last and the reference still runs.
     Timed @('info') 'info'
     Timed @('kernel-contract', 'inkling2 loop') 'contract'
     $r = New-Object System.Random 4387
     (1..4200 | ForEach-Object { $r.Next(1000, 199000) }) -join ' ' | Set-Content -Encoding ascii "$out\ids.txt"
-    Timed @('inkling2-serving', $Model, "$out\ids.txt") 'serving'
+    Timed @('inkling2-serving', $Model, "$out\ids.txt") 'serving' -FailOk
+    $serving = $script:last
     Timed @('inkling2-mini-ref', $Model, '32', $text) 'ref'
-    exit 0
+    exit $serving
 }
 
 # The reference's planted control is its own step: the float64 reference takes 226 s on the N1X, twice is over 10 min.

@@ -43,7 +43,11 @@ mkdir -p "$out"
 "$bin/tf-cuda-test" kernel-contract "inkling2 loop"
 # #4387's serving checks take any 4,096+ ids; these are fixed so every run sees the same prompt
 python3 -c 'import random; r = random.Random(4387); print(" ".join(str(r.randrange(1000, 199000)) for _ in range(4200)))' >"$out/ids.txt"
-"$bin/tf-cuda-test" inkling2-serving "$model" "$out/ids.txt"
+# case=1 (sampled) is a known engine defect owned by card 263: its status is printed and returned at the end, so the
+# reference, control and serve steps still run and the job stays red
+serving=0
+"$bin/tf-cuda-test" inkling2-serving "$model" "$out/ids.txt" || serving=$?
+echo "RESULT inkling2-serving exit $serving"
 text="The three laws of thermodynamics, explained for a curious student:"
 # the float64 reference must exit 0
 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text"
@@ -60,7 +64,10 @@ mem "before the server"
 /work/sm121/native/bin/tensorfold-native serve "$model" --backend cuda --host 127.0.0.1 --port 8188 \
     --name inkling-2-mini --parallel 8 --context 8192 --no-update-check >"$out/server.log" 2>&1 &
 server=$!
-trap 'kill $server 2>/dev/null || :' EXIT
+# peak GPU memory: the server's own compute allocation, sampled every 500 ms for the whole serve
+while :; do nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits; sleep 0.5; done >"$out/pool.txt" 2>/dev/null &
+sampler=$!
+trap 'kill $server $sampler 2>/dev/null || :' EXIT
 python3 - <<'EOF'
 import time, urllib.request
 for _ in range(180):
@@ -72,6 +79,21 @@ for _ in range(180):
 raise SystemExit("server did not answer /v1/models in 3 min")
 EOF
 mem "server loaded"
+# prefill probe: one short and one ~4k-token prompt, read from the server's own done line (prompt=, cached=, ttft=)
+python3 - "$out/server.log" <<'EOF'
+import json, re, sys, time, urllib.request
+word = "The quick brown fox jumps over the lazy dog near the river bank while engineers measure prefill throughput. "
+for tag, prompt in (("prefill-short", "Explain one tick of a clock."), ("prefill-long", word * 400)):
+    before = open(sys.argv[1]).read().count("] done ")
+    body = json.dumps({"model": "inkling-2-mini", "prompt": prompt, "max_tokens": 8, "temperature": 0, "ignore_eos": True})
+    urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8188/v1/completions", body.encode(),
+                                                  {"Content-Type": "application/json"}), timeout=120).read()
+    time.sleep(0.2)
+    line = [l for l in open(sys.argv[1]) if "] done " in l][before]
+    m = re.search(r"prompt=(\d+) cached=(\d+) .*ttft=([\d.]+)", line)
+    print(f"RESULT inkling2 mini gb10 {tag}: {m[1]} prompt tokens ({m[2]} cached), prefill "
+          f"{(int(m[1]) - int(m[2])) / float(m[3]):,.0f} tok/s, first token {m[3]} s")
+EOF
 # --alone runs each request solo first and hashes every concurrent reply's tokens against it (output agreement);
 # each cell's request metrics carry prompt_ttft_tps (prefill) and ttft_s, its counts the failed and unmeasured.
 for level in 1 2 4 8; do
@@ -118,3 +140,6 @@ print(f"RESULT inkling2 mini weight bytes a token {per_token / 1e9:.2f} GB: one 
 if agg[8] < 1.5 * agg[1]:
     raise SystemExit(f"8 streams gave {agg[8]:.1f} tok/s, not clearly more than 1 stream's {agg[1]:.1f}")
 EOF
+echo "RESULT inkling2 mini gb10 peak GPU memory sampled every 500 ms: $(sort -n "$out/pool.txt" | tail -n 1) MiB"
+echo "RESULT inkling2 mini gb10 server peak RSS: $(awk '/^VmHWM:/ {printf "%d MiB", $2 / 1024}' /proc/$server/status)"
+exit "$serving"
