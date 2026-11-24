@@ -26,7 +26,7 @@ check() { # check SHA256 FILE
 serve_tensorfold() {
     (cd "$wt" && zig build native -Doptimize=ReleaseFast)
     echo "[settings] tensorfold $(git -C "$wt" rev-parse HEAD): $model, quant $("$python" -c 'import json, sys
-print(json.load(open(sys.argv[1]))["quantization"])' "$model/hf_quant_config.json"), KV bf16 (Metal's only)"
+print(json.load(open(sys.argv[1]))["quant_method"])' "$model/hf_quant_config.json"), KV bf16 (Metal's only)"
     echo "[settings] flags: serve --context 65536 --parallel 64 --drafter $model (DSpark on)"
     "$wt/zig-out/native/bin/tensorfold-native" serve "$model" --port "$port" --context 65536 --parallel 64 \
         --drafter "$model" >"$log/server.log" 2>&1 &
@@ -73,6 +73,7 @@ run() { # run ENGINE: setup, then 1, 4 and 64 streams on both cells
     local engine=$1 started pid streams cell
     log=$out/$engine
     rm -rf "$log" && mkdir -p "$log"
+    ! curl -s "http://127.0.0.1:$port/v1/models" >/dev/null || fail "port $port already serves; stop that server first"
     started=$(date +%s)
     case $engine in
         tensorfold) serve_tensorfold ;;
@@ -82,7 +83,7 @@ run() { # run ENGINE: setup, then 1, 4 and 64 streams on both cells
         *) fail "unknown engine: $engine" ;;
     esac
     pid=$!
-    trap 'kill -INT $pid 2>/dev/null; wait $pid 2>/dev/null' EXIT
+    trap "kill -INT $pid 2>/dev/null; wait $pid 2>/dev/null" EXIT
     for _ in $(seq 600); do
         curl -sf "http://127.0.0.1:$port/v1/models" >/dev/null && break
         kill -0 "$pid" 2>/dev/null || { tail -30 "$log/server.log"; fail "$engine server exited during setup"; }
