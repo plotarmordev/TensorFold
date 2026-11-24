@@ -56,6 +56,53 @@ run ends with one `RESULT` line for each engine, level and cell, and one `FASTES
 
 ## Receipt
 
-None yet. The Desk staged every input above on 25 Nov 01:1x (`tf250-engines/setup.txt`: "TF 250 SETUP DONE", digests
-checked). The run still waits for a Mac GPU window of its own. Nothing here claims an engine is faster until
-`engines.sh` has run in one.
+Measured on 25 Nov 2026, 01:46 to 02:45 HKT, in the Desk's Mac GPU window ("250 only"). The Desk staged every input
+above on 25 Nov 01:1x (`tf250-engines/setup.txt`: "TF 250 SETUP DONE", digests checked). The run used the GGUF at
+`STAGE/gguf/Inkling-2-Mini-IQ4_NL.gguf` (17,627,940,768 B, sha256 `cbdf3fa9…81af4`, checked by the script) and llama.cpp
+b12655.
+
+There were two runs:
+
+- **Run 1, `engines.sh` at `0962da4a`.** Only TensorFold's cells count. Its server outlived its turn because the exit
+  trap read a `local` pid after `run` returned. llama.cpp and both Strata servers then could not bind port 18250
+  (their logs say so), so their cells measured TensorFold again. `737b4a6b` fixes the trap and refuses a busy port.
+  Job logs: `logs/run1/` (the engine's phase log and one bench log for each cell).
+- **Run 2, `engines.sh` at `737b4a6b`, `llama.cpp strata-sq20 strata-sq10`.** llama.cpp took 66 s to set up and
+  418 s to measure; Strata SQ-20 took 109 s and 296 s. The window closed during Strata SQ-10's setup, so SQ-10 is not
+  measured. Job logs: `logs/run2/`, including Strata's own `done:` lines (`strata-sq20/server-done.log`).
+
+TensorFold's engine is the feat/210 head (`d29431d5f`); the commits after it change only this folder. Its quant is
+`inkling2`: NVFP4 1×16 and MXFP8 32×32 groups, the rest bf16. Run 1 printed the quant as blank because the script
+read a missing key; `737b4a6b` reads `quant_method`.
+
+Aggregate tok/s, median of 3, 256 tokens a request, temperature 0:
+
+| Streams | Cell | TensorFold | llama.cpp IQ4_NL | Strata SQ-20 |
+|---|---|---|---|---|
+| 1 | same | **94.3** | 35.9 | unmeasured (3 of 3) |
+| 1 | diverse | **129.5** | 32.1 | (659.5, see below) |
+| 4 | same | **232.5** | 95.4 | unmeasured (12 of 12) |
+| 4 | diverse | **177.1** | 101.3 | (138.1, see below) |
+| 64 | same | **485.5** | 394.8 | unmeasured (102 requests) |
+| 64 | diverse | **405.7** | 312.0 | unmeasured (19 requests) |
+
+Every TensorFold and llama.cpp cell finished with no failed or unmeasured request.
+
+**Fastest engine measured on this Mac: TensorFold, at 1, 4 and 64 streams, on both cells.** That compares TensorFold
+with llama.cpp. Strata was not timed: it is neither slower nor faster here.
+
+Strata's figures are not timings. Its server finished every request with 256 tokens (`done: 256 tokens`, 420 in
+`server.log`). But it streamed the thinking text in a lump, so `bench_concurrent.py` saw no timed tokens in the "same" cells
+and on most 64-stream requests. The 659.5 tok/s is one burst after a 2.5 s first token, not a decode rate. Strata's
+own log puts single-stream SQ-20 at 67 to 99 tok/s; that figure is the engine's own count and was not checked by our client.
+
+Settings that differ between engines (see the table above):
+
+- Weights: TensorFold runs the official `inkling2` checkpoint, and llama.cpp runs an IQ4_NL re-quantization.
+- KV: TensorFold uses bf16 and llama.cpp uses f16.
+- Drafting: TensorFold drafts with DSpark, which accepted 9/23 to 154/498 of its drafts in the server log. llama.cpp
+  runs no drafter.
+- Thinking: TensorFold thinks on every request (`thinking=True`). Strata logged `thinking=False` for its requests
+  but still produced thinking text.
+
+This is one Mac, one session, one model. These figures do not compare chips.
