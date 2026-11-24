@@ -228,8 +228,13 @@ pub const Product = struct {
             t.sw[5 * kb] = nan;
             t.sw[9 * kb + kb - 1] = inf;
         }
+        // the weights as bind packs them; the reference reads t.wq row-major
+        const packed_w = try al.alloc(i8, t.wq.len);
+        for (0..s.n) |r| for (0..s.k) |i| {
+            packed_w[h3k.packedAt(r, i, s.k)] = t.wq[r * s.k + i];
+        };
         t.bufs[0] = try t.rig.input(std.mem.sliceAsBytes(t.xq));
-        t.bufs[1] = try t.rig.input(std.mem.sliceAsBytes(t.wq));
+        t.bufs[1] = try t.rig.input(std.mem.sliceAsBytes(packed_w));
         t.bufs[2] = try t.rig.input(std.mem.sliceAsBytes(t.sx));
         t.bufs[3] = try t.rig.input(std.mem.sliceAsBytes(t.sw));
     }
@@ -383,7 +388,7 @@ pub const Quantize = struct {
         const p = t.rig.begin();
         p.e.setPipeline(t.pipe);
         p.e.setBuffer(t.bufs[0].buf, t.bufs[0].off, 0);
-        p.e.setValue([3]i32{ @intCast(s.rows), @intCast(s.n * s.k), @intCast(s.k) }, 1);
+        p.e.setValue([4]i32{ @intCast(s.rows), @intCast(s.n * s.k), @intCast(s.k), 0 }, 1);
         p.e.setBuffer(t.bufs[1].buf, t.bufs[1].off, 2);
         p.e.setBuffer(t.bufs[2].buf, t.bufs[2].off, 3);
         p.e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));

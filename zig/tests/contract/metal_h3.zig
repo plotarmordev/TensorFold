@@ -278,7 +278,7 @@ pub const H3 = struct {
         e.barrier();
         e.setPipeline(self.quant_pipe.?);
         e.setBuffer(xn.buf, xn.off, 0);
-        e.setValue([3]i32{ @intCast(s.rows), @intCast(s.n), 256 }, 1);
+        e.setValue([4]i32{ @intCast(s.rows), @intCast(s.n), 256, 0 }, 1);
         e.setBuffer(self.bufs[5].buf, self.bufs[5].off, 2);
         e.setBuffer(self.bufs[6].buf, self.bufs[6].off, 3);
         e.dispatchGroups(mtl.Size.of(s.rows, 1, 1), mtl.Size.of(32, 1, 1));
@@ -294,5 +294,34 @@ pub const H3 = struct {
         const want = try self.replaced();
         if (!std.mem.eql(u8, got, want)) return "non-finite inputs: its bytes differ from h3_norm + h3_quantize_rows's";
         return null;
+    }
+};
+
+/// Every H3 kernel, on a device with tensor units: metal_main.zig's registration.
+pub const Suite = struct {
+    a: std.mem.Allocator,
+    device: mtl.Device,
+    queue: mtl.Queue,
+    kernels: *std.ArrayList(g.Kernel),
+    list: std.ArrayList(*H3) = .empty,
+
+    pub fn collect(s: *Suite, only: ?[]const u8) !void {
+        if (!s.device.tensorUnits()) return;
+        for (std.enums.values(Which)) |w| {
+            if (only) |o| if (std.mem.indexOf(u8, spec(w).name, o) == null) continue;
+            const x = try s.a.create(H3);
+            errdefer s.a.destroy(x);
+            x.* = try H3.init(s.a, s.device, s.queue, w);
+            try s.list.append(s.a, x);
+            try s.kernels.append(s.a, x.kernel());
+        }
+    }
+
+    pub fn deinit(s: *Suite) void {
+        for (s.list.items) |x| {
+            x.deinit();
+            s.a.destroy(x);
+        }
+        s.list.deinit(s.a);
     }
 };

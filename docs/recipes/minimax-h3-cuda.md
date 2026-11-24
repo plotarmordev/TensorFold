@@ -627,9 +627,10 @@ goal), in order, each needing its own window:
 2. **Attention**: 1.80 s a picture in the transformer on main (`368cee6b`'s re-pipelining measured 1.91 s, reverted
    `787f3d3d`), 217 registers at 128 threads and two CTAs an SM (8 warps), and 1.89 s in the decoder, whose
    16-byte key loads changed nothing. Its bound is not the value load's latency — deeper prefetch and query-in-registers
-   both lost to register pressure — so mmh3's INT8/FP8 attention is the candidate that would also cut registers (the
-   `fb5090ae` fp8 round measured 14.1 s a picture and is reverted); the
-   decoder's attention needs its stall found first, since neither its loads nor its occupancy explain it.
+   both lost to register pressure. Card 179's int8 pair (168 registers, `h3_attention_i8`) measured 2.28 s a picture
+   and missed every picture gate (cosine 0.924–0.994, PSNR 16.6–26.0 dB), so it is reverted too: the u8 probability
+   codes lose the diffuse rows' mass, and int8 fragments read 4 bytes a register where `ldmatrix4` moves the bf16
+   tiles. The decoder's attention needs its stall found first, since neither its loads nor its occupancy explain it.
 3. **The rows outside the blocks**: on the device as of `bd734252`, 0.15 s a picture.
 4. **The decoder's products** are 2.26 s at 121 registers and two CTAs an SM. A 512-thread 4 x 8 tile measured 3.00 s
    (`cb217aa2`, reverted): the smaller per-thread tile reads 12 shared floats for 32 products where 8 x 8 reads 16 for
@@ -1184,6 +1185,60 @@ Gates, each routed picture against the dense picture of the same prompt (`gate.p
 All four pass (0.99, 28.2 dB, 4.1), and the profiled pass's routed pictures match these figures. `--routed-steps 2`
 stays **opt-in**. It is a different picture, though a close one, for 2.8%, while `--fp4` gives 19%. Routing more steps
 or running at 4096 (four times the tiles, attention a larger share) was not measured.
+
+### Card 179: dense attention's QK and PV on the INT8 tensor cores — measured, not kept
+
+I ran the image transformer's dense attention (`h3_attention_int8.cuh`) with both products on the integer tensor
+cores: QK^T on `mma.sync.aligned.m16n8k32.s8.s8.s32` and P·V on `m16n8k32.u8.s8.s32` (unsigned probabilities
+against signed values), the online softmax in fp32 and its int32 sums exact. The scales were mmh3's: Q and K rows
+at their absmax/127, V per tile and channel at its live keys' absmax/127 (one outlier cannot flatten a tile), and
+the probabilities as `round(p * 255)` codes staged through shared memory at 80-byte rows. `h3_heads_quant` wrote
+those codes and scales from `h3_heads`' bf16 tiles, so the attention stage carried the quantization. The tile
+loop, lists and output were `h3_attention`'s: `h3_attention_i8` replaced it on the dense path, and the routed path
+kept `h3_attention`.
+
+`h3_attention_i8` took **168 registers** a thread on all five recorded SMs against `h3_attention`'s 217 on
+sm_120/121 (168 on sm_80/86/89), and `h3_heads_quant` took 80 (86 on sm_120/121): the u8 codes in shared memory
+are what the fp32 probability tile cost in registers. Both records are measured. `check-179.sh` at `3bc944e1`
+(job `top-afbef35083c5`) passed the kernel contract's gates 1-4 on the pair — non-finite classes, five
+byte-identical repeats, six shapes within the float64 bound (worst 0.975 of it), and its sum classes at k 1024 —
+and the limits audit's five SMs matched the records; its other 59 problems were main's stale records (`h3_norm`,
+`h3_quantize`, the fp4 pair, GLM's BF16 images and exl3's controls), not this card's launches.
+
+I ran `bench-179-ab.sh` at `fa094cb8e` (job `top-28126dd9a5e7`, GB10, driver 580.173.02): this kernel, then
+`bench-179-base.patch` reverse-applied for main's bf16 attention — the job stopped unless the result was main's
+`zig/` tree, `5dd31fb2`. Every selftest passed on both sides. The attention stage, the fox cold and the three
+unseen prompts warm:
+
+| attention stage, s | fox (cold) | harbour | meadow | steam |
+|---|---:|---:|---:|---:|
+| int8, this card | 2.26 | 2.28 | 2.28 | 2.28 |
+| main, bf16 | 1.76 | 1.77 | 1.79 | 1.81 |
+
+and each card picture against main's picture of the same prompt (`gate.py`: 0.99, 28.2 dB, 4.1):
+
+| prompt | latent cosine | PSNR dB | mean diff |
+|---|---:|---:|---:|
+| fox | 0.9441 | 18.03 | 16.87 |
+| harbour | 0.9242 | 16.57 | 20.57 |
+| meadow | 0.9944 | 26.04 | 7.60 |
+| steam | 0.9804 | 23.83 | 8.37 |
+
+All four fail. Two causes. The codes scale `p` by the running maximum, so a tile whose scores sit more than
+`log2(510)` ≈ 9 below it rounds entirely to zero; with 4,096 keys a dense row's attention is diffuse, so most of
+the numerator's mass disappears while the denominator keeps the exact fp32 mass — `fb5090ae`'s e4m3 probabilities
+(a relative error on small `p`) measured 0.9882 on the same model, and this u8 code is coarser there. On time,
+`h3_attention` loads its fragments with `ldmatrix4`; this kernel's int8 fragments were 4-byte shared reads, and
+`h3_heads_quant` adds a pass over each block's q/k/v, so the narrower mma returned less than they cost.
+
+I reverted it in full: the dense path stays `h3_attention`, and the A/B script and its base patch remain only at
+`fa094cb8e`. The register win is real; the picture and the time are not.
+
+The next shapes, each its own card and gated on the picture before the clock: QK^T alone in int8, with K smoothed
+by its per-channel mean (exact under softmax, since it shifts each row's scores by one constant) and P·V kept on
+bf16 `ldmatrix4` fragments, which removes the probability codes that failed here; and the int8 operands loaded with
+`ldmatrix` on a k-major shared layout, 16 bytes a lane instead of 4, before any rate is compared
+[INFERENCE: neither was built or measured].
 
 ### Card 149: the race again, after the encoder, decoder, passes and int8-product cards (21 November)
 
