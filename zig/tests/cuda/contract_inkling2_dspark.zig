@@ -16,6 +16,7 @@ const inter = 9216;
 const vocab = 200_058;
 const cap: f32 = 30;
 const eps: f32 = 1e-6;
+const soft_why = "online softmax over the ring and block keys: no input makes its sums exact in fp32; gate 3's derived bound holds it";
 
 /// resid += y, then x = bf16(rms-normed resid * norm): the output is x [rows][H]; resid is the launch's own state.
 pub const AddNorm = struct {
@@ -248,9 +249,12 @@ pub const Fuse = struct {
         self.taps = try ref.bfs(a, rng, shape.rows * 4 * hidden, -1, 1);
         self.fuse = try ref.bfs(a, rng, 16, -2, 2);
         self.dflare = try ref.bfs(a, rng, 4 * hidden, 0.5, 1.5);
-        if (fill == .stress) for (self.taps) |*t| {
-            t.* = c.toBf16(64);
-        };
+        if (fill == .stress) {
+            // Equal weights (a quarter each) of integer taps 1..9: every m and m^2 is exact and their sum stays under
+            // 2^24 in any order, while bf16 terms and partials round and fp16's sum overflows.
+            @memset(self.fuse, c.toBf16(0));
+            for (self.taps, 0..) |*t, i| t.* = c.toBf16(@floatFromInt(1 + (i * 37 + i / 7) % 9));
+        }
         if (fill == .nonfinite) {
             self.taps[0] = c.toBf16(ref.nan);
             self.taps[hidden] = c.toBf16(ref.inf);
@@ -588,7 +592,7 @@ pub const Attn = struct {
     pub fn spec(self: *const Attn) c.Spec {
         const served = &[_]c.Shape{ .{ .rows = 8, .n = q_width, .k = 1050 } };
         const name = if (self.mean) "control: inkling2 dspark tf_ink2_dsp_attn output over key count" else "inkling2 dspark tf_ink2_dsp_attn (ring + block kv, online softmax)";
-        return .{ .name = name, .accum = .f32, .depth = depth, .ops = 5, .out = .bf16, .served = served };
+        return .{ .name = name, .accum = .f32, .depth = depth, .ops = 5, .out = .bf16, .served = served, .sums = .{ .f16 = 0, .bf16 = 0, .exact = false, .why = soft_why } };
     }
     fn depth(s: c.Shape) usize {
         return s.k + hd + 2;
@@ -609,9 +613,10 @@ pub const Attn = struct {
         self.ring = &.{};
         self.ring_v = &.{};
     }
-    /// A ring of 2048 rows with committed - from = 1050 valid rows (a local layer's window wraps once).
+    /// A ring of 2048 rows with committed - from = 1050 valid rows (a local layer's window wraps once). The launch
+    /// attends all eight block rows; the first `rows` are checked.
     pub fn prepare(self: *Attn, a: std.mem.Allocator, rig: *rig_.Rig, shape: c.Shape, fill: g.Fill, rng: std.Random) !bool {
-        if (shape.rows != 8 or shape.n != q_width or shape.k != 1050) return false;
+        if (shape.rows == 0 or shape.rows > 8 or shape.n != q_width or shape.k != 1050) return false;
         self.free(a);
         self.shape = shape;
         self.q = try ref.bfs(a, rng, 8 * q_width, -1, 1);
@@ -621,13 +626,9 @@ pub const Attn = struct {
         self.ring_v = try ref.bfs(a, rng, ring_rows * kv_width, -1, 1);
         self.from = 700;
         self.committed = 1750;
-        if (fill == .stress) {
-            for (self.q) |*v| v.* = c.toBf16(64);
-            for (self.bk) |*v| v.* = c.toBf16(64);
-            for (self.bv) |*v| v.* = c.toBf16(64);
-            for (self.ring) |*v| v.* = c.toBf16(64);
-            for (self.ring_v) |*v| v.* = c.toBf16(64);
-        }
+        if (fill == .stress) for ([_][]u16{ self.q, self.bk, self.bv, self.ring, self.ring_v }) |x| for (x) |*v| {
+            v.* = c.toBf16(@as(f32, @floatFromInt(@as(i32, @intCast(rng.uintLessThan(u32, 17))) - 8)) / 8);
+        };
         if (fill == .nonfinite) {
             self.q[0] = c.toBf16(ref.nan);
             self.ring[0] = c.toBf16(ref.inf);
@@ -640,44 +641,72 @@ pub const Attn = struct {
     pub fn run(self: *Attn, rig: *rig_.Rig) !void {
         try self.kern.launchAttn(rig.s, self.ptr[0], self.ptr[1], self.ptr[2], self.ptr[3], self.ptr[4], self.ptr[5], self.from, self.committed, ring_rows, true);
     }
-    pub fn count(_: *const Attn) usize {
-        return 8 * q_width;
+    pub fn count(self: *const Attn) usize {
+        return self.shape.rows * q_width;
     }
-    /// out[row][h][d] = softmax(q·k/sqrt(128))·v over the last 1024 ring rows + 8 block rows; local layer.
+    /// Head-slice value of key t at dim d: the ring's held rows, then the block's.
+    fn value(self: *const Attn, first: u32, held: u32, kv: usize, t: usize, d: usize) f64 {
+        const at = if (t < held) (@as(usize, first + t) % ring_rows) * kv_width else (t - held) * kv_width;
+        return ref.bf((if (t < held) self.ring_v else self.bv)[at + kv * hd + d]);
+    }
+    /// out[row][h][d] = softmax(q·k/sqrt(128))·v over the last 1024 ring rows + 8 block rows; local layer. The device's
+    /// weights are each within a relative `eps_w` of exp(s - max): twice the worst score error, the exps' fp32
+    /// arguments (up to the score range) and an expf with a rescale per key. y = sum p v / sum p then moves at most
+    /// grow = eps_w / (1 - eps_w) of sum p |v - y| / sum p, plus the fp32 chains of both sums and the division.
     pub fn solve(self: *const Attn, a: std.mem.Allocator, _: ref.Sums, out: []Iv) !void {
+        const u = ref.iv.unit;
         const scale = 1 / @sqrt(@as(f64, hd));
         const first = self.committed - 1024;
         const held = self.committed - first;
         const keys = held + 8;
+        const nk: f64 = @floatFromInt(keys);
         const scores = try a.alloc(f64, keys);
         defer a.free(scores);
         const probs = try a.alloc(f64, keys);
         defer a.free(probs);
-        for (0..8) |row| {
+        for (0..self.shape.rows) |row| {
             for (0..24) |h| {
                 const kv = h / 3;
                 var m: f64 = -ref.inf;
+                var low: f64 = ref.inf;
+                var err: f64 = 0;
                 for (0..keys) |t| {
                     const kbase = if (t < held) (@as(usize, first + t) % ring_rows) * kv_width + kv * hd else 0;
                     const ksrc = if (t < held) self.ring[kbase..][0..hd] else self.bk[(t - held) * kv_width + kv * hd ..][0..hd];
                     var dot: f64 = 0;
-                    for (0..hd) |d| dot += ref.bf(self.q[row * q_width + h * hd + d]) * ref.bf(ksrc[d]);
+                    var abs: f64 = 0;
+                    for (0..hd) |d| {
+                        const p = ref.bf(self.q[row * q_width + h * hd + d]) * ref.bf(ksrc[d]);
+                        dot += p;
+                        abs += @abs(p);
+                    }
                     scores[t] = dot * scale;
+                    // the dot's 128-term chain, then the scale (rsqrtf's ulps) and its product
+                    err = @max(err, c.gamma(hd, u) * abs * scale + (ref.iv.libm_ulps + 2) * u * @abs(scores[t]));
                     m = @max(m, scores[t]);
+                    low = @min(low, scores[t]);
                 }
+                const eps_w = 2 * err + 3 * u * (m - low) + (2 * ref.iv.libm_ulps + 2) * u * (nk + 1);
+                const grow = eps_w / (1 - eps_w);
                 var l: f64 = 0;
                 for (0..keys) |t| {
                     probs[t] = @exp(scores[t] - m);
                     l += probs[t];
                 }
-                const denom = if (self.mean) @as(f64, @floatFromInt(keys)) else l;
+                const denom = if (self.mean) nk else l;
                 for (0..hd) |d| {
                     var acc: f64 = 0;
+                    var acc_abs: f64 = 0;
                     for (0..keys) |t| {
-                        const v = if (t < held) self.ring_v[(@as(usize, first + t) % ring_rows) * kv_width + kv * hd + d] else self.bv[(t - held) * kv_width + kv * hd + d];
-                        acc += probs[t] * ref.bf(v);
+                        const v = self.value(first, held, kv, t, d);
+                        acc += probs[t] * v;
+                        acc_abs += probs[t] * @abs(v);
                     }
-                    out[row * q_width + h * hd + d] = Iv.of(acc / denom).bf();
+                    const y = acc / denom;
+                    var spread: f64 = 0;
+                    for (0..keys) |t| spread += probs[t] * @abs(self.value(first, held, kv, t, d) - y);
+                    const tol = (grow * spread + c.gamma(3 * nk + 2, u) * (acc_abs + @abs(acc))) / l * (1 + grow) + 2 * u * @abs(y);
+                    out[row * q_width + h * hd + d] = (Iv{ .m = y, .lo = y - tol, .hi = y + tol }).bf();
                 }
             }
         }
@@ -720,9 +749,10 @@ pub const Kappa = struct {
         self.rnn = &.{};
         self.bias = &.{};
     }
-    /// y [8][H] (rows 1..7 feed the steps), newest [H], rnn [768][5120] bf16, bias [768].
+    /// y [8][H] (rows 1..7 feed the steps), newest [H], rnn [768][5120] bf16, bias [768]; the launch fills all seven
+    /// steps, the first `rows` are checked.
     pub fn prepare(self: *Kappa, a: std.mem.Allocator, rig: *rig_.Rig, shape: c.Shape, fill: g.Fill, rng: std.Random) !bool {
-        if (shape.rows != 7 or shape.n != 3 * rank or shape.k != 2 * hidden) return false;
+        if (shape.rows == 0 or shape.rows > 7 or shape.n != 3 * rank or shape.k != 2 * hidden) return false;
         self.free(a);
         self.shape = shape;
         self.y = try ref.bfs(a, rng, 8 * hidden, -1, 1);
@@ -730,14 +760,17 @@ pub const Kappa = struct {
         self.rnn = try ref.bfs(a, rng, 3 * rank * rnn_w, -0.05, 0.05);
         self.bias = try ref.bfs(a, rng, 3 * rank, -1, 1);
         if (fill == .stress) {
-            for (self.y) |*v| v.* = c.toBf16(64);
-            for (self.newest) |*v| v.* = c.toBf16(64);
-            for (self.rnn) |*v| v.* = c.toBf16(0.5);
+            // Integer products 1..21 over 4,608 terms: exact in fp32 in any order; bf16 sums round past 256.
+            for (self.y, 0..) |*v, i| v.* = c.toBf16(@floatFromInt(1 + i % 7));
+            for (self.newest, 0..) |*v, i| v.* = c.toBf16(@floatFromInt(1 + i % 5));
+            for (self.rnn, 0..) |*v, i| v.* = c.toBf16(@floatFromInt(1 + i % 3));
         }
         if (fill == .nonfinite) {
+            // NaN in step 0's y, +Inf in step 1's, -Inf in channel 0's newest weight: later steps' other channels stay
+            // finite.
             self.y[hidden] = c.toBf16(ref.nan);
-            self.newest[0] = c.toBf16(ref.inf);
-            self.rnn[512] = c.toBf16(-ref.inf);
+            self.y[2 * hidden] = c.toBf16(ref.inf);
+            self.rnn[2816] = c.toBf16(-ref.inf);
         }
         self.ptr = .{ try ref.input(rig, self.y), try ref.input(rig, self.newest), try ref.input(rig, self.rnn), try ref.input(rig, self.bias), try rig.output(7 * 3 * rank * 4) };
         return true;
@@ -745,8 +778,8 @@ pub const Kappa = struct {
     pub fn run(self: *Kappa, rig: *rig_.Rig) !void {
         try self.kern.launchKappa(rig.s, self.ptr[0], self.ptr[1], self.ptr[2], self.ptr[3], self.ptr[4]);
     }
-    pub fn count(_: *const Kappa) usize {
-        return 7 * 3 * rank;
+    pub fn count(self: *const Kappa) usize {
+        return self.shape.rows * 3 * rank;
     }
     /// kappa[step][c] = sum_d y[step+1][d]*w[512+d] + newest[d]*w[2816+d] + bias[c], fp32.
     pub fn solve(self: *const Kappa, a: std.mem.Allocator, sum: ref.Sums, out: []Iv) !void {
@@ -754,7 +787,7 @@ pub const Kappa = struct {
         defer a.free(terms);
         const scratch = try a.alloc(f64, 2 * hidden);
         defer a.free(scratch);
-        for (0..7) |step| {
+        for (0..self.shape.rows) |step| {
             for (0..3 * rank) |ch| {
                 const w = self.rnn[ch * rnn_w ..];
                 for (0..hidden) |d| {
@@ -812,7 +845,7 @@ pub const Step = struct {
     }
     /// markov a fixture vocab of 4096 rows [4096][rank]; prev picks one.
     pub fn prepare(self: *Step, a: std.mem.Allocator, rig: *rig_.Rig, shape: c.Shape, fill: g.Fill, rng: std.Random) !bool {
-        if (shape.rows != 1 or shape.n != hidden or shape.k != rank) return false;
+        if (shape.rows == 0 or shape.rows > 64 or shape.n != hidden or shape.k != rank) return false;
         self.free(a);
         const vocab_rows = 4096;
         self.prev = rng.uintLessThan(u32, vocab_rows);
