@@ -257,6 +257,7 @@ pub const Drafter = struct {
         const d = cast(ptr);
         if (items.len == 0) return;
         if (d.pending.items.len > 0 or d.held_len > 0) try d.flushPending();
+        try d.pending.ensureUnusedCapacity(d.gpa, items.len); // before any lane advances past rows not yet absorbed
         const row_bytes = 4 * state.hidden * 2;
         var prompt = false;
         for (items) |item| {
@@ -274,7 +275,7 @@ pub const Drafter = struct {
             prompt = prompt or item.prompt;
         }
         // A prompt's rows are absorbed before the round drafting from them; a round's live rows ride its keep.
-        if (!prompt) return d.pending.appendSlice(d.gpa, items);
+        if (!prompt) return d.pending.appendSliceAssumeCapacity(items);
         const pool = mtl.objc.Pool.push();
         defer pool.pop();
         const cb = d.target.queue.commandBuffer();
@@ -339,8 +340,10 @@ pub const Drafter = struct {
 
     /// The drafts a stashed hold wrote, read back once its submission has run.
     fn finishHolds(d: *Drafter) !void {
+        const held = d.held_len;
+        d.held_len = 0; // their submission ran: a bad token below must not stage them again
         const tokens = d.chain_tokens.slice(u32, k.cohort_streams * 8);
-        for (d.holds[0..d.held_len], d.depths[0..d.held_len], d.slots[0..d.held_len]) |item, depth, at_slot| {
+        for (d.holds[0..held], d.depths[0..held], d.slots[0..held]) |item, depth, at_slot| {
             const lane = d.contexts.getPtr(item.stream) orelse continue;
             for (0..depth) |step| {
                 const token = tokens[at_slot * 8 + step + 1];
@@ -349,7 +352,6 @@ pub const Drafter = struct {
             }
             lane.held_len = depth;
         }
-        d.held_len = 0;
     }
 
     /// A stream leaving the rounds takes its stashed work with it.
