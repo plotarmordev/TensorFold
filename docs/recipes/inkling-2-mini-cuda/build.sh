@@ -26,7 +26,10 @@ export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACH
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
 nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
-echo "model $model: $(cat "$model"/*.safetensors | sha256sum | cut -d' ' -f1)"
+digest=$(cat "$model"/*.safetensors | sha256sum | cut -d' ' -f1)
+echo "model $model: $digest"
+[ "$digest" = 5e8e3094c5cb650936383a7f1fabc0b77f21b49373f7e94612e246022b055969 ] ||
+    { echo "$model is not the checkpoint the receipts measured" >&2; exit 1; }
 zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/sm121
 bin=/work/sm121/bin
 rm -rf "$out"
