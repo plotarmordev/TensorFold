@@ -55,6 +55,9 @@ Before opening a pull request, have the agent run the [pull request skill](docs/
 
 ## Build and host tests
 
+For card checkouts, run `tools/zig/setup_cache.sh` before the first build so even plain `zig build` uses the external
+shared cache and installs outside the checkout; see [Keep checkouts small](#keep-checkouts-small).
+
 Use the exact Zig version in `.zig-version`, currently 0.17.0.
 `zig build native` needs Xcode's Metal compiler for the `.metal` sources. Install full Xcode and its Metal Toolchain
 component (`xcodebuild -downloadComponent MetalToolchain`); with the Command Line Tools alone it stops with
@@ -120,6 +123,30 @@ Linux release builds use the CUDA backend and qualified GPU kernel assets.
 Release archives include the native executable, runtime assets and license notices.
 [Packaging](packaging/README.md) lists the flat fatbin set and optional captured CUDA files required by `dist`.
 Compile success alone does not qualify a GPU or checkpoint.
+
+### Keep checkouts small
+
+Zig keeps every build of every revision in the local cache and never prunes it, so a worktree's `.zig-cache` grows past
+15 GB after a few days of `zig build test`; a fresh full build plus tests needs about 4 GB of cache on its own.
+Before building a fresh card checkout, link its ignored `.zig-cache` and `zig-out` into the shared cache outside the
+checkout:
+
+```sh
+tools/zig/setup_cache.sh
+zig build test test-golden
+```
+
+The setup refuses an existing `.zig-cache` or `zig-out` rather than discarding its contents; move it out of the checkout
+first. Run setup once in each checkout (or again to verify the links). By default the shared folder is
+`$HOME/.cache/tensorfold/zig`; set `ZIG_LOCAL_CACHE_DIR` when running setup to choose another absolute location.
+Zig chooses the local cache before `build.zig` runs, so plain `zig build` cannot relocate it itself. The link also
+moves Zig's test scratch files, which do not follow `ZIG_LOCAL_CACHE_DIR` alone. Zig locks its object cache for
+concurrent builds. Each checkout has its own folder under the shared cache's `checkouts/`: `zig-out` links to it, so the
+default install of `zig build` and `zig build native` lands there under the documented `zig-out/...` paths, and the
+standalone Metal scripts write their executables beside it, as `tools/zig/check_mlx_ops.py` does its runner and staged
+tensors. Model weights, GGUF files, fixtures (`TF_FIXTURES_DIR`, by default `$HOME/tensorfold-fixtures`) and job output
+belong outside the checkout; pass their paths instead of staging copies in the tree.
+Delete the shared folder to reclaim its space when no build is running.
 
 ## Exactness and precision
 

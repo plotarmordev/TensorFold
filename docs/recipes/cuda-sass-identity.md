@@ -5,13 +5,15 @@ It compiles locally and does not execute GPU code or fetch dependencies.
 Use a checkout with its pinned Zig version, CUDA's nvcc and cuobjdump, and enough disk for retained fatbins.
 
 ```sh
-tools/zig/sass_compare.sh BASE_TREE NEW_TREE --repo . --output sass-proof --zig /path/to/pinned/zig
+tools/zig/sass_compare.sh BASE_TREE NEW_TREE --repo . --zig /path/to/pinned/zig
 ```
 
 Each input is a local Git revision or a checkout directory.
 Directory inputs include uncommitted source bytes; the receipt hashes the snapshot as well as recording its HEAD.
 Choose the base before the complete refactor and the final fixed head, rather than an intermediate broken tree.
-The output directory must be new; the runner retains snapshots, logs, commands, generated sources, fatbins and dumps.
+The runner retains snapshots, logs, commands, generated sources, fatbins and dumps in a new output directory: by default
+`sass-compare/<UTC time>-<pid>` in the shared Zig cache (`$ZIG_LOCAL_CACHE_DIR`, else `~/.cache/tensorfold/zig`),
+which it prints first. `--output DIR` names another; it must be new, and belongs outside the checkout.
 Override `--nvcc` and `--cuobjdump` together if CUDA is not in `/usr/local/cuda/bin`.
 There are at most two compiler jobs, at nice priority 19; `--jobs 1` serializes them.
 On a Mac, also supply `--cache-guard /path/to/cache_guard.sh` before compiler builds.

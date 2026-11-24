@@ -2,7 +2,11 @@
 # The fabric's tests here (CPU, in-process fakes) and the link test build; TF_MCDMA_SRC names an MCDMA checkout.
 set -euo pipefail
 zig="${ZIG:-zig}"
-root="$(cd "$(dirname "$0")/../.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd -P)"
+# Zig's caches and every output below go to this checkout's folder in the shared cache, as setup_cache.sh places them.
+ZIG_LOCAL_CACHE_DIR="$(python3 "$root/tools/zig/outside_checkout.py" "$root" "${ZIG_LOCAL_CACHE_DIR:-$HOME/.cache/tensorfold/zig}")"
+export ZIG_LOCAL_CACHE_DIR ZIG_GLOBAL_CACHE_DIR="$ZIG_LOCAL_CACHE_DIR/global"
+out="$ZIG_LOCAL_CACHE_DIR/checkouts/$(printf '%s' "$root" | shasum -a 256 | cut -c1-16)/fabric"
 fabric="$root/zig/src/fabric/fabric.zig"
 verbs="$root/zig/src/fabric/verbs.zig"
 canon="$root/zig/src/cluster/canon.zig"
@@ -20,17 +24,15 @@ done
 for name in fabric_collective fabric_sendrecv; do
   "$zig" test -lc -O ReleaseSafe --dep fabric --dep sys "-Mroot=$root/zig/tests/$name.zig" --dep bf16_round --dep sys --dep verbs "-Mfabric=$fabric" "-Mbf16_round=$bf16_round" "-Msys=$sys" --dep sys "-Mverbs=$verbs"
 done
-mkdir -p "$root/build/linktest"
+mkdir -p "$out"
 # A baseline arm64 target, not this machine's CPU, so the binary runs on any Apple Silicon Mac.
-"$zig" build-exe -target aarch64-macos.26.0 -O ReleaseFast -fstrip -lc --dep fabric --dep sys "-Mroot=$root/zig/tests/linktest.zig" --dep bf16_round --dep sys --dep verbs "-Mfabric=$fabric" "-Mbf16_round=$bf16_round" "-Msys=$sys" --dep sys "-Mverbs=$verbs" "-femit-bin=$root/build/linktest/tf-linktest"
+"$zig" build-exe -target aarch64-macos.26.0 -O ReleaseFast -fstrip -lc --dep fabric --dep sys "-Mroot=$root/zig/tests/linktest.zig" --dep bf16_round --dep sys --dep verbs "-Mfabric=$fabric" "-Mbf16_round=$bf16_round" "-Msys=$sys" --dep sys "-Mverbs=$verbs" "-femit-bin=$out/tf-linktest"
 src="${TF_MCDMA_SRC:-$root/build/mcdma}"
 if [ ! -f "$src/rpc/libmcdma_rpc.c" ]; then
   echo "no MCDMA checkout at $src: skipping the libmcdma-rpc binding tests"
   exit 0
 fi
-out="$root/build/fabric"
-mkdir -p "$out"
-# Built as MCDMA's own `make -C rpc test` builds it, into this tree's ignored build/; nothing is installed.
+# Built as MCDMA's own `make -C rpc test` builds it, into the shared cache; nothing is installed.
 if [ "$(uname -s)" = Darwin ]; then
   lib="$out/libmcdma-rpc.dylib"
   cc -std=c11 -O2 -Wall -Wextra -Werror -dynamiclib -o "$lib" "$src/rpc/libmcdma_rpc.c" "$src/rpc/libmcdma_rpc_metal.m" -fobjc-arc -framework Metal -framework Foundation

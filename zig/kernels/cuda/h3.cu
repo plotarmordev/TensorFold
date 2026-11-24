@@ -486,7 +486,7 @@ __global__ void __launch_bounds__(256) h3_euler(float* X, const float* V, float 
 
 // The TMA int8 products (h3_int8_tma.cuh, mmh3's 256x128 TallTile): plain writes bf16 rows, swiglu
 // writes silu(gate) * up at n / 2 for weights whose rows h3_swiglu_rows interleaved pairwise. N must
-// be a multiple of 128: the grid has no edge tile.
+// be a multiple of 8; its last 128-column tile may be partial.
 __global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma(
         const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
         const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {

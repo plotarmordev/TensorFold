@@ -1,0 +1,100 @@
+diff --git a/zig/kernels/cuda/h3.cu b/zig/kernels/cuda/h3.cu
+index 2b378e66a..07ceafe54 100644
+--- a/zig/kernels/cuda/h3.cu
++++ b/zig/kernels/cuda/h3.cu
+@@ -486,7 +486,7 @@ __global__ void __launch_bounds__(256) h3_euler(float* X, const float* V, float
+ 
+ // The TMA int8 products (h3_int8_tma.cuh, mmh3's 256x128 TallTile): plain writes bf16 rows, swiglu
+ // writes silu(gate) * up at n / 2 for weights whose rows h3_swiglu_rows interleaved pairwise. N must
+-// be a multiple of 128: the grid has no edge tile.
++// be a multiple of 8; its last 128-column tile may be partial.
+ __global__ void __launch_bounds__(256, 1) h3_gemm_int8_tma(
+         const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CUtensorMap map_b,
+         const float* XS, const float* WS, __nv_bfloat16* C, int M, int N, int K) {
+diff --git a/zig/kernels/cuda/h3_int8_tma.cuh b/zig/kernels/cuda/h3_int8_tma.cuh
+index 06c1131d2..4b1df7125 100644
+--- a/zig/kernels/cuda/h3_int8_tma.cuh
++++ b/zig/kernels/cuda/h3_int8_tma.cuh
+@@ -291,10 +291,12 @@ __device__ __forceinline__ void grouped_tile(Consume &consume, int32_t (&accumul
+ // the tiles; the warp that releases a ring stage last issues the TMA copies that refill it, so no
+ // producer warp costs every warp its registers. The tensor maps bind by reference so their
+ // addresses stay in parameter space — a by-value copy would land in local space, which
+-// cp.async.bulk.tensor refuses.
++// cp.async.bulk.tensor refuses. N is a multiple of 8 (a lane's eight columns are one store); the
++// last column tile may be partial: TMA zero-fills its weight rows past n and its lanes past n skip
++// the store.
+ // GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
+ // ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
+-// fp32 rows are written unrounded.
++// fp32 rows are written unrounded. Its epilogue has no edge tile: N a multiple of BLOCK_N.
+ template <typename Config, bool SWIGLU, bool GROUPED = false, typename Out = std::conditional_t<GROUPED, float, __nv_bfloat16>>
+ __device__ __forceinline__ void
+     gemm_kernel(const CUtensorMap &map_a, const CUtensorMap &map_b,
+@@ -307,7 +309,7 @@ __device__ __forceinline__ void
+ 
+     TileGrid grid;
+     grid.tiles_m = (m + Config::block_m - 1) / Config::block_m;
+-    grid.tiles_n = n / Config::block_n;
++    grid.tiles_n = (n + Config::block_n - 1) / Config::block_n;
+     grid.tiles = grid.tiles_m * grid.tiles_n;
+     grid.k_blocks = k / tma_block_k;
+ 
+@@ -389,7 +391,8 @@ __device__ __forceinline__ void
+         }
+         #pragma unroll
+         for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
+-            const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
++            // An edge tile's lanes past n read the last scales (their sums are TMA's zero fill), never stored.
++            const int column = min(tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8, n - 8);
+             #pragma unroll
+             for (int slot = 0; slot < 4; slot++) {
+                 const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
+@@ -436,7 +439,7 @@ __device__ __forceinline__ void
+                         words[3] = swapped;
+                     }
+                     const int row = tile_m * Config::block_m + warp_row + m_tile * 16 + half * 8 + group_id;
+-                    if (row < m) {
++                    if (row < m && column < n) {
+                         if constexpr (SWIGLU) {
+                             // The lane's eight columns hold the (gate, up) pairs of features
+                             // column / 2 to column / 2 + 3 (the weights' rows interleave pairwise).
+diff --git a/zig/src/core/contract/registry_media.zig b/zig/src/core/contract/registry_media.zig
+index 6ba9b54d4..3310cab06 100644
+--- a/zig/src/core/contract/registry_media.zig
++++ b/zig/src/core/contract/registry_media.zig
+@@ -76,7 +76,7 @@ pub const cuda_pending = [_]CudaRecord{
+ /// (card 199's TOP check); sm_80 to sm_89 sit below their min_sm.
+ pub const cuda_tma_pending = [_]CudaRecord{
+     .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(222) },
+-    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(219) },
++    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(225) },
+     .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = sm12x(22) },
+ };
+ 
+diff --git a/zig/src/families/h3/cuda_int8.zig b/zig/src/families/h3/cuda_int8.zig
+index 712685e8c..76ca5c6a1 100644
+--- a/zig/src/families/h3/cuda_int8.zig
++++ b/zig/src/families/h3/cuda_int8.zig
+@@ -44,10 +44,10 @@ pub const Weight = struct {
+     }
+ };
+ 
+-/// h3_quantize's K (quantize_chunks) and the product's whole N tiles: the grid has no edge tile, so
+-/// an N off 128 would leave its last columns unwritten.
++/// h3_quantize's K (quantize_chunks) and the product's N: a multiple of 8, so each lane's eight output
++/// columns are one 16-byte store; the last 128-column tile may be partial.
+ pub fn checkGeometry(n: usize, k: usize) !void {
+-    if (k % 128 != 0 or k > 14336 or n % block_n != 0) return error.BadGeometry;
++    if (k % 128 != 0 or k > 14336 or n % 8 != 0) return error.BadGeometry;
+ }
+ 
+ /// One block's quantized projections; fc1's rows and scales interleave gate/up pairs for the
+@@ -147,7 +147,7 @@ pub const Int8 = struct {
+         for ([_]u64{ lay.xs, w.scales(), out }) |a| args.add(a);
+         for ([_]usize{ rows, w.n, w.k }) |v| args.add(@as(c_int, @intCast(v)));
+         const sm: usize = @intCast(try self.ctx.attribute(.multiprocessor_count));
+-        const tiles = (rows + block_m - 1) / block_m * (w.n / block_n);
++        const tiles = (rows + block_m - 1) / block_m * ((w.n + block_n - 1) / block_n);
+         const blocks: u32 = @intCast(@min(sm, tiles));
+         const name = if (w.swiglu) Model.functionIndex("h3_swiglu_int8_tma") else Model.functionIndex("h3_gemm_int8_tma");
+         try self.launchShared(name, blocks, 256, gemm_shared, &args);
