@@ -40,10 +40,11 @@ tokens exit non-zero and the script goes on, ending 0 with 33.8 tok/s at one str
 `codync@rtx-spark`, relayed by the Desk, one step a run. It installs and downloads nothing; the laptop has PowerShell
 but no Python or WSL, so the 1/4-stream client is the script's own, not `bench_concurrent.py`.
 
-1. `-Step fatbins`, then `-Step build`: `zig build fatbins`, then `zig build install native`, both `-Dsm=121
-   -Doptimize=ReleaseFast` with the CUDA 13.5 `windows-arm64` nvcc and `cl.exe` arm64 (`vcvarsall arm64`). 189's
-   Windows fixes are on this branch (`__noinline__` in `glm_index_rope.cuh`, `/wd4819`, POSIX file modes and COM
-   `@alignCast` in the server, no `tf-muse`). Each stops at 9 min; a cut-off step resumes from the zig cache.
+1. `-Step fatbins`, `-Step runner`, then `-Step server`: `zig build fatbins`, `zig build tf-cuda-test`, then `zig
+   build native`, each `-Dsm=121 -Doptimize=ReleaseFast` with the CUDA 13.5 `windows-arm64` nvcc and `cl.exe` arm64
+   (`vcvarsall arm64`). 189's Windows fixes are on this branch (`__noinline__` in `glm_index_rope.cuh`, `/wd4819`,
+   POSIX file modes and COM `@alignCast` in the server, no `tf-muse`). Each stops at 9 min; a cut-off step resumes from
+   the zig cache.
 2. `-Step check`: 188's GB10 checks unchanged, so the laptop's output is held to the host reference the same way:
    `kernel-contract "inkling2 loop"`, `inkling2-serving` and `inkling2-mini-ref` (32 greedy tokens equal to the float64
    reference).
@@ -57,8 +58,9 @@ What differs from the GB10 and is not copied from it:
 - `nvidia-smi` there also lists an NVIDIA NPU, so the script finds the N1X by name and queries only its index;
   `memory.used` over every device gave an array and stopped run 1's serve step.
 - A cold build took 647 s (run 1) and 901 s (run 2) in one piece, over a run's 10 minutes, so nvcc's kernel images are
-  their own step. The host float64 reference takes 226 s on the laptop, so the planted control is its own step: run 2
-  ran both in one step for 11 min 10 s.
+  their own step; `install` also builds a dozen products this card never runs (run 4 below), so the runner and the
+  server are a step each. The host float64 reference takes 226 s on the laptop, so the planted control is its own
+  step: run 2 ran both in one step for 11 min 10 s.
 - The serve step times replies from the server's log, not the client: run 2's client read the stream line by line and
   spawned `nvidia-smi` per line, which put it at 6.7 tok/s at one stream while the server decoded at 32.2.
 - Memory is the WDDM pool the firmware gives CUDA (51,816 MiB on this laptop), not `/proc/meminfo`; admission reads it
@@ -72,6 +74,11 @@ above stopped the script before any tok/s.
 Run 3 at `a86ccbd1` (request `39062c42`, clean tree): `-Step fatbins` exited 1 in 20 s with `no such step:
 fatbins-Dsm=121`, as PowerShell unrolled the one-element target list to a string that `+` then appended to; the
 script now keeps it an array.
+
+Run 4 at `26de8309` (request `407e1d7b`, clean tree): `-Step fatbins` exited 0 in 83 s with 143 images; `-Step build`
+(`install native`) stopped at 9 min twice without a compile error, building `tf-drama-quant`, `tf-qwen35-learn` and
+the rest of `install` beside the two binaries the checks and serving run. Cold aarch64-windows ReleaseFast
+cross-compiles on a Mac took 104 s for `tf-cuda-test` and 129 s for `tensorfold-native`, each on one core.
 
 ### Receipt: run 2 at `2a37918af`, one capped run
 

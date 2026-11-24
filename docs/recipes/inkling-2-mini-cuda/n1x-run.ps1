@@ -1,9 +1,9 @@
 # Inkling 2 Mini (revision ed40e7da62) whole on an RTX Spark N1X laptop, native Windows ARM64, run by its Codync bot:
-#   powershell -ExecutionPolicy Bypass -File docs\recipes\inkling-2-mini-cuda\n1x-run.ps1 -Step fatbins|build|check|control|serve
+#   powershell -ExecutionPolicy Bypass -File docs\recipes\inkling-2-mini-cuda\n1x-run.ps1 -Step fatbins|runner|server|check|control|serve
 # From a clean checkout with `vcvarsall arm64` set up and CUDA_PATH naming the windows-arm64 toolkit. Installs, downloads
 # and deletes nothing outside .\zig-out and $env:TEMP\inkling2-n1x. Each step stops itself inside 10 minutes.
 param(
-    [Parameter(Mandatory)][ValidateSet('fatbins', 'build', 'check', 'control', 'serve')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('fatbins', 'runner', 'server', 'check', 'control', 'serve')][string]$Step,
     [string]$Model = 'C:\models\Inkling-2-Mini-ed40e7da62'
 )
 $ErrorActionPreference = 'Stop'
@@ -34,12 +34,12 @@ Write-Output "power plan: $(powercfg /getactivescheme)"
 $test = 'zig-out\bin\tf-cuda-test.exe'
 $server = 'zig-out\native\bin\tensorfold-native.exe'
 
-# A cold build ran 15 min in one piece (run 2), so it is two steps: nvcc's 147 kernel images, then the Zig products over
-# them from the cache. Each stops at 9 min; a step cut off resumes from the cache when it runs again.
-if ($Step -in 'fatbins', 'build') {
-    # @() keeps 'fatbins' an array: an if's one-element result unrolls to a string, and + would then append to it
-    $targets = @(if ($Step -eq 'fatbins') { 'fatbins' } else { 'install', 'native' })
-    $argv = $targets + @('-Dsm=121', "`"-Dnvcc=$env:CUDA_PATH\bin\nvcc.exe`"", '-Doptimize=ReleaseFast')
+# A cold build ran 15 min in one piece (run 2) and `install native` twice ran past 9 min (run 4), building a dozen
+# products this card does not run, so each step builds one thing: nvcc's 147 kernel images, then tf-cuda-test, then
+# tensorfold-native. Each stops at 9 min; a step cut off resumes from the cache when it runs again.
+$targets = @{ fatbins = 'fatbins'; runner = 'tf-cuda-test'; server = 'native' }
+if ($targets.ContainsKey($Step)) {
+    $argv = @($targets[$Step], '-Dsm=121', "`"-Dnvcc=$env:CUDA_PATH\bin\nvcc.exe`"", '-Doptimize=ReleaseFast')
     Write-Output "> zig build $argv"
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $zig = Start-Process -FilePath zig -ArgumentList (@('build') + $argv) -PassThru -NoNewWindow
