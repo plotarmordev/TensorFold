@@ -1,16 +1,24 @@
 #!/bin/sh
 # Inkling 2 Mini decode levers on TOP's GB10, the inference-optimisation skill's way:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/hillclimb.sh
-# After setup.sh's build and exactness gates, estimate the no-draft ceilings at 1 and 64 streams, then bench fresh
-# servers control, lever A, control, lever B, control. Each arm runs same-prompt c1 (6 reps), same-prompt c64 and
+# setup.sh's cold build and exactness gates run first and log "build: N s". Only the measurement then runs under
+# `timeout 580` and logs "measure: N s": the no-draft ceilings at 1 and 64 streams, then fresh servers control, lever A,
+# control, lever B, control. Each arm runs same-prompt c1 (6 reps), same-prompt c64 and
 # mixed-prompt c64 (3 reps each), greedy, 128 tokens. Every stream must produce a valid timing. Keep a lever only if
 # its median beats both neighbouring controls by over 3% at one level/case without losing over 3% elsewhere.
 # Every successful or failed arm lands in /work/out/inkling2/ledger.jsonl.
 set -eu
-if [ "${INKLING_HILLCLIMB_DEADLINE:-}" != 1 ]; then
-    INKLING_HILLCLIMB_DEADLINE=1 exec timeout --signal=INT --kill-after=20s 580 sh "$0"
+if [ "${1:-}" != measure ]; then
+    start=$(date +%s)
+    . docs/recipes/inkling-2-mini-cuda/setup.sh
+    echo "build: $(($(date +%s) - start)) s"
+    export model out
+    start=$(date +%s)
+    status=0
+    timeout --signal=INT --kill-after=20s 580 sh "$0" measure || status=$?
+    echo "measure: $(($(date +%s) - start)) s"
+    exit "$status"
 fi
-. docs/recipes/inkling-2-mini-cuda/setup.sh
 python3 docs/recipes/inkling-2-mini-cuda/ceiling.py "$model" 273 1 64
 prompts=docs/recipes/inkling-2-mini-cuda/prompts-64.json
 prompt_sha=$(sha256sum "$prompts" | cut -d' ' -f1)
@@ -31,7 +39,8 @@ arm() {
     env "$@" /work/sm121/native/bin/tensorfold-native serve "$model" --backend cuda --host 127.0.0.1 --port 8188 \
         --name inkling-2-mini --parallel 64 --context 4096 --no-update-check >"$out/server-$name.log" 2>&1 &
     server=$!
-    python3 - "$server" <<'EOF'
+    failed_case=
+    python3 - "$server" <<'EOF' || failed_case=startup
 import os, sys, time, urllib.request
 for _ in range(900):
     try:
@@ -48,8 +57,8 @@ for _ in range(900):
         time.sleep(1)
 raise SystemExit("server did not answer /v1/models in 15 min")
 EOF
-    failed_case=
     for case in same-1 same-64 mixed-64; do
+        [ -z "$failed_case" ] || break
         level=${case##*-}
         reps=$([ "$level" = 1 ] && echo 6 || echo 3)
         if [ "$case" = mixed-64 ]; then
@@ -60,11 +69,10 @@ EOF
             python3 tools/bench_concurrent.py http://127.0.0.1:8188 inkling-2-mini --levels "$level" --tokens 128 \
                 --reps "$reps" --temperatures 0 --label "$name-$case" --output "$out/$name-$case.json" >/dev/null || failed_case=$case
         fi
-        [ -z "$failed_case" ] || break
     done
     stop_server
     if [ -n "$failed_case" ]; then
-        printf '{"arm":"%s","case":"%s","failed":"benchmark exited nonzero","prompts_file":"%s","prompts_sha256":"%s"}\n' \
+        printf '{"arm":"%s","case":"%s","failed":"exited nonzero","prompts_file":"%s","prompts_sha256":"%s"}\n' \
             "$name" "$failed_case" "$prompts" "$prompt_sha" | tee -a "$out/ledger.jsonl"
         return 1
     fi

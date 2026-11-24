@@ -49,7 +49,8 @@ Linux route. From #1010 (`5b1f10812`) and #2107:
 
 ## Hill-climb and limits
 
-`hillclimb.sh` runs `setup.sh`'s build and exactness gates, then the no-draft limits from `ceiling.py`, then fresh servers in
+`hillclimb.sh` runs `setup.sh`'s build, checkpoint digest check and exactness gates (logged as `build: N s`), then,
+under `timeout 580` alone (logged as `measure: N s`), the no-draft limits from `ceiling.py` and fresh servers in
 the order control, `TF_NVFP4_DECODE_WARPS=1`, control, `TF_QMMF_HALF_BELOW=0`, control. It measures one same-prompt
 stream and 64 same-prompt and mixed-prompt streams; each cell requires a valid timing from every request. The 64
 different prompts in [`prompts-64.json`](prompts-64.json) have sha256
