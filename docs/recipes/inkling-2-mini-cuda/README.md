@@ -73,6 +73,9 @@ What differs from the GB10 and is not copied from it:
 Run 1 at `b2ddc3de` (clean tree): build exit 0; check passed as in run 2; serve was ready in 55.3 s, then the NPU row
 above stopped the script before any tok/s.
 
+Run 2 at `2a37918a` (request `bb869e9b`, clean tree): one 15-minute `build` and one `check` with the control (11 min
+10 s), both exit 0 with run 6's results; serve 32.2 tok/s at one stream, 117.0 total at four, pool peak 23,335 MiB.
+
 Run 3 at `a86ccbd1` (request `39062c42`, clean tree): `-Step fatbins` exited 1 in 20 s with `no such step:
 fatbins-Dsm=121`, as PowerShell unrolled the one-element target list to a string that `+` then appended to; the
 script now keeps it an array.
@@ -90,23 +93,30 @@ kernel-contract-fatbins` with a stand-in nvcc makes 0 of its 180 calls), the run
 own step, and each build step logs zig's output. Serve passed again: ready in 55.2 s, 32.2 tok/s at one stream (first
 token 0.098 s), 115.4 total at four, pool peak 23,119 MiB; check and control did not run without `tf-cuda-test`.
 
-### Receipt: run 2 at `2a37918af`, one capped run
+### Receipt: run 6 at `2c9228a8`, one capped run
 
-Desk request `bb869e9b` on `codync@rtx-spark`, clean clone (`git status --porcelain` empty before and after the build),
+Desk run on `codync@rtx-spark`, relayed by Capri, 24 Nov 13:56:50-14:27:27, warm folder `tf243-a86c`, clean tree.
+`vcvarsall arm64` 0, cl 14.44.35207 HostARM64, nvcc 13.5 V13.5.37, zig 0.17.0; N1X sm_121, 48 SMs, 51,816 MiB,
+driver 621.01, power plan Balanced. Each step is
 `powershell -ExecutionPolicy Bypass -File docs\recipes\inkling-2-mini-cuda\n1x-run.ps1 -Step <step>`. This is one run
 with these settings, not a benchmark.
 
 | Step | Exit | Time | Result |
 |---|---|---|---|
-| `build` | 0 | 15 min 1 s (cold cache) | no error lines |
-| `check` (with the control, as it then was) | 0 | 11 min 10 s | `kernel-contract "inkling2 loop"` 5/5 pass gates 1-4, 2/2 controls red; `inkling2-serving` PASS (CUDA equals the host reference token for token, fresh equals resumed, admission); `inkling2-mini-ref` 0 of 32 tokens differ (smallest margin 0.110, 226 s); planted control 6 of 32 differ, exit 1 |
-| `serve` | 0 | | ready in 58.4 s: 19.82 GiB model, 4 streams x 0.49 GiB at 8192, 16 GiB prompt cache |
+| `fatbins` | 0 | 84 s | 143 images |
+| `images` | 0 | 151 s | 180 images |
+| `runner` | 0 | 493 s | `tf-cuda-test` |
+| `server` | 0 | 347 s | `tensorfold-native` |
+| `check` | 0 | | `kernel-contract "inkling2 loop"` 5/5 pass gates 1-4, 2/2 controls red, 0 limit problems (101,376 B shared, 1024 threads; MLP128 sm_120 only); `inkling2-serving` PASS (CUDA equals the host reference token for token, fresh equals resumed, 2 lanes share rounds and a 3rd waits at 17.60 GiB weights); `inkling2-mini-ref` 0 of 32 greedy tokens differ (smallest margin 0.110) |
+| `control` | 0 | | planted control 6 of 32 differ (positions 15, 18, 19, 38, 39, 42), its exit non-zero as required |
+| `serve` | 0 | | ready in 58.5 s |
 
 | Streams | First token | Decode a stream | Total decode | Failed |
 |---|---|---|---|---|
-| 1 | 0.104 s | 32.2 tok/s | 32.2 tok/s | 0 |
-| 4 | 0.096-0.357 s | 28.8 / 29.1 / 29.4 / 29.7 tok/s | 117.0 tok/s (3.63x) | 0 |
+| 1 | 0.099 s | 32.3 tok/s | 32.3 tok/s | 0 |
+| 4 | 0.087-0.356 s | 28.5 / 28.8 / 29.1 / 29.4 tok/s | 115.8 tok/s (3.59x) | 0 |
 
-Times are the server's `done` lines (256 tokens each, `finish=length`). Peak GPU memory: the WDDM pool's largest
-sample was 23,335 MiB (run 1 sampled 2.7 GiB before the server). The N1X decoded one stream as fast as GB10 (32.2
-against 32.5 tok/s) and four streams at 117.0 against 117.8.
+Times are the server's `done` lines (256 tokens each). Peak GPU memory: the WDDM pool went from 2,714 MiB before the
+server to 23,315 MiB after load and peaked at 23,324 MiB; the server's working set peaked at 3,973 MiB. The server
+warned that `tfgrammar.dll` is missing (a source build). As deployments, not chips: this laptop decoded one stream at
+32.3 tok/s against GB10's 32.5, and four at 115.8 against 117.8.
