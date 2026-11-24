@@ -1,0 +1,58 @@
+# top-957270e2461a plant-203-limits.sh at 89d5f14c6, the door's last 200 lines, 'no compiled usage recorded' rows removed
+# removed 146 rows (of 153; the first 7 were above the door's cut): drama3 x5, qwen35 x5, qwen35_kv8 x8, qwen4_gdn x20, qwen4_hc x48, qwen4_ple x40, qwen4_projection x20 -- none h3
+
+N/A dsv41_x3gm _ZN10dsv41_x3gm9gm_kernelILi2ELi2ELi3ELi1ELi16ELi4ELi3ELi4EEEvNS_4ArgsE on sm_121: optional shared-memory limit
+N/A dsv41_x3gm _ZN10dsv41_x3gm9gm_kernelILi2ELi2ELi4ELi1ELi16ELi4ELi3ELi4EEEvNS_4ArgsE on sm_121: optional shared-memory limit
+N/A dsv41_x3gm _ZN10dsv41_x3gm9gm_kernelILi2ELi2ELi5ELi1ELi16ELi4ELi3ELi4EEEvNS_4ArgsE on sm_121: optional shared-memory limit
+N/A dsv41_x3gm _ZN10dsv41_x3gm9gm_kernelILi2ELi2ELi6ELi1ELi16ELi4ELi3ELi4EEEvNS_4ArgsE on sm_121: optional shared-memory limit
+N/A dsv41_x3gm _ZN10dsv41_x3gm9gm_kernelILi2ELi2ELi7ELi1ELi16ELi4ELi3ELi4EEEvNS_4ArgsE on sm_121: optional shared-memory limit
+N/A dsv41_x3gm _ZN10dsv41_x3gm9gm_kernelILi2ELi2ELi8ELi1ELi16ELi4ELi3ELi4EEEvNS_4ArgsE on sm_121: optional shared-memory limit
+N/A dsv41_x3gm _ZN10dsv41_x3gm9gm_kernelILi2ELi2ELi10ELi1ELi16ELi4ELi3ELi4EEEvNS_4ArgsE on sm_121: optional shared-memory limit
+FAIL limits: 1742 registered CUDA launches against sm_80/86/89/120/121, 198 problems
+INFO limits live: images built by nvcc 13.0, checked against nvcc 13.0's records
+FAIL limits live qmm_prefill many bit-exact BF16 launch fusion: 256 threads launched, the driver allows 256; 130 registers, 0 + 62976 shared bytes (recorded 128, 0)
+FAIL limits live flashnext_hcn fn_hcn_down2: 224 threads launched, the driver allows 224; 161 registers, 0 + 13312 shared bytes (recorded 152, 0)
+FAIL limits live flashnext_hcn fn_hcn_down3: 224 threads launched, the driver allows 224; 190 registers, 0 + 19968 shared bytes (recorded 189, 0)
+FAIL limits live flashnext_hcn fn_hcn_up3: 256 threads launched, the driver allows 256; 128 registers, 0 + 43776 shared bytes (recorded 127, 0)
+FAIL limits live nemo_audio tf_nemo_attn64: 256 threads launched, the driver allows 256; 68 registers, 43264 + 0 shared bytes (recorded 69, 43264)
+FAIL limits live muse_glue muse_rms: 1024 threads launched, the driver allows 1024; 19 registers, 132 + 0 shared bytes (recorded 21, 132)
+FAIL limits live muse_glue muse_expert_sum: 1024 threads launched, the driver allows 1024; 28 registers, 132 + 0 shared bytes (recorded 29, 132)
+FAIL limits live muse_glue muse_softcap: 256 threads launched, the driver allows 1024; 30 registers, 0 + 0 shared bytes (recorded 29, 0)
+FAIL limits live muse_glue muse_argmax: 256 threads launched, the driver allows 1024; 40 registers, 2048 + 0 shared bytes (recorded 35, 2048)
+FAIL limits live muse_linear muse_linear_multi_k2: 128 threads launched, the driver allows 128; 128 registers, 16 + 16384 shared bytes (recorded 143, 16)
+FAIL limits live muse_linear muse_linear2_k2_w4: 128 threads launched, the driver allows 128; 245 registers, 16 + 16384 shared bytes (recorded 241, 16)
+FAIL limits live muse_linear muse_linear2_k2_w8: 256 threads launched, the driver allows 256; 251 registers, 16 + 32768 shared bytes (recorded 245, 16)
+FAIL limits live muse_linear muse_linear_multi_k3: 128 threads launched, the driver allows 128; 153 registers, 16 + 16384 shared bytes (recorded 159, 16)
+FAIL limits live muse_linear muse_linear2_k3_w8: 256 threads launched, the driver allows 256; 252 registers, 16 + 32768 shared bytes (recorded 255, 16)
+FAIL limits live muse_linear muse_linear_multi_k4: 128 threads launched, the driver allows 128; 128 registers, 16 + 16384 shared bytes (recorded 143, 16)
+FAIL limits live muse_linear muse_linear2_k4_w4: 128 threads launched, the driver allows 128; 245 registers, 16 + 16384 shared bytes (recorded 241, 16)
+FAIL limits live muse_linear muse_linear2_k4_w8: 256 threads launched, the driver allows 256; 251 registers, 16 + 32768 shared bytes (recorded 245, 16)
+FAIL limits live muse_linear muse_linear_multi_k5: 128 threads launched, the driver allows 128; 154 registers, 16 + 16384 shared bytes (recorded 160, 16)
+FAIL limits live muse_linear muse_linear2_k5_w4: 128 threads launched, the driver allows 128; 253 registers, 16 + 16384 shared bytes (recorded 251, 16)
+FAIL limits live muse_linear muse_linear2_k5_w8: 256 threads launched, the driver allows 256; 255 registers, 16 + 32768 shared bytes (recorded 251, 16)
+FAIL limits live muse_linear muse_linear_multi_k6: 128 threads launched, the driver allows 128; 154 registers, 16 + 16384 shared bytes (recorded 160, 16)
+FAIL limits live muse_linear muse_linear2_k6_w4: 128 threads launched, the driver allows 128; 255 registers, 16 + 16384 shared bytes (recorded 250, 16)
+FAIL limits live muse_linear muse_linear2_k6_w8: 256 threads launched, the driver allows 256; 255 registers, 16 + 32768 shared bytes (recorded 250, 16)
+FAIL limits live muse_linear muse_linear_multi_k8: 128 threads launched, the driver allows 128; 141 registers, 16 + 16384 shared bytes (recorded 143, 16)
+FAIL limits live muse_linear muse_linear2_k8_w4: 128 threads launched, the driver allows 128; 245 registers, 16 + 16384 shared bytes (recorded 243, 16)
+FAIL limits live muse_linear muse_rot_multi: 128 threads launched, the driver allows 128; 24 registers, 0 + 0 shared bytes (recorded 23, 0)
+FAIL limits live muse_dflash2 dfl_topk: 256 threads launched, the driver allows 256; 48 registers, 3072 + 0 shared bytes (recorded 20, 3072)
+FAIL limits live muse_dflash2 dfl_walk: 512 threads launched, the driver allows 512; 38 registers, 196 + 0 shared bytes (recorded 40, 196)
+FAIL limits live flashnext_mtp fn_row_topk: 1024 threads launched, the driver allows 1024; 34 registers, 9228 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_experts tf_exl3_prompt_gu: 256 threads launched, the driver allows 256; 124 registers, 43264 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_experts tf_exl3_prompt_down: 256 threads launched, the driver allows 256; 126 registers, 43264 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_experts tf_exl3_prompt_gu_k6: 256 threads launched, the driver allows 256; 127 registers, 40192 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_experts tf_exl3_prompt_down_k6: 256 threads launched, the driver allows 256; 127 registers, 40192 + 0 shared bytes (recorded 0, 0)
+FAIL limits live drama3 d3_router_compact: 256 threads launched, the driver allows 1024; 26 registers, 592 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_grouped tf_ctl_exl3_grouped_old_0: 128 threads launched, the driver allows 512; 127 registers, 32896 + 0 shared bytes (recorded 127, 32832)
+FAIL limits live exl3_grouped tf_ctl_exl3_grouped_old_1: 128 threads launched, the driver allows 512; 128 registers, 32896 + 0 shared bytes (recorded 128, 32832)
+FAIL limits live exl3_grouped tf_ctl_exl3_grouped_old_2: 128 threads launched, the driver allows 512; 128 registers, 32896 + 0 shared bytes (recorded 128, 32832)
+FAIL limits live GLM BF16 tf_ctl_glm_old_rmsnorm_512: 128 threads launched, the driver allows 128; 22 registers, 128 + 0 shared bytes (recorded 22, 16)
+FAIL limits live GLM BF16 tf_ctl_glm_old_rmsnorm_1536: 128 threads launched, the driver allows 128; 40 registers, 128 + 0 shared bytes (recorded 40, 16)
+FAIL limits live GLM BF16 tf_ctl_glm_old_rmsnorm_4096: 256 threads launched, the driver allows 256; 39 registers, 128 + 0 shared bytes (recorded 39, 32)
+FAIL limits live GLM BF16 tf_ctl_glm_old_hc_finish: 256 threads launched, the driver allows 256; 79 registers, 128 + 0 shared bytes (recorded 79, 48)
+RED  limits live control: past its bounds: 512 threads launched, the driver allows 256; 10 registers, 0 + 0 shared bytes (recorded 10, 0)
+RED  limits live control: heavy at 1,024 threads: 1024 threads launched, the driver allows 384; 166 registers, 0 + 0 shared bytes (recorded 166, 0)
+FAIL kernel-contract-suites limits: 239 limit problems
+FAIL kernel-contract-suites: TestFailed
+

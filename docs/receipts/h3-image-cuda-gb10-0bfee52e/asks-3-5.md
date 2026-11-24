@@ -71,14 +71,22 @@ alone took about 750 s in earlier receipts. Job `g0` ran on the GB10 and its gat
 ```
 
 Its exit 1 comes from the 41 live-limit problems: a shard checks every registered launch's live limits. The log was
-read through its last 80 lines, so it does not name the 41 records. Those lines show the H3 and DSv41 records passing,
-so these are presumed to be the same stale non-H3 records as the five-SM audit, but this is unverified.
+read through its last 80 lines, so it does not name the 41 records; `top-957270e2461a`'s `limits` run below names
+them and none is H3.
 
-Job `limits` (`top-08c281336b68`, at `6d6faf83f`) measured in 12 s and ended with `FAIL kernel-contract-suites limits:
-239 limit problems`. The door returns only a log's last 200 lines, all of them `PASS`, so this log does not name the
-239 records. Its jobs now print every non-PASS line and count the PASS lines (`89d5f14c6`). Not yet run at that sha:
-`limits` (rerun), `g1` to `g5`, `back` and `after`, about 10 min of TOP each plus the queue. `g1`'s `swarm gpu-run`
-holds a ticket in the queue behind the card 204 check and four earlier runs.
+Job `limits` ran twice. `top-08c281336b68` (at `6d6faf83f`) measured in 12 s and ended `FAIL kernel-contract-suites
+limits: 239 limit problems`; the door's last 200 lines were all `PASS`, so that log named none of them. The rerun,
+`top-957270e2461a` (at `89d5f14c6`, which prints every non-PASS line), names all 239 in
+`limits-top-957270e2461a.txt`: 198 audit problems across sm_80/86/89/120/121 (153 `no compiled usage recorded` rows on
+drama3, qwen35, qwen35_kv8, qwen4_gdn, qwen4_hc, qwen4_ple and qwen4_projection launches, 7 `optional shared-memory
+limit` N/As on dsv41_x3gm, plus the stale-record rows the audit counted before) and 41 `FAIL limits live` rows —
+the same live-limit drift on qmm_prefill, flashnext_hcn, nemo_audio, muse_*, dfl_*, fn_row_topk, exl3_*,
+tf_ctl_glm_old_* and drama3, plus the two planted live controls going `RED`. No line is H3: the audit's rows name
+only those non-H3 families and the live FAILs match `g0`'s unverified 41 count for count, confirming them as the
+same stale non-H3 records. All of it is pre-existing on Ash's main: this head adds only the h3_image_* sources and
+their registry line under `zig/kernels/cuda` and `zig/src/core/contract`.
+
+Still to run at `89d5f14c6`: `g1` to `g5`, `back` and `after`, about 10 min of TOP each plus the queue.
 
 On this Mac, `zig build test test-golden` at this head ends `991/998 steps succeeded (5 failed); 1909/1943 tests
 passed, 4 failed`. The base `2f5e1ca37` on the same Mac ends `989/998 steps succeeded (7 failed); 17444/17596 tests
@@ -94,3 +102,8 @@ At `2f5e1ca37`, the PR's head (checked 24 Nov), every job passes: `zig`, `zig-b`
 `release-paths (ubuntu-24.04)`, `comfyui-moss-installer` and `benchmark-clients` on Ubuntu and Windows.
 `host-nightly-linux` and `host-nightly-macos` are skipped. At `64fdb3215`, `zig` was red at lean check on a two-line
 comment in `contract_limits.zig` from this branch. Ash's main is not red there, and `e27a4ecf4` fixes it.
+
+The PR's head moved to `c433b7902` since this card's code went in (someone pushed more work). Checked 24 Nov
+~21:50: every job is pending again on the new head — `zig`, `zig-b`, `zig-windows`, `zig-macos-dev-tools`, `fmt`,
+`pytest`, `release-paths (ubuntu-24.04)`, `comfyui-moss-installer`, `benchmark-clients` on Ubuntu and Windows;
+`host-nightly-linux` and `host-nightly-macos` skip. No red job at this head.
