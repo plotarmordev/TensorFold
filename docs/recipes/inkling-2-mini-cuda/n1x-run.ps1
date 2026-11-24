@@ -111,6 +111,7 @@ if ($Step -eq 'control') {
 Pool 'before the server'
 $port = 8188
 $proc = Start-Process -FilePath $server -PassThru -NoNewWindow -RedirectStandardOutput "$out\server.log" `
+    -RedirectStandardError "$out\server.err" -ArgumentList @('serve', "`"$Model`"", '--backend', 'cuda',
     '--host', '127.0.0.1', '--port', $port, '--name', 'inkling-2-mini', '--parallel', '8', '--context', '8192',
     '--no-update-check')
 try {
