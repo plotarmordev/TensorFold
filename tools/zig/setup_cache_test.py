@@ -117,11 +117,14 @@ class SetupCacheTests(unittest.TestCase):
 
     def test_every_entry_point_rejects_a_cache_path_with_a_newline(self):
         root = self.checkout("card")
-        cache = f"{root}\n"  # Command substitution would strip the newline and use the checkout itself.
-        results = [self.setup_cache(root, cache), *self.entry_points(root, {**self.stubs(), "ZIG_LOCAL_CACHE_DIR": cache})]
-        for result in results:
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("must not contain a newline", result.stderr)
+        link = self.work / "link"
+        link.symlink_to(f"{root}\n")  # Resolves to a newline only after the link is followed.
+        # Command substitution would strip the newline and use the checkout itself.
+        for cache in (f"{root}\n", str(link)):
+            env = {**self.stubs(), "ZIG_LOCAL_CACHE_DIR": cache}
+            for result in (self.setup_cache(root, cache), *self.entry_points(root, env)):
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must not contain a newline", result.stderr)
         self.assertEqual(list(root.iterdir()), [root / "tools"])
 
     def test_metal_checker_stages_runner_and_tensors_outside_checkout(self):

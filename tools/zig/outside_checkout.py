@@ -8,13 +8,14 @@ import sys
 
 
 def outside(root, path):
-    # Shell command substitution strips trailing newlines, so the callers would use another path than the one checked.
-    if "\n" in str(path):
-        sys.exit("ZIG_LOCAL_CACHE_DIR must not contain a newline")
     path = Path(path)
     if not path.is_absolute():
         sys.exit("ZIG_LOCAL_CACHE_DIR must be absolute")
     path = Path(os.path.realpath(path))
+    # Checked on the printed canonical path: a symlink can resolve to one with a newline, and shell command
+    # substitution strips trailing newlines, so the callers would use another path than the one checked.
+    if "\n" in str(path):
+        sys.exit("ZIG_LOCAL_CACHE_DIR must not contain a newline")
     root = os.stat(root)
     for folder in (path, *path.parents):
         if folder.exists() and os.path.samestat(os.stat(folder), root):
