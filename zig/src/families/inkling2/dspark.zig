@@ -167,6 +167,68 @@ pub const Kernels = struct {
         k.mod.unload();
     }
 
+    /// taps [n][4][H] fused into c [4][n][H] by each fusion's softmax weights, normed by its dflare row; fusion 3's
+    /// last row also lands in newest [H].
+    pub fn launchFuse(k: *const Kernels, s: cuda.Stream, taps_in: u64, fuse: u64, dflare: u64, c: u64, newest: u64, n: usize) !void {
+        var a: cuda.Args = .{};
+        for ([_]u64{ taps_in, fuse, dflare, c, newest }) |p| a.add(p);
+        a.add(@as(c_int, @intCast(n)));
+        try go(k.fuse, s, .{ .x = @intCast(n), .y = 4 }, 256, &a);
+    }
+
+    /// Rows k/v [n][KV] normed (k) and RoPE'd at positions base.. into a layer's rings, one warp a (row, kv head).
+    pub fn launchCtx(k: *const Kernels, s: cuda.Stream, k_in: u64, v_in: u64, knorm: u64, ring_k: u64, ring_v: u64, base: u64, n: usize, ring: u32) !void {
+        var a: cuda.Args = .{};
+        for ([_]u64{ k_in, v_in, knorm, ring_k, ring_v }) |p| a.add(p);
+        a.add(@as(u32, @intCast(base)));
+        a.add(@as(c_int, @intCast(ring)));
+        try go(k.ctx, s, .{ .x = @intCast(n), .y = 8 }, 32, &a);
+    }
+
+    /// Block row 0 the pending token's normed embedding, rows 1.. the mask row; writes the fp32 residual and the
+    /// first input norm x [8][H].
+    pub fn launchInit(k: *const Kernels, s: cuda.Stream, pending: u64, embed: u64, embed_norm: u64, embed_eps: f32, mask: u64, norm: u64, resid: u64, x: u64) !void {
+        var a: cuda.Args = .{};
+        for ([_]u64{ pending, embed, embed_norm }) |p| a.add(p);
+        a.add(embed_eps);
+        for ([_]u64{ mask, norm, resid, x }) |p| a.add(p);
+        try go(k.init, s, .{ .x = rows }, 256, &a);
+    }
+
+    /// The block's Q and K heads normed and RoPE'd at anchor + row in place; one warp a (row, head).
+    pub fn launchQk(k: *const Kernels, s: cuda.Stream, q: u64, kb: u64, qnorm: u64, knorm: u64, anchor: u64) !void {
+        var a: cuda.Args = .{};
+        for ([_]u64{ q, kb, qnorm, knorm }) |p| a.add(p);
+        a.add(@as(u32, @intCast(anchor)));
+        try go(k.qk, s, .{ .x = rows, .y = 32 }, 32, &a);
+    }
+
+    /// Attention of each (row, q head): the context ring's keys from..committed (locals keep the last 1024), then the
+    /// block's eight rows; one warp a (row, head).
+    pub fn launchAttn(k: *const Kernels, s: cuda.Stream, q: u64, bk: u64, bv: u64, ring_k: u64, ring_v: u64, out: u64, from: u64, committed: u64, ring: u32, local: bool) !void {
+        var a: cuda.Args = .{};
+        for ([_]u64{ q, bk, bv, ring_k, ring_v, out }) |p| a.add(p);
+        a.add(@as(u32, @intCast(from)));
+        a.add(@as(u32, @intCast(committed)));
+        a.add(@as(c_int, @intCast(ring)));
+        a.add(@as(c_int, @intFromBool(local)));
+        try go(k.attn, s, .{ .x = rows, .y = 24 }, 32, &a);
+    }
+
+    /// The Markov chain's step-independent z part per (step, channel): one warp each of 768 over 7 steps.
+    pub fn launchKappa(k: *const Kernels, s: cuda.Stream, y: u64, newest: u64, rnn: u64, bias: u64, kappa: u64) !void {
+        var a: cuda.Args = .{};
+        for ([_]u64{ y, newest, rnn, bias, kappa }) |p| a.add(p);
+        try go(k.kappa, s, .{ .x = 3 * rank / 8, .y = depth }, 256, &a);
+    }
+
+    /// One Markov step: z from the state and prev's markov row, the gated update, then h bf16 [H] for the unembed.
+    pub fn launchStep(k: *const Kernels, s: cuda.Stream, prev: u64, markov: u64, rnn: u64, kappa: u64, hidden_w: u64, hidden_b: u64, y: u64, state: u64, h: u64) !void {
+        var a: cuda.Args = .{};
+        for ([_]u64{ prev, markov, rnn, kappa, hidden_w, hidden_b, y, state, h }) |p| a.add(p);
+        try go(k.step, s, .{ .x = 1 }, 3 * rank, &a);
+    }
+
     /// act = silu(gate) * up over `count` bf16 values (a multiple of 256).
     pub fn launchSwiglu(k: *const Kernels, s: cuda.Stream, gate: u64, up: u64, act: u64, count: usize) !void {
         var a: cuda.Args = .{};
@@ -246,11 +308,15 @@ test "a rejected absorb leaves the context's span whole and the next one lands" 
     var c: Context = .{ .k = undefined, .v = undefined, .rings = .{ local_ring, 64, local_ring }, .newest = undefined, .from = 10, .end = 20 };
     try std.testing.expectError(error.DSparkContextFull, c.admit(100, 65));
     try std.testing.expectError(error.DraftContextGap, c.admit(19, 1));
+    try std.testing.expectEqual(@as(u64, 10), c.from);
+    try std.testing.expectEqual(@as(u64, 20), c.end);
     try std.testing.expectEqual(Context.Span{ .from = 10, .end = 74 }, try c.admit(20, 54));
     const s = try c.admit(100, 64);
-    try std.testing.expectEqual(Context.Span{ .from = 100, .end = 164 }, s);
+    try std.testing.expectEqual(@as(u64, 100), s.from);
+    try std.testing.expectEqual(@as(u64, 164), s.end);
     c.from, c.end = .{ s.from, s.end };
     try std.testing.expectError(error.DraftContextGap, c.admit(163, 1));
+    try std.testing.expectEqual(@as(u64, 164), c.end);
 }
 
 /// The target pieces the head reads: its embedding, embed norm and unembedding, and its lane GEMM.
@@ -328,20 +394,13 @@ pub const Head = struct {
         const span = try c.admit(start, n);
         var at: usize = 0;
         while (at < n) : (at += absorb_rows) {
-            const m: u32 = @intCast(@min(absorb_rows, n - at));
-            var f: cuda.Args = .{};
-            for ([_]u64{ tap_rows + at * 4 * hidden * 2, h.w.fuse, h.w.dflare, h.fused, c.newest.ptr }) |p| f.add(p);
-            f.add(@as(c_int, @intCast(m)));
-            try go(h.k.fuse, s, .{ .x = m, .y = 4 }, 256, &f);
+            const m: usize = @min(absorb_rows, n - at);
+            try h.k.launchFuse(s, tap_rows + at * 4 * hidden * 2, h.w.fuse, h.w.dflare, h.fused, c.newest.ptr, m);
             for (h.w.proj, h.w.norms, 0..) |p, nm, i| {
                 const fused = h.fused + i * m * hidden * 2;
                 try h.gemm(s, fused, m, p.k_ctx, h.ck);
                 try h.gemm(s, fused, m, p.v_ctx, h.cv);
-                var a: cuda.Args = .{};
-                for ([_]u64{ h.ck, h.cv, nm.k_ctx, c.k[i].ptr, c.v[i].ptr }) |ptr| a.add(ptr);
-                a.add(@as(u32, @intCast(start + at)));
-                a.add(@as(c_int, @intCast(c.rings[i])));
-                try go(h.k.ctx, s, .{ .x = m, .y = 8 }, 32, &a);
+                try h.k.launchCtx(s, h.ck, h.cv, nm.k_ctx, c.k[i].ptr, c.v[i].ptr, start + at, m, c.rings[i]);
             }
         }
         c.from, c.end = .{ span.from, span.end };
@@ -352,26 +411,13 @@ pub const Head = struct {
     pub fn draft(h: *const Head, s: cuda.Stream, c: *const Context) !void {
         if (c.end <= c.from) return error.DSparkNoContext;
         const tw = h.t.w;
-        var a: cuda.Args = .{};
-        for ([_]u64{ h.picks, tw.embed, tw.embed_norm }) |p| a.add(p);
-        a.add(tw.config.text.eps);
-        for ([_]u64{ h.w.mask, h.w.norms[0].input, h.resid, h.x }) |p| a.add(p);
-        try go(h.k.init, s, .{ .x = rows }, 256, &a);
+        try h.k.launchInit(s, h.picks, tw.embed, tw.embed_norm, tw.config.text.eps, h.w.mask, h.w.norms[0].input, h.resid, h.x);
         for (h.w.proj, h.w.norms, 0..) |p, nm, i| {
             try h.gemm(s, h.x, rows, p.q, h.q);
             try h.gemm(s, h.x, rows, p.k, h.kb);
             try h.gemm(s, h.x, rows, p.v, h.vb);
-            var qk: cuda.Args = .{};
-            for ([_]u64{ h.q, h.kb, nm.q, nm.k }) |ptr| qk.add(ptr);
-            qk.add(@as(u32, @intCast(c.end)));
-            try go(h.k.qk, s, .{ .x = rows, .y = 32 }, 32, &qk);
-            var at: cuda.Args = .{};
-            for ([_]u64{ h.q, h.kb, h.vb, c.k[i].ptr, c.v[i].ptr, h.att }) |ptr| at.add(ptr);
-            at.add(@as(u32, @intCast(c.from)));
-            at.add(@as(u32, @intCast(c.end)));
-            at.add(@as(c_int, @intCast(c.rings[i])));
-            at.add(@as(c_int, @intFromBool(i != 1)));
-            try go(h.k.attn, s, .{ .x = rows, .y = 24 }, 32, &at);
+            try h.k.launchQk(s, h.q, h.kb, nm.q, nm.k, c.end);
+            try h.k.launchAttn(s, h.q, h.kb, h.vb, c.k[i].ptr, c.v[i].ptr, h.att, c.from, c.end, c.rings[i], i != 1);
             try h.gemm(s, h.att, rows, p.o, h.y);
             try h.addNorm(s, nm.post);
             try h.gemm(s, h.x, rows, p.gate, h.gate);
@@ -380,15 +426,11 @@ pub const Head = struct {
             try h.gemm(s, h.act, rows, p.down, h.y);
             try h.addNorm(s, if (i < 2) h.w.norms[i + 1].input else h.w.norm);
         }
-        var kp: cuda.Args = .{};
-        for ([_]u64{ h.x, c.newest.ptr, h.w.rnn, h.w.rnn_b, h.kappa }) |ptr| kp.add(ptr);
-        try go(h.k.kappa, s, .{ .x = 3 * rank / 8, .y = depth }, 256, &kp);
+        try h.k.launchKappa(s, h.x, c.newest.ptr, h.w.rnn, h.w.rnn_b, h.kappa);
         try (DeviceBuffer{ .d = s.d, .ptr = h.state, .len = rank * 4, .borrowed = true }).fill8(0, s.handle);
         const v = vocab(h.t);
         for (0..depth) |step| {
-            var st: cuda.Args = .{};
-            for ([_]u64{ h.picks + step * 4, h.w.markov, h.w.rnn, h.kappa + step * 3 * rank * 4, h.w.hidden_w, h.w.hidden_b, h.x + (step + 1) * hidden * 2, h.state, h.h }) |ptr| st.add(ptr);
-            try go(h.k.step, s, .{ .x = 1 }, 3 * rank, &st);
+            try h.k.launchStep(s, h.picks + step * 4, h.w.markov, h.w.rnn, h.kappa + step * 3 * rank * 4, h.w.hidden_w, h.w.hidden_b, h.x + (step + 1) * hidden * 2, h.state, h.h);
             const logits = h.logits + step * v * 4;
             try h.t.lane.matmulOut(s, h.h, hidden, 1, tw.unembed, logits, .f32, h.part);
             try h.k.launchPick(s, logits, v, tw.config.text.logit_cap, h.picks + (step + 1) * 4);
