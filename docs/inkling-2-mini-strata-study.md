@@ -106,15 +106,20 @@ measured ≈108 ms c=64 step (64 streams / 590 tok/s), under 1%, so it is not a 
 
 ### 3. fp4 tensor-core MoE — missing
 
-Strata: `ink_moe_fp4_sm120.cu` is compiled for `sm_120a`/`sm_121a`. SF4 experts (e2m1 with an e4m3 scale per 16
-weights, layers 0–19, 44 of 48 visits) run on `mma.sync…kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64`, and MX8
-(layers 20–23) on `kind::mxf8f6f4`. Pack bytes are already in MMA operand order ("zero bit-reordering"). `k_ink_moe_bin`
-builds the grouped expert tiles on device, so it can be captured in a graph. These kernels, and the INT8 tensor-core
-path SQ-10/SQ-15 use, run only at M ≥ 24 rows (c=32, c=64, prefill: `launch_ink_moe_dispatch_only` in
-[`ink_moe_cuda.cuh`](https://github.com/Niko1221/Strata/blob/v0.2.20/engine/src/inkling2/cuda/ink_moe_cuda.cuh),
-lines 3252–3254 and 3328). Below that (solo decode and every verify tree of up to 16 rows) SF4/MX8 run on CUDA
-cores: `k_ink_moe_gu_sf4_mx8<1>` reads each weight once for one row, and `<4>` rereads it once per four-row group;
-the S_K and GGUF codecs use `dp4a` the same way.
+Strata: `ink_moe_fp4_sm120.cu` is compiled for `sm_120a`/`sm_121a`. In SQ-20, SF4 experts (e2m1 with an e4m3 scale per
+16 weights, layers 0–19, 44 of 48 visits) run on `mma.sync…kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64`, and
+MX8 (layers 20–23) on `kind::mxf8f6f4`. Pack bytes are already in MMA operand order ("zero bit-reordering").
+`k_ink_moe_bin` builds the grouped expert tiles on device, so it can be captured in a graph. SQ-10 and SQ-15 keep SF4
+experts too, mixed with S_K codecs (SQ-10: S2/S3_K + SF4, SQ-15: SF4 + S3/4/5_K, per the
+[runner header](https://github.com/Niko1221/Strata/blob/v0.2.20/engine/src/inkling2/metal/ink_metal_runner.h),
+line 4). `launch_ink_moe_dispatch_only` in
+[`ink_moe_cuda.cuh`](https://github.com/Niko1221/Strata/blob/v0.2.20/engine/src/inkling2/cuda/ink_moe_cuda.cuh)
+dispatches on each layer's codec flags, not on the pack: at M ≥ 24 rows (c=32, c=64, prefill; lines 3252–3253) a
+layer's SF4/MX8 experts take these fp4/fp8 tensor-core kernels (line 3292) and its S_K experts take the INT8
+tensor-core `k_ink_moe_sk_tc` (lines 3323–3328), in the same call. So at c=64 SQ-10's SF4 experts run on this lever's
+fp4 path; only its S_K experts use INT8. Below M = 24 (solo decode and every verify tree of up to 16 rows) SF4/MX8 run
+on CUDA cores: `k_ink_moe_gu_sf4_mx8<1>` reads each weight once for one row, and `<4>` rereads it once per four-row
+group; the S_K and GGUF codecs use `dp4a` the same way.
 
 TensorFold: the native block-scaled FP4 mma exists (`zig/kernels/cuda/mma4.cuh`, the same instruction) but only
 Nemotron uses it (`zig/kernels/cuda/ck_experts.cu`). On 188's branch Mini's experts go through the shared grouped
@@ -181,15 +186,17 @@ Strata: paged KV in FP16 or FP8 E4M3 (`engine/src/inkling2/ink_batch.h`, `KvDtyp
 FP16, 16 KiB in FP8, 160 / 80 MiB for the full sliding windows), chosen per server by `kv_dtype`; INT8/4-bit K8V8 and
 K8V4 go further.
 
-TensorFold: Mini holds bf16 KV per slot (`mini_model.zig`: 40 sliding rings of 1,024 tokens, 8 whole caches). With
+TensorFold: Mini holds bf16 KV per slot (`mini_model.zig`: 40 sliding rings, 8 whole caches). A sliding ring covers
+the 1,024-token window plus a 512-row prompt chunk, 1,536 rows after 64-row alignment (`kernels.zig`, `ringFor`). With
 8 KV heads × 128 (Mini's `config.json`), each visit stores 4 KiB of K and V a token in bf16.
 
 Would touch: `zig/src/families/inkling2/mini_model.zig` (cache allocation) and the attention reads in
 `zig/src/families/inkling2/mini_visit.zig`.
-Gain: cache bytes halve. A stream at context L holds 4 KiB × (40·min(L, 1024) + 8·L): 416 MiB at L = 8,192 in bf16
-(26 GiB for 64 streams), 208 MiB in FP8, so twice the streams or context fit the same memory. Decode reads those
-bytes every step: at the end of Strata's bench (L = 320) that is 60 MiB a stream, 3.75 GiB for 64 streams a step,
-of which FP8 saves 1.9 GiB, more at longer context.
+Gain: cache bytes halve. A stream at context L allocates 4 KiB × (40·1,536 + 8·L): 496 MiB at L = 8,192 in bf16
+(31 GiB for 64 streams; 243's laptop serve reports 0.49 GiB a stream), 248 MiB in FP8, so twice the streams or
+context fit the same memory. Decode reads only the live rows, 4 KiB × (40·min(L, 1024) + 8·L) a stream: at the end
+of Strata's bench (L = 320) that is 60 MiB a stream, 3.75 GiB for 64 streams a step, of which FP8 saves 1.9 GiB,
+more at longer context.
 
 ## Strata's engine on TOP, next to ours: measured
 
@@ -246,17 +253,20 @@ lever:
   ([#32704](https://github.com/ggml-org/llama.cpp/pull/32704)) fixes Mini's looped NVFP4 expert scales; and
   [b12641](https://github.com/ggml-org/llama.cpp/releases/tag/b12641)
   ([#32799](https://github.com/ggml-org/llama.cpp/pull/32799), `ignore_merges` for inkling2) brings tokenizer
-  parity, the first fully correct Mini build. [b12642](https://github.com/ggml-org/llama.cpp/releases/tag/b12642)
-  ([#32807](https://github.com/ggml-org/llama.cpp/pull/32807)) also fixes stale expert copies in Mini's shared
-  looped layers when experts stay on the host (`--n-cpu-moe`). llama.cpp has its own parallel batching; this study
-  did not audit which of its kernels Mini takes on Blackwell, and no N1X tok/s for it is known here.
-- TensorFold's own Mini engine builds and passes its checks natively on the N1X, unmerged: card 243's laptop run 1 at
-  `b2ddc3de` (`docs/recipes/inkling-2-mini-cuda/README.md` on `feat/243-inkling-2-mini-runs-on-net-s-rtx-spark-l`)
-  gives build exit 0, `inkling2-serving` 3/3 and `inkling2-mini-ref` 0 of 32 tokens differing; its serve step stopped
-  before any tok/s.
-- What the laptop still needs: a 1/4-stream tok/s receipt for Mini on the N1X (243's run 2), its own measured
-  bandwidth roof, and the GB10 levers below brought over and tuned. TensorFold **already implements** WDDM-pool
-  admission via `cuMemGetInfo_v2` (`docs/WINDOWS.md`, lines 167–173). The kernels target the same `sm_121`.
+  parity, the first fully correct Mini build with experts on the GPU.
+  [b12642](https://github.com/ggml-org/llama.cpp/releases/tag/b12642)
+  ([#32807](https://github.com/ggml-org/llama.cpp/pull/32807)) fixes stale expert copies in Mini's shared looped
+  layers when experts stay on the host (`--n-cpu-moe`), so it is the first fully correct one there. llama.cpp has
+  its own parallel batching; this study did not audit which of its kernels Mini takes on Blackwell, and no N1X tok/s
+  for it is known here.
+- TensorFold's own Mini engine builds, passes its checks and serves natively on the N1X, unmerged (card 243's
+  [`docs/recipes/inkling-2-mini-cuda/README.md`](https://github.com/plotarmordev/TensorFold/blob/df6af4786/docs/recipes/inkling-2-mini-cuda/README.md)
+  at `df6af4786`). Run 1 at `b2ddc3de` gives build exit 0, `inkling2-serving` 3/3 and `inkling2-mini-ref` 0 of 32
+  tokens differing; run 2 at `2a37918af` decodes **32.2** tok/s at one stream and **117.0** total at four (server
+  `done` lines, 256 tokens a stream), against GB10's 32.5 / 117.8, both without drafting.
+- What the laptop still needs: its own measured bandwidth roof, a merge of 243, and the GB10 levers below brought
+  over and tuned. TensorFold **already implements** WDDM-pool admission via `cuMemGetInfo_v2` (`docs/WINDOWS.md`,
+  lines 167–173). The kernels target the same `sm_121`.
 
 ## Follow-up cards, in order
 
@@ -293,9 +303,9 @@ For 207 (GB10):
 
 For 202 (RTX Spark laptop, Windows-native, N1X-tuned):
 
-1. **Validate Mini's CUDA engine `aarch64-windows` at speed.** 243's run 1 already builds and passes the exactness
-   checks on the N1X; what remains is run 2's 1/4-stream tok/s, the WDDM allocation-delta check, and a merge. Gain:
-   a measured N1X baseline; no source cited here gives an N1X tok/s for Inkling 2 Mini.
+1. **Merge Mini's CUDA engine `aarch64-windows`.** 243 already builds, passes the exactness checks and decodes 32.2 /
+   117.0 tok/s at 1 / 4 streams on the N1X (run 2); what remains is the WDDM allocation-delta check and a merge.
+   Gain: the measured N1X baseline lands on main, at GB10's no-draft rate.
 2. **Bring 207's quantised trunk and CUDA DSpark tree to the N1X.** Measure its own bandwidth roof: GB10-class
    silicon does not guarantee 273 GB/s sustained in a laptop. Gain: the trunk's byte ratio raises a bandwidth roof
    up to 1.69× (before quality gating); drafting is unmeasured and depends on N1X acceptance and utilisation.
