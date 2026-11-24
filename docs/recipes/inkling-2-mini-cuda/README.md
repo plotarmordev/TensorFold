@@ -78,10 +78,12 @@ total at 64; SQ-20 gives 46.1 at one and 1,145.1 total at 64. Card 209's TOP run
 SQ-10 pack gave 74.4 at one and 382.5 at 64 with its built-in `--bench` (job `top-edfe387b00e5`), against our
 32.6–32.9 and 589.8–593.0 on the stored checkpoint; prompt lengths (64 vs code/chat), generated lengths (256 vs
 128), client protocols and pack sizes differ, so these are **not matched engine comparisons**. Strata SQ-20 has
-no same-session TOP measurement in this receipt. Neither published pack nor the one-stream bar is beaten by this
-engine; Mini CUDA has no draft path (`takes_drafter = false`). Card 209 proposes a CUDA DSpark tree on #4128's kernels,
-then fp4 tensor-core experts at 64 streams and a smaller pack. Cards 215 and 219 own that work, but their future
-results are not evidence for this card's bar.
+no same-session TOP measurement in this receipt. Card 247's first HTTP run of Strata on the SQ-10 pack (at
+`1e17bb6c`: 53.4, 79.3 and 269.3 tok/s at 1, 4 and 64 streams) returned mostly empty replies, so it is not a fair
+bar yet, and the published rows have not been reproduced on this GB10. Neither published pack nor the one-stream bar
+is beaten by this engine; Mini CUDA has no draft path (`takes_drafter = false`). Card 209 proposes a CUDA DSpark tree
+on #4128's kernels, then fp4 tensor-core experts at 64 streams and a smaller pack. Cards 215 and 219 own that work,
+but their future results are not evidence for this card's bar.
 
 ## K/V pages by TMA bulk copies
 

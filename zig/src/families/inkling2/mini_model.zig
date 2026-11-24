@@ -85,6 +85,9 @@ pub const Scratch = struct {
     seg_of: u64, // int32 [R]: the row's stream in the call
     segs: [2]u64, // attention Seg [streams]: sliding, then full caches (offsets differ by cache length)
     conv_segs: u64, // int4 [streams]: row0, rows, slot
+    conv_hist: u64, // fp32 [sites][round_rows, C]: drafted windows' exact conv inputs
+    conv_backup: u64, // fp32 [slots][slot's sites][3, C]: pre-window conv states
+    rewind_sites: u64, // RewindSite [slots][sites], each descriptor addressing its actual slot
     tiles: u64, // attention Tile [max tiles]
     h: [2]u64, // bf16 [R, H]: the running state in, the next visit's out
     blocks: u64, // bf16 [max blocks][R, H]
@@ -137,7 +140,10 @@ pub const Model = struct {
     sliding: attn.Layer,
     full: attn.Layer,
     kv: [2][config.max_visits]u64 = undefined, // a visit's K and V: [slots][kv][len][128] bf16
-    conv: [config.max_visits][4]u64 = undefined, // a visit's conv states: fp32 [slots][3][C] by Site
+    conv_slots: u64 = 0, // all conv states: [slots][visits][sites][3][C] fp32
+    conv_slot_bytes: usize = 0, // one slot's contiguous conv states; also a backup's size
+    conv: [config.max_visits][4]u64 = undefined, // each site's slot-0 pointer into conv_slots
+    conv_hist: [config.max_visits][4]u64 = undefined, // each site's [round_rows][C] fp32 history plane
     s: Scratch = undefined,
     buffers: std.ArrayList(DeviceBuffer) = .empty,
     planned: ?usize = null, // a plan: the bytes counted, nothing allocated
@@ -210,18 +216,61 @@ pub const Model = struct {
         m.buffers.deinit(m.gpa);
     }
 
+    pub fn convWidth(m: *const Model, site: Site) usize {
+        return if (site == .k or site == .v) @as(usize, m.c.local.kv) * m.c.local.dim else m.c.hidden;
+    }
+
+    /// A site's state in its actual slot within the contiguous slot-major allocation.
+    pub fn convState(m: *const Model, slot: usize, v: usize, site: Site) u64 {
+        return m.conv[v][@intFromEnum(site)] + slot * m.conv_slot_bytes;
+    }
+
     fn build(m: *Model, s: cuda.Stream, k: *const Kernels) !void {
-        const t = m.c;
-        const kvw: usize = @as(usize, t.local.kv) * t.local.dim;
+        m.conv_slot_bytes = 0;
+        for (m.w.plan.visits.slice()) |_| for (std.enums.values(Site)) |site| {
+            m.conv_slot_bytes += 3 * m.convWidth(site) * 4;
+        };
+        m.conv_slots = try m.zeros(s, m.slots * m.conv_slot_bytes);
+        var conv_off: usize = 0;
         for (m.w.plan.visits.slice(), 0..) |step, i| {
             const len: usize = if (step.of(.full) != null) m.full.ring else m.sliding.ring;
+            const kvw: usize = @as(usize, m.c.local.kv) * m.c.local.dim;
             for (0..2) |side| m.kv[side][i] = try m.alloc(m.slots * len * kvw * 2);
             for (std.enums.values(Site)) |site| {
-                const width: usize = if (site == .k or site == .v) kvw else t.hidden;
-                m.conv[i][@intFromEnum(site)] = try m.zeros(s, m.slots * 3 * width * 4);
+                m.conv[i][@intFromEnum(site)] = m.conv_slots + conv_off;
+                conv_off += 3 * m.convWidth(site) * 4;
             }
         }
         try m.scratch(k);
+        var hist_off: usize = 0;
+        for (m.w.plan.visits.slice(), 0..) |_, i| for (std.enums.values(Site)) |site| {
+            m.conv_hist[i][@intFromEnum(site)] = m.s.conv_hist + hist_off;
+            hist_off += round_rows * m.convWidth(site) * 4;
+        };
+        if (m.planned == null) try m.stageRewindSites(s);
+    }
+
+    /// Rewind's kernel addresses state as slot * 3 * C. Slot-major storage instead gives each actual slot
+    /// its own descriptor table and passes slot zero, retaining one contiguous backup per drafted window.
+    fn stageRewindSites(m: *Model, s: cuda.Stream) !void {
+        const n_sites = 4 * m.w.plan.visits.len;
+        const sites = try m.gpa.alloc(ops.RewindSite, m.slots * n_sites);
+        defer m.gpa.free(sites);
+        var hist_off: i64 = 0;
+        var backup_off: i64 = 0;
+        for (m.w.plan.visits.slice(), 0..) |_, v| for (std.enums.values(Site)) |site| {
+            const width = m.convWidth(site);
+            const j = 4 * v + @intFromEnum(site);
+            for (0..m.slots) |slot| sites[slot * n_sites + j] = .{
+                .state = m.convState(slot, v, site),
+                .hist = hist_off,
+                .backup = backup_off,
+                .c = @intCast(width),
+            };
+            hist_off += @intCast(round_rows * width * 4);
+            backup_off += @intCast(3 * width * 4);
+        };
+        try m.upload(s, m.s.rewind_sites, std.mem.sliceAsBytes(sites));
     }
 
     fn scratch(m: *Model, k: *const Kernels) !void {
@@ -233,6 +282,7 @@ pub const Model = struct {
         const heads: usize = t.local.q;
         const rank: usize = t.loop.?.rank;
         const pairs = r * t.topk;
+        const hist_row = m.conv_slot_bytes / 3; // one fp32 input row at every site, versus its three-state backup
         const blocks = (t.layers + t.block - 1) / t.block;
         // partials: every prompt row's sliding or full chunks, or a split decode call's sub-chunks
         const stride_full = attn.slotsFor(m.full, m.context);
@@ -252,6 +302,9 @@ pub const Model = struct {
             .seg_of = try m.alloc(r * 4),
             .segs = .{ try m.alloc(round_rows * @sizeOf(attn.Seg)), try m.alloc(round_rows * @sizeOf(attn.Seg)) },
             .conv_segs = try m.alloc(round_rows * 16),
+            .conv_hist = try m.alloc(round_rows * hist_row),
+            .conv_backup = try m.alloc(m.slots * m.conv_slot_bytes),
+            .rewind_sites = try m.alloc(m.slots * 4 * m.w.plan.visits.len * @sizeOf(ops.RewindSite)),
             .tiles = try m.alloc((attn.tileCount(r, 3) + round_rows) * @sizeOf(attn.Tile)),
             .h = .{ try m.alloc(r * h * 2), try m.alloc(r * h * 2) },
             .blocks = try m.alloc(blocks * r * h * 2),
@@ -311,21 +364,36 @@ pub const Model = struct {
 
     /// A slot's conv states to zero: a stream starting at position 0 has no inputs before it.
     pub fn clear(m: *Model, s: cuda.Stream, slot: usize) !void {
-        const t = m.c;
-        const kvw: usize = @as(usize, t.local.kv) * t.local.dim;
-        for (0..m.w.plan.visits.len) |v| for (std.enums.values(Site)) |site| {
-            const width: usize = if (site == .k or site == .v) kvw else t.hidden;
-            const at = m.conv[v][@intFromEnum(site)] + slot * 3 * width * 4;
-            try m.d.check(m.d.api.cuMemsetD8Async(at, 0, 3 * width * 4, s.handle), "cuMemsetD8Async");
-        };
+        const at = m.conv_slots + slot * m.conv_slot_bytes;
+        try m.d.check(m.d.api.cuMemsetD8Async(at, 0, m.conv_slot_bytes, s.handle), "cuMemsetD8Async");
+    }
+
+    /// Restore a drafted window's conv states after its first `n` rows. Positional K/V rows need no undo.
+    pub fn rewind(m: *Model, k: *const Kernels, s: cuda.Stream, slot: usize, row0: usize, n: usize) !void {
+        const n_sites = 4 * m.w.plan.visits.len;
+        const widest = @max(@as(usize, m.c.local.kv) * m.c.local.dim, m.c.hidden);
+        try ops.rewind(
+            &k.ops,
+            s,
+            m.s.rewind_sites + slot * n_sites * @sizeOf(ops.RewindSite),
+            n_sites,
+            widest,
+            m.s.conv_backup + slot * m.conv_slot_bytes,
+            m.s.conv_hist,
+            0,
+            row0,
+            n,
+        );
     }
 
     /// Every chain's rows (one prompt chunk, or decode windows); rows [head0, head0 + heads)'s fp32 logits at s.logits.
     pub fn forward(m: *Model, k: *const Kernels, s: cuda.Stream, chains: []const Chain, prompt: bool, head0: usize, heads: usize) !void {
         var rows: usize = 0;
+        var record = false;
         for (chains, 0..) |ch, i| {
             if (ch.tokens.len == 0 or ch.slot >= m.slots or ch.p0 + ch.tokens.len > m.context) return error.BadChain;
             if (!prompt and ch.tokens.len > window_rows) return error.WindowTooWide;
+            record = record or (!prompt and ch.tokens.len > 1);
             for (chains[0..i]) |o| if (o.slot == ch.slot) return error.BadChain;
             for (ch.tokens) |id| if (id >= m.c.vocab) return error.InvalidToken;
             rows += ch.tokens.len;
@@ -333,7 +401,10 @@ pub const Model = struct {
         if (rows == 0 or rows > @as(usize, if (prompt) prompt_rows else round_rows) or (prompt and chains.len != 1)) return error.TooManyRows;
         if (chains.len > round_rows or heads > round_rows or head0 + heads > rows) return error.TooManyRows;
         for (chains) |ch| if (ch.p0 == 0) try m.clear(s, ch.slot);
-        var r = try visit.Rows.stage(m, s, chains, rows, prompt);
+        if (record) for (chains) |ch| if (ch.tokens.len > 1) {
+            try m.copy(s, m.s.conv_backup + ch.slot * m.conv_slot_bytes, m.conv_slots + ch.slot * m.conv_slot_bytes, m.conv_slot_bytes);
+        };
+        var r = try visit.Rows.stage(m, s, chains, rows, prompt, record);
         // one row a stream, every row's logits: the launches depend on the row count alone (the rest is on the device)
         if (prompt or !m.graphed or head0 != 0 or heads != rows or r.streams != rows or r.n_tiles != rows)
             return visit.run(m, k, s, &r, head0, heads);
