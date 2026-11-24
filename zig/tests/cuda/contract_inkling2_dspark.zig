@@ -57,9 +57,13 @@ pub const AddNorm = struct {
         self.norm = try ref.bfs(a, rng, hidden, 0.5, 1.5);
         self.resid = try ref.f32s(a, rng, n, -4, 4);
         if (fill == .stress) for (self.resid, self.y, 0..) |*r, *y, i| {
-            r.* = if (i % 3 == 0) 1e4 else -1e4;
-            y.* = c.toBf16(0.5);
+            r.* = if ((i * 37 + i / 7) % 5 == 0) 384 else 256; // whole-number squares bf16 sums lose and fp32 keeps
+            y.* = 0;
         };
+        if (fill == .nonfinite) {
+            self.resid[3] = ref.nan;
+            self.y[5] = c.toBf16(ref.inf);
+        }
         self.ptr = .{ try ref.input(rig, self.y), try ref.input(rig, self.norm), try rig.scratch(n * 4), try rig.output(n * 2) };
         return true;
     }
@@ -154,7 +158,7 @@ pub const Pick = struct {
     pub fn spec(self: *const Pick) c.Spec {
         const served = &[_]c.Shape{ .{ .rows = 1, .n = vocab, .k = 1 }, .{ .rows = 1, .n = 1000, .k = 1 } };
         const name = if (self.short) "control: inkling2 dspark tf_ink2_dsp_pick one id short" else "inkling2 dspark tf_ink2_dsp_pick (capped fp32 logits, first id of the maximum)";
-        return .{ .name = name, .accum = .none, .depth = ref.noSums, .out = .raw, .in_place = true, .nan = .{ .stated = "finite logits only: the head's logits are a bf16 GEMV of normed rows" }, .served = if (self.short) served[0..1] else served };
+        return .{ .name = name, .accum = .none, .depth = ref.noSums, .out = .raw, .in_place = true, .nan = .{ .stated = "NaN stays NaN and is never picked; +-Inf caps to +-30" }, .served = if (self.short) served[0..1] else served };
     }
     pub fn control(self: *const Pick) ?g.Gate {
         return if (self.short) .shapes else null;
@@ -163,14 +167,16 @@ pub const Pick = struct {
         a.free(self.x);
         self.x = &.{};
     }
-    /// Values on 1/8 steps of [-64, 64): ties everywhere, and the unique maximum at the last id, where a short scan misses.
+    /// Values on 1/8 steps of [-64, 64): ties everywhere, and the unique maximum at the last id, where a short scan misses;
+    /// nonfinite: NaN, -Inf and +Inf at ids 0-2.
     pub fn prepare(self: *Pick, a: std.mem.Allocator, rig: *rig_.Rig, shape: c.Shape, fill: g.Fill, rng: std.Random) !bool {
-        if (shape.rows != 1 or shape.n < 2 or shape.n > vocab or fill == .nonfinite) return false;
+        if (shape.rows != 1 or shape.n < 4 or shape.n > vocab) return false;
         self.free(a);
         self.shape = shape;
         self.x = try a.alloc(f32, shape.n);
         for (self.x) |*v| v.* = ref.int(rng, -512, 511) / 8;
         self.x[shape.n - 1] = 100;
+        if (fill == .nonfinite) self.x[0..3].* = .{ ref.nan, -ref.inf, ref.inf };
         self.ptr = .{ try rig.output(shape.n * 4), try rig.output(4) };
         return true;
     }
@@ -181,14 +187,14 @@ pub const Pick = struct {
     pub fn count(self: *const Pick) usize {
         return 4 * (self.shape.n + 1);
     }
-    /// The capped logits within tanhf's error of float64's, and the pick exactly the host's first maximum.
+    /// The capped logits within tanhf's error of float64's (NaN for NaN), and the pick the first maximum of the device's.
     pub fn check(self: *const Pick, _: std.mem.Allocator, got: []const u8, msg: []u8) !?[]const u8 {
         var best: usize = 0;
         for (self.x, 0..) |x, i| {
             const want = cap * std.math.tanh(@as(f64, x) / cap);
             const v = ref.readF32(got, i);
-            if (@abs(v - want) > 1e-5 * cap) return try std.fmt.bufPrint(msg, "id {d}: capped {e} where {e} is due", .{ i, v, want });
-            if (ref.readF32(got, i) > ref.readF32(got, best)) best = i;
+            if (std.math.isNan(want) != std.math.isNan(v) or @abs(v - want) > 1e-5 * cap) return try std.fmt.bufPrint(msg, "id {d}: capped {e} where {e} is due", .{ i, v, want });
+            if (v > ref.readF32(got, best) or std.math.isNan(ref.readF32(got, best))) best = i;
         }
         const pick = ref.readI32(got, self.shape.n);
         if (pick != @as(i32, @intCast(best))) return try std.fmt.bufPrint(msg, "picked {d} where {d} is due", .{ pick, best });
