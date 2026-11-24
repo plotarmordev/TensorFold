@@ -72,12 +72,16 @@ alone took about 750 s in earlier receipts. Job `g0` ran on the GB10 and its gat
 
 Its exit 1 comes from the 41 live-limit problems: a shard checks every registered launch's live limits. The log was
 read through its last 80 lines, so it does not name the 41 records. Those lines show the H3 and DSv41 records passing,
-so these are presumed to be the same stale non-H3 records as the five-SM audit, but this is unverified. Not yet run:
-`g1` to `g5`, `back`, `after` and `limits`, at about 10 min of TOP each plus the queue.
+so these are presumed to be the same stale non-H3 records as the five-SM audit, but this is unverified.
+
+Job `limits` (`top-08c281336b68`, at `6d6faf83f`) measured in 12 s and ended with `FAIL kernel-contract-suites limits:
+239 limit problems`. The door returns only a log's last 200 lines, all of them `PASS`, so this log does not name the
+239 records. Its jobs now print every non-PASS line and count the PASS lines (`89d5f14c6`). The `limits` rerun at that
+sha is queued. Not yet run: `g1` to `g5`, `back` and `after`, about 10 min of TOP each plus the queue.
 
 ## CI on #3733
 
-At `2f5e1ca37` (23 Nov), every job passes: `zig`, `zig-b`, `zig-windows`, `zig-macos-dev-tools`, `fmt`, `pytest`,
+At `2f5e1ca37`, the PR's head (checked 24 Nov), every job passes: `zig`, `zig-b`, `zig-windows`, `zig-macos-dev-tools`, `fmt`, `pytest`,
 `release-paths (ubuntu-24.04)`, `comfyui-moss-installer` and `benchmark-clients` on Ubuntu and Windows.
 `host-nightly-linux` and `host-nightly-macos` are skipped. At `64fdb3215`, `zig` was red at lean check on a two-line
 comment in `contract_limits.zig` from this branch. Ash's main is not red there, and `e27a4ecf4` fixes it.
