@@ -61,11 +61,12 @@ serve_strata() { # serve_strata PACK-NAME: Strata's own server over its engine, 
     "$control/python/bin/python3" "$control/tools/inkling_tokenizer.py" --hf-json "$tokenizer" \
         --template "$log/export/chat_template.jinja" --out "$log/tokenizer"
     cat >"$log/config.json" <<EOF
-{"exe": "$strata", "args": ["--native", "$pack", "--max-context", "32768"], "cwd": "$log", "arch": "inkling2_loop",
- "tokenizer": "$log/tokenizer", "model_name": "Inkling-2-Mini", "drafting": "dspark", "parallel": 64, "log": "$log/engine.log"}
+{"exe": "$strata", "args": ["--native", "$pack", "--max-context", "32768", "--kv", "fp16"], "cwd": "$log",
+ "arch": "inkling2_loop", "tokenizer": "$log/tokenizer", "model_name": "Inkling-2-Mini", "drafting": "dspark",
+ "parallel": 64, "log": "$log/engine.log"}
 EOF
     echo "[settings] strata-inkling 0.1.65 (Strata v0.2.19, macos-arm64-metal): $pack"
-    echo "[settings] flags: $(tr -d '\n' <"$log/config.json"); KV dtype --kv auto (the engine log's kv_dtype follows)"
+    echo "[settings] flags: $(tr -d '\n' <"$log/config.json"); KV fp16, set rather than --kv auto"
     STRATA_DEBUG=1 PYTHONPATH=$control:$control/tools "$control/python/bin/python3" "$control/serve/server.py" \
         --engine strata --config "$log/config.json" --port "$port" --no-api-key >"$log/server.log" 2>&1 &
 }
@@ -79,6 +80,12 @@ quiet() { # quiet: wait for a 1-minute load under 10 (the Desk's speed-cell rule
         echo "[quiet] 1-minute load $load, rechecking in 60 s"
         sleep 60
     done
+}
+
+stop() { # stop PID: INT, then TERM after 30 s, so a server slow to stop cannot hold the window
+    kill -INT "$1" 2>/dev/null || return 0
+    for _ in $(seq 30); do kill -0 "$1" 2>/dev/null || return 0; sleep 1; done
+    kill -TERM "$1" 2>/dev/null; wait "$1" 2>/dev/null || :
 }
 
 run() { # run ENGINE: setup, then 1, 4 and 64 streams on both cells
@@ -95,7 +102,7 @@ run() { # run ENGINE: setup, then 1, 4 and 64 streams on both cells
         *) fail "unknown engine: $engine" ;;
     esac
     pid=$!
-    trap "kill -INT $pid 2>/dev/null; wait $pid 2>/dev/null" EXIT
+    trap "stop $pid" EXIT
     for _ in $(seq 600); do
         curl -sf "http://127.0.0.1:$port/v1/models" >/dev/null && break
         kill -0 "$pid" 2>/dev/null || { tail -30 "$log/server.log"; fail "$engine server exited during setup"; }
@@ -113,7 +120,6 @@ run() { # run ENGINE: setup, then 1, 4 and 64 streams on both cells
                 { tail -20 "$log/$streams-$cell.log"; fail "$engine $streams streams $cell: bench failed or passed 600 s"; }
         done
     done
-    grep -ho 'kv_dtype=[a-z0-9_]*' "$log/server.log" "$log/engine.log" 2>/dev/null | sort -u || :
     echo "[$engine] measure: $(($(date +%s) - started)) s"
 }
 
