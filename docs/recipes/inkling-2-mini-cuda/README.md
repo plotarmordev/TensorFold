@@ -70,13 +70,17 @@ only, one at a time; the head and step list below are the brief.
 
 ### Ours on TOP's GB10, one capped run
 
-Job `top-7ed89a976853` at `d0a93a07f`: the build and `kernel-contract "inkling2 loop"` passed (6 kernels, 4 planted
+Job `top-7ed89a976853` at `d0a93a07f` (a head that predates `origin/main` `6b6822bbd` but carries card 188's fix
+rounds `7a5c0da9f` and `7a0732118`): the build and `kernel-contract "inkling2 loop"` passed (6 kernels, 4 planted
 controls red), then `inkling2-serving` stopped the run with `host-reference case=1 mismatch=MiniServingTokenMismatch`:
-the sampled case (seed 37, temperature 0.8, top_k 64, top_p 0.95) draws other tokens on CUDA than the host does over the
-same logits. Greedy (case 0) passed. The reference, control and serve steps did not run. That is an engine defect on
-main, outside this card's doc scope. The prior receipt of the same engine and checkpoint (card 211's, job
-`top-0b05213c9f06` at `4a5089e70`, `--parallel 4`): 32.9 tok/s at one stream, 117.9/118.8 total at four, 0 failed,
-0 of 32 reference tokens off, 67% of the 49 tok/s weight-read ceiling (5.55 GB a token at 273 GB/s).
+the sampled case (seed 37, temperature 0.8, top_k 64, top_p 0.95) draws other tokens on CUDA than the host does over
+the same logits. Greedy (case 0) passed. That failure is recorded at `d0a93a07f`, not yet shown on main, and belongs
+to card 263 (or 188, whichever proves it); this card neither fixes nor skips the check. Both runners now print its
+exit, go on to the reference, control and serve steps, and return it last, so the job stays red while it measures.
+Output agreement below is therefore greedy only; sampled agreement is blocked on 263. The prior receipt of the same
+engine and checkpoint (card 211's, job `top-0b05213c9f06` at `4a5089e70`, `--parallel 4`): 32.9 tok/s at one stream,
+117.9/118.8 total at four, 0 failed, 0 of 32 reference tokens off, 67% of the 49 tok/s weight-read ceiling (5.55 GB a
+token at 273 GB/s).
 
 ### Ours on the RTX Spark N1X, native Windows
 
