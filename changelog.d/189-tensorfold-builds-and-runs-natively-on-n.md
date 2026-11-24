@@ -28,3 +28,6 @@
 - The MOSS-Image conv contract includes fp32 `expf` overflow at a stress sum of -89 in its signed silu
   interval; the Idol decoder attention reference rounds P against the running max over its 64-key tiles so far
   before rescaling, as the kernel does at the 65-key edge. The laptop's rerun 11 passes both.
+- `tf-drama-quant` refuses a DST inside SRC on Windows too: the guard folds case and takes `\` as `/` there, where
+  it compared case and `/` only. The H3-Image scratch test lists its folder opened for iteration (`AccessDenied` on
+  Windows). Both failed the laptop's `zig build test` at `75d7bdcd7`.

@@ -219,6 +219,17 @@ fn convertShard(gpa: Allocator, arena: Allocator, io: Io, src: []const u8, out: 
     return bytes;
 }
 
+/// Whether real path PATH is DIR or under it; on Windows, case-insensitive and with either separator.
+pub fn within(dir: []const u8, path: []const u8, windows: bool) bool {
+    if (path.len < dir.len) return false;
+    for (dir, path[0..dir.len]) |a, b| if (fold(a, windows) != fold(b, windows)) return false;
+    return path.len == dir.len or fold(path[dir.len], windows) == '/';
+}
+
+fn fold(c: u8, windows: bool) u8 {
+    return if (!windows) c else if (c == '\\') '/' else std.ascii.toLower(c);
+}
+
 /// SRC rewritten at DST (new, outside SRC): experts NVFP4 or kept, compacted to a held set or not, all else as it was.
 pub fn convert(gpa: Allocator, io: Io, src: []const u8, dst: []const u8, o: Options) !Summary {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -228,7 +239,7 @@ pub fn convert(gpa: Allocator, io: Io, src: []const u8, dst: []const u8, o: Opti
     const from = try cwd.realPathFileAlloc(io, src, arena);
     const parent = try cwd.realPathFileAlloc(io, std.fs.path.dirname(dst) orelse ".", arena);
     const to = try std.fs.path.join(arena, &.{ parent, std.fs.path.basename(dst) });
-    if (std.mem.startsWith(u8, to, from) and (to.len == from.len or to[from.len] == '/')) return error.DestinationInSource;
+    if (within(from, to, @import("builtin").os.tag == .windows)) return error.DestinationInSource;
     if (cwd.access(io, to, .{ .follow_symlinks = false })) return error.DestinationExists else |e| if (e != error.FileNotFound) return e; // the rename below guards a race
 
     // the index and the map are checked before DST is staged; shapes and scales fail later, under the errdefer

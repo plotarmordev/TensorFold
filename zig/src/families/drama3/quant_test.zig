@@ -250,6 +250,17 @@ test "an FP8 checkpoint converts: NVFP4 experts, every other tensor and file unc
     try testing.expectError(error.DestinationInSource, f.convert("src/dst", .{}));
 }
 
+test "DST inside SRC: Windows drive-letter paths match in any case and with either separator" {
+    const src = "C:\\Models\\Drama3";
+    for ([_][]const u8{ src, "c:\\models\\drama3\\dst", "C:/Models/DRAMA3/dst", "C:\\Models\\Drama3/nested\\dst" }) |to|
+        try testing.expect(quant.within(src, to, true));
+    for ([_][]const u8{ "C:\\Models\\Drama3-nvfp4", "C:\\Models\\Drama", "D:\\Models\\Drama3\\dst" }) |to|
+        try testing.expect(!quant.within(src, to, true));
+    try testing.expect(quant.within("/models/drama3", "/models/drama3/dst", false));
+    try testing.expect(!quant.within("/models/drama3", "/Models/drama3/dst", false));
+    try testing.expect(!quant.within("/models/drama3", "/models/drama3-nvfp4", false));
+}
+
 /// Layer l holds every expert but l % 9, as the loader's map reads.
 fn dropOne(arena: Allocator) ![]const u8 {
     var text: std.ArrayList(u8) = .empty;
