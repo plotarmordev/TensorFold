@@ -25,8 +25,16 @@ only the first control run (main, plain, one stream, `--parallel 4`):
 
 - 24 Nov: the window closed during it; it decoded at 0.8 tok/s.
 - 25 Nov 04:26 HKT, 1-minute load 10.3 at its start: 16 tokens at 0.9 tok/s, then 256 in 296 s, and `timeout 600` ended
-  it mid-bench. The GPU showed 93% busy just after.
+  it mid-bench.
 
-Main decoding about 140 times below #4618's own figure means the Mac was not measuring the engine, so both runs are
-void. `bench.sh` holds the run: control (main) / candidate / control, each plain and with `--drafter`, at 1 and 4
-streams, each under `timeout 600` and the model lock taken without waiting.
+That is main's own speed, not a broken run: #4618 is sethforprivacy's stack, which card 210 took, and none of it is on
+main. Main's routed experts run one threadgroup of 32 a row and route, each lane a serial 2,304-long scalar dot a
+gate and up row, on one serial encoder a forward. The server log shows the latency signature: 1.155 to 1.165 s a round
+for 16, 255 and 237 rounds alike, steady to 1%, and a 15-row prompt forward costs about one decode round. So the
+control runs with `TOKENS=32`, which fits `timeout 600`; the candidate keeps 256.
+
+`bench.sh` holds the run: control (main) / candidate / control, each plain and with `--drafter`, at 1 and 4 streams,
+each under `timeout 600` and the model lock taken without waiting. Two guards stop a void run: a `MIN_TPS` floor on
+each cell's aggregate tok/s (default 0.3; the candidate takes ~20), and `PARTNER_JSON` pointed at the first control's
+report makes the second control abort when it runs over 2x slower. Controls pair, never against the candidate: a
+control is legitimately tens of times slower.
