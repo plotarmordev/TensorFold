@@ -1,0 +1,4 @@
+$ lockf -k -t 120 /tmp/tensorfold-model.lock swift blit.swift
+1035 GB/s best of 12 over a 4096 MiB blit
+
+The receipt's ceiling keeps the 1,072 GB/s its run recorded (best of 12); this re-run came out 3.5% under it.
