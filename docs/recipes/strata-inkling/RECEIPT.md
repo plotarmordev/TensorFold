@@ -54,12 +54,20 @@ request.
     one 16-token warm-up request a cell.
   - Same prompt: the first chat prompt of `tools/bench_prompts.json` (31 tokens) on every stream. Different prompts:
     request i gets chat prompt i mod their count (21-47 tokens).
-  - KV dtype: the server log's `kv_dtype=` (Strata's server picks it, as for the bench).
+  - KV dtype: not recorded by these runs. The server logs no `kv_dtype=` line (the engine reports it only in its
+    `INFO` protocol line, which the server keeps in `/metrics`), so the jobs at `1e17bb6ca` printed none. Control
+    passes no `--kv`, so the engine's auto rule applies: fp16 at 1 and 4 slots, fp8 at 64 `[INFERENCE]`, from
+    `ink_main.cpp` at v0.2.19. `strata-job.sh` now prints a `[kv]` line per pack and level from `/metrics` and fails
+    when the dtype is absent; a rerun records it.
 
 ## What still differs from the published 805.8
 
 - Flags: the card gives none. Our own bench runs the engine's defaults (64-token prompt, 32 output tokens, `--kv
   auto`); the card's prompt and output lengths are unknown, so its decode window may differ from ours.
+- Path: the card's "many at once" is "the total written across that many requests running together", i.e. served
+  requests with drafting, while `--bench` at 64 slots takes the plain batched path (DSpark's tree runs at 1 slot
+  only). Our HTTP cells are the served path, but under the thinking fault below, so neither side matches the card's
+  workload.
 - Thinking: the card measures "with thinking off". Strata's server renders thinking off, yet the model still opens
   `<|content_thinking|>` and the server drops that span, so the HTTP replies are mostly empty text (`no_output`:
   SQ-10 at 64 same prompt 192 of 192, SQ-20 141 of 192 plus 51 truncated). Tokens are generated and counted, so the
@@ -73,7 +81,10 @@ request.
 - FEED 238: Strata v0.2.19 HTTP end to end on GB10 (bottom-93a2de938e6e, bottom-8e4de9ca491c, median of 3, same /
   different prompts): SQ-10 53.4/53.4, 79.3/74.2, 269.3/240.7; SQ-20 38.1/38.0, 62.9/57.6, 204.6/180.8 tok/s at
   1 / 4 / 64 streams; replies mostly thinking-only, not a bar.
-- FEED 240: Strata's published GB10 figures (74.3 one stream, 805.8 at 64, SQ-10) do not reproduce with v0.2.19's
-  default `--bench` (57.5 and 442.8); its card names no flags or version, so they are not a target.
+- FEED 240: Strata's published GB10 figures do not reproduce with v0.2.19's default `--bench` (bottom-c5e4253968cb,
+  decode, median of 3): SQ-10 57.5 at 1 stream and 442.8 at 64 against 74.3 / 805.8; SQ-20 23.8 at 1 and 332.1 at
+  64 against 46.1 / 1,145.1. Its card names no flags or version, so they are not a target.
 - FEED 241: Strata v0.2.19's server emits no answer text for Inkling 2 Mini with thinking off (the model opens
-  `<|content_thinking|>`, the server drops it): 192 of 192 SQ-10 replies at 64 streams were `no_output`.
+  `<|content_thinking|>`, the server drops it): at 64 streams, same prompt, SQ-10 192 of 192 replies `no_output`
+  (bottom-93a2de938e6e), SQ-20 141 `no_output` and 51 truncated of 192 (bottom-8e4de9ca491c); at 1 and 4 streams,
+  same prompt, every reply `no_output`.

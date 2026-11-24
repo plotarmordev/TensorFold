@@ -173,11 +173,12 @@ Strata's own linux-aarch64 build ran as shipped, with no host changes, through `
 
 - The Desk staged the engine tarball (sha256 `a01f0e1f…`, from the release's `SHA256SUMS.txt`) and the SQ-10 pack
   (sha256 `ac4d452a…`, pinned to Hugging Face revision `04996a1e2c45…`) in TOP's pilot folder
-  `strata-inkling-pack/`, as [`recipes/strata-inkling/strata-stage.sh`](recipes/strata-inkling/strata-stage.sh) does.
-- [`recipes/strata-inkling/strata-job.sh`](recipes/strata-inkling/strata-job.sh) runs the engine's `--bench` at 1, 4
-  and 64 streams (64-token prompt, 256 generated tokens) and `--selfcheck` (PASS, `sm_121`, `sm120_tc=1`). The binary
-  needs glibc 2.38, newer than the job image's, so it runs under the loader and libraries of the Arm GNU 14.3
-  toolchain already staged for `cuda-build.sh`, unpacked in `/work`.
+  `strata-inkling-pack/`, as `strata-stage.sh` did at `f88916b9e`.
+- `strata-job.sh` at `f88916b9e` ran the engine's `--bench` at 1, 4 and 64 streams (64-token prompt, 256 generated
+  tokens) and `--selfcheck` (PASS, `sm_121`, `sm120_tc=1`). The binary needs glibc 2.38, newer than the job image's,
+  so it ran under the loader and libraries of the Arm GNU 14.3 toolchain already staged for `cuda-build.sh`. Both
+  scripts have since changed; card 247's v0.2.19 runs are in
+  [`recipes/strata-inkling/RECEIPT.md`](recipes/strata-inkling/RECEIPT.md).
 
 | GB10 decode, tok/s | 1 stream | 4 streams total | 64 streams total | Source |
 |---|---|---|---|---|

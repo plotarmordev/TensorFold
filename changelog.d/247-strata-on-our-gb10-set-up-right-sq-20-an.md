@@ -4,3 +4,4 @@
 - A failed `[http]` cell prints the server's `[strata]` lines (run with `STRATA_DEBUG=1`).
 - `strata-http-sq20.sh` and `strata-http-sq10.sh` run one pack's HTTP bench at 1, 4 and 64 streams without repeating the own bench (`STRATA_OWN=0`).
 - `RECEIPT.md` records card 247's Strata v0.2.19 runs on GB10 (own `--bench` and HTTP bench, SQ-20 and SQ-10 at 1, 4 and 64 streams, every setting, job ids). SQ-10 at 64 ran 442.8 tok/s, 55% of the published 805.8, so nothing in it is a bar.
+- `strata-job.sh` clears each own-bench cell before its three runs, stops Strata's server on any exit (a failed HTTP client left it serving), and prints a `[kv]` line per pack and level from the server's `/metrics`, failing when the engine reported no KV dtype.

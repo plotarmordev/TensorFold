@@ -54,11 +54,18 @@ for cell in report["cells"]:
         sys.exit(1)
 EOF
 }
+stop() { # the running Strata server, if any: on every exit, so a failed cell never leaves it serving
+    [ -z "${pid:-}" ] || { kill "$pid" 2>/dev/null; wait "$pid" || :; }
+    pid=
+}
 measure() { # every pack and level asked for, own bench (unless STRATA_OWN=0) then HTTP bench
+    trap stop EXIT
+    trap 'exit 1' TERM INT
     for name in $packs; do
         eval "pack=\$$name"
         for streams in $levels; do
             [ "${STRATA_OWN:-1}" = 1 ] || continue
+            : >"$out/$name-$streams.txt"
             for rep in 1 2 3; do bench "$name-$streams" "$pack" "$streams"; done
             echo "[own] $name at $streams streams: median $(median "$name-$streams") tok/s total"
         done
@@ -89,11 +96,13 @@ EOF
                     --reps 3 --temperatures 0 --prompts "$out/$cell.json" --label "$name $cell" \
                     --output "$out/http-$name-$streams-$cell.json" >"$out/http.log"
                 summary "$out/http-$name-$streams-$cell.json" ||
-                    { grep '^\[strata\]' "$out/server-$name-$streams.log" | tail -12; kill "$pid"; exit 1; }
+                    { grep '^\[strata\]' "$out/server-$name-$streams.log" | tail -12; exit 1; }
             done
-            kill "$pid"
-            wait "$pid" || :
-            grep -h -o 'kv_dtype=[a-z0-9]*' "$out/server-$name-$streams.log" | sort -u
+            # the engine's INFO line, which the server keeps only in /metrics
+            kv=$(python3 -c 'import json, urllib.request as u
+print(json.load(u.urlopen("http://127.0.0.1:8242/metrics"))["engine"]["kv_dtype"])')
+            echo "[kv] $name at $streams streams, HTTP: kv_dtype=$kv"
+            stop
         done
     done
 }
@@ -151,7 +160,8 @@ cat <<'EOF'
   --reps 3 (the tool's medians), one 16-token warm-up request a cell. Two cells a level, from the chat prompts of
   tools/bench_prompts.json (its raw-completion prompts need /v1/completions, a route Strata's server does not
   have): "same" sends the first on every stream, "different" sends request i prompt i % their count. Their text
-  and names follow; each [http] line gives its cell's prompt tokens, output tokens and completion classes.
+  and names follow; each [http] line gives its cell's prompt tokens, output tokens and completion classes, and each
+  [kv] line the KV dtype the engine reported at start (its INFO kv_dtype, from the server's /metrics).
   rate: end to end on the client's clock, every stream's usage tokens over the time from the first request sent to
   the last reply done, prefill included. Strata's server renders Inkling's thinking off (serve/inkling_dialect.py),
   yet the model opens <|content_thinking|> anyway and the server drops that span (InklingDialect._emit_typed), so
