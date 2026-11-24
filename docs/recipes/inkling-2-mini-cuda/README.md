@@ -40,10 +40,11 @@ tokens exit non-zero and the script goes on, ending 0 with 33.8 tok/s at one str
 `codync@rtx-spark`, relayed by the Desk, one step a run. It installs and downloads nothing; the laptop has PowerShell
 but no Python or WSL, so the 1/4-stream client is the script's own, not `bench_concurrent.py`.
 
-1. `-Step fatbins`, `-Step runner`, then `-Step server`: `zig build fatbins`, `zig build tf-cuda-test`, then `zig
-   build native`, each `-Dsm=121 -Doptimize=ReleaseFast` with the CUDA 13.5 `windows-arm64` nvcc and `cl.exe` arm64
-   (`vcvarsall arm64`). 189's Windows fixes are on this branch (`__noinline__` in `glm_index_rope.cuh`, `/wd4819`,
-   POSIX file modes and COM `@alignCast` in the server, no `tf-muse`). Each stops at 9 min; a cut-off step resumes from
+1. `-Step fatbins`, `-Step images`, `-Step runner`, then `-Step server`: `zig build fatbins`, `zig build
+   kernel-contract-fatbins`, `zig build tf-cuda-test`, then `zig build native`, each `-Dsm=121 -Doptimize=ReleaseFast`
+   with the CUDA 13.5 `windows-arm64` nvcc and `cl.exe` arm64 (`vcvarsall arm64`). 189's Windows fixes are on this
+   branch (`__noinline__` in `glm_index_rope.cuh`, `/wd4819`, POSIX file modes and COM `@alignCast` in the server, no
+   `tf-muse`). Each stops at 9 min and prints its log's tail and the images installed; a cut-off step resumes from
    the zig cache.
 2. `-Step check`: 188's GB10 checks unchanged, so the laptop's output is held to the host reference the same way:
    `kernel-contract "inkling2 loop"`, `inkling2-serving` and `inkling2-mini-ref` (32 greedy tokens equal to the float64
@@ -59,8 +60,9 @@ What differs from the GB10 and is not copied from it:
   `memory.used` over every device gave an array and stopped run 1's serve step.
 - A cold build took 647 s (run 1) and 901 s (run 2) in one piece, over a run's 10 minutes, so nvcc's kernel images are
   their own step; `install` also builds a dozen products this card never runs (run 4 below), so the runner and the
-  server are a step each. The host float64 reference takes 226 s on the laptop, so the planted control is its own
-  step: run 2 ran both in one step for 11 min 10 s.
+  server are a step each, and the 37 images only `tf-cuda-test` embeds (DeepSeek's EXL3 units, the contract's
+  controls, H3) are a step before the runner (run 5 below). The host float64 reference takes 226 s on the laptop, so
+  the planted control is its own step: run 2 ran both in one step for 11 min 10 s.
 - The serve step times replies from the server's log, not the client: run 2's client read the stream line by line and
   spawned `nvidia-smi` per line, which put it at 6.7 tok/s at one stream while the server decoded at 32.2.
 - Memory is the WDDM pool the firmware gives CUDA (51,816 MiB on this laptop), not `/proc/meminfo`; admission reads it
@@ -79,6 +81,14 @@ Run 4 at `26de8309` (request `407e1d7b`, clean tree): `-Step fatbins` exited 0 i
 (`install native`) stopped at 9 min twice without a compile error, building `tf-drama-quant`, `tf-qwen35-learn` and
 the rest of `install` beside the two binaries the checks and serving run. Cold aarch64-windows ReleaseFast
 cross-compiles on a Mac took 104 s for `tf-cuda-test` and 129 s for `tensorfold-native`, each on one core.
+
+Run 5 at `2ce7e54c` (request `4fbd4d3b`, clean tree): `-Step fatbins` exited 0 in 122 s with nothing changed since
+run 4's, and `-Step runner` stopped at 9 min twice with no output, while `-Step server` exited 0 in 449 s. Every
+warm build had run nvcc on every image again: each image's cache key held a side-effect `nvcc --version` capture,
+rewritten each build, so no step resumed. Images are now keyed by nvcc's own bytes (a second `fatbins
+kernel-contract-fatbins` with a stand-in nvcc makes 0 of its 180 calls), the runner's 37 nvcc-only images are their
+own step, and each build step logs zig's output. Serve passed again: ready in 55.2 s, 32.2 tok/s at one stream (first
+token 0.098 s), 115.4 total at four, pool peak 23,119 MiB; check and control did not run without `tf-cuda-test`.
 
 ### Receipt: run 2 at `2a37918af`, one capped run
 
