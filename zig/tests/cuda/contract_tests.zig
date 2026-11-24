@@ -639,9 +639,9 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     const families = try @import("contract_family_sets.zig").Sets.init(gpu, s, a, &kernels, &affine4, cap);
     defer families.deinit();
     var t: g.Tally = .{};
+    @import("contract_after.zig").keep(&kernels, only);
     try @import("contract_dump.zig").run(a, kernels.items);
     t0.* = check.now(gpu.io);
-    @import("contract_after.zig").keep(&kernels, only);
     try g.runAll(a, kernels.items, 0x6b63, &t);
     return t;
 }

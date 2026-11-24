@@ -87,22 +87,30 @@ but their future results are not evidence for this card's bar.
 
 ## K/V pages by TMA bulk copies
 
-`kv-pages.sh`, job `top-fe6b1f3ecd90` at `d5b2cafd7`: attention stages each 64-key K/V page into shared memory with
+`kv-pages.sh`, job `top-c14c8b8357c6` at `6b6a342e8`: attention stages each 64-key K/V page into shared memory with
 `cp.async.bulk` on sm_90+; the control is the same tree built with `TF_INK2_KV_LOADS=1` (the per-thread loads).
 The attention contract passed on both builds. At 64 streams (64 distinct prompts, greedy, 128 tokens, medians of 3),
-all 192 replies per context were byte-identical across control, candidate, control.
+all 192 replies per arm and context were byte-identical across control, candidate, control (576 replies per context).
 
 | Context (prompt) | Arm | Achieved K/V, GB/s | 64-stream decode, tok/s | End to end, tok/s |
 |---|---|---:|---:|---:|
-| 1K (858) | control | 24 | 133.7 | 133.5 |
-| 1K (858) | candidate | 24 | 132.3 | 132.2 |
-| 1K (858) | control | 24 | 133.9 | 133.7 |
+| 1K (858) | control | 24 | 132.6 | 132.5 |
+| 1K (858) | candidate | 24 | 130.5 | 130.3 |
+| 1K (858) | control | 24 | 132.9 | 132.7 |
 | 8K (7,814) | control | 16 | 38.2 | 22.5 |
-| 8K (7,814) | candidate | 16 | 37.9 | 22.4 |
-| 8K (7,814) | control | 16 | 38.4 | 22.6 |
+| 8K (7,814) | candidate | 18 | 41.5 | 22.2 |
+| 8K (7,814) | control | 16 | 38.1 | 22.4 |
 
-The bulk copies are output-neutral and within 1% of their controls (no speedup). Achieved K/V is derived from the
-cache layout and the decode rate, not read from a counter; at 16–24 GB/s it is far from the GB10's 273 GB/s, so
-attention K/V reads do not limit 64-stream decode here. The Desk has no same-machine Strata SQ-20 figure on TOP;
-the only one there is SQ-10's 382.5 tok/s at 64 streams (`top-edfe387b00e5`, its own `--bench`, about 64-token
-prompts). That figure is above this receipt's 1K figures, but the workloads differ, so it is not a matched comparison.
+The bulk copies are output-neutral on the measured 64-stream replies, but 1K decode was 1.6–1.8% slower than
+the controls; 8K decode was 8.6–8.9% faster while end-to-end was 0.9–1.3% slower. Achieved K/V is derived from the
+cache layout and the decode rate, not read from a counter. Its 16–24 GB/s is below the GB10's 273 GB/s peak;
+this estimate alone does not identify the decode bottleneck.
+
+| 64-stream comparison | Strata SQ-20 | Strata SQ-10 |
+|---|---|---|
+| Same-machine TOP | Not measured | 382.5 tok/s, Strata 0.1.66 `--bench`, `top-edfe387b00e5` |
+| Other GB10, BOTTOM | 180.8 tok/s HTTP, distinct prompts, `bottom-8e4de9ca491c` | 240.7 tok/s HTTP, distinct prompts, `bottom-93a2de938e6e` |
+
+The BOTTOM rows are Strata v0.2.19's card 247 runs and mostly returned empty replies; TOP's SQ-10 `--bench` used
+about 64-token prompts. None matches this receipt's 858/7,814-token prompts or establishes a same-machine SQ-20
+bar. No matched Strata throughput claim follows from these rows.
