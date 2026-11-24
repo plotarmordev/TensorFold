@@ -44,8 +44,13 @@ mkdir -p "$out"
 python3 -c 'import random; r = random.Random(4387); print(" ".join(str(r.randrange(1000, 199000)) for _ in range(4200)))' >"$out/ids.txt"
 "$bin/tf-cuda-test" inkling2-serving "$model" "$out/ids.txt"
 text="The three laws of thermodynamics, explained for a curious student:"
+# the float64 reference runs on one host core: its planted control runs beside it, and each must exit 0
+INKLING2_REF_PLANT=1 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text" >"$out/planted.log" 2>&1 &
+planted=$!
+trap 'kill $planted 2>/dev/null || :' EXIT
 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text"
-INKLING2_REF_PLANT=1 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text"
+wait $planted || { cat "$out/planted.log"; exit 1; }
+cat "$out/planted.log"
 mem() { echo "$1: host $(awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {printf "used %d MiB, available %d MiB", (t - a) / 1024, a / 1024}' /proc/meminfo); GPU $(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | tr '\n' ' ')"; }
 mem "before the server"
 /work/sm121/native/bin/tensorfold-native serve "$model" --backend cuda --host 127.0.0.1 --port 8188 \
