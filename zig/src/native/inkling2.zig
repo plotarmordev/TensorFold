@@ -163,14 +163,15 @@ fn cacheBudget(ram: u64, working_set: u64, text: ?[]const u8, resident: u64) err
     return if (limit > resident + margin) limit - resident - margin else 0;
 }
 
+/// The longest context every stream can hold at once: each owns a target state and draft rows; the scores are shared.
 fn longest(bytes: u64, most: u32, streams: u64, draft_fixed: u64, draft_token: u64, draft_shared_token: u64) usize {
-    const one: u64 = st.cacheBytes(1) + streams * (draft_fixed + draft_token) + draft_shared_token;
+    const one: u64 = streams * (st.cacheBytes(1) + draft_fixed + draft_token) + draft_shared_token;
     if (one > bytes) return 0;
     var lo: usize = 1;
     var hi: usize = most;
     while (lo < hi) {
         const mid = lo + (hi - lo + 1) / 2;
-        const need = st.cacheBytes(mid) + streams * (draft_fixed + draft_token * @as(u64, @intCast(mid))) + draft_shared_token * @as(u64, @intCast(mid));
+        const need = streams * (st.cacheBytes(mid) + draft_fixed + draft_token * @as(u64, @intCast(mid))) + draft_shared_token * @as(u64, @intCast(mid));
         if (need <= bytes) lo = mid else hi = mid - 1;
     }
     return lo;
@@ -278,9 +279,11 @@ test "Inkling native load limit clamps before integer conversion" {
 }
 
 test "Inkling native longest context accounts target, streams and shared draft scores" {
-    const budget = st.cacheBytes(7) + 2 * (11 + 7 * 13) + 7 * 17;
+    const budget = 2 * (st.cacheBytes(7) + 11 + 7 * 13) + 7 * 17;
     try std.testing.expectEqual(@as(usize, 7), longest(budget, 8, 2, 11, 13, 17));
+    try std.testing.expectEqual(@as(usize, 6), longest(budget - 1, 8, 2, 11, 13, 17));
     try std.testing.expectEqual(@as(usize, 0), longest(st.cacheBytes(1) - 1, 8, 1, 0, 0, 0));
+    try std.testing.expectEqual(@as(usize, 0), longest(st.cacheBytes(1), 8, 2, 0, 0, 0));
     const per_token = dspark.Drafter.streamBytes(1) - dspark.Drafter.streamBytes(0);
     const conservative = dspark.Drafter.streamBytes(0) + 127 * per_token + 129 * per_token;
     try std.testing.expect(conservative >= dspark.Drafter.streamBytes(129));

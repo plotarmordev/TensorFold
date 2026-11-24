@@ -100,7 +100,7 @@ pub const Cache = struct {
     follow: ?mtl.ResidencySet.Follow = null,
 
     pub fn init(device: mtl.Device, capacity: usize, schedule: *const plan.Plan) !Cache {
-        if (capacity == 0 or capacity > 1048576 or schedule.n_visits != visit_slots) return error.Inkling2CacheShape;
+        if (capacity == 0 or capacity > 1048576 or schedule.visits.len != visit_slots) return error.Inkling2CacheShape;
         var out: Cache = .{
             .kv = undefined,
             .conv = undefined,
@@ -115,7 +115,7 @@ pub const Cache = struct {
         };
         var at: usize = 0;
         for (0..visit_slots) |slot| {
-            const global = schedule.at(schedule.visit(@intCast(slot)).layer).kind == .global;
+            const global = schedule.at(schedule.visits.steps[slot].layer).kind == .global;
             const ring_size = if (global) globalSlots(capacity) else sliding_ring;
             out.globals[slot] = global;
             out.rings[slot] = @intCast(ring_size);
@@ -187,7 +187,7 @@ pub const Cache = struct {
 
     pub fn attentionLayer(c: *const Cache, schedule: *const plan.Plan, slot: usize, rows: usize) ap.Layer {
         std.debug.assert(rows <= max_rows);
-        var layer = if (schedule.at(schedule.visit(@intCast(slot)).layer).kind == .global) ap.Layer.global(@intCast(c.capacity)) else ap.Layer.sliding(1024, @intCast(rows));
+        var layer = if (schedule.at(schedule.visits.steps[slot].layer).kind == .global) ap.Layer.global(@intCast(c.capacity)) else ap.Layer.sliding(1024, @intCast(rows));
         layer.ring = @intCast(c.ring(slot));
         return layer;
     }

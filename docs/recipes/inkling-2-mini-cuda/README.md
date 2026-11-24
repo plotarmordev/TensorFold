@@ -11,28 +11,28 @@ one machine, and every cross-hardware row is labelled non-comparable. The earlie
 
 | | Mia's recipe | Ours (this branch) |
 |---|---|---|
-| Engine base | `tensorfold-native` from PR #4441 at `dc2ca8a1` (upstream main `1587c8caee`) plus `patches/0001`-`0017` | upstream main: the merged `inkling2_loop` family |
+| Engine base | `tensorfold-native` from PR #4441 at `dc2ca8a1` (upstream main `1587c8caee`) plus `patches/0001`-`0017` | the same #4441 engine, merged as `inkling2.native` (`mini_native.zig`/`mini_model.zig`/`mini_backend.zig`, model type `inkling2_loop`), unpatched |
 | Host | NVIDIA PyTorch container, aarch64 Linux, Docker | `tensorfold-native.exe`, Windows ARM64, no container |
 | GPU | DGX Spark GB10 (`sm_121`, 273 GB/s LPDDR5x) | RTX Spark N1X (`sm_121`, laptop power cap) |
 | Checkpoint | `thinkingmachines/Inkling-2-Mini` pinned `7a67ae23`, SHA-256-checked | the same upstream checkpoint (the laptop's copy is revision `ed40e7da62`) |
 
-Upstream closed #4441 as superseded: the merged engine is #4387's (`cuda_native.zig`, `loop_model.zig`,
-`loop_backend.zig`), so Mia's patch series does not apply to this tree — 0001-0009 touch `mini_native.zig`,
-`mini_backend.zig` and `mini_model.zig`, which do not exist here. Her published numbers are taken as her
-recipe's reference; our side is measured by the two harnesses below.
+Upstream closed #4441 on 23 Nov as superseded — Mini on CUDA goes through #4387's engine there (#4640, then
+#4697, #4718, #4728 and #4729 for speed) — while this branch serves the same `mini_*` engine Mia's patches target,
+so her series names the same files here but no longer matches their contents. Her published numbers are taken as
+her recipe's reference; our side is measured by the two harnesses below.
 
 ## Feature table
 
 | Mia's recipe (its defaults) | Ours, merged engine |
 |---|---|
-| CUDA DSpark drafter (`DRAFTS=1`, patch 0002) | refused by name: `--drafter` exits `Inkling2DSparkPending` |
+| CUDA DSpark drafter (`DRAFTS=1`, patch 0002) | refused by name: `--drafter` exits `NoDraftHead` (C5 pending) |
 | fp8 KV cache (`KV_DTYPE=fp8`, patch 0003) | bf16 KV per slot |
-| FP8 attention projections (`TF_INKLING2_ATTN_FP8`, patch 0012) | bf16 attention |
+| FP8 attention projections (`TF_INKLING2_ATTN_FP8`, patch 0012) | bf16 attention; experts serve as stored (modelopt-nvfp4) |
 | Blackwell FP4/MXFP8 prefill tensor cores (`TF_INKLING2_PREFILL_TC`, patch 0015) | the shared widened-code expert path |
 | Wide verify CUDA graphs, 4,096-row prompts (patches 0014, 0009) | per-shape graphs, one batched forward a round |
-| Native `inkling2_vision` tower (patch 0016) | refused by name: `--vision` exits `Inkling2LoopTextOnly` |
+| Native `inkling2_vision` tower (patch 0016) | refused by name: image parts exit `Inkling2MiniImages` (C6 pending) |
 | Structured output and `tool_choice` on Mini (patch 0013) | serves; `tfgrammar.dll` beside the exe as on other families |
-| `CONTEXT=262144`, `PARALLEL=8`, admission refusal | up to 16 streams; context to the model's 1,048,576 |
+| `CONTEXT=262144`, `PARALLEL=8`, admission refusal | `--parallel`/`--context` fit admission computes from the pool; the harness serves 8 at 8,192 |
 | `Derisked` derivative support, `reasoning_effort` API (patches 0004, 0010) | the checkpoint's own reply parser |
 
 Nothing in her stack is Windows-native: the image, its Zig download and `libtfgrammar.so` are aarch64 Linux,
