@@ -61,6 +61,9 @@ pub const cuda_pending = @import("qwen_whole_records.zig").records ++
     @import("weight_only_records.zig").cuda ++
     @import("hc_activation_records.zig").cuda ++
     @import("qwen4_records.zig").cuda ++
+    @import("ricursive_cuda_records.zig").cuda ++
+    @import("ricursive_prep_records.zig").cuda ++
+    @import("ricursive_attn_records.zig").cuda ++
     @import("registry_media.zig").cuda_pending ++
     @import("registry_media.zig").cuda_tma_pending ++
     @import("h3_image_cuda_records.zig").records ++

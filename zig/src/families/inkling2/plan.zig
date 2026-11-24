@@ -41,6 +41,7 @@ pub const Plan = struct {
     layers: [config.max_layers]Layer,
     n: u32,
     final_sources: u32, // the output query's states: every finished block and the last layer's output
+
     visits: Visits,
     pre_blocks: u32, // looped: finished blocks entering the core
     bank_blocks: u32, // looped: blocks a pass finishes past its entry block, the next pass's message sources
@@ -66,6 +67,8 @@ pub const Plan = struct {
     pub fn at(p: *const Plan, i: u32) *const Layer {
         return &p.layers[i];
     }
+
+
 
     pub fn count(p: *const Plan, kind: Kind) u32 {
         var k: u32 = 0;

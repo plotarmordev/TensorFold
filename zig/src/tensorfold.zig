@@ -3,6 +3,7 @@ const std = @import("std");
 
 pub const startup_receipt = @import("profile").startup_receipt;
 pub const benchmark_group = @import("core/benchmark_group.zig");
+pub const chunked_write = @import("core/chunked_write.zig");
 pub const safetensors = @import("core/safetensors.zig");
 /// torch.save archives and WAV files: Drama 3's codec and clips, through its `core` shim.
 pub const torch_pth = @import("core/torch_pth.zig");
@@ -80,6 +81,7 @@ pub const flashnext_learned = @import("families/flashnext/learned.zig");
 pub const flashnext_think_check = @import("families/flashnext/think_check.zig");
 pub const glm = @import("families/glm/glm.zig");
 pub const qwen35 = @import("families/qwen3_5/qwen3_5.zig");
+pub const qwen35_stages = @import("families/qwen3_5/stages.zig");
 pub const gemma4 = @import("families/gemma4/gemma4.zig");
 pub const step5 = @import("families/step5/step5.zig");
 pub const spark25_metal = @import("families/spark25/metal.zig");

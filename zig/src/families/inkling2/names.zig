@@ -102,6 +102,7 @@ fn backbone(c: *const Text, prec: []const plan.Precision, sink: anytype) !void {
     try put(sink, "model.llm.norm.weight", .{}, .bf16, &.{h});
     try put(sink, "model.llm.unembed.weight", .{}, .bf16, &.{ c.vocab, h });
     try put(sink, "model.llm.attn_res.output_query", .{}, .f32, &.{h});
+
     for (0..c.layers) |k| {
         const i: u32 = @intCast(k);
         try put(sink, "model.llm.attn_res.mlp_queries.{d}", .{i}, .f32, &.{h});
@@ -111,6 +112,7 @@ fn backbone(c: *const Text, prec: []const plan.Precision, sink: anytype) !void {
             try put(sink, "model.llm.attn_res.attn_queries.{d}", .{i}, .f32, dims);
         }
         try attention(c, i, sink);
+
         try put(sink, "model.llm.layers.{d}.attn_sconv.weight", .{i}, .bf16, &.{ h, 1, config.conv_taps });
         try put(sink, "model.llm.layers.{d}.mlp_norm.weight", .{i}, .bf16, &.{h});
         try put(sink, "model.llm.layers.{d}.mlp_sconv.weight", .{i}, .bf16, &.{ h, 1, config.conv_taps });

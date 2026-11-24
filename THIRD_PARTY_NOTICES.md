@@ -332,7 +332,7 @@ These follow a model's release code or a library's model code for their math, ro
 
 - `tools/lfm3/ref64.py` and `zig/kernels/xpu/lfm3.cl`: `modeling_lfm3.py` in [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B). Copyright Liquid AI, LFM Open License v1.0; see [the license text](LICENSES/LFM-Open-1.0.txt).
 - `zig/kernels/metal/minimax_m3/glue.metal`: the rounding points of `modeling_minimax_m3_vl.py` in [transformers](https://github.com/huggingface/transformers).
-- `zig/src/families/ricursive/` (its layer order and rounding points), `zig/kernels/metal/ricursive/glue.metal` and `tools/zig/ricursive_reference.py`: `modeling_ricursive.py` in [ricursiveAI/Ripple-65B-Preview](https://huggingface.co/ricursiveAI/Ripple-65B-Preview) at revision `240d5966cbe00f0627c699e59ef58560b60303cf`: the scaled embedding, the value residual, the per-head q/k norms, RoPE on sliding layers only, the fp32 sigmoid gate, the clamped SwiGLU and the four norms a layer. The release's SGLang model `inference/server/model.py` computes the same layers; what is in it alone is its serving (the W4A4 kernels, the capture of hidden states for a drafter), which this family does not take. Copyright ricursiveAI, Apache License 2.0; see [the license text](LICENSES/Apache-2.0.txt). The reference's `--release` mode imports the release's own `modeling_ricursive.py` from the checkpoint at run time; TensorFold does not include it.
+- `zig/src/families/ricursive/` (its layer order and rounding points), `zig/kernels/metal/ricursive/glue.metal`, `zig/kernels/cuda/ricursive.cu`, `ricursive.cuh`, `ricursive_prep.cu`, `ricursive_prep.cuh` and `tools/zig/ricursive_reference.py`: `modeling_ricursive.py` in [ricursiveAI/Ripple-65B-Preview](https://huggingface.co/ricursiveAI/Ripple-65B-Preview) at revision `240d5966cbe00f0627c699e59ef58560b60303cf`: the scaled embedding, the value residual, the per-head q/k norms, RoPE on sliding layers only, the fp32 sigmoid gate, the clamped SwiGLU and the four norms a layer. The release's SGLang model `inference/server/model.py` computes the same layers; what is in it alone is its serving (the W4A4 kernels, the capture of hidden states for a drafter), which this family does not take. Copyright ricursiveAI, Apache License 2.0; see [the license text](LICENSES/Apache-2.0.txt). The reference's `--release` and `--release-f64` modes import the release's own `modeling_ricursive.py` from the checkpoint at run time; TensorFold does not include it.
 - `zig/src/vision/qwen_cuda.zig`: `Qwen3_5VisionModel` in transformers.
 - `zig/src/core/picture/patches_test.zig`: recorded image-processor output data from `Lfm3VlImageProcessor` and `Qwen2VLImageProcessor` in transformers; the processing implementation is described below.
 - `zig/src/families/flashnext/rotary_config.zig`: `_compute_yarn_parameters` in transformers, for the 64 rotary dims.
@@ -576,8 +576,11 @@ stated on its model card (see [the license text](LICENSES/Apache-2.0.txt)). The 
 headers, no tensor data or weights. `tools/zig/inkling2_fixtures.py` rebuilds all three from the Mini release, or from its
 extracted headers, with the same revision annotation. No revision was derived from fixture digests.
 
-The Mini loop host/reference implementations in `zig/src/families/inkling2/loop.zig`, the CUDA and Metal loop kernels
-and the stored-expert implementations in `modelopt.zig` and
+`release_chat_template.jinja` and `release_tokenizer_config.json` in the same folder are byte-identical copies of that
+revision's `chat_template.jinja` and `tokenizer_config.json`, under the same license.
+
+The Mini loop host/reference implementations in `zig/src/families/inkling2/loop.zig`, `loop_model.zig`, `loop_engine.zig`,
+`loop_math_cuda.zig`, the CUDA and Metal loop kernels and the stored-expert implementations in `modelopt.zig` and
 `zig/kernels/cuda/inkling2/modelopt.cu` are independent TensorFold implementations of the supplied math-only Mini
 specification. Its primary reference is huggingface/transformers PR #51050 at head `6173a2f6`: the Mini configuration and
 forward pass in `models/inkling2_loop/modular_inkling2_loop.py` and `modeling_inkling2_loop.py`, with the temporary

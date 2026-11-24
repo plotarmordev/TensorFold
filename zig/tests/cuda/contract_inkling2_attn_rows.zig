@@ -4,7 +4,7 @@ const cuda = @import("cuda");
 const core = @import("core");
 const ink = @import("inkling2");
 const rig_ = @import("contract_rig.zig");
-const ref = @import("contract_inkling2_attn_ref.zig");
+const ref = core.contract.inkling2_attn_ref;
 const M = @import("contract_inkling2_model.zig");
 
 const contract = core.contract;

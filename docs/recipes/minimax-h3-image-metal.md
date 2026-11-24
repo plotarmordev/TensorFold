@@ -269,19 +269,22 @@ samples. A separate 16-byte generation in `/tmp/tensorfold-speech.lock.stamp` de
 between lock polls. Missing, malformed or inaccessible signals invalidate timings; uncoordinated forwards do too.
 Both processes must use this protocol; an old speech binary cannot certify clean timings. Speech remains best-effort
 on filesystem errors: if both publishing and invalidating a generation fail, a short request can remain unobserved.
-Speech waits for its shared hold only behind a render's exclusive probe, which lasts microseconds and never spans GPU
-work, so it never synthesizes unprotected. The prompt encoder (`tf-h3-image-prompt`, the server's first stage) waits
+Speech releases its hold when the engine's work ends, before the reply goes to the client, so a slow client never
+holds a render back. It opens the lock without following symlinks and creates it only when absent; behind an
+exclusive hold longer than a second (a render's probes last microseconds) it synthesizes without the hold rather
+than wait. A command buffer that fails is reported only after every buffer committed with it has completed.
+The prompt encoder (`tf-h3-image-prompt`, the server's first stage) waits
 before each pass with three queued, and the decoder (`tf-h3-image-decoder`, its last) before each batch of tiles; both
 print the seconds they waited.
 
 ### Speech contention receipt, 12 November 2026
 
 Apple M5 Ultra, 256 GiB RAM, macOS 27.0 (26A425), Zig 0.17.0, ReleaseFast with `-Dcpu=apple_m1`.
-The branch's isolated Drama 3 NVFP4 server served the Capri catalog in `synth.json`, CFG 1.5 with paired submission,
+The branch's isolated Drama 3 NVFP4 server served a voice catalog in `synth.json`, CFG 1.5 with paired submission,
 one lane and context 8192. The live release server was not changed. More than 170 GiB was free before loading.
 The client timed from sending each HTTP request until reading the first two PCM bytes, not response headers.
 
-The reference cache was warmed before starting `tf-h3-image MODEL_DIR CASE OUT free`. The case was card 35's
+The reference cache was warmed before starting `tf-h3-image MODEL_DIR CASE OUT free`. The case was a
 4096-square, seed-42, 24-text-row case (SHA-256 `af4f85f19ebeb4e4af5beada167d8e8fd00bf1b880541b88a60c0a2b5b6dd66b`).
 Five sequential requests, seeds 42–46, used `stream=true` and `response_format="pcm"`:
 
@@ -307,7 +310,7 @@ not a cold-start guarantee. Generation checks now bracket the complete wall inte
 ### Five voice notes during a resident render, 13 November 2026
 
 Same machine, speech server and client, built from `b82e132` and served on port 18899; `tf-h3-image-server` drew
-card 34's prompt at 4096x4096, seed 42. The server's first request after start, with its reference rows still unbuilt
+a prompt at 4096x4096, seed 42. The server's first request after start, with its reference rows still unbuilt
 in memory, reached first PCM in 2.879 s idle; the next took 0.414 s. Five notes then went out 15 s apart during the
 render, all HTTP 200 with the render running at the start and end of each:
 
@@ -321,7 +324,7 @@ render, all HTTP 200 with the render running at the start and end of each:
 
 Steps 1-3, 5 and 6 waited 2.27-3.21 s each and reported `timing_valid=false`; step 4 waited zero and reported
 `true`, with 10.04 s on the GPU like the others. The render resumed after each wait and exited 0; its latent matched
-card 34's `t2i-4096.latent.f32` and its rows the 12 November baseline (`b3726693...`) byte-for-byte. The prompt
+the uncoordinated `t2i-4096.latent.f32` and its rows the 12 November baseline (`b3726693...`) byte-for-byte. The prompt
 encoder and decoder are too short at this spacing to catch a note; `test-h3-image-server` has speech arrive during
 each stage. The isolated server was stopped afterward; the live release server was not changed.
 
@@ -438,6 +441,36 @@ Before the workload, `nice -n 10 zig build test test-golden` exited zero in 89.6
 13 known differences, zero unexpected); `nice -n 10 zig build test-h3-image-server -Doptimize=ReleaseSafe`
 exited zero in 3.27 s. That regression retains card 49's mid-encoder, refiner, decoder and denoising waits and
 byte-identical output checks. The measured ReleaseFast executable rebuild also exited zero.
+
+### Large resident renders and a live speech server, 14-15 November 2026
+
+The render gives way only to a speech server that publishes the same lock: updating `tf-h3-image-server` alone
+cannot make an older speech process announce a request, and `timing_valid=true` cannot detect a speech process
+that does not take part. To check a live deployment during a real request:
+
+- Attempt a nonblocking exclusive `flock` on `/tmp/tensorfold-speech.lock` from a separate process every 20 ms;
+  contention means speech holds it.
+- Compare `/tmp/tensorfold-speech.lock.stamp` before and after the request. The coordinated server writes it even
+  when acquiring the speech hold fails. Across users the lock needs mode 0644, the stamp 0666 and length 16.
+- Time the complete audio response, not only first PCM: a streamed HTTP 200 can still miss a caller's deadline.
+
+Apple M5 Ultra, 256 GiB, macOS 27.0, Zig 0.17.0, `tf-h3-image-server` built with
+`zig build tf-h3-image-server -Dcpu=apple_m1 -Doptimize=ReleaseFast`, rendering 5472x3072 (seed 2201, 183 prompt
+tokens; six steps of 11-12 s each). Each voice request used `model="fishaudio/drama-3"` and the public input "The
+little boat crossed the harbor before the sun came up, and the gulls were quiet over the water while the fishermen
+coiled their nets along the pier." (618,496 PCM bytes), sent after the render's `drawn on` line.
+
+With a speech server that did not publish the lock, the streamed reply completed in **72.854 s** (first PCM 18.856 s)
+while the render ran; 776 probes found no hold, the stamp never changed and all six steps reported zero wait.
+With the speech server publishing the lock and the same renderer executable (same SHA-256), five voice notes sent
+after step 2 of consecutive renders completed in **9.397, 9.538, 9.774, 9.769 and 9.676 s**, each an M4A including
+transport and encoding; 76-93 of every 93-111 probes found a hold and the generation changed each time.
+
+That server replayed 17 resident requests (eight 5472x3072, six 3072x5472, three 4096x4096) in one process, with a
+streamed voice request at the start of each: 17/17 HTTP 200, first PCM 1.061-2.224 s, complete body 5.484-9.421 s.
+The image logs recorded 183.28 s of waits and 25 of 102 steps with `timing_valid=false`. All 17 final latents and
+PNGs matched the uncoordinated run's by SHA-256. These are contention measurements, not a speech-free throughput
+comparison.
 
 ## Gates, fixed before any run
 

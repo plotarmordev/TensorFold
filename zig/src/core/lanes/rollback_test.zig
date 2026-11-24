@@ -157,9 +157,10 @@ test "rollback: heads landing no draft, some or all commit the one-token decode,
     };
 }
 
-test "rollback: fully accepted lone keep is opt-in and adds keeps over main's default" {
-    var calls: [2]usize = undefined;
-    for ([_]bool{ false, true }, &calls) |enabled, *n| {
+test "rollback: fully accepted lone keep is opt-in and preserves main's default call count" {
+    // main keeps a window only when part of it was rejected or cut (max_new ends the last one short)
+    var partial: [2]usize = undefined;
+    for ([_]bool{ false, true }, 0..) |enabled, i| {
         const r = try Rig.create(every, 0);
         defer r.destroy();
         r.engine.backend.keep_full_lone = enabled;
@@ -167,9 +168,16 @@ test "rollback: fully accepted lone keep is opt-in and adds keeps over main's de
         try r.engine.addStream(s);
         _ = try r.finish();
         try expectFresh(.{ .prompt = &p1, .max_new = 24 }, s);
-        n.* = r.target.keep_calls;
+        partial[i] = r.target.keep_calls - r.target.full_keeps;
+        if (enabled) {
+            try expect(r.target.full_keeps > 0);
+        } else {
+            // off: never a whole fully accepted lone window, so every keep is one main's rule makes
+            try std.testing.expectEqual(@as(usize, 0), r.target.full_keeps);
+        }
     }
-    try expect(calls[1] > calls[0]);
+    // the opt-in adds whole-window keeps only: the partial keeps main makes are the same calls
+    try std.testing.expectEqual(partial[0], partial[1]);
 }
 
 /// Steps of the uncancelled run of `reqs`, which bound where a cancel can land.

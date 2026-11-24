@@ -1,27 +1,24 @@
-//! Inkling 2's attention in float64, each device rounding point named: the fixed reference of the attn contract.
+//! Inkling 2's attention in float64, each device rounding point named: the fixed reference of the attn contracts.
 const std = @import("std");
-const core = @import("core");
-
-const contract = core.contract;
-const c = contract.spec;
-const sumIn = contract.rows.sumIn;
+const c = @import("contract.zig");
+const gates = @import("gates.zig");
+const sumIn = @import("rows.zig").sumIn;
 
 pub const D = 128;
-pub const heads = 24; // a TP=2 rank's query heads
+pub const heads = 24; // a call's default query heads: CUDA's served Small rank (TP=2); a Call names its own
 pub const kv = 4; // and its key heads
 pub const group = heads / kv;
 pub const extent = 1024; // rel_extent: the bias covers distances 0..1023
 pub const d_rel = 16;
 pub const qk_clip: f64 = 22.627416997969522; // config.json qk_l2_clip_threshold
 pub const rel_clip: f64 = 8.0;
-pub const floor_pos: f64 = 128000; // log_scaling_n_floor
+pub const floor_pos: f64 = 128000; // Small's log_scaling_n_floor (Mini's is 8,192: tauAt)
 pub const alpha: f64 = 0.1; // log_scaling_alpha
 pub const eps: f64 = 1e-6; // rms_norm_eps
 pub const scale: f64 = 0.08838834764831845; // 128^-1/2; the device's fp32 constant is within 2^-24 of it
 pub const max_keys = 4096 + extent; // distinct keys a row's reference walks: ring slots, then the biased distances
 
 const u: f64 = 0x1p-24; // fp32 unit roundoff
-const u_mma: f64 = 0x1p-23; // a tensor-core add: its adders may truncate
 const u_bf: f64 = 0x1p-8; // bf16 unit roundoff (8 significant bits)
 const log2e: f64 = 1.4426950408889634;
 
@@ -57,15 +54,28 @@ pub fn clipFactor(x: []const f64, thr: f64) f64 {
     return minNum(thr / (@sqrt(ss) + 1e-6), 1);
 }
 
-/// The log-scaling factor of a global layer's q and rel at position `pos`: 1 + alpha ln(max((pos + 1) / floor, 1)).
+/// The log-scaling factor of a global layer's q and rel at position `pos` with Small's floor.
 pub fn tau(pos: usize) f64 {
     return tauAt(pos, floor_pos);
 }
 
-/// tau at a model's own log_scaling_n_floor (Mini's is 8,192).
+
+/// The log-scaling factor at `pos` for a model's n_floor: 1 + alpha ln(max((pos + 1) / floor, 1)).
 pub fn tauAt(pos: usize, floor: f64) f64 {
     return 1 + alpha * @log(@max(@as(f64, @floatFromInt(pos + 1)) / floor, 1));
 }
+
+/// A backend's fp32 chains: adds in a q.k dot and in a 64-key tile of a row's P.V sum, and each add's unit roundoff.
+pub const Chain = struct {
+    dot: f64,
+    tile: f64,
+    unit: f64,
+
+    /// 8 chained mma (k16) a dot, 4 a tile and its rescale; a tensor-core add may truncate (2^-23).
+    pub const cuda: Chain = .{ .dot = 8 * 17, .tile = 4 * 17 + 1, .unit = 0x1p-23 };
+    /// HIP's scalar IEEE adds: 128 a dot from 0, a tile's 64 keys after its rescale.
+    pub const hip: Chain = .{ .dot = 128, .tile = 64 + 1, .unit = u };
+};
 
 /// One attention call's host inputs as the device holds them (bf16 bits) and where its rows sit.
 pub const Call = struct {
@@ -80,19 +90,26 @@ pub const Call = struct {
     ring: usize,
     window: usize, // 0: a global layer, every key from 0
     exact: bool = false, // gate 4's rows: every p is 1 and every sum an integer below 2^24
-    kv: usize = kv, // key heads a rank: Small's 4, Mini's 8
+    heads: usize = heads, // the call's query heads, then its key heads (GQA groups of heads / kv)
+    kv: usize = kv,
+    chain: Chain = .cuda,
 
+    fn groupSize(call: *const Call) usize {
+        return call.heads / call.kv;
+    }
+    /// heads / kv: the query heads one key head serves.
     pub fn perKv(call: *const Call) usize {
-        return heads / call.kv;
+        return call.groupSize();
     }
 
-    /// The fp32 sums' longest chain at a row: 4 mma (k16) a 64-key tile and its rescale, then the folds.
+
+    /// The fp32 sums' longest chain at a row: a 64-key tile's adds and its rescale (`chain.tile`), then the folds.
     fn depth(call: *const Call, pos: usize) f64 {
         const global = call.window == 0;
         const tiles: f64 = if (global) 16 else 4; // a block's tiles: a 1,024-key sub-chunk, or a 256-key chunk
         const chunks: f64 = @floatFromInt(if (global) pos / 16384 + 1 else 5);
         const subs: f64 = if (global) 16 else 0;
-        return tiles * (4 * 17 + 1) + 2 * (subs + chunks) + 8;
+        return tiles * call.chain.tile + 2 * (subs + chunks) + 8;
     }
 
     /// Rescales a key's weight meets (exp2f within 2 ulp, then a product): in-tile, sub-chunk and chunk folds.
@@ -127,7 +144,7 @@ pub const Keys = struct {
             for (0..@min(call.ring, last + 1)) |slot| ks.add(slot, @floatFromInt((last - slot) / call.ring + 1), 0);
             near = last + 1;
         }
-        const tab = call.tab[(r * heads + h) * extent ..][0..extent];
+        const tab = call.tab[(r * call.heads + h) * extent ..][0..extent];
         for (near..pos + 1) |p| ks.add(p % call.ring, 1, if (pos - p < extent) bf(tab[pos - p]) else 0);
     }
 
@@ -151,10 +168,10 @@ fn sigmoid(g: f64) f64 {
 pub fn row(call: *const Call, r: usize, h: usize, ks: *Keys, want: []f64, tol: []f64) void {
     ks.gather(call, r, h);
     const st = call.stream[r];
-    const kvh = h / call.perKv();
+    const kvh = h / call.groupSize();
     const pos = call.pos[r];
-    const qr = call.q[(r * heads + h) * D ..][0..D];
-    const z = bf(call.sink[r * heads + h]);
+    const qr = call.q[(r * call.heads + h) * D ..][0..D];
+    const z = bf(call.sink[r * call.heads + h]);
     var most = z;
     for (0..ks.n) |i| {
         const kr = call.keyRow(call.k, st, kvh, ks.slot[i]);
@@ -164,11 +181,11 @@ pub fn row(call: *const Call, r: usize, h: usize, ks: *Keys, want: []f64, tol: [
             dot += bf(qv) * bf(kv_); // bf16 x bf16: exact in fp32, so the mma's 128 products are exact
             abs += @abs(bf(qv) * bf(kv_));
         }
-        ks.s[i] = dot * scale + ks.bias[i]; // fp32 on the device: dot by 8 chained k16 mma, then scale, bias, log2e
-        ks.e[i] = abs * scale * 136 * u_mma + (@abs(dot * scale) + @abs(ks.bias[i])) * 6 * u;
+        ks.s[i] = dot * scale + ks.bias[i]; // fp32 on the device: the dot's chain (`chain.dot`), then scale, bias, log2e
+        ks.e[i] = abs * scale * call.chain.dot * call.chain.unit + (@abs(dot * scale) + @abs(ks.bias[i])) * 6 * u;
         most = maxNan(most, ks.s[i]);
     }
-    const chain = call.depth(pos) * u_mma + call.rescales(pos) * 0x1p-22; // fp32 sums and the folds' exp2f factors
+    const chain = call.depth(pos) * call.chain.unit + call.rescales(pos) * 0x1p-22; // fp32 sums and the folds' exp2f factors
     var l: f64 = @exp(z - most); // the sink: one extra logit with no value (eager_attention_forward)
     for (0..ks.n) |i| {
         ks.w[i] = @exp(ks.s[i] - most) * ks.mult[i];
@@ -177,7 +194,7 @@ pub fn row(call: *const Call, r: usize, h: usize, ks: *Keys, want: []f64, tol: [
     }
     const p0 = @exp(z - most);
     const e0 = (@abs(z) * 3 + (most - z)) * u + 0x1p-22 + chain; // the sink's logit times log2e, then exp2f in fp32
-    const gate = call.gate[(r * heads + h) * D ..][0..D];
+    const gate = call.gate[(r * call.heads + h) * D ..][0..D];
     for (0..D) |d| {
         var num: f64 = 0;
         for (0..ks.n) |i| num += ks.w[i] * bf(call.keyRow(call.v, st, kvh, ks.slot[i])[d]);
@@ -198,15 +215,15 @@ pub fn row(call: *const Call, r: usize, h: usize, ks: *Keys, want: []f64, tol: [
 }
 
 /// Row r, head h with every sum in `acc` and `order` over the keys one by one (gate 4), output rounded to bf16.
-pub fn simulate(call: *const Call, r: usize, h: usize, acc: c.Accum, order: contract.gates.Order, p: []f64, col: []f64, out: []f64) void {
+pub fn simulate(call: *const Call, r: usize, h: usize, acc: c.Accum, order: gates.Order, p: []f64, col: []f64, out: []f64) void {
     const st = call.stream[r];
-    const kvh = h / call.perKv();
+    const kvh = h / call.groupSize();
     const pos = call.pos[r];
     const lo = if (call.window > 0) (pos + 1) -| call.window else 0;
     const n = pos + 1 - lo;
-    const qr = call.q[(r * heads + h) * D ..][0..D];
-    const tab = call.tab[(r * heads + h) * extent ..][0..extent];
-    const z = bf(call.sink[r * heads + h]);
+    const qr = call.q[(r * call.heads + h) * D ..][0..D];
+    const tab = call.tab[(r * call.heads + h) * extent ..][0..extent];
+    const z = bf(call.sink[r * call.heads + h]);
     var most = z;
     for (p[0..n], lo..) |*x, kp| {
         var dot: f64 = 0;
@@ -216,7 +233,7 @@ pub fn simulate(call: *const Call, r: usize, h: usize, acc: c.Accum, order: cont
     }
     for (p[0..n]) |*x| x.* = @exp(x.* - most);
     const l = sumIn(acc, order, p[0..n]) + @exp(z - most);
-    const gate = call.gate[(r * heads + h) * D ..][0..D];
+    const gate = call.gate[(r * call.heads + h) * D ..][0..D];
     for (out, 0..) |*o, d| {
         for (col[0..n], p[0..n], lo..) |*x, w, kp| x.* = w * bf(call.keyRow(call.v, st, kvh, kp % call.ring)[d]);
         const y = sumIn(acc, order, col[0..n]) / l * sigmoid(bf(gate[d]));
@@ -232,4 +249,100 @@ test "rn rounds once to nearest even and keeps bf16 values" {
     try std.testing.expect(std.math.isNan(minNum(std.math.nan(f64), std.math.nan(f64))));
     try std.testing.expectEqual(@as(f64, 1), minNum(std.math.nan(f64), 1));
     try std.testing.expectEqual(@as(f64, 1), tau(127998));
+}
+
+test "a call carries its rank's heads, key heads and chains; tau takes the model's floor" {
+    try std.testing.expectEqual(@as(f64, 1), tauAt(8191, 8192));
+    try std.testing.expectApproxEqAbs(1 + 0.1 * @log(2.0), tauAt(16383, 8192), 1e-15);
+    try std.testing.expectEqual(tau(300000), tauAt(300000, floor_pos));
+    const call: Call = .{ .q = &.{}, .k = &.{}, .v = &.{}, .tab = &.{}, .sink = &.{}, .gate = &.{}, .pos = &.{}, .stream = &.{}, .ring = 4096, .window = 0 };
+    try std.testing.expectEqual(@as(usize, heads), call.heads);
+    try std.testing.expectEqual(@as(usize, kv), call.kv);
+    try std.testing.expectEqual(Chain.cuda, call.chain);
+    try std.testing.expect(Chain.hip.unit < Chain.cuda.unit and Chain.hip.tile < Chain.cuda.tile);
+}
+
+fn pinned(i: usize, m: usize) u16 {
+    const x: f32 = @floatFromInt(@as(i64, @intCast((i * 37 + m) % 29)) - 14);
+    return c.toBf16(x * 0.0625);
+}
+
+test "CUDA's defaults keep the bits the reference had in zig/tests/cuda (#4125)" {
+    var q: [heads * D]u16 = undefined;
+    var k: [kv * 128 * D]u16 = undefined;
+    var v: [kv * 128 * D]u16 = undefined;
+    var tab: [heads * extent]u16 = undefined;
+    var sink: [heads]u16 = undefined;
+    var gate: [heads * D]u16 = undefined;
+    for ([_][]u16{ &q, &k, &v, &tab, &gate, &sink }, 1..) |x, m| for (x, 0..) |*e, i| {
+        e.* = pinned(i, m);
+    };
+    var pos = [_]usize{100};
+    var st = [_]usize{0};
+    const want = [2][4]u64{ .{ 0xbfc6dd62d3109c22, 0xbfbd967537eb01a7, 0x3f64049c6441daa5, 0x3f584dec199b1a8c }, .{ 0xbfc2ef9685604c58, 0xbfbd36245440324a, 0x3f617d0618cb7670, 0x3f579dc3fed2449e } };
+    for ([_]usize{ 0, 32 }, want) |window, bits_| {
+        const call: Call = .{ .q = &q, .k = &k, .v = &v, .tab = &tab, .sink = &sink, .gate = &gate, .pos = &pos, .stream = &st, .ring = 128, .window = window };
+        var ks: Keys = .{};
+        var w: [D]f64 = undefined;
+        var t: [D]f64 = undefined;
+        row(&call, 0, 13, &ks, &w, &t);
+        const got = [4]u64{ @bitCast(w[0]), @bitCast(w[77]), @bitCast(t[0]), @bitCast(t[77]) };
+        try std.testing.expectEqualSlices(u64, &bits_, &got);
+    }
+}
+
+// bits from the base file (5c1fea67f:zig/tests/cuda/contract_inkling2_attn_ref.zig) on these inputs
+test "CUDA's defaults keep the base bits past the extent, on a full window, the exact branch, gate 4 and tau" {
+    const a = std.testing.allocator;
+    const ring = 128;
+    const q = try a.alloc(u16, 2 * heads * D);
+    defer a.free(q);
+    const k = try a.alloc(u16, kv * ring * D);
+    defer a.free(k);
+    const v = try a.alloc(u16, k.len);
+    defer a.free(v);
+    const tab = try a.alloc(u16, 2 * heads * extent);
+    defer a.free(tab);
+    const sink = try a.alloc(u16, 2 * heads);
+    defer a.free(sink);
+    const gate = try a.alloc(u16, 2 * heads * D);
+    defer a.free(gate);
+    for ([_][]u16{ q, k, v, tab, gate, sink }, 1..) |x, m| for (x, 0..) |*e, i| {
+        e.* = pinned(i, m);
+    };
+    q[(1 * heads + 13) * D + 3] = c.toBf16(std.math.nan(f32));
+    sink[1 * heads + 7] = c.toBf16(std.math.inf(f32));
+    const st = [_]usize{ 0, 0 };
+    const Case = struct { pos: [2]usize, window: usize, exact: bool, r: usize, h: usize, bits: ?[4]u64 };
+    const cases = [_]Case{
+        .{ .pos = .{ 5000, 5001 }, .window = 0, .exact = false, .r = 0, .h = 13, .bits = .{ 0xbfc94c2fe7b239f9, 0xbfbbd5eb445673c4, 0x3f65377f773ff541, 0x3f571c5526af1cd6 } },
+        .{ .pos = .{ 2000, 2001 }, .window = 1024, .exact = false, .r = 0, .h = 5, .bits = .{ 0x3fc15c3191d15f7c, 0x3fd77f821709cc70, 0x3f5c6a56e75e29fd, 0x3f735aa88f30c395 } },
+        .{ .pos = .{ 300, 301 }, .window = 1024, .exact = true, .r = 0, .h = 0, .bits = .{ 0xbfc56a13a38f6bbf, 0xbfc0eaa55736282d, 0x3f456b149c7b1678, 0x3f40eb7056f63eb7 } },
+        .{ .pos = .{ 300, 301 }, .window = 0, .exact = false, .r = 1, .h = 13, .bits = null }, // a NaN q: want and tol NaN
+        .{ .pos = .{ 300, 301 }, .window = 0, .exact = false, .r = 1, .h = 7, .bits = null }, // a +inf sink: want and tol NaN
+    };
+    const ks = try a.create(Keys);
+    defer a.destroy(ks);
+    for (cases) |cs| {
+        const call: Call = .{ .q = q, .k = k, .v = v, .tab = tab, .sink = sink, .gate = gate, .pos = &cs.pos, .stream = &st, .ring = ring, .window = cs.window, .exact = cs.exact };
+        var w: [D]f64 = undefined;
+        var t: [D]f64 = undefined;
+        row(&call, cs.r, cs.h, ks, &w, &t);
+        if (cs.bits) |b| {
+            try std.testing.expectEqualSlices(u64, &b, &.{ @bitCast(w[0]), @bitCast(w[77]), @bitCast(t[0]), @bitCast(t[77]) });
+        } else for (w, t) |x, y| try std.testing.expect(std.math.isNan(x) and std.math.isNan(y));
+    }
+    const p = try a.alloc(f64, 5001);
+    defer a.free(p);
+    const col = try a.alloc(f64, 5001);
+    defer a.free(col);
+    const sp = [_]usize{ 5000, 5001 };
+    const call: Call = .{ .q = q, .k = k, .v = v, .tab = tab, .sink = sink, .gate = gate, .pos = &sp, .stream = &st, .ring = ring, .window = 0 };
+    var o: [D]f64 = undefined;
+    simulate(&call, 0, 12, .f32, .sequential, p, col, &o);
+    try std.testing.expectEqualSlices(u64, &.{ 0x3fd4c00000000000, 0xbfc2200000000000 }, &.{ @bitCast(o[0]), @bitCast(o[77]) });
+    simulate(&call, 0, 12, .bf16, .pairwise, p, col, &o);
+    try std.testing.expectEqualSlices(u64, &.{ 0x3fd4e00000000000, 0xbfc2000000000000 }, &.{ @bitCast(o[0]), @bitCast(o[77]) });
+    for ([_]usize{ 127999, 128000, 300000, 1048575 }, [_]u64{ 0x3ff0000000000000, 0x3ff00000d1b6e1a9, 0x3ff15ce10ac9824d, 0x3ff35d741b82a5cf }) |pos, b|
+        try std.testing.expectEqual(b, @as(u64, @bitCast(tau(pos))));
 }
