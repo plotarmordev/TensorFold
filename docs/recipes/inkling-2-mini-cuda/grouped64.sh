@@ -1,8 +1,19 @@
 #!/bin/sh
 # Run on TOP through swarm gpu-run: 64-stream greedy decode of one prompt, and of tools/bench_prompts.json's 16 prompts
-# (each sent to 4 streams). Memory is sampled before load, after load and after the benches, not a peak.
+# (each sent to 4 streams). setup.sh's build and gates log "build: N s"; the rest runs under `timeout 580` and logs
+# "measure: N s". Memory is sampled before load, after load and after the benches, not a peak.
 set -eu
-. docs/recipes/inkling-2-mini-cuda/setup.sh
+if [ "${1:-}" != measure ]; then
+    start=$(date +%s)
+    . docs/recipes/inkling-2-mini-cuda/setup.sh
+    echo "build: $(($(date +%s) - start)) s"
+    export model out bin
+    start=$(date +%s)
+    status=0
+    timeout --signal=INT --kill-after=20s 580 sh "$0" measure || status=$?
+    echo "measure: $(($(date +%s) - start)) s"
+    exit "$status"
+fi
 "$bin/tf-cuda-test" stored-experts ckpt "$model"
 "$bin/tf-cuda-test" inkling2-round64 "$model" "$out/ids.txt"
 mem() {
@@ -14,6 +25,7 @@ mem before
     --name inkling-2-mini --parallel 64 --context 4096 --no-update-check >"$out/server-grouped64.log" 2>&1 &
 server=$!
 trap 'kill -INT "$server" 2>/dev/null || :; wait "$server" 2>/dev/null || :' EXIT
+trap 'exit 130' INT
 python3 - "$server" <<'PY'
 import sys, time, urllib.request
 for _ in range(900):
