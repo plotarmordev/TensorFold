@@ -81,16 +81,26 @@ kernel void tf_inkling2_loop_messages(
   }
 }
 
-// The gates' first launch: h and m each to unit RMS and BF16, as normalized[row][h | m].
-kernel void tf_inkling2_loop_gates(
+
+// A row's whole gate in one launch: h and m to unit RMS BF16, the rank-64 zeta dots, the four-step blend,
+// and when the caller passes a norm the row's RMS scale against it to BF16. The phases keep the old three
+// launches' reduction order; `normed` picks the last phase. `out` always receives the FP32 blend row.
+struct InkGateArgs { uint rows, stride, normed; };
+[[max_total_threads_per_threadgroup(256)]]
+kernel void tf_inkling2_loop_gate(
     const device float* h [[buffer(0)]], const device float* m [[buffer(1)]],
-    device bfloat* normalized [[buffer(2)]], constant InkLoopArgs& a [[buffer(3)]],
-    uint t [[thread_position_in_threadgroup]],
-    uint row [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    const device bfloat* down [[buffer(2)]], const device bfloat* forget [[buffer(3)]],
+    const device bfloat* gain [[buffer(4)]], device float* out [[buffer(5)]],
+    const device bfloat* norm_w [[buffer(6)]], device bfloat* norm_out [[buffer(7)]],
+    constant InkGateArgs& a [[buffer(8)]],
+    uint t [[thread_position_in_threadgroup]], uint row [[threadgroup_position_in_grid]],
+    uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
   if (row >= a.rows) return;
   const device float* inputs[2] = { h + size_t(row) * INKLING_LOOP_H,
                                     m + size_t(row) * a.stride };
-  threadgroup float sums[2 * 8], inverse[2];
+  threadgroup float sums[2 * 8], inverse[2], part[8];
+  threadgroup bfloat normalized[2 * INKLING_LOOP_H], zeta[INKLING_LOOP_RANK];
+  threadgroup float blended[INKLING_LOOP_H];
   for (uint s = 0; s < 2; ++s) {
     float ss = 0.0f;
     for (uint d = t; d < INKLING_LOOP_H; d += 256) {
@@ -98,7 +108,7 @@ kernel void tf_inkling2_loop_gates(
       ss += x * x;
     }
     const float reduced = simd_sum(ss);
-    if (lane == 0) sums[s * 8 + t / 32] = reduced;
+    if (lane == 0) sums[s * 8 + sg] = reduced;
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
   if (t == 0) for (uint s = 0; s < 2; ++s) {
@@ -107,46 +117,30 @@ kernel void tf_inkling2_loop_gates(
     inverse[s] = precise::rsqrt(precise::divide(ss, 2304.0f) + INKLING_LOOP_EPS);
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  device bfloat* y = normalized + size_t(row) * (2 * INKLING_LOOP_H);
   for (uint d = t; d < INKLING_LOOP_H; d += 256) {
-    y[d] = bfloat(inputs[0][d] * inverse[0]);
-    y[INKLING_LOOP_H + d] = bfloat(inputs[1][d] * inverse[1]);
+    normalized[d] = bfloat(inputs[0][d] * inverse[0]);
+    normalized[INKLING_LOOP_H + d] = bfloat(inputs[1][d] * inverse[1]);
   }
-}
-
-// The second: zeta[row][r] = bf16(down[r] . normalized[row]) in fp32, a simdgroup a rank, eight columns a lane a step.
-[[max_total_threads_per_threadgroup(256)]]
-kernel void tf_inkling2_loop_zeta(
-    const device bfloat* normalized [[buffer(0)]], const device bfloat* down [[buffer(1)]],
-    device bfloat* zeta [[buffer(2)]], constant InkLoopArgs& a [[buffer(3)]],
-    uint2 tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
-    uint lane [[thread_index_in_simdgroup]]) {
-  const uint r = tg.x * 8 + sg, row = tg.y;
-  if (r >= INKLING_LOOP_RANK || row >= a.rows) return;
-  const device bfloat* w = down + size_t(r) * (2 * INKLING_LOOP_H);
-  const device bfloat* x = normalized + size_t(row) * (2 * INKLING_LOOP_H);
-  float acc = 0.0f;
-  for (uint i = 8 * lane; i < 2 * INKLING_LOOP_H; i += 256) {
-    const float4 w0 = float4(*(const device bfloat4*)(w + i)), w1 = float4(*(const device bfloat4*)(w + i + 4));
-    const float4 x0 = float4(*(const device bfloat4*)(x + i)), x1 = float4(*(const device bfloat4*)(x + i + 4));
-    acc += dot(w0, x0) + dot(w1, x1);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  // A simdgroup takes eight of the ranks in sequence, each dot in the old launch's lane order.
+  for (uint band = 0; band < 8; ++band) {
+    const uint r = band * 8 + sg;
+    const device bfloat* w = down + size_t(r) * (2 * INKLING_LOOP_H);
+    float acc = 0.0f;
+    for (uint i = 8 * lane; i < 2 * INKLING_LOOP_H; i += 256) {
+      const float4 w0 = float4(*(const device bfloat4*)(w + i)), w1 = float4(*(const device bfloat4*)(w + i + 4));
+      const float4 x0 = float4(*(const threadgroup bfloat4*)(normalized + i)), x1 = float4(*(const threadgroup bfloat4*)(normalized + i + 4));
+      acc += dot(w0, x0) + dot(w1, x1);
+    }
+    const float sum = simd_sum(acc);
+    if (lane == 0) zeta[r] = bfloat(sum);
   }
-  const float sum = simd_sum(acc);
-  if (lane == 0) zeta[row * INKLING_LOOP_RANK + r] = bfloat(sum);
-}
-
-// The third: each output's forget and gain dots over zeta in rank order, then the four-step blend.
-kernel void tf_inkling2_loop_blend(
-    const device float* h [[buffer(0)]], const device float* m [[buffer(1)]],
-    const device bfloat* zeta [[buffer(2)]], const device bfloat* forget [[buffer(3)]],
-    const device bfloat* gain [[buffer(4)]], device float* out [[buffer(5)]],
-    constant InkLoopArgs& a [[buffer(6)]], uint2 at [[thread_position_in_grid]]) {
-  const uint d = at.x, row = at.y;
-  if (d >= INKLING_LOOP_H || row >= a.rows) return;
-  {
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  // Each output's forget and gain dots over zeta in rank order, then the four-step blend.
+  for (uint d = t; d < INKLING_LOOP_H; d += 256) {
     float fdot = 0.0f, gdot = 0.0f;
     for (uint r = 0; r < INKLING_LOOP_RANK; ++r) {
-      const float z = float(zeta[row * INKLING_LOOP_RANK + r]);
+      const float z = float(zeta[r]);
       fdot += float(forget[size_t(d) * INKLING_LOOP_RANK + r]) * z;
       gdot += float(gain[size_t(d) * INKLING_LOOP_RANK + r]) * z;
     }
@@ -156,6 +150,20 @@ kernel void tf_inkling2_loop_blend(
     const float keep = 1.0f - f;
     const float left = keep * h[size_t(row) * INKLING_LOOP_H + d];
     const float right = g * m[size_t(row) * a.stride + d];
-    out[size_t(row) * INKLING_LOOP_H + d] = left + right;
+    const float v = left + right;
+    blended[d] = v;
+    out[size_t(row) * INKLING_LOOP_H + d] = v;
   }
+  if (a.normed == 0u) return;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  float ns = 0.0f;
+  for (uint d = t; d < INKLING_LOOP_H; d += 256) ns = fma(blended[d], blended[d], ns);
+  const float nreduced = simd_sum(ns);
+  if (lane == 0) part[sg] = nreduced;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  float ntotal = 0.0f;
+  for (uint j = 0; j < 8; ++j) ntotal += part[j];
+  const float ninv = precise::rsqrt(ntotal / 2304.0f + INKLING_LOOP_EPS);
+  for (uint d = t; d < INKLING_LOOP_H; d += 256)
+    norm_out[size_t(row) * INKLING_LOOP_H + d] = bfloat(float(norm_w[d]) * (blended[d] * ninv));
 }

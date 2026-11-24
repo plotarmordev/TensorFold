@@ -18,13 +18,13 @@ pub const Kind = enum {
     pub fn symbol(k: Kind) []const u8 {
         return switch (k) {
             .messages => "tf_inkling2_loop_messages",
-            .gates => "tf_inkling2_loop_gates",
+            .gates => "tf_inkling2_loop_gate",
         };
     }
     pub fn label(k: Kind) []const u8 {
         return switch (k) {
             .messages => "metal inkling2 loop messages tf_inkling2_loop_messages",
-            .gates => "metal inkling2 loop gates tf_inkling2_loop_gates",
+            .gates => "metal inkling2 loop gates tf_inkling2_loop_gate",
         };
     }
 };
@@ -53,7 +53,7 @@ pub fn geometry(kind: Kind, c: Call) Geometry {
         },
         .tg_memory = switch (kind) {
             .messages => 144,
-            .gates => 80,
+            .gates => 18664,
         },
     };
 }

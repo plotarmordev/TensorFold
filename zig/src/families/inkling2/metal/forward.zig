@@ -159,13 +159,18 @@ fn prepareAttentionInputs(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scra
             const source_role = if (lp.kind == .local) 0 else role;
             g.* = .{ .h = l(arRow(s, source_role, rows, 0, false)), .m = l(messageRow(s, core, role, 0)), .down = l(r(c.down)), .forget = l(r(c.forget)), .gain = l(r(c.gain)), .out = l(arRow(s, role, rows, 0, true)) };
         }
-        loop.gatesEach(&m.loop, e, &roles, @intCast(rows), state.message_entries * state.hidden);
-        e.barrier();
+        // Each launch gates its role and norms the blend with that head's weight: the norms come along free.
+        const norms = [3]loop.Norm{
+            .{ .weight = l(r(w.attn.q_norm)), .out = l(at(s.q_norm, 0)) },
+            .{ .weight = l(r(w.attn.k_norm)), .out = l(at(s.k_norm, 0)) },
+            .{ .weight = l(r(w.attn.v_norm)), .out = l(at(s.v_norm, 0)) },
+        };
+        loop.gatesEach(&m.loop, e, &roles, &norms, @intCast(rows), state.message_entries * state.hidden);
     }
     // An ungated local visit has exactly one AR result and one norm result; Q/K/V alias.
     if (!gated and lp.kind == .local) {
         norm(m, e, arRow(s, 0, rows, 0, false), w.attn.q_norm, at(s.q_norm, 0), rows);
-    } else {
+    } else if (!gated) {
         norm(m, e, arRow(s, 0, rows, 0, gated), w.attn.q_norm, at(s.q_norm, 0), rows);
         norm(m, e, arRow(s, 1, rows, 0, gated), w.attn.k_norm, at(s.k_norm, 0), rows);
         norm(m, e, arRow(s, 2, rows, 0, gated), w.attn.v_norm, at(s.v_norm, 0), rows);
@@ -394,9 +399,9 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     if (gated) {
         const c = w.controllers.?[3];
         const core = v.layer - 6;
-        loop.gatesStrided(&m.loop, e, l(at(s.mlp_ar, 0)), l(messageRow(s, core, 3, 0)), l(r(c.down)), l(r(c.forget)), l(r(c.gain)), l(at(s.mlp_gated, 0)), @intCast(rows), state.message_entries * state.hidden);
-        e.barrier();
-        norm(m, e, at(s.mlp_gated, 0), w.mlp_norm, at(s.mlp_normed, 0), rows);
+        const tuple = [1]loop.Gate{.{ .h = l(at(s.mlp_ar, 0)), .m = l(messageRow(s, core, 3, 0)), .down = l(r(c.down)), .forget = l(r(c.forget)), .gain = l(r(c.gain)), .out = l(at(s.mlp_gated, 0)) }};
+        const norms = [1]loop.Norm{.{ .weight = l(r(w.mlp_norm)), .out = l(at(s.mlp_normed, 0)) }};
+        loop.gatesEach(&m.loop, e, &tuple, &norms, @intCast(rows), state.message_entries * state.hidden);
     } else norm(m, e, at(s.mlp_ar, 0), w.mlp_norm, at(s.mlp_normed, 0), rows);
     e.barrier();
     glue.router(&m.glue, e, at(s.mlp_normed, 0), r(w.router_weight), r(w.router_bias), at(s.route_ids, 0), at(s.route_weights, 0), @intCast(rows));

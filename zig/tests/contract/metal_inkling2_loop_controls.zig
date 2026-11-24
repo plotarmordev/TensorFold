@@ -8,7 +8,7 @@ fn edit(kind: p.Kind) Edit {
         // Drops the required post-dot binary32(1/48) scale.
         .messages => .{ .from = "weights[s] = dot * INKLING_LOOP_SCALE;", .to = "weights[s] = dot;" },
         // Drops the model-dtype rounding between D accumulation and F/Gamma.
-        .gates => .{ .from = "zeta[row * INKLING_LOOP_RANK + r] = bfloat(sum);", .to = "zeta[row * INKLING_LOOP_RANK + r] = bfloat(2.0f * sum);" },
+        .gates => .{ .from = "zeta[r] = bfloat(sum);", .to = "zeta[r] = bfloat(2.0f * sum);" },
     };
 }
 
@@ -21,7 +21,7 @@ pub fn source(a: std.mem.Allocator, production: []const u8, kind: p.Kind) ![]u8 
 pub fn name(kind: p.Kind) []const u8 {
     return switch (kind) {
         .messages => "control: metal inkling2 loop messages tf_inkling2_loop_messages",
-        .gates => "control: metal inkling2 loop gates tf_inkling2_loop_gates",
+        .gates => "control: metal inkling2 loop gates tf_inkling2_loop_gate",
     };
 }
 
