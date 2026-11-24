@@ -166,6 +166,31 @@ pub const Kernels = struct {
     pub fn unload(k: *Kernels) void {
         k.mod.unload();
     }
+
+    /// act = silu(gate) * up over `count` bf16 values (a multiple of 256).
+    pub fn launchSwiglu(k: *const Kernels, s: cuda.Stream, gate: u64, up: u64, act: u64, count: usize) !void {
+        var a: cuda.Args = .{};
+        for ([_]u64{ gate, up, act }) |p| a.add(p);
+        a.add(@as(c_int, @intCast(count)));
+        try go(k.swiglu, s, .{ .x = @intCast(count / 256) }, 256, &a);
+    }
+
+    /// resid += y, then x = bf16(rmsnorm(resid) * norm), `n` rows of the hidden width.
+    pub fn launchAddNorm(k: *const Kernels, s: cuda.Stream, y: u64, norm: u64, resid: u64, x: u64, n: usize) !void {
+        var a: cuda.Args = .{};
+        for ([_]u64{ y, norm, resid, x }) |p| a.add(p);
+        try go(k.add_norm, s, .{ .x = @intCast(n) }, 256, &a);
+    }
+
+    /// Caps fp32 logits in place (cap * tanh(x / cap)) and writes the first id of their maximum to `pick`.
+    pub fn launchPick(k: *const Kernels, s: cuda.Stream, logits: u64, n: usize, cap: f32, pick: u64) !void {
+        var a: cuda.Args = .{};
+        a.add(logits);
+        a.add(@as(c_int, @intCast(n)));
+        a.add(cap);
+        a.add(pick);
+        try go(k.pick, s, .{ .x = 1 }, 1024, &a);
+    }
 };
 
 /// One stream's committed context: each layer's K/V ring, the newest fused Markov feature, and its span.
@@ -331,10 +356,7 @@ pub const Head = struct {
             try h.addNorm(s, nm.post);
             try h.gemm(s, h.x, rows, p.gate, h.gate);
             try h.gemm(s, h.x, rows, p.up, h.up);
-            var sw: cuda.Args = .{};
-            for ([_]u64{ h.gate, h.up, h.act }) |ptr| sw.add(ptr);
-            sw.add(@as(c_int, rows * inter));
-            try go(h.k.swiglu, s, .{ .x = rows * inter / 256 }, 256, &sw);
+            try h.k.launchSwiglu(s, h.gate, h.up, h.act, rows * inter);
             try h.gemm(s, h.act, rows, p.down, h.y);
             try h.addNorm(s, if (i < 2) h.w.norms[i + 1].input else h.w.norm);
         }
@@ -349,19 +371,12 @@ pub const Head = struct {
             try go(h.k.step, s, .{ .x = 1 }, 3 * rank, &st);
             const logits = h.logits + step * v * 4;
             try h.t.lane.matmulOut(s, h.h, hidden, 1, tw.unembed, logits, .f32, h.part);
-            var pk: cuda.Args = .{};
-            pk.add(logits);
-            pk.add(@as(c_int, @intCast(v)));
-            pk.add(tw.config.text.logit_cap);
-            pk.add(h.picks + (step + 1) * 4);
-            try go(h.k.pick, s, .{ .x = 1 }, 1024, &pk);
+            try h.k.launchPick(s, logits, v, tw.config.text.logit_cap, h.picks + (step + 1) * 4);
         }
     }
 
     fn addNorm(h: *const Head, s: cuda.Stream, norm: u64) !void {
-        var a: cuda.Args = .{};
-        for ([_]u64{ h.y, norm, h.resid, h.x }) |p| a.add(p);
-        try go(h.k.add_norm, s, .{ .x = rows }, 256, &a);
+        try h.k.launchAddNorm(s, h.y, norm, h.resid, h.x, rows);
     }
 };
 

@@ -14,8 +14,11 @@ const start = 37;
 const pending: u32 = 1000;
 /// The draft logits' RMS error relative to the reference's RMS: bf16 weights and activations sit well under it.
 const tolerance = 0.02;
+/// Any one logit's error (cap 30), so a wrong column is not diluted by the vocabulary; it is also the pick margin: the
+/// GPU's pick must be within this of the reference's best logit.
+const column_tolerance = 0.25;
 
-/// tf-cuda-test inkling2-dspark DIR: seven greedy drafts after a seeded context, every step's logits against the
+/// tf-cuda-test inkling2-dspark DIR: seven greedy drafts after a seeded context, every step's logits and pick against the
 /// float64 reference teacher-forced on the device's picks; INKLING2_REF_PLANT=1 plants a context-blind reference
 /// that must go red.
 pub fn run(gpu: check.Gpu, model: []const u8) !void {
@@ -66,22 +69,29 @@ pub fn run(gpu: check.Gpu, model: []const u8) !void {
     try r.draft(taps, start, pending, ids[1..], want);
 
     var worst: f64 = 0;
-    var differ: usize = 0;
+    var worst_column: f64 = 0;
+    var bad_picks: usize = 0;
     for (0..ds.depth) |step| {
+        const ref_logits = want[step * vocab ..][0..vocab];
         var err: f64 = 0;
         var norm: f64 = 0;
+        var column: f64 = 0;
         var best: usize = 0;
-        for (got[step * vocab ..][0..vocab], want[step * vocab ..][0..vocab], 0..) |g, x, v| {
+        for (got[step * vocab ..][0..vocab], ref_logits, 0..) |g, x, v| {
             err += (g - x) * (g - x);
             norm += x * x;
-            if (x > want[step * vocab + best]) best = v;
+            column = @max(column, @abs(g - x));
+            if (x > ref_logits[best]) best = v;
         }
         const rel = @sqrt(err / norm);
+        const margin = ref_logits[best] - ref_logits[ids[step + 1]];
         worst = @max(worst, rel);
-        if (best != ids[step + 1]) differ += 1;
-        std.debug.print("INFO inkling2 dspark step {d}: GPU pick {d}, reference pick {d}, relative logit error {d:.5}\n", .{ step, ids[step + 1], best, rel });
+        worst_column = @max(worst_column, column);
+        if (margin > column_tolerance) bad_picks += 1;
+        std.debug.print("INFO inkling2 dspark step {d}: GPU pick {d}, reference pick {d} ({d:.4} below), relative logit error {d:.5}, worst logit error {d:.4}\n", .{ step, ids[step + 1], best, margin, rel, column });
     }
-    std.debug.print("RESULT inkling2 dspark vs float64 reference{s}: worst relative logit error {d:.5} (tolerance {d}), {d} of {d} picks differ; GPU absorb + draft {d:.1} ms\n", .{ if (plant) " (PLANTED: no context)" else "", worst, tolerance, differ, ds.depth, @as(f64, @floatFromInt(t1 - t0)) / 1e6 });
-    if (plant) return check.expect(worst > tolerance, "inkling2 dspark planted control: a context-blind reference still agrees", .{});
-    try check.expect(worst <= tolerance, "inkling2 dspark logits == reference: worst relative error {d:.5}", .{worst});
+    const ok = worst <= tolerance and worst_column <= column_tolerance and bad_picks == 0;
+    std.debug.print("RESULT inkling2 dspark vs float64 reference{s}: worst relative logit error {d:.5} (tolerance {d}), worst logit error {d:.4} (tolerance {d}), {d} of {d} picks past the margin; GPU absorb + draft {d:.1} ms\n", .{ if (plant) " (PLANTED: no context)" else "", worst, tolerance, worst_column, column_tolerance, bad_picks, ds.depth, @as(f64, @floatFromInt(t1 - t0)) / 1e6 });
+    if (plant) return check.expect(!ok, "inkling2 dspark planted control: a context-blind reference still agrees", .{});
+    try check.expect(ok, "inkling2 dspark logits == reference: relative {d:.5}, worst logit {d:.4}, {d} picks past the margin", .{ worst, worst_column, bad_picks });
 }

@@ -1,4 +1,4 @@
-//! Inkling 2's CUDA kernels under the contract: attention, glue and the Mini loop, each with controls.
+//! Inkling 2's CUDA kernels under the contract: attention, glue, the Mini loop and the DSpark head, each with controls.
 const std = @import("std");
 const cuda = @import("cuda");
 const check = @import("check.zig");
@@ -10,6 +10,7 @@ pub const Set = struct {
     attn: @import("contract_inkling2_attn.zig").Set = .{},
     ops: @import("contract_inkling2_ops.zig").Set = .{},
     loop: @import("contract_inkling2_loop.zig").Set = .{},
+    dspark: @import("contract_inkling2_dspark.zig").Set = .{},
 
     /// The set, its kernels appended to `list`.
     pub fn init(gpu: check.Gpu, s: cuda.Stream, a: std.mem.Allocator, list: *std.ArrayList(g.Kernel)) !*Set {
@@ -22,10 +23,12 @@ pub const Set = struct {
         errdefer set.ops.deinit();
         try set.loop.init(gpu, s, a, list);
         errdefer set.loop.deinit();
+        try set.dspark.init(gpu, s, a, list);
         return set;
     }
 
     pub fn deinit(set: *Set) void {
+        set.dspark.deinit();
         set.loop.deinit();
         set.ops.deinit();
         set.attn.deinit();

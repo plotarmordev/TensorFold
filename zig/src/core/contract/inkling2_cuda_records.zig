@@ -2,8 +2,9 @@
 const attn = @import("inkling2_attn_records.zig");
 const ops = @import("inkling2_ops_records.zig");
 const loop = @import("inkling2_loop_records.zig");
+const dspark = @import("inkling2_dspark_records.zig");
 
 pub const cuda = attn.cuda ++ ops.cuda;
-pub const pending = loop.pending;
+pub const pending = loop.pending ++ dspark.pending;
 pub const cuda_132 = attn.cuda_132 ++ ops.cuda_132;
 pub const cuda_133 = attn.cuda_133 ++ ops.cuda_133;
