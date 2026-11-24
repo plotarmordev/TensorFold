@@ -31,7 +31,9 @@ for level in 1 4; do
     mem "after $level streams"
 done
 python3 - "$out" <<'EOF'
-import json, sys, urllib.request
+import json, statistics, sys, time, urllib.request
+sys.path.insert(0, "tools")
+from bench_concurrent import PROMPTS
 out = sys.argv[1]
 def post(path, body):
     req = urllib.request.Request(f"http://127.0.0.1:8189{path}", json.dumps(body).encode(), {"Content-Type": "application/json"})
@@ -46,6 +48,15 @@ for level in (1, 4):
         r = c["request"]
         print(f"RESULT llama.cpp q4_k_m gb10 {level} stream(s) {c['prompt']}: first token {r['ttft_s']} s, prompt {r['prompt_ttft_tps']} tok/s, decode {c['per_stream_tps']} tok/s a stream, {c['aggregate_tps']} total")
 print(f"RESULT llama.cpp q4_k_m gb10 aggregate decode: 1 stream {agg[1]:.1f} tok/s, 4 streams {agg[4]:.1f} tok/s ({agg[4] / agg[1]:.2f}x)")
+# bench_concurrent.py's warm-up sends the measured prompt first, so llama.cpp's slot cache answers every 1-stream
+# request from it and prompt_ttft_tps (cold requests only) stays null; this times the code prompt uncached, alone.
+code = next(p["prompt"] for p in PROMPTS if p["name"] == "code")
+cold = []
+for _ in range(3):
+    t = time.perf_counter()
+    n = post("/completion", {"prompt": code, "n_predict": 1, "temperature": 0, "cache_prompt": False})["timings"]["prompt_n"]
+    cold.append(n / (time.perf_counter() - t))
+print(f"RESULT llama.cpp q4_k_m gb10 1 stream code prompt, uncached: {n} tokens, median {statistics.median(cold):.1f} tok/s (prompt tokens over the one-token reply's time)")
 # run-script.sh's float64 reference continuation of this prompt (job top-16bffb6ca094: TensorFold equals it on all 32)
 prompt = "The three laws of thermodynamics, explained for a curious student:"
 want = "\n\n  1. Energy cannot be created or destroyed, only transformed.\n  2. Entropy (disorder) in a closed system always increases."
@@ -53,7 +64,7 @@ got = post("/completion", {"prompt": prompt, "n_predict": 32, "temperature": 0, 
 ids = lambda s: post("/tokenize", {"content": s})["tokens"]
 w, g = ids(want), ids(got)
 same = next((i for i, (a, b) in enumerate(zip(w, g)) if a != b), min(len(w), len(g)))
-print(f"RESULT llama.cpp q4_k_m greedy vs float64 reference: first {same} of {len(w)} tokens equal: {got!r}")
+print(f"RESULT llama.cpp q4_k_m greedy vs float64 reference, as text (re-tokenized): first {same} of {len(w)} tokens equal: {got!r}")
 # teacher-forced, as tf-cuda-test inkling2-mini-ref scores TensorFold: after the reference's own prefix, is llama.cpp's
 # next pick the reference's token? A free run says nothing past its first difference.
 start = post("/tokenize", {"content": prompt, "add_special": True})["tokens"]

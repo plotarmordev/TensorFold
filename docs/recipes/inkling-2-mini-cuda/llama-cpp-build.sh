@@ -12,7 +12,15 @@ cmake=cmake-3.31.6-linux-aarch64
 sha256sum -c --quiet <<EOF
 78fcedcf93c5d1bfe83e225513b71392bb52259be0eaa5f8899c856a2e5834ae  $pilot/inkling-gguf/Inkling-2-Mini-UD-Q4_K_M.gguf
 b4cc788d63112b2749b40627e719eb5d3b8ed8f00c36d77189f4019cfe64bc9e  $llama/$cmake.tar.gz
+7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $staged/$gcc.tar.xz
 EOF
+# the source is staged unpacked, without .git: pin its files' sha256 list, made the same way from ggml-org's b12611
+# archive (refs/tags/b12611.tar.gz, 4,609 files)
+tree=$(cd "$llama/llama.cpp-b12611" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum)
+[ "${tree%% *}" = 98643c17504a879c2f930b297a5f745feebfe9d9760d1cf0e3d61678bc0ff6a7 ] || {
+    echo "$llama/llama.cpp-b12611 differs from llama.cpp b12611's archive (tree sha256 ${tree%% *})" >&2
+    exit 1
+}
 tar -C /work -xJf "$staged/$gcc.tar.xz"
 tar -C /work -xzf "$llama/$cmake.tar.gz"
 cc=/work/$gcc/bin/aarch64-none-linux-gnu
