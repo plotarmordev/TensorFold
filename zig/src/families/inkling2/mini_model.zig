@@ -340,7 +340,7 @@ pub const Model = struct {
             .plan = .{
                 .members = try m.alloc(pairs * 4),
                 .items = try m.alloc(items * 12),
-                .counts = try m.alloc(8),
+                .counts = try m.alloc(8 * m.w.plan.visits.len), // a visit's own (items, experts with rows)
                 .rank = try m.alloc(pairs * 4),
                 .hist = try m.alloc(((pairs + 1023) / 1024) * t.experts * 4),
             },
@@ -352,6 +352,13 @@ pub const Model = struct {
             .lane_part = try m.alloc(part),
             .entries = entries,
         };
+    }
+
+    /// Visit `v`'s expert plan: the shared members and items, its own counts (left on the device after a forward).
+    pub fn visitPlan(m: *const Model, v: usize) cuda.grouped.Plan {
+        var p = m.s.plan;
+        p.counts += v * 8;
+        return p;
     }
 
     pub fn upload(m: *const Model, s: cuda.Stream, dst: u64, bytes: []const u8) !void {

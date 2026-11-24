@@ -374,7 +374,7 @@ __device__ __forceinline__ void decode_body(const __nv_bfloat16* __restrict__ X,
   }
 }
 
-// Prompt rows: items of 64 pairs, CW warps of columns by 4 / CW warps of rows, k32 groups staged in shared memory.
+// 64-pair staged tiles: decode_body's per-row k16 MMA order, one weight load per item.
 template <int M, int EPI, int RT, int CW>
 __device__ __forceinline__ void prompt_body(const __nv_bfloat16* __restrict__ X, int x_stride, int slots,
                                             const uint4* __restrict__ W, int KG, int NB, const int* __restrict__ items,
@@ -488,3 +488,4 @@ TF_MX_ENTRY(tf_mxfp8_down_f32, decode_body<TF_MX_ARGS(1, 0)>)
 TF_MX_ENTRY(tf_mxfp8_down_bf16, decode_body<TF_MX_ARGS(1, 3)>)
 TF_MX_ENTRY(tf_mxfp8_prompt_softcap, prompt_body<TF_MX_ARGS(2, 4, 2, 2)>)
 TF_MX_ENTRY(tf_mxfp8_prompt_down, prompt_body<TF_MX_ARGS(1, 3, 4, 4)>)
+TF_MX_ENTRY(tf_mxfp8_staged_down_f32, prompt_body<TF_MX_ARGS(1, 0, 4, 4)>)

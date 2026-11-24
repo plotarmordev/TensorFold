@@ -16,7 +16,8 @@ const dec = core.expert_decode;
 pub const Format = enum { nvfp4, mxfp8 };
 pub const Kind = enum { up, down_f32, down_bf16 };
 
-pub const Entry = struct { name: []const u8, format: Format, kind: Kind, prompt: bool, short: bool = false };
+/// `staged`: decode rows of a plan routed at tile 64 (rounds of over 16 rows), an item's weights read once.
+pub const Entry = struct { name: []const u8, format: Format, kind: Kind, prompt: bool, staged: bool = false, short: bool = false };
 
 /// Every new entry point, the reused NVFP4 downs at Mini's shapes, and a one-group-short control per new entry.
 pub const entries = [_]Entry{
@@ -29,6 +30,8 @@ pub const entries = [_]Entry{
     .{ .name = "cuda stored experts mxfp8 tf_mxfp8_down_bf16", .format = .mxfp8, .kind = .down_bf16, .prompt = false },
     .{ .name = "cuda stored experts mxfp8 tf_mxfp8_prompt_softcap", .format = .mxfp8, .kind = .up, .prompt = true },
     .{ .name = "cuda stored experts mxfp8 tf_mxfp8_prompt_down", .format = .mxfp8, .kind = .down_bf16, .prompt = true },
+    .{ .name = "cuda stored experts nvfp4 tf_nvfp4_fact_softcap", .format = .nvfp4, .kind = .up, .prompt = false, .staged = true },
+    .{ .name = "cuda stored experts mxfp8 tf_mxfp8_staged_down_f32", .format = .mxfp8, .kind = .down_f32, .prompt = false, .staged = true },
     .{ .name = "control: tf_nvfp4_softcap one 32-input group short", .format = .nvfp4, .kind = .up, .prompt = false, .short = true },
     .{ .name = "control: tf_nvfp4_prompt_softcap one 32-input group short", .format = .nvfp4, .kind = .up, .prompt = true, .short = true },
     .{ .name = "control: tf_mxfp8_softcap one 32-input group short", .format = .mxfp8, .kind = .up, .prompt = false, .short = true },
@@ -36,6 +39,8 @@ pub const entries = [_]Entry{
     .{ .name = "control: tf_mxfp8_down_bf16 one 32-input group short", .format = .mxfp8, .kind = .down_bf16, .prompt = false, .short = true },
     .{ .name = "control: tf_mxfp8_prompt_softcap one 32-input group short", .format = .mxfp8, .kind = .up, .prompt = true, .short = true },
     .{ .name = "control: tf_mxfp8_prompt_down one 32-input group short", .format = .mxfp8, .kind = .down_bf16, .prompt = true, .short = true },
+    .{ .name = "control: tf_nvfp4_fact_softcap one 32-input group short", .format = .nvfp4, .kind = .up, .prompt = false, .staged = true, .short = true },
+    .{ .name = "control: tf_mxfp8_staged_down_f32 one 32-input group short", .format = .mxfp8, .kind = .down_f32, .prompt = false, .staged = true, .short = true },
 };
 
 const experts = 4;
@@ -47,16 +52,18 @@ fn depth(s: c.Shape) usize {
     return s.k / 16 + core.attention_range.mma_step + 2;
 }
 
-/// Mini's experts: 2,304 to 1,152 (gate and up each) and back; decode 1 and 4 tokens, prompt items of 9 and 16 tokens.
-const ups = [2][]const c.Shape{ &.{ .{ .rows = 1, .n = 1152, .k = 2304 }, .{ .rows = 4, .n = 1152, .k = 2304 } }, &.{ .{ .rows = 9, .n = 1152, .k = 2304 }, .{ .rows = 16, .n = 1152, .k = 2304 } } };
-const downs = [2][]const c.Shape{ &.{ .{ .rows = 1, .n = 2304, .k = 1152 }, .{ .rows = 4, .n = 2304, .k = 1152 } }, &.{ .{ .rows = 9, .n = 2304, .k = 1152 }, .{ .rows = 16, .n = 2304, .k = 1152 } } };
+/// Mini's experts: 2,304 to 1,152 (gate and up each) and back; decode 1 and 4 tokens, prompt items of 9 and 16 tokens,
+/// staged decode 17 (the first round routed at tile 64: items part full) and 64 tokens.
+const ups = [3][]const c.Shape{ &.{ .{ .rows = 1, .n = 1152, .k = 2304 }, .{ .rows = 4, .n = 1152, .k = 2304 } }, &.{ .{ .rows = 9, .n = 1152, .k = 2304 }, .{ .rows = 16, .n = 1152, .k = 2304 } }, &.{ .{ .rows = 17, .n = 1152, .k = 2304 }, .{ .rows = 64, .n = 1152, .k = 2304 } } };
+const downs = [3][]const c.Shape{ &.{ .{ .rows = 1, .n = 2304, .k = 1152 }, .{ .rows = 4, .n = 2304, .k = 1152 } }, &.{ .{ .rows = 9, .n = 2304, .k = 1152 }, .{ .rows = 16, .n = 2304, .k = 1152 } }, &.{ .{ .rows = 17, .n = 2304, .k = 1152 }, .{ .rows = 64, .n = 2304, .k = 1152 } } };
 
 pub fn spec(e: Entry) c.Spec {
     const up = e.kind == .up;
-    const served = (if (up) ups else downs)[@intFromBool(e.prompt)];
-    // MXFP8's prompt CTAs take 2 (gate-up) or 4 (down) column blocks of 32
-    const n_tile: c.Tile = if (e.format == .mxfp8 and e.prompt) (if (up) .{ .size = 128, .step = 64, .min = 64 } else .{ .size = 256, .step = 128, .min = 128 }) else .{ .size = 64, .step = 32, .min = 32 };
-    const tiles = [3]c.Tile{ .{ .size = (if (e.prompt) ex_.promptTile(.nvfp4) else 16) / slots }, n_tile, .{ .size = 64, .step = 32, .min = 32 } };
+    const tiled = e.prompt or e.staged; // items of 64 pairs
+    const served = (if (up) ups else downs)[if (e.staged) 2 else @intFromBool(e.prompt)];
+    // MXFP8's staged CTAs take 2 (gate-up) or 4 (down) column blocks of 32
+    const n_tile: c.Tile = if (e.format == .mxfp8 and tiled) (if (up) .{ .size = 128, .step = 64, .min = 64 } else .{ .size = 256, .step = 128, .min = 128 }) else .{ .size = 64, .step = 32, .min = 32 };
+    const tiles = [3]c.Tile{ .{ .size = (if (tiled) ex_.promptTile(.nvfp4) else 16) / slots }, n_tile, .{ .size = 64, .step = 32, .min = 32 } };
     return switch (e.kind) {
         // fp32 tanhf, expf and the divisions after the sums: a few ulps each
         .up => .{ .name = e.name, .accum = .f32, .depth = depth, .ops = 16, .out = .bf16, .tiles = tiles, .served = served, .sums = .{ .f16 = 30, .bf16 = 30, .why = "the caps saturate: a replay's sum far off can land on the same plateau, so only 30x is provable" } },
@@ -135,7 +142,7 @@ pub const Experts = struct {
     }
 
     fn tile(self: *const Experts) usize {
-        return if (self.entry.prompt) ex_.promptTile(.nvfp4) else 16;
+        return if (self.entry.prompt or self.entry.staged) ex_.promptTile(.nvfp4) else 16;
     }
 
     fn items(self: *const Experts) usize {
@@ -151,7 +158,7 @@ pub const Experts = struct {
     /// Random stored codes and scales; non-finite: NaN, +Inf and -Inf in the first rows; stress: mirrored integers.
     pub fn prepare(self: *Experts, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
         if (shape.rows == 0 or shape.n == 0 or shape.n % 32 != 0 or shape.k == 0 or shape.k % 32 != 0) return false;
-        if (self.entry.format == .mxfp8 and self.entry.prompt and shape.n % (32 * mx.Mxfp8Experts.prompt_cw[@intFromBool(!self.up())]) != 0) return false;
+        if (self.entry.format == .mxfp8 and (self.entry.prompt or self.entry.staged) and shape.n % (32 * mx.Mxfp8Experts.prompt_cw[@intFromBool(!self.up())]) != 0) return false;
         self.free();
         self.rig.reset();
         self.shape = shape;
@@ -263,19 +270,22 @@ pub const Experts = struct {
         };
     }
 
-    pub fn run(self: *Experts) !void {
-        const l = self.layer();
-        const in: ex_.Rows = .{ .x = self.xd, .stride = self.shape.k, .slots = if (self.up()) slots else 0 };
-        if (self.entry.short) return self.short(l, in);
-        const epi: ex_.Epi = switch (self.entry.kind) {
+    fn epi(self: *const Experts) ex_.Epi {
+        return switch (self.entry.kind) {
             .up => .up,
             .down_f32 => .down_f32,
             .down_bf16 => .down_bf16,
         };
+    }
+
+    pub fn run(self: *Experts) !void {
+        const l = self.layer();
+        const in: ex_.Rows = .{ .x = self.xd, .stride = self.shape.k, .slots = if (self.up()) slots else 0 };
+        if (self.entry.short) return self.short(l, in);
         const gx: ex_.Grouped = .{ .nvfp4 = self.k4, .mxfp8 = self.k8 };
         if (self.entry.prompt) {
-            try gx.prompt(self.rig.s, epi, in, l, self.plan, self.out, self.items(), self.pairs(), 64, -1);
-        } else try gx.decode(self.rig.s, epi, in, l, self.plan, self.out, self.items(), self.pairs(), 16, -1);
+            try gx.prompt(self.rig.s, self.epi(), in, l, self.plan, self.out, self.items(), self.pairs(), 64, -1);
+        } else try gx.decode(self.rig.s, self.epi(), in, l, self.plan, self.out, self.items(), self.pairs(), self.tile(), -1);
         try self.rig.s.synchronize();
     }
 
@@ -286,19 +296,17 @@ pub const Experts = struct {
         const nb = n / 32;
         const kg = self.shape.k / 32 - 1;
         const nv = self.entry.format == .nvfp4;
+        const tiled = self.entry.prompt or self.entry.staged;
         var a = mx.argsOf(in, up_, self.wd, if (nv) self.sd else null, kg, nb, self.plan, self.out, n, l.caps, -1);
         var cfg: cuda.Config = .{ .grid = .{ .x = @intCast((self.items() * nb + 3) / 4) }, .block = .{ .x = 128 } };
-        const f = if (nv) self.k4.softcap.fns[@intFromBool(self.entry.prompt)] else self.k8.fns[
-            try mx.Mxfp8Experts.entry(self.entry.prompt, switch (self.entry.kind) {
-                .up => .up,
-                .down_f32 => .down_f32,
-                .down_bf16 => .down_bf16,
-            })
+        const form: mx.Softcap.Form = if (self.entry.staged) .fact else if (self.entry.prompt) .prompt else .decode;
+        const f = if (nv) self.k4.softcap.fns[@backingInt(form)] else self.k8.fns[
+            if (self.entry.staged) mx.Mxfp8Experts.stagedEntry(self.epi()) else try mx.Mxfp8Experts.entry(self.entry.prompt, self.epi())
         ];
-        if (self.entry.prompt and nv) {
+        if (tiled and nv) {
             cfg.grid.x = @intCast(self.items() * ((nb + 3) / 4));
             cfg.shared = ex_.Nvfp4Experts.promptSmem(2, mx.Softcap.prompt_wn);
-        } else if (self.entry.prompt) cfg.grid.x = @intCast(self.items() * (nb / mx.Mxfp8Experts.prompt_cw[@intFromBool(!up_)]));
+        } else if (tiled) cfg.grid.x = @intCast(self.items() * (nb / mx.Mxfp8Experts.prompt_cw[@intFromBool(!up_)]));
         try cuda.launch.launch(f, cfg, self.rig.s, &a);
         try self.rig.s.synchronize();
     }

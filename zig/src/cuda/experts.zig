@@ -60,7 +60,7 @@ pub const Grouped = struct {
     bf16: ?*const Bf16Experts = null,
     mxfp8: ?*const mx.Mxfp8Experts = null,
 
-    /// Decode rows: `items` bounds the plan, `pairs` its picks; `tile` 16 or 64 (EXL3 only); `skip` an expert or -1.
+    /// Decode rows: `items` bounds the plan, `pairs` its picks; 64-pair NVFP4/MXFP8 plans stage weights once.
     pub fn decode(g: Grouped, s: Stream, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, pairs: usize, tile: usize, skip: i32) !void {
         if (l.after and l.format != .exl3) return error.OptionNotBuilt; // the clamp-after order is built for EXL3 only
         try mx.capsBuilt(l);
@@ -82,11 +82,21 @@ pub const Grouped = struct {
                 return a.run(s, epi == .up, in, l, p, out, items);
             },
             .fp8g => return (g.fp8g orelse return error.FormatNotLoaded).run(s, epi, in, l, p, false, out, items, skip),
-            .nvfp4 => return (g.nvfp4 orelse return error.FormatNotLoaded).run(s, epi, in, l, p, out, items, skip),
+            .nvfp4 => {
+                const e = g.nvfp4 orelse return error.FormatNotLoaded;
+                if (tile == 64) {
+                    if (epi == .up and l.caps[0] != 0) return e.softcap.run(s, .fact, in, l, p, out, items, skip);
+                    return e.runFact(s, epi, in, l, p, out, items, skip);
+                }
+                return e.run(s, epi, in, l, p, out, items, skip);
+            },
             .nvfp4_csf0 => return (g.nvfp4_csf0 orelse return error.FormatNotLoaded).run(s, epi, in, l, p, out, items, skip),
             .iq2xxs => return iq2Run(g.iq2xxs orelse return error.FormatNotLoaded, s, false, epi, in, l, p, out, items, skip),
             .bf16 => return (g.bf16 orelse return error.FormatNotLoaded).run(s, false, epi, in, l, p, out, items, skip),
-            .mxfp8 => return (g.mxfp8 orelse return error.FormatNotLoaded).run(s, false, epi, in, l, p, out, items, skip),
+            .mxfp8 => {
+                const e = g.mxfp8 orelse return error.FormatNotLoaded;
+                return if (tile == 64) e.runStaged(s, epi, in, l, p, out, items, skip) else e.run(s, false, epi, in, l, p, out, items, skip);
+            },
         }
     }
 
@@ -435,7 +445,7 @@ pub const Nvfp4Experts = struct {
 
     /// One call of nvfp4/experts.py's _run on a plan of at most `items` items.
     pub fn run(e: *const Nvfp4Experts, s: Stream, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
-        if (epi == .up and l.caps[0] != 0) return e.softcap.run(s, false, in, l, p, out, items, skip);
+        if (epi == .up and l.caps[0] != 0) return e.softcap.run(s, .decode, in, l, p, out, items, skip);
         const gate = epi == .up;
         const kg = (if (gate) l.dims else l.width) / 32;
         const nb = (if (gate) l.width else l.dims) / cols;
@@ -460,7 +470,7 @@ pub const Nvfp4Experts = struct {
     /// Prompt rows on a plan of at most `items` items of 64 pairs: up (relu^2 or SwiGLU by the layer), bf16 sums down.
     pub fn runPrompt(e: *const Nvfp4Experts, s: Stream, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
         if (epi == .down_f32) return error.EpilogueNotBuilt;
-        if (epi == .up and l.caps[0] != 0) return e.softcap.run(s, true, in, l, p, out, items, skip);
+        if (epi == .up and l.caps[0] != 0) return e.softcap.run(s, .prompt, in, l, p, out, items, skip);
         const gate = epi == .up;
         const parts: usize = if (gate and !l.relu2) 2 else 1;
         const nb = (if (gate) l.width else l.dims) / cols;

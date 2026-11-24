@@ -168,6 +168,7 @@ pub fn ckpt(gpu: Gpu, dir: []const u8) !void {
         try invariants(s, layer);
         try @import("stored_experts_check.zig").decoded(gpu, s, layer);
         try @import("stored_experts_check.zig").outputs(gpu, s, layer);
+        try @import("stored_experts_check.zig").rows64(gpu, s, layer);
     }
 }
 

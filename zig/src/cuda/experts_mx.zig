@@ -73,41 +73,46 @@ pub fn argsOf(in: Rows, gate: bool, w: u64, scale: ?u64, kg: usize, nb: usize, p
 
 /// nvfp4_experts.cu's soft-capped SwiGLU gate-up: decode units of 4 warps, and the prompt tiles of 4 warps.
 pub const Softcap = struct {
-    fns: [2]Function = undefined, // decode, prompt
+    fns: [3]Function = undefined, // by Form
     resident: usize = 0,
 
-    pub const symbols = [2][:0]const u8{ "tf_nvfp4_softcap", "tf_nvfp4_prompt_softcap" };
+    pub const symbols = [3][:0]const u8{ "tf_nvfp4_softcap", "tf_nvfp4_prompt_softcap", "tf_nvfp4_fact_softcap" };
     pub const prompt_wn = 4;
+
+    /// A call's rows: decode units of 16 pairs, or the tiles of 4 warps over items of 64 pairs: prompt rows, or decode
+    /// rows of a plan routed at tile 64 (fact: the decode form's sums, an item's weights read once).
+    pub const Form = enum { decode, prompt, fact };
 
     pub fn resolve(mod: Module, sms: usize) !Softcap {
         var c: Softcap = .{};
         for (symbols, &c.fns) |name, *f| f.* = try mod.function(name);
-        try c.fns[1].allowDynamicShared(experts.Nvfp4Experts.promptSmem(2, prompt_wn));
+        for (c.fns[1..]) |f| try f.allowDynamicShared(experts.Nvfp4Experts.promptSmem(2, prompt_wn));
         c.resident = @max(1, try c.fns[0].occupancy(128, 0)) * sms;
         return c;
     }
 
-    /// Gate-up on a plan of at most `items` items (16 pairs decode, 64 prompt); capsBuilt checked the layer.
-    pub fn run(c: Softcap, s: Stream, prompt: bool, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
+    /// Gate-up on a plan of at most `items` items (16 pairs a decode unit, 64 on the tiles); capsBuilt checked the layer.
+    pub fn run(c: Softcap, s: Stream, form: Form, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
         const nb = l.width / 32;
         var a = argsOf(in, true, l.up, l.up_scale, l.dims / 32, nb, p, out, l.width, kernelCaps(l), skip);
-        const grid = if (prompt) items * ((nb + prompt_wn - 1) / prompt_wn) else @min((items * nb + 3) / 4, c.resident);
+        const tiles = form != .decode;
+        const grid = if (tiles) items * ((nb + prompt_wn - 1) / prompt_wn) else @min((items * nb + 3) / 4, c.resident);
         if (grid < 1) return;
-        const smem: u32 = if (prompt) experts.Nvfp4Experts.promptSmem(2, prompt_wn) else 0;
+        const smem: u32 = if (tiles) experts.Nvfp4Experts.promptSmem(2, prompt_wn) else 0;
         const cfg: launch_.Config = .{ .grid = .{ .x = @intCast(grid), .y = 1, .z = 1 }, .block = .{ .x = 128 }, .shared = smem };
-        try launch_.launch(c.fns[@intFromBool(prompt)], cfg, s, &a);
+        try launch_.launch(c.fns[@backingInt(form)], cfg, s, &a);
     }
 };
 
 /// MXFP8 experts: e4m3 codes with one E8M0 scale per output row per 32 inputs, blocks of 32 columns by 32 inputs.
 pub const Mxfp8Experts = struct {
     mod: Module,
-    fns: [5]Function, // decode: soft-capped gate-up, fp32 down, bf16 down; prompt: soft-capped gate-up, bf16 down
+    fns: [6]Function, // decode: soft-capped gate-up, fp32 down, bf16 down; staged (items of 64 pairs): soft-capped gate-up, bf16 down, fp32 down
     resident: [3]usize, // the decode entries' blocks a grid may hold
 
     pub const words = 264; // int32 a block: fp8g's 256 code words ([32 lanes][2][4]), then 32 E8M0 bytes
-    pub const prompt_cw = [2]usize{ 2, 4 }; // column warps a prompt CTA: gate-up, down (64 pairs an item)
-    pub const symbols = [5][:0]const u8{ "tf_mxfp8_softcap", "tf_mxfp8_down_f32", "tf_mxfp8_down_bf16", "tf_mxfp8_prompt_softcap", "tf_mxfp8_prompt_down" };
+    pub const prompt_cw = [2]usize{ 2, 4 }; // column warps a staged CTA: gate-up, down (64 pairs an item)
+    pub const symbols = [6][:0]const u8{ "tf_mxfp8_softcap", "tf_mxfp8_down_f32", "tf_mxfp8_down_bf16", "tf_mxfp8_prompt_softcap", "tf_mxfp8_prompt_down", "tf_mxfp8_staged_down_f32" };
 
     pub fn load(d: *const driver.Driver, sms: usize) !Mxfp8Experts {
         if (!kernels.available) return error.BuiltWithoutKernels;
@@ -134,15 +139,34 @@ pub const Mxfp8Experts = struct {
 
     /// One call on a plan of at most `items` items (16 pairs decode, 64 prompt); the layer's caps already checked.
     pub fn run(e: *const Mxfp8Experts, s: Stream, prompt: bool, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
-        const fi = try entry(prompt, epi);
+        return e.launchEntry(try entry(prompt, epi), s, epi, in, l, p, out, items, skip);
+    }
+
+    /// The staged entry for decode rows of a plan routed at tile 64: the prompt entries and the staged fp32 down.
+    pub fn stagedEntry(epi: Epi) usize {
+        return switch (epi) {
+            .up => 3,
+            .down_f32 => 5,
+            .down_bf16 => 4,
+        };
+    }
+
+    /// Decode rows of a plan routed at tile 64 (items of 64 pairs): the staged entries, an item's weights read once.
+    pub fn runStaged(e: *const Mxfp8Experts, s: Stream, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
+        return e.launchEntry(stagedEntry(epi), s, epi, in, l, p, out, items, skip);
+    }
+
+    /// Entry `fi` on a plan of at most `items` items: a decode entry's units of 16 pairs, or a staged entry's items of 64.
+    fn launchEntry(e: *const Mxfp8Experts, fi: usize, s: Stream, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
+        const staged = fi >= 3;
         const gate = epi == .up;
         const n = if (gate) l.width else l.dims;
         const k = if (gate) l.dims else l.width;
         if (n % 32 != 0 or k % 32 != 0) return error.UnexpectedShape;
         const nb = n / 32;
         const cw = prompt_cw[@intFromBool(!gate)];
-        if (prompt and nb % cw != 0) return error.UnexpectedShape;
-        const grid = if (prompt) items * (nb / cw) else @min((items * nb + 3) / 4, e.resident[fi]);
+        if (staged and nb % cw != 0) return error.UnexpectedShape;
+        const grid = if (staged) items * (nb / cw) else @min((items * nb + 3) / 4, e.resident[fi]);
         if (grid < 1) return;
         var a = argsOf(in, gate, if (gate) l.up else l.down, null, k / 32, nb, p, out, n, kernelCaps(l), skip);
         try launch_.launch(e.fns[fi], .{ .grid = .{ .x = @intCast(grid), .y = 1, .z = 1 }, .block = .{ .x = 128 } }, s, &a);

@@ -182,3 +182,75 @@ pub fn run(gpu: Gpu, model: []const u8, ids_path: []const u8) !void {
     try admission(gpu, &loaded, ids[0..257], ids[17..1042]);
     check.pass("Mini CUDA two lanes decode together in shared rounds without changing tokens; a third waits", .{});
 }
+
+/// 64 streams of one prompt through one shared decode round, opened apart from `run` (its window at 64 streams is past what the
+/// recipe serves): the items and experts with rows every MoE visit's plan observed on the device, and the last visit's picks
+/// routed again in the 16-row form; the `maxItems` bounds are reported apart, as bounds.
+pub fn round64(gpu: Gpu, model: []const u8, ids_path: []const u8) !void {
+    const ids = try readIds(gpu, ids_path);
+    defer gpu.gpa.free(ids);
+    const n = mini.mini_backend.round_rows;
+    const len = 48; // not 64 rows: a prompt chunk's plan cannot pass for the round's
+    if (ids.len < len) return error.MiniServingPromptTooShort;
+    var loaded = try native.open(gpu.gpa, gpu.io, gpu.ctx, model, null, .{ .context = len + 8, .drafts = false, .lanes = n });
+    defer loaded.deinit(loaded.ctx);
+    const t = loaded.target;
+    const c = t.m.c;
+    const pairs: usize = n * c.topk;
+    const streams = try gpu.gpa.alloc(lanes.Stream, n);
+    defer gpu.gpa.free(streams);
+    var made: usize = 0;
+    defer for (streams[0..made]) |*s| {
+        loaded.backend.release(s);
+        s.deinit(gpu.gpa);
+    };
+    for (streams) |*s| {
+        s.* = try lanes.Stream.init(gpu.gpa, .{ .id = "mini-64", .prompt = ids[0..len], .max_new = 4 });
+        made += 1;
+    }
+    var cfg = try lanes.Config.init(gpu.gpa, loaded.facts, loaded.rows, loaded.rows - 1);
+    defer cfg.deinit(gpu.gpa);
+    cfg.timed = false;
+    var clock: lanes.fake.FixedClock = .{};
+    var e = lanes.Engine.init(gpu.gpa, &cfg, loaded.backend, clock.clock());
+    defer e.deinit();
+    for (streams) |*s| try e.addStream(s);
+    const visits = t.m.w.plan.visits.len;
+    const plan = t.m.s.plan;
+    // zeroed after the prompts, so every count read back is the round's: a visit that did not run reads 0 items
+    try t.d.check(t.d.api.cuMemsetD8Async(plan.counts, 0, visits * 8, t.s.handle), "cuMemsetD8Async");
+    try e.step();
+    // the 16-row form of the last visit's picks: its own members, items and counts (rank and hist are a route's scratch)
+    const all = [2]usize{ cuda.grouped.maxItems(pairs, c.experts, 64), cuda.grouped.maxItems(pairs, c.experts, 16) };
+    var scratch = try cuda.DeviceBuffer.alloc(gpu.d, pairs * 4 + all[1] * 12 + 8);
+    defer scratch.free();
+    var plan16 = plan;
+    plan16.members = scratch.ptr;
+    plan16.items = scratch.ptr + pairs * 4;
+    plan16.counts = plan16.items + all[1] * 12;
+    try t.k.router.route(t.s, t.m.s.pick, pairs, c.experts, 16, plan16);
+    try t.s.synchronize();
+    const counts = try gpu.gpa.alloc([2]i32, visits); // a visit's items, experts with rows
+    defer gpu.gpa.free(counts);
+    try cuda.memory.download(t.d, plan.counts, std.mem.sliceAsBytes(counts));
+    var last16: [2]i32 = undefined;
+    try cuda.memory.download(t.d, plan16.counts, std.mem.sliceAsBytes(&last16));
+    try check.expect(e.shared_rounds == 1, "{d} streams: {d} shared rounds, not 1", .{ n, e.shared_rounds });
+    var least: i32 = std.math.maxInt(i32);
+    var most: i32 = 0;
+    for (counts, 0..) |vc, v| {
+        // an item per expert with rows: each expert's weights are read once a visit
+        try check.expect(vc[0] > 0 and vc[0] == vc[1], "visit {d} of {d}'s round at tile 64: {d} items over {d} experts with rows", .{ v, visits, vc[0], vc[1] });
+        least = @min(least, vc[0]);
+        most = @max(most, vc[0]);
+    }
+    const last = counts[visits - 1];
+    const used: usize = @intCast(last[1]);
+    const items = try gpu.gpa.alloc([3]i32, used); // expert, first, rows
+    defer gpu.gpa.free(items);
+    try cuda.memory.download(t.d, plan.items, std.mem.sliceAsBytes(items));
+    var rows: i64 = 0;
+    for (items) |it| rows += it[2];
+    try check.expect(rows == pairs and last16[1] == last[1], "the last visit's {d} items hold {d} of {d} pairs; {d} experts with rows at tile 16, {d} at 64", .{ used, rows, pairs, last16[1], last[1] });
+    check.pass("Mini CUDA {d} streams of one prompt, one shared round: observed on the device, each of {d} MoE visits {d} to {d} items at tile 64, one per expert with rows (one weight read an expert); the last visit's picks routed at tile 16 take {d} items. Bounds: maxItems over the last visit's {d} experts with rows {d} at tile 64, {d} at tile 16; over all {d} experts {d} and {d}", .{ n, visits, least, most, last16[0], used, cuda.grouped.maxItems(pairs, used, 64), cuda.grouped.maxItems(pairs, used, 16), c.experts, all[0], all[1] });
+}

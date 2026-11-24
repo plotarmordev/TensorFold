@@ -37,7 +37,7 @@ const mini: experts.Layer = .{ .format = .nvfp4, .up = 20, .down = 30, .up_scale
 fn kernelsOn(d: *Driver) struct { k4: experts.Nvfp4Experts, k8: mx.Mxfp8Experts } {
     d.api.cuLaunchKernel = Mock.launch;
     var k4: experts.Nvfp4Experts = undefined; // only the soft-capped entries are reachable from the calls below
-    k4.softcap = .{ .fns = .{ .{ .d = d, .handle = @ptrFromInt(31) }, .{ .d = d, .handle = @ptrFromInt(32) } }, .resident = 96 };
+    k4.softcap = .{ .fns = .{ .{ .d = d, .handle = @ptrFromInt(31) }, .{ .d = d, .handle = @ptrFromInt(32) }, .{ .d = d, .handle = @ptrFromInt(33) } }, .resident = 96 };
     var k8: mx.Mxfp8Experts = .{ .mod = undefined, .fns = undefined, .resident = @splat(96) };
     for (&k8.fns, 0..) |*f, i| f.* = .{ .d = d, .handle = @ptrFromInt(41 + i) };
     return .{ .k4 = k4, .k8 = k8 };
@@ -63,6 +63,10 @@ test "soft-capped NVFP4 gate-up takes tf_nvfp4_softcap with both caps; prompt ro
     try std.testing.expectEqual(@as(u32, 3 * 9), Mock.grid);
     try std.testing.expectEqual(experts.Nvfp4Experts.promptSmem(2, 4), Mock.shared);
     try std.testing.expectEqual(@as(u64, 7), Mock.words[14]);
+    try g.decode(s, .up, in_up, mini, plan, 110, 5, 320, 64, -1);
+    try std.testing.expectEqual(@as(usize, 33), Mock.selected);
+    try std.testing.expectEqual(@as(u32, 5 * 9), Mock.grid);
+    try std.testing.expectEqual(experts.Nvfp4Experts.promptSmem(2, 4), Mock.shared);
 }
 
 test "MXFP8 calls take their entry by form and epilogue, with no scale pointer and the layer's caps" {
@@ -91,6 +95,12 @@ test "MXFP8 calls take their entry by form and epilogue, with no scale pointer a
         try std.testing.expectEqual(c.nb, Mock.words[5]);
         try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 25))), @as(u32, @truncate(Mock.words[12])));
     }
+    try g.decode(s, .up, in_up, l, plan, 110, 5, 320, 64, -1);
+    try std.testing.expectEqual(@as(usize, 44), Mock.selected);
+    try std.testing.expectEqual(@as(u32, 5 * 18), Mock.grid);
+    try g.decode(s, .down_f32, in_down, l, plan, 110, 5, 320, 64, -1);
+    try std.testing.expectEqual(@as(usize, 46), Mock.selected);
+    try std.testing.expectEqual(@as(u32, 5 * 18), Mock.grid);
 }
 
 test "refusals by name launch nothing: MXFP8 not loaded, caps unbuilt or malformed, shapes, prompt fp32 down" {

@@ -234,32 +234,34 @@ fn visitOne(m: *Model, k: *const Kernels, s: cuda.Stream, r: *const Rows, v: u32
         mix.norm[0] = L.mlp_norm;
         try ops.mix(&k.ops, s, mix);
     }
-    try moe(m, k, s, r, L);
+    try moe(m, k, s, r, L, v);
     // the MLP conv: the next visit's state is bf16(h32 + bf16(conv(moe)))
     try conv(m, k, s, r, v, .mlp, .{ .x = m.s.moe, .state = 0, .w = L.mlp_conv, .resid = m.s.h32, .out = hout, .x_bf16 = 1, .c = @intCast(h), .rows = 0, .mode = 2 });
 }
 
 /// The router's picks over sigmoid scores, the routed experts as stored (core experts), their weighted sum in bf16.
-fn moe(m: *Model, k: *const Kernels, s: cuda.Stream, r: *const Rows, L: *const wts.Layer) !void {
+fn moe(m: *Model, k: *const Kernels, s: cuda.Stream, r: *const Rows, L: *const wts.Layer, v: u32) !void {
     const t = m.c;
     const h: usize = t.hidden;
     const n = r.n;
     const pairs = n * t.topk;
+    // Up to 16 rows, each expert already fits one decode unit; larger rounds stage up to 64 rows per expert.
+    const tile: usize = if (r.prompt) cuda.experts.promptTile(L.experts.format) else if (n > 16) 64 else 16;
     try ops.rowdot(&k.ops, s, m.s.xm, L.router, m.s.scores, n, t.experts, h, false, true);
     try ops.topk(&k.ops, s, m.s.scores, L.router_bias, m.s.pick, m.s.rw, n, t.experts, t.topk, t.route_scale);
-    const tile: usize = if (r.prompt) cuda.experts.promptTile(L.experts.format) else 16;
     const items = cuda.grouped.maxItems(pairs, t.experts, tile);
-    try k.router.route(s, m.s.pick, pairs, t.experts, tile, m.s.plan);
+    const p = m.visitPlan(v);
+    try k.router.route(s, m.s.pick, pairs, t.experts, tile, p);
     const gx = k.experts();
     const up_in: cuda.experts.Rows = .{ .x = m.s.xm, .stride = h, .slots = t.topk };
     const down_in: cuda.experts.Rows = .{ .x = m.s.act, .stride = t.expert_inter };
     if (r.prompt) {
-        try gx.prompt(s, .up, up_in, L.experts, m.s.plan, m.s.act, items, pairs, tile, -1);
-        try gx.prompt(s, .down_bf16, down_in, L.experts, m.s.plan, m.s.y, items, pairs, tile, -1);
+        try gx.prompt(s, .up, up_in, L.experts, p, m.s.act, items, pairs, tile, -1);
+        try gx.prompt(s, .down_bf16, down_in, L.experts, p, m.s.y, items, pairs, tile, -1);
         try k.glue.combine(s, m.s.y, .bf16, m.s.rw, m.s.moe, .bf16, n, t.topk, h);
     } else {
-        try gx.decode(s, .up, up_in, L.experts, m.s.plan, m.s.act, items, pairs, tile, -1);
-        try gx.decode(s, .down_f32, down_in, L.experts, m.s.plan, m.s.y, items, pairs, tile, -1);
+        try gx.decode(s, .up, up_in, L.experts, p, m.s.act, items, pairs, tile, -1);
+        try gx.decode(s, .down_f32, down_in, L.experts, p, m.s.y, items, pairs, tile, -1);
         try k.glue.combine(s, m.s.y, .f32, m.s.rw, m.s.moe, .bf16, n, t.topk, h);
     }
 }
