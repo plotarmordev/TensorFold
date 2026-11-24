@@ -18,20 +18,24 @@ if [ -z "$model" ]; then
     find /assets -maxdepth 5 -name config.json -exec grep -l '"inkling2' {} + >&2 || true
     exit 1
 fi
-[ -d "$staged" ] || { echo "missing $staged: run ../minimax-h3-cuda/toolchain-stage.sh" >&2; exit 1; }
-(cd "$staged" && sha256sum -c --quiet) <<EOF
+# TOP's GPU slot is 10 minutes of measurement: the build runs first, then the script again under timeout, with its status
+if [ -z "${INKLING2_TIMED:-}" ]; then
+    [ -d "$staged" ] || { echo "missing $staged: run ../minimax-h3-cuda/toolchain-stage.sh" >&2; exit 1; }
+    (cd "$staged" && sha256sum -c --quiet) <<EOF
 9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8  $zig.tar.xz
 7f4ca1d3b773c41b031019d1249b2c58e6beb470eeabacfa0a0813c5e8bb7e5b  $gcc.tar.xz
 EOF
-tar -C /work -xJf "$staged/$zig.tar.xz"
-tar -C /work -xJf "$staged/$gcc.tar.xz"
-# the checkout may be read-only: caches and builds go to /work
-export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
-export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
-nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
-echo "model $model: $(cat "$model"/*.safetensors | sha256sum | cut -d' ' -f1)"
-zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/sm121
+    tar -C /work -xJf "$staged/$zig.tar.xz"
+    tar -C /work -xJf "$staged/$gcc.tar.xz"
+    # the checkout may be read-only: caches and builds go to /work
+    export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
+    export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+    export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
+    nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
+    echo "model $model: $(cat "$model"/*.safetensors | sha256sum | cut -d' ' -f1)"
+    zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/sm121
+    INKLING2_TIMED=1 exec timeout 600 sh "$0" "$@"
+fi
 bin=/work/sm121/bin
 rm -rf "$out"
 mkdir -p "$out"
@@ -40,6 +44,10 @@ mkdir -p "$out"
 python3 -c 'import random; r = random.Random(4387); print(" ".join(str(r.randrange(1000, 199000)) for _ in range(4200)))' >"$out/ids.txt"
 "$bin/tf-cuda-test" inkling2-serving "$model" "$out/ids.txt"
 text="The three laws of thermodynamics, explained for a curious student:"
+# the float64 reference runs on one host core: its planted control runs beside it, and each must exit 0
+INKLING2_REF_PLANT=1 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text" >"$out/planted.log" 2>&1 &
+planted=$!
+trap 'kill $planted 2>/dev/null || :' EXIT
 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text"
 # the planted control must go red with its own differing tokens: a load or CUDA failure also exits non-zero
 if INKLING2_REF_PLANT=1 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text" 2>"$out/control.log"; then
@@ -57,13 +65,13 @@ server=$!
 trap 'kill $server 2>/dev/null || :' EXIT
 python3 - <<'EOF'
 import time, urllib.request
-for _ in range(900):
+for _ in range(180):
     try:
         urllib.request.urlopen("http://127.0.0.1:8188/v1/models", timeout=5)
         raise SystemExit(0)
     except OSError:
         time.sleep(1)
-raise SystemExit("server did not answer /v1/models in 15 min")
+raise SystemExit("server did not answer /v1/models in 3 min")
 EOF
 mem "server loaded"
 for level in 1 4; do

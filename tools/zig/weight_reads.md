@@ -13,10 +13,11 @@ Python 3.9 or later supplies the test driver.
 2. Execute the test driver with a new output directory.
 
    ```sh
-   python3 tools/zig/check_weight_reads.py --output /tmp/tensorfold-weight-results
+   S="$(git rev-parse --show-toplevel)/.scratch"; mkdir -p "$S"
+   python3 tools/zig/check_weight_reads.py --storage-directory "$S" --output "$S/tensorfold-weight-results"
    ```
 
-Use `--storage-directory /path/to/storage` to select a filesystem for the temporary fixtures.
+Use another `--storage-directory` to select a filesystem for the temporary fixtures.
 The driver removes its fixtures after the tests.
 It retains the logs and `result.json` in the output directory.
 The probe overwrites only test files with the filename prefix `tensorfold-loader-probe-`.

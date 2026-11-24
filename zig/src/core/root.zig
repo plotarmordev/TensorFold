@@ -34,7 +34,6 @@ pub const torch_pth = @import("torch_pth.zig"); // torch.save archives read with
 pub const wav = @import("wav.zig"); // reference clips in, speech out
 pub const proposal_vocab = @import("proposal_vocab.zig");
 pub const ids_json = @import("ids_json.zig");
-pub const json_read = @import("json_read.zig");
 pub const affine4_host = @import("affine4_host.zig");
 pub const affine4_fold = @import("affine4_fold.zig");
 pub const shard_edit = @import("shard_edit.zig");
@@ -77,6 +76,7 @@ pub const moe_ref = @import("moe_ref.zig");
 pub const dense_ref = @import("dense_ref.zig");
 
 pub const checkpoint_weights = @import("checkpoint_weights.zig");
+pub const audio = @import("audio.zig");
 pub const kv_pool = @import("kv_pool.zig");
 pub const kv_prompts = @import("kv_prompts.zig");
 pub const state_walk = @import("state_walk.zig");
@@ -89,6 +89,7 @@ test {
     _ = dspine;
     _ = profile;
     _ = checkpoint_weights;
+    _ = audio;
     _ = safetensors;
     _ = expert_decode;
     _ = gguf;
@@ -141,7 +142,6 @@ test {
     _ = prompt_tail;
     _ = @import("copy_index.zig");
     _ = ids_json;
-    _ = json_read;
     _ = proposal_vocab;
     _ = proposal_rows;
     _ = nvfp4;

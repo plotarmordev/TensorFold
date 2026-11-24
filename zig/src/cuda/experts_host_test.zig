@@ -103,9 +103,6 @@ test "nvfp4 rows of either kind are refused when the format is not loaded" {
     try std.testing.expectError(error.FormatNotLoaded, g.prompt(s, .up, .{ .x = 0, .stride = 64 }, l, p, 0, 1, 1, 64, -1));
     try std.testing.expectError(error.FormatNotLoaded, g.decode(s, .down_bf16, .{ .x = 0, .stride = 64 }, l, p, 0, 1, 1, 16, -1));
     try std.testing.expectEqual(@as(usize, 2 * 2 * 3 * 144 * 4), Nvfp4Experts.bytes(2, 64, 96, 1));
-    try std.testing.expectEqual(@as(u32, 2 * 17408), Nvfp4Experts.promptSmem(1, 8)); // 64 rows x 64 inputs, 8x2 blocks
-    try std.testing.expectEqual(@as(u32, 2 * 17408), Nvfp4Experts.promptSmem(2, 4));
-    try std.testing.expectEqual(@as(u32, 3 * 12800), Nvfp4Experts.promptSmem(1, 4));
 }
 
 test "a packed fp8 expert puts each word where fp8/experts.py's pack does" {

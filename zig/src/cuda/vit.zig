@@ -1,4 +1,4 @@
-//! Vision towers' shared glue (vit.cu), torch Linears through cuBLASLt, and full attention over a picture's rows.
+//! Vision and audio towers' shared glue (vit.cu), torch Linears through cuBLASLt, and full attention over their rows.
 const std = @import("std");
 const kernels = @import("kernels.zig");
 const module = @import("module.zig");
@@ -34,6 +34,8 @@ pub const Kernels = struct {
     unshuffle_fn: module.Function,
     cast_fn: module.Function,
     position_fn: module.Function,
+    conv_cols_fn: module.Function,
+    conv_flatten_fn: module.Function,
 
     pub fn load(d: *const Driver) !Kernels {
         if (!kernels.available) return error.BuiltWithoutKernels;
@@ -52,6 +54,8 @@ pub const Kernels = struct {
             .unshuffle_fn = try mod.function("tf_vit_unshuffle"),
             .cast_fn = try mod.function("tf_vit_cast"),
             .position_fn = try mod.function("tf_vit_position_add"),
+            .conv_cols_fn = try mod.function("tf_vit_conv_cols"),
+            .conv_flatten_fn = try mod.function("tf_vit_conv_flatten"),
         };
     }
 
@@ -155,6 +159,25 @@ pub const Kernels = struct {
         try go(k.cast_fn, s, blocks(count, threads), 1, &a);
     }
 
+    /// y [n fo to, ld]: the 3x3 stride-2 pad-1 conv taps of x [n, fi, ti, c] (channels last), zero past 9 c columns.
+    pub fn convCols(k: *const Kernels, s: Stream, x: u64, y: u64, n: usize, fi: usize, ti: usize, c: usize, ld: usize) !void {
+        if (ld < 9 * c or fi == 0 or ti == 0) return error.RowShape;
+        var a: Args = .{};
+        a.add(x);
+        a.add(y);
+        for ([_]usize{ fi, ti, c, ld }) |v| a.add(int(v));
+        try go(k.conv_cols_fn, s, n * ((fi - 1) / 2 + 1) * ((ti - 1) / 2 + 1), blocks(ld, threads), &a);
+    }
+
+    /// y [n t, c f] = x [n, f, t, c] with each row's (f, c) block transposed: torch's flatten of a [c, f] conv row.
+    pub fn convFlatten(k: *const Kernels, s: Stream, x: u64, y: u64, n: usize, f: usize, t: usize, c: usize) !void {
+        var a: Args = .{};
+        a.add(x);
+        a.add(y);
+        for ([_]usize{ f, t, c }) |v| a.add(int(v));
+        try go(k.conv_flatten_fn, s, n * t, 1, &a);
+    }
+
     /// o [h * w, c] = bf16(x + bf16(the table [side * side, c] resized to the longer side's square, y < h, x < w)).
     pub fn positionAdd(k: *const Kernels, s: Stream, x: u64, table: u64, o: u64, h: usize, w: usize, side: usize, c: usize) !void {
         var a: Args = .{};
@@ -220,13 +243,25 @@ pub const Gemms = struct {
     }
 
     pub fn plan(g: *Gemms, rows: usize, n: usize, k: usize, out: cublaslt.DataType, epilogue: cublaslt.Epilogue) !*const Linear {
-        const key = [3]u64{ rows, n, k | @as(u64, @intCast(@backingInt(out))) << 40 | @as(u64, @backingInt(epilogue)) << 48 };
+        const key = planKey(rows, n, k, out, epilogue);
         const got = try g.plans.getOrPut(g.gpa, key);
         if (!got.found_existing) got.value_ptr.* = Linear.initEpilogue(&g.lt, rows, n, k, out, workspace_bytes, epilogue) catch |e| {
             g.plans.removeByPtr(got.key_ptr);
             return e;
         };
         return got.value_ptr;
+    }
+
+    /// `plan(.bf16, .bias)` whose algorithm runs the bias epilogue whenever the shape has one that can: see `repick`.
+    pub fn planFused(g: *Gemms, rows: usize, n: usize, k: usize) !*const Linear {
+        _ = try g.plan(rows, n, k, .bf16, .bias);
+        const p = g.plans.getPtr(planKey(rows, n, k, .bf16, .bias)).?;
+        try p.repick(.bias);
+        return p;
+    }
+
+    fn planKey(rows: usize, n: usize, k: usize, out: cublaslt.DataType, epilogue: cublaslt.Epilogue) [3]u64 {
+        return .{ rows, n, k | @as(u64, @intCast(@backingInt(out))) << 40 | @as(u64, @backingInt(epilogue)) << 48 };
     }
 };
 
@@ -272,8 +307,9 @@ const Full = struct {
     }
 };
 
-/// Full attention by head dim: SigLIP2's 72, RADIO's 80 (full_kernel's bits in one barrier a tile), MOSS-Image's 128.
+/// Full attention by head dim: Qwen3-ASR's 64, SigLIP2's 72, RADIO's 80 (full_kernel's bits), MOSS-Image's 128.
 const fulls = [_]Full{
+    .{ .dim = 64, .warps = 8 },
     .{ .dim = 72, .warps = 8, .slots = 8 },
     .{ .dim = 80, .warps = 8 },
     .{ .dim = 128, .warps = 8 },

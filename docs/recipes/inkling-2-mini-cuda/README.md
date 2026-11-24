@@ -6,6 +6,8 @@ GPU door. The job has no network, so the checkpoint must already sit in the pilo
 
 The server is jschmied's #4441 engine (`inkling2.native`, model type `inkling2_loop`, on his #4364 and #4365): graphs,
 fused input projections and one batched forward for every stream's rows in a round. #4387's checks run against it.
+Upstream, jschmied closed #4441 on 23 Nov as superseded: Mini on CUDA goes through #4387's engine there (#4640, then
+#4697, #4718, #4728 and #4729 for speed). This branch is local; an upstream claim must move to that stack first.
 The script fails on any of: `tf-cuda-test kernel-contract "inkling2 loop"` (the served message and gate kernels
 against FP64 references, with their planted controls), `tf-cuda-test inkling2-serving` (#4387's checks), `tf-cuda-test inkling2-mini-ref` (32
 greedy tokens equal to the float64 host reference), that reference's planted control staying green, a failed stream
@@ -15,20 +17,28 @@ checkpoint's headers) over 273 GB/s.
 
 ## Receipt: TOP's GB10, one capped run
 
-Job `top-16bffb6ca094` at `9f542e6fa`, `--context 8192`, greedy, 256 tokens, 3 reps, medians. This is one run with
-these settings, not a benchmark.
+Job `top-0b05213c9f06` at `4a5089e70`, `--context 8192`, greedy, 256 tokens, 3 reps, medians; the build ran first, then
+every check and both levels inside `timeout 600`. This is one run with these settings, not a benchmark.
 
-| Streams | First token (code / chat) | Prompt (code) | Decode a stream | Total decode | Failed |
+| Streams | First token (code / chat) | Prompt (code) | Decode a stream (code / chat) | Total decode (code / chat) | Failed |
 |---|---|---|---|---|---|
-| 1 | 0.077 s / 0.038 s | 195.9 tok/s | 32.5 tok/s | 32.5 tok/s | 0 |
-| 4 | 0.189 s / 0.092 s | 82.6 tok/s | 29.6 tok/s | 117.8 tok/s (3.62x) | 0 |
+| 1 | 0.075 s / 0.037 s | 199.4 tok/s | 32.9 / 32.8 tok/s | 32.9 / 32.8 tok/s | 0 |
+| 4 | 0.186 s / 0.091 s | 83.7 tok/s | 29.8 / 29.8 tok/s | 117.9 / 118.8 tok/s | 0 |
 
-Memory, sampled after each step (not process peaks): host used (`/proc/meminfo`) was 10.9 GiB before the server,
-31.6 GiB with Mini loaded for 4 streams, and the same after both levels; the server held 20.0 GiB of GPU memory
+The 4-stream gate takes each level's better prompt: 118.8 over 32.9 tok/s, 3.61x. Every stream sends the same prompt,
+so the four streams route to the same experts; mixed traffic may give a lower 4-stream rate.
+
+Checks in the same job: the CUDA engine matched the host reference token for token, fresh and resumed prompts gave
+identical logits and tokens, and two lanes in shared rounds kept their tokens; 0 of 32 greedy tokens differed from
+the float64 reference (smallest reference margin 0.11), and its planted control (no messages) differed at 6. The
+kernel contract passed gates 1-4 on all 5 loop kernels with both planted controls red.
+
+Memory, sampled after each step (not process peaks): host used (`/proc/meminfo`) was 11.1 GiB before the server,
+31.8 GiB with Mini loaded for 4 streams and 32.2 GiB after both levels; the server held 20.0 GiB of GPU memory
 (`nvidia-smi`).
 
 Bandwidth limit: a decoded token reads about 5.55 GB of weights (core layers 3 passes, 8 of 128 experts a visit, the
-whole unembedding), so 273 GB/s caps one stream near 49 tok/s; 32.5 tok/s is 66% of it. #4387's own engine, removed
+whole unembedding), so 273 GB/s caps one stream near 49 tok/s; 32.9 tok/s is 67% of it. #4387's own engine, removed
 here, gave 5.7 tok/s at one stream and 9.4 at four on the same GB10 (job `top-0759755a0515`).
 
 Job `top-9defa53c0bfc` at `2a37918af` reran it with the planted control's new exit: the control's 6 of 32 differing

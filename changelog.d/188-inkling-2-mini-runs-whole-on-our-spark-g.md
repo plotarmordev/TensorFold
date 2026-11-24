@@ -8,11 +8,10 @@
 - `docs/recipes/inkling-2-mini-cuda/run-script.sh` runs the original checkpoint on TOP's GB10: the serving checks,
   the float64 reference and its planted control, then first-token time, prompt speed, decode speed, memory
   (`/proc/meminfo`) and the bandwidth limit at 1 and 4 streams; 4 streams must give 1.5 times one stream's total.
+  After the build, every check and both levels run inside `timeout 600`.
   The recipe's README notes what RTX Spark (native Windows and WSL2) needs.
 - `tf-cuda-test kernel-contract "inkling2 loop"` checks the served `loop.cu` message mix and three gate launches
   against FP64 references, with planted controls (an aliased block, a gate reading the wrong role plane).
-- `llama-cpp-baseline.sh` serves Unsloth's UD-Q4_K_M GGUF with llama.cpp CUDA on TOP at the same settings, for
-  size, speed and greedy agreement with the float64 reference.
 - Metal Mini admission budgets a target state for every stream, so concurrent full-window requests no longer run out
   of state; the Metal checkpoint check reads the first logprob row after the first token, and an expired token
   handle (more than 4,096 draws old) is refused instead of reading a newer token.
