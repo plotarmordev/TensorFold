@@ -42,20 +42,34 @@ its dependent chain of kernels does, so the hold lever cuts launches and waits, 
 - At one stream it is inside noise (118.0-120.2 against 118.9-122.2). Bar not reached: one stream reads 118.0-120.2
   tok/s at `1038e2d4` against #4618's 123. Strata v0.2.19 reads 108.9-114.5 on M5 Max, another chip: a deployment
   comparison, not a chip one.
-- Plain, 05:00-05:04, control / candidate / control with the load average at 80, 90 and 127:
-
-  | plain, tok/s (code / chat) | control | candidate | control |
-  |---|---|---|---|
-  | 1 stream | 51.9 / 55.5 | 52.0 / 60.1 | 60.4 / 50.4 |
-  | 4 streams | 205.0 / 169.7 | 159.0 / 179.1 | 204.9 / 155.7 |
-  | round p50, 1 / 4 streams, code | 16.9 / 18.2 ms | 16.7 / 18.3 ms | 16.4 / 18.1 ms |
-
-  Host load moved single reps by up to 40% (control code at four streams: 205.0, 127.2, 209.5), so these medians do
-  not establish throughput parity between the builds; the lever only touches the drafted path, and the per-round p50
-  above is a hint, not a throughput result. A repeat of these three cells under stable load is pending the next Mac
-  GPU window. The earlier candidate cells (61.1 / 62.6 and 223.7 / 224.1 at load 9) match card 210's 61.0-62.3 /
-  216-221.
+- Plain at 05:00-05:04 (load 80-127) moved single reps by up to 40%; its repeat is below.
 - Every cell: 0 failed requests, every concurrent reply equal to its run alone (12 of 12), drafted equal to plain.
+
+## Repeat, 24 Nov 11:02-11:09
+
+A second Desk window for this card alone, idle GPU, load 3-20; candidate `f8b9b3c0a` (the lever plus its rollback
+test), control `781eeab52`, both built before the first bench, one lock over the six sessions. The two controls agree
+within 0.3% in every cell but plain chat at four streams.
+
+| tok/s (code / chat) | control | candidate | control |
+|---|---|---|---|
+| DSpark, 1 stream | 126.6 / 93.0 | 124.3 / 95.3 | 126.8 / 92.9 |
+| DSpark, 4 streams | 282.1 / 229.3 | **288.0 / 237.3** | 281.4 / 228.9 |
+| DSpark 4-stream round, code | 38.8 ms | 37.9 ms | 38.6 ms |
+| plain, 1 stream | 61.6 / 61.0 | 60.1 / 59.8 | 61.5 / 56.3 |
+| plain, 4 streams | 210.2 / 223.0 | 221.5 / 221.0 | 210.0 / 126.4* |
+
+\* reps 110.4/192.6/126.4: disturbed, not used.
+
+- The lever repeats at four streams: code 2.1-2.3% and chat 3.5-3.7% over both controls, a round 0.7-0.9 ms shorter.
+- At one stream it gains nothing: code 124.3 (reps 127.4, 116.2, 124.3) against 126.6-126.8, chat 95.3 against 93.
+- Plain is at parity, which the lever's path predicts (it only touches a verify window): code 60.1 against 61.5-61.6
+  at one stream and 221.5 against 210.0-210.2 at four, chat 59.8 and 221.0 against the clean control's 61.0 and 223.0.
+- #4618 reports 123 at one stream and 281 at four; it was not run on this Mac, so these medians are not a claim to
+  beat it. At this window's low load the controls already read 126.6-126.8 at one stream.
+- A second candidate pass at 11:09-11:14 ran as load rose to 50 (DSpark four-stream code reps 282.4, 252.5, 238.6;
+  plain reps down to 41) and is not used. Every cell of both passes: 0 failed requests, every concurrent reply equal
+  to its run alone, drafted equal to plain.
 
 ## Prefill at 45K
 
