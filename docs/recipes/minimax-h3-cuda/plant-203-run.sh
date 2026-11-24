@@ -35,6 +35,8 @@ echo "== build: $(( $(date +%s) - s )) s"
 echo "== measure: tf-cuda-test $cmd"
 s=$(date +%s)
 c=0
-timeout 600 $b/bin/tf-cuda-test $cmd 2>&1 || c=$?
-echo "== measure: exit $c (124: stopped at 600 s) in $(( $(date +%s) - s )) s"
+timeout 600 $b/bin/tf-cuda-test $cmd >/work/measure.log 2>&1 || c=$?
+# the door keeps a log's last 200 lines: PASS lines are only counted, every other line is printed
+echo "== measure: exit $c (124: stopped at 600 s) in $(( $(date +%s) - s )) s, $(grep -c '^PASS' /work/measure.log) PASS lines"
+grep -v '^PASS' /work/measure.log || true
 exit "$c"
