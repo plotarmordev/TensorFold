@@ -305,10 +305,22 @@ per kernel and the SUMMARY. It exits 1 on one limit problem, `d3_cfg_mix` "12 re
 record is `registry.none`, pending on every OS. At `a29b38dcd`, `contract-job.sh` (`h3d h3p tf_me_conv
 tf_idol_dec_attention`, four shards) exits 0: 28 kernels pass, the planted control red, no limit problem.
 
-The laptop's rerun 11 at `a29b38dcd` (Desk request `6203c38d`) qualifies Windows: the clean build and all eight
-`tf-cuda-test` suites pass, and `kernel-contract -Dsm=121` reaches its SUMMARY with 844 of 844 kernels passing gates
-1-4, 500 of 500 controls red as planted and 11 known findings. It exits 1 only on 1013 limit problems, mostly
-"(recorded 0, 0)": there are no records for Windows nvcc 13.5 sm_121 images (item 7).
+The laptop's run at this branch's head `456d8c947` (25 Nov; N1X, driver 621.01, nvcc 13.5.37, Zig 0.17.0, MSVC
+19.44 ARM64; fresh clone, `git status` clean) qualifies Windows, with the commands of rerun 11 at `a29b38dcd`
+(Desk request `6203c38d`), whose totals it repeats:
+
+- `zig build native install -Dsm=121 -Dstrip=true` exits 1 on the fresh clone, 20 of 228 steps (item 10). Run
+  again in the same checkout with no edits it exits 0, 228 of 228; `tf-muse` is not built for Windows.
+- `tf-cuda-test`: all eight suites exit 0 with no FAIL: `info`, `smoke` 8, `glue` 1473 of 1473 byte-equal,
+  `sample` 2880 draws none differ, `quant-ref` 4, `affine8` 24 cases, `modelopt` 6, `exlr8` 7.
+- `zig build kernel-contract -Dsm=121` exits 1 at its SUMMARY: 844 kernels, 844 pass gates 1-4, 0 fail, 11 known
+  findings; 500 controls red as planted, 0 missed; 1013 limit problems, no launch over the driver's thread limit.
+  They are 203 from the offline audit, 759 live register counts that differ from their records ("(recorded 0, 0)"
+  or nvcc 13.3's, as `affine4` verify32's 80 against 72) and 51 launches of `dsv41_x3ld`, `dsv41_x3pf`,
+  `dsv41_exl3_experts`, `dsv41_linear`, `dsv41_dense3`, `dsv41_l2pace`, `dsv41_l2pf`, `l2pf` and `l2pace` whose
+  symbol is not in the image (items 6 and 7). Limit records are not this card's check (Lead, 24 Nov).
+- `zig build test` exits 1, 797 of 806 steps: 11257 of 11536 tests pass, 279 skipped, 0 failed. The five failed
+  steps are the H3 host builds below, not ported to Windows.
 
 The short re-check at `75d7bdcd7` (warm folder, the two contract corrections since, `6b692d6ee` and `41b7b7004`):
 
@@ -319,10 +331,11 @@ The short re-check at `75d7bdcd7` (warm folder, the two contract corrections sin
 - `tf-cuda-test kernel-contract 0/4 h3d` and `2/ h3d` each stop at once with "FAIL kernel-contract: BadShard",
   exit 1, as intended.
 - `zig build test --summary all` exits 1: 795 of 806 steps, 11254 of 11535 tests pass (279 skipped, 2 failed). The
-  two failures were path bugs on Windows, fixed since: `tf-drama-quant`'s DST-inside-SRC guard compared case and
-  `/` only, and `h3_image_files`' scratch test listed a folder opened without iteration (`AccessDenied`). The
-  failed steps are the H3 host tests, not ported to Windows: POSIX `clock_gettime`, `mmap`/`munmap` and
-  `file.handle` as an fd (`h3/checkpoint.zig`, `h3/cuda_load_threads.zig`, `tests/h3_image_prompt_cuda.zig`).
+  two failures were path bugs on Windows, fixed since (0 failed at `456d8c947`): `tf-drama-quant`'s DST-inside-SRC
+  guard compared case and `/` only, and `h3_image_files`' scratch test listed a folder opened without iteration
+  (`AccessDenied`). The failed steps are the H3 host builds, not ported to Windows: POSIX `clock_gettime`
+  (`tf-h3-image-prompt-cuda`, `tf-h3-image-decoder-cuda`), `mmap`/`munmap` (`h3/checkpoint.zig`,
+  `tests/h3_image_prompt_cuda.zig`) and `file.handle` as an fd (`h3/cuda_load_threads.zig`).
 
 Serving is outside this card's acceptance (Lead, 24 Nov): it neither downloads nor serves a model on the laptop.
 The laptop's serving receipt is card 243's, cited here as 243's: Inkling 2 Mini
@@ -371,7 +384,7 @@ needs:
    includes zero in that interval. `tf_idol_dec_attention` exceeded its shapes bound by 1.07 at 16x1000x65:
    the reference rounded P at the final row max, while the tiled kernel rounds against the highest score of every
    tile so far before rescaling. Its reference now carries that running max across tiles. With both corrections
-   the laptop's rerun 11 passes all 844 kernels (above).
+   the laptop's run at `456d8c947` passes all 844 kernels (above).
    The 11 other non-control FAIL lines are declared known findings: qwen35 decode attention can leave a
    NaN-key row finite, and `tf_glm_scores` maps a NaN score to zero via `fmaxf`. Those served-kernel
    behaviors are unchanged by this card.
@@ -379,3 +392,7 @@ needs:
    how it uses more cores, but the words and the shard filter only after every kernel's fixture is built: each
    process pays that build and holds its GPU memory, which N processes multiply. Run one family at a time
    (`kernel-contract I/N WORD`), and raise N only while the 40 GiB CUDA share holds.
+10. A first build that succeeds in a fresh clone. At `03e9b18df`, `a29b38dcd` and `456d8c947` the first
+    `zig build native install -Dsm=121` in a new checkout exits 1 (at `456d8c947`, 176 nvcc steps "process exited
+    with code 2" with no nvcc message, such as `drama3_codec.fatbin` into `.zig-cache\tmp`); the same command again,
+    with no edits, builds all 228. Its cause is not found yet.

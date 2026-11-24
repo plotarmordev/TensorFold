@@ -8,7 +8,7 @@
 - `glm_index_rope.cuh` uses CUDA's `__noinline__`, not GCC's `__attribute__((noinline))`, which nvcc
   with cl.exe rejected in `glm_glue` and `glm_index`; Windows fatbins pass `/wd4819`, the flag that
   showed that error under the code-page warnings burying it.
-- `docs/WINDOWS.md` records the N1X laptop's clean native build and eight passing `tf-cuda-test` suites. A prior kernel-contract run aborted at gate 5 on a missing LP64-mangled symbol; the contract now counts each missing image symbol as one limit failure and continues to its SUMMARY. The laptop's rerun 11 at `a29b38dcd` passes gates 1-4 on all 844 kernels with 500 of 500 controls red; its 1013 limit problems are the missing nvcc 13.5 sm_121 records, outside this card. Model serving and tok/s are outside this card.
+- `docs/WINDOWS.md` records the N1X laptop's clean native build and eight passing `tf-cuda-test` suites. A prior kernel-contract run aborted at gate 5 on a missing LP64-mangled symbol; the contract now counts each missing image symbol as one limit failure and continues to its SUMMARY. The laptop's run at `456d8c947` passes gates 1-4 on all 844 kernels with 500 of 500 controls red; its 1013 limit problems are the missing nvcc 13.5 sm_121 records, outside this card. Model serving and tok/s are outside this card.
 - The kernel contract's `h3p_attention` takes gate 4's 4-row cut of its 77-row shape (its keys are its rows; it
   refused fewer rows than K on every OS), and MLP128's N/A line names its sm_120-only tile, not the sm_90 cluster.
 - `h3p_scatter_add` and `h3p_splice`'s contract rows stay inside their buffer: gate 1's 5-row shape wrote past it
@@ -27,7 +27,7 @@
   A leading word shaped as a shard but out of range or malformed (`0/4`, `2/`) stops the run instead of naming kernels.
 - The MOSS-Image conv contract includes fp32 `expf` overflow at a stress sum of -89 in its signed silu
   interval; the Idol decoder attention reference rounds P against the running max over its 64-key tiles so far
-  before rescaling, as the kernel does at the 65-key edge. The laptop's rerun 11 passes both.
+  before rescaling, as the kernel does at the 65-key edge. The laptop's run at `456d8c947` passes both.
 - `tf-drama-quant` refuses a DST inside SRC on Windows too: the guard folds case and takes `\` as `/` there, where
   it compared case and `/` only. The H3-Image scratch test lists its folder opened for iteration (`AccessDenied` on
   Windows). Both failed the laptop's `zig build test` at `75d7bdcd7`.
