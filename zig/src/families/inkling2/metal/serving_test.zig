@@ -577,7 +577,8 @@ fn greedy(dir: []const u8, ids: []const u32, out: []u32, weights: *core.checkpoi
     defer b.release(&s);
     out[0] = try b.read(try b.first(&s, ids.len));
     for (1..out.len) |i| out[i] = try b.read(try b.queue(&s, .{ .value = out[i - 1] }, ids.len + i));
-    return .{ .gpa = gpa, .c = model.config, .p = model.weight_plan, .ck = weights };
+    // Metal's ink2_act rounds the experts' gate and up to bf16 before the soft caps.
+    return .{ .gpa = gpa, .c = model.config, .p = model.weight_plan, .ck = weights, .round_caps = true };
 }
 
 /// Generated positions where the reference's pick is not the token the device drew.

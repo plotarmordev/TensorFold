@@ -29,6 +29,10 @@ fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
     const lanes = b.createModule(.{ .root_source_file = b.path(dir ++ "lanes/lanes.zig"), .target = target, .optimize = optimize, .link_libc = true });
     m.addImport("lanes", lanes);
     m.addImport("engine_api", b.createModule(.{ .root_source_file = b.path(dir ++ "engine_api.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "lanes", .module = lanes }} }));
+    const parts = b.createModule(.{ .root_source_file = b.path("zig/src/families/inkling2/core_parts.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    parts.addImport("core", core);
+    m.addImport("visit_plan", parts);
+    m.addImport("modelopt", parts);
     return m;
 }
 

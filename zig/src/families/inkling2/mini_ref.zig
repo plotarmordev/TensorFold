@@ -1,17 +1,24 @@
-//! Inkling 2 Mini's forward in float64 on the host over a whole token sequence: the reference the Metal engine's greedy
-//! tokens are checked against (teacher-forced: each position's argmax and its margin). The stored weights decoded
-//! exactly and only the experts' gate and up rounded, as the engine does; everything else stays float64. Slow.
+//! Inkling 2 Mini's forward in float64 on the host over a whole token sequence: the reference the CUDA and Metal
+//! engines' greedy tokens are checked against (teacher-forced: each position's argmax and its margin). No intermediate
+//! rounding unless `round_caps`; the stored weights decoded exactly. Slow: tiny checkpoint, short runs.
 const std = @import("std");
 const core = @import("core");
 const config = @import("config.zig");
 const plan_ = @import("plan.zig");
-const loop_model = @import("loop_model.zig");
 
 const Tensor = core.checkpoint.Tensor;
 const Checkpoint = core.checkpoint.Checkpoint;
 
-/// Each position's top token (ties: the lower id) and its margin over the runner-up.
-pub const Pick = struct { id: u32, margin: f64 };
+/// Each position's top token, its margin over the runner-up and the top logit (soft-capped).
+/// Its five best ids and logits, best first (ties: the lower id), for cross-engine comparisons.
+pub const Pick = struct { id: u32, margin: f64, top: f64, ids: [5]u32 = @splat(0), logits: [5]f64 = @splat(-std.math.inf(f64)) };
+
+const e4m3_table = blk: {
+    @setEvalBranchQuota(100000);
+    var t: [256]f64 = undefined;
+    for (0..256) |i| t[i] = core.expert_decode.e4m3(@intCast(i));
+    break :blk t;
+};
 
 fn bf(bytes: []const u8, i: usize) f64 {
     const u: u32 = std.mem.readInt(u16, bytes[2 * i ..][0..2], .little);
@@ -50,6 +57,11 @@ fn bf16Round(x: f64) f64 {
     const u: u32 = @bitCast(@as(f32, @floatCast(x)));
     const r = (u + 0x7fff + ((u >> 16) & 1)) & 0xffff0000;
     return @as(f32, @bitCast(r));
+}
+
+/// An NVFP4 expert's outer factor as the engines take it (experts_mx.nvfp4Factor): bf16 amax over bf16 denominator in f32.
+fn nvfp4Factor(amax: f64, denominator: f64) f64 {
+    return @as(f32, @floatCast(bf16Round(amax))) / @as(f32, @floatCast(bf16Round(denominator)));
 }
 
 fn mat2(a: std.mem.Allocator, n: usize, w: usize) ![][]f64 {
@@ -93,12 +105,10 @@ fn convTime(x: [][]f64, w: Tensor, dyn: ?[][]f64, heads: usize) !void {
             if (dyn) |d| {
                 const hd = ch / (c / heads);
                 const dd = d[t][hd * 4 ..][0..4];
-                y = (bf(w.bytes, ch) + dd[0]) * xi + (bf(w.bytes, c + ch) + dd[1]) * h2 +
-                    (bf(w.bytes, 2 * c + ch) + dd[2]) * h1 + (bf(w.bytes, 3 * c + ch) + dd[3]) * h0;
+                y = (bf(w.bytes, ch) + dd[0]) * xi + (bf(w.bytes, c + ch) + dd[1]) * h2 + (bf(w.bytes, 2 * c + ch) + dd[2]) * h1 + (bf(w.bytes, 3 * c + ch) + dd[3]) * h0;
                 y = (y + xi) / 3.0;
             } else {
-                y = bf(w.bytes, ch * 4) * h0 + bf(w.bytes, ch * 4 + 1) * h1 +
-                    bf(w.bytes, ch * 4 + 2) * h2 + bf(w.bytes, ch * 4 + 3) * xi;
+                y = bf(w.bytes, ch * 4) * h0 + bf(w.bytes, ch * 4 + 1) * h1 + bf(w.bytes, ch * 4 + 2) * h2 + bf(w.bytes, ch * 4 + 3) * xi;
                 y = (y + xi) / @sqrt(5.0);
             }
             prev[0][ch] = h1;
@@ -115,15 +125,11 @@ fn expertDot(nv: bool, codes: []const u8, scales: []const u8, k: usize, row: usi
     if (nv) {
         const cr = codes[row * (k / 2) ..][0 .. k / 2];
         const sr = scales[row * (k / 16) ..][0 .. k / 16];
-        for (0..k) |i| {
-            const byte = cr[i / 2];
-            const code = if (i % 2 == 0) byte & 0xf else byte >> 4;
-            s += loop_model.e2m1(code) * loop_model.e4m3(sr[i / 16]) * x[i];
-        }
+        for (0..k) |i| s += core.expert_decode.e2m1(core.expert_decode.nibble(cr, i)) * e4m3_table[sr[i / 16]] * x[i];
     } else {
         const cr = codes[row * k ..][0..k];
         const sr = scales[row * (k / 32) ..][0 .. k / 32];
-        for (0..k) |i| s += loop_model.e4m3(cr[i]) * loop_model.mxfp8Scale(sr[i / 32]) * x[i];
+        for (0..k) |i| s += e4m3_table[cr[i]] * core.expert_decode.e8m0(sr[i / 32]) * x[i];
     }
     return s;
 }
@@ -133,6 +139,7 @@ pub const Ref = struct {
     c: config.Config,
     p: plan_.Plan,
     ck: *Checkpoint,
+    round_caps: bool = false, // gate and up rounded to bf16 before the soft caps (the experts' round_caps A/B)
     plant: bool = false, // a planted control: the cross-pass messages dropped (the check must then go red)
 
     fn get(r: *Ref, comptime fmt: []const u8, args: anytype) !Tensor {
@@ -169,17 +176,9 @@ pub const Ref = struct {
     }
 
     /// A gate: (1 - tanh(Wf d)) h + tanh(Wg d) m with d = Wdown [unit(h), unit(m)], then normed by `gamma`.
-    fn gate(
-        r: *Ref,
-        h: []const f64,
-        msg: []const f64,
-        ctl_layer: u32,
-        comptime name: []const u8,
-        gamma: Tensor,
-        out: []f64,
-    ) !void {
+    fn gate(r: *Ref, h: []const f64, msg: []const f64, ctl_layer: u32, comptime name: []const u8, gamma: Tensor, out: []f64) !void {
         const hd = h.len;
-        const rank: usize = r.c.text.loop.?.gate_rank;
+        const rank: usize = r.c.text.loop.?.rank;
         const eps: f64 = r.c.text.eps;
         const down = try r.get("model.llm.layers.{d}.controllers." ++ name ++ ".down_weight", .{ctl_layer});
         const forget = try r.get("model.llm.layers.{d}.controllers." ++ name ++ ".forget_weight", .{ctl_layer});
@@ -192,8 +191,7 @@ pub const Ref = struct {
             cat[i] = h[i] * ih;
             cat[hd + i] = msg[i] * im;
         }
-        var d: [128]f64 = undefined;
-        if (rank > d.len) return error.Inkling2RefGateRank;
+        var d: [config.max_gate_rank]f64 = undefined;
         for (0..rank) |j| d[j] = dotBf(down.bytes, j, 2 * hd, cat);
         for (0..hd) |i| {
             const f = dotBf(forget.bytes, i, rank, d[0..rank]);
@@ -215,7 +213,6 @@ pub const Ref = struct {
         var hcur = try mat2(a, n, h);
         var hnext = try mat2(a, n, h);
         var blocks: [16][][]f64 = undefined;
-        if (nblocks > blocks.len) return error.Inkling2RefBlocks;
         for (0..nblocks) |b| blocks[b] = try mat2(a, n, h);
         const bank = try mat2(a, n, h);
         const bank_h = try mat2(a, n, h);
@@ -225,7 +222,7 @@ pub const Ref = struct {
             for (0..h) |c| hcur[i][c] = bf(embed.bytes, @as(usize, id) * h + c);
             normInto(hcur[i], enorm, t.eps);
         }
-        for (0..r.p.n_visits) |v| {
+        for (r.p.visits.slice(), 0..) |_, v| {
             try r.visit(a, @intCast(v), ids.len, hcur, hnext, &blocks, bank, bank_h);
             std.mem.swap([][]f64, &hcur, &hnext);
         }
@@ -240,81 +237,60 @@ pub const Ref = struct {
             src[nb] = hcur[i];
             mixOne(h, src[0 .. nb + 1], oq.bytes, 0, xf);
             normInto(xf, norm, t.eps);
-            var best: Pick = .{ .id = 0, .margin = 0 };
-            var top = -std.math.inf(f64);
-            var second = top;
+            var best: Pick = .{ .id = 0, .margin = 0, .top = 0 };
             for (0..t.unpadded_vocab) |vid| {
                 const l = t.logit_cap * std.math.tanh(dotBf(unembed.bytes, vid, h, xf) / t.logit_cap);
-                if (l > top) {
-                    second = top;
-                    top = l;
-                    best.id = @intCast(vid);
-                } else if (l > second) second = l;
+                if (l <= best.logits[4]) continue;
+                var at: usize = 4;
+                while (at > 0 and l > best.logits[at - 1]) : (at -= 1) {
+                    best.logits[at] = best.logits[at - 1];
+                    best.ids[at] = best.ids[at - 1];
+                }
+                best.logits[at] = l;
+                best.ids[at] = @intCast(vid);
             }
-            best.margin = top - second;
+            best.id = best.ids[0];
+            best.top = best.logits[0];
+            best.margin = best.logits[0] - best.logits[1];
             out[i] = best;
         }
     }
 
-    fn visit(
-        r: *Ref,
-        a: std.mem.Allocator,
-        v: u32,
-        n: usize,
-        hin: [][]f64,
-        hout: [][]f64,
-        blocks: *[16][][]f64,
-        bank: [][]f64,
-        bank_h: [][]f64,
-    ) !void {
+    fn visit(r: *Ref, a: std.mem.Allocator, v: u32, n: usize, hin: [][]f64, hout: [][]f64, blocks: *[16][][]f64, bank: [][]f64, bank_h: [][]f64) !void {
         const t = &r.c.text;
         const p = &r.p;
-        const visit_plan = p.visit(v);
-        const i = visit_plan.layer;
+        const i = p.visits.steps[v].layer;
         const spec = p.at(i);
         const h: usize = t.hidden;
         const global = spec.kind == .global;
-        const msgs = visit_plan.hasMessages() and !r.plant;
+        const msgs = p.messages(v) and !r.plant;
         const L = .{i};
-        const loop = t.loop orelse return error.Inkling2RefNoLoop;
-        const restart = visit_plan.previous_core_start != null and i == loop.core_start;
-        if (restart) for (0..n) |row| {
-            @memcpy(bank[row], blocks[loop.core_start / t.block + 1][row]);
+        if (p.bank_blocks > 1) return error.Inkling2RefBank; // one banked block (Mini), or none (the tiny checkpoint)
+        if (p.restarts(v)) for (0..n) |row| {
+            for (0..p.bank_blocks) |b| @memcpy(bank[row], blocks[p.pre_blocks + 1 + b][row]);
             @memcpy(bank_h[row], hin[row]);
-            @memcpy(hin[row], blocks[loop.core_start / t.block][row]);
+            @memcpy(hin[row], blocks[p.pre_blocks][row]);
         };
         const xin = [3][][]f64{ try a.alloc([]f64, n), try a.alloc([]f64, n), try a.alloc([]f64, n) };
-        const msg = [4][][]f64{
-            try a.alloc([]f64, n),
-            try a.alloc([]f64, n),
-            try a.alloc([]f64, n),
-            try a.alloc([]f64, n),
-        };
+        const msg = [4][][]f64{ try a.alloc([]f64, n), try a.alloc([]f64, n), try a.alloc([]f64, n), try a.alloc([]f64, n) };
         var norms: [3]Tensor = undefined;
         if (global) {
-            norms = .{
-                try r.get("model.llm.layers.{d}.q_input_norm.weight", L),
-                try r.get("model.llm.layers.{d}.k_input_norm.weight", L),
-                try r.get("model.llm.layers.{d}.v_input_norm.weight", L),
-            };
+            norms = .{ try r.get("model.llm.layers.{d}.q_input_norm.weight", L), try r.get("model.llm.layers.{d}.k_input_norm.weight", L), try r.get("model.llm.layers.{d}.v_input_norm.weight", L) };
         } else {
             const one = try r.get("model.llm.layers.{d}.attn_norm.weight", L);
             norms = .{ one, one, one };
         }
         const aq: ?Tensor = if (i > 0) try r.get("model.llm.attn_res.attn_queries.{d}", .{i - 1}) else null;
-        const core_j = if (msgs) i - loop.core_start else 0;
-        const cross = .{
-            try r.get("model.llm.middle_cycle_cross_pass_queries", .{}),
-            try r.get("model.llm.middle_cycle_cross_pass_kv_queries", .{}),
-        };
+        const core_j = p.coreIndex(v);
+        const cross = .{ try r.get("model.llm.middle_cycle_cross_pass_queries", .{}), try r.get("model.llm.middle_cycle_cross_pass_kv_queries", .{}) };
         var src: [17][]const f64 = undefined;
         for (0..n) |row| {
             for (0..3) |q| xin[q][row] = try a.alloc(f64, h);
             if (msgs) {
                 for (0..4) |q| msg[q][row] = try a.alloc(f64, h);
-                src[0] = bank[row];
-                src[1] = bank_h[row];
-                const sources = src[0..2];
+                for (0..p.bank_blocks) |b| src[b] = bank[row];
+                src[p.bank_blocks] = bank_h[row];
+                const sources = src[0 .. p.bank_blocks + 1];
                 // the message queries: main 2j (q), kv 2j (k), kv 2j + 1 (v), main 2j + 1 (mlp)
                 mixOne(h, sources, cross[0].bytes, 2 * core_j, msg[0][row]);
                 mixOne(h, sources, cross[1].bytes, 2 * core_j, msg[1][row]);
@@ -346,7 +322,7 @@ pub const Ref = struct {
         for (0..n) |row| if (!spec.boundary) for (0..h) |c| {
             h32[row][c] += hin[row][c];
         };
-        if (spec.boundary and !restart) for (0..n) |row| @memcpy(blocks[i / t.block][row], hin[row]);
+        if (spec.boundary and !p.restarts(v)) for (0..n) |row| @memcpy(blocks[i / t.block][row], hin[row]);
         const nb = spec.blocks_in + @intFromBool(spec.boundary);
         const mq = try r.get("model.llm.attn_res.mlp_queries.{d}", L);
         const mnorm = try r.get("model.llm.layers.{d}.mlp_norm.weight", L);
@@ -379,7 +355,6 @@ pub const Ref = struct {
         const bias = try r.get("model.llm.layers.{d}.mlp.gate.bias", L);
         var score: [512]f64 = undefined;
         var sel: [512]f64 = undefined;
-        if (t.experts > score.len or t.topk > 32) return error.Inkling2RefExperts;
         for (0..t.experts) |e| {
             score[e] = sigmoid(dotBf(router.bytes, e, h, x));
             sel[e] = score[e] + f32At(bias.bytes, e);
@@ -410,8 +385,8 @@ pub const Ref = struct {
         for (pick[0..t.topk]) |e| {
             if (nv) {
                 const den = f32At((try r.get(pre ++ "w13_weight_outer_scale_denominator", L)).bytes, 0);
-                f13 = loop_model.nvfp4OuterFactor(f32At((try r.get(pre ++ "w13_weight_amax", L)).bytes, e), den);
-                f2 = loop_model.nvfp4OuterFactor(f32At((try r.get(pre ++ "w2_weight_amax", L)).bytes, e), den);
+                f13 = nvfp4Factor(f32At((try r.get(pre ++ "w13_weight_amax", L)).bytes, e), den);
+                f2 = nvfp4Factor(f32At((try r.get(pre ++ "w2_weight_amax", L)).bytes, e), den);
             }
             const c13 = w13.bytes[e * (w13.bytes.len / t.experts) ..][0 .. w13.bytes.len / t.experts];
             const sc13 = s13.bytes[e * (s13.bytes.len / t.experts) ..][0 .. s13.bytes.len / t.experts];
@@ -419,10 +394,10 @@ pub const Ref = struct {
                 var gu: [2]f64 = .{ 0, 0 };
                 // w13's rows interleave gate and up
                 for (0..2) |half| gu[half] = expertDot(nv, c13, sc13, h, 2 * j + half, x) * f13;
-                // Metal's ink2_act rounds gate and up to bf16 before the soft caps
-                for (&gu) |*g| g.* = bf16Round(g.*);
-                act[j] = sigmoid(gu[0]) * t.gate_cap * std.math.tanh(gu[0] / t.gate_cap) *
-                    t.up_cap * std.math.tanh(gu[1] / t.up_cap);
+                if (r.round_caps) for (&gu) |*g| {
+                    g.* = bf16Round(g.*);
+                };
+                act[j] = sigmoid(gu[0]) * t.gate_cap * std.math.tanh(gu[0] / t.gate_cap) * t.up_cap * std.math.tanh(gu[1] / t.up_cap);
             }
             const c2 = w2.bytes[e * (w2.bytes.len / t.experts) ..][0 .. w2.bytes.len / t.experts];
             const sc2 = s2.bytes[e * (s2.bytes.len / t.experts) ..][0 .. s2.bytes.len / t.experts];
@@ -434,10 +409,11 @@ pub const Ref = struct {
     /// The attention of every position at visit `v` from its inputs (q from plane 0, k from 1, v from 2) into `y`.
     fn attention(r: *Ref, a: std.mem.Allocator, v: u32, n: usize, xin: [3][][]f64, y: [][]f64) !void {
         const t = &r.c.text;
-        const i = r.p.visit(v).layer;
-        const global = r.p.at(i).kind == .global;
+        const p = &r.p;
+        const i = p.visits.steps[v].layer;
+        const global = p.at(i).kind == .global;
         const L = .{i};
-        const hd = t.heads(i);
+        const hd = t.local;
         const qw: usize = @as(usize, hd.q) * hd.dim;
         const kvw: usize = @as(usize, hd.kv) * hd.dim;
         const dr: usize = t.d_rel;
@@ -448,12 +424,9 @@ pub const Ref = struct {
         const gate_ = try mat2(a, n, qw);
         const sink = try mat2(a, n, hd.q);
         const w = .{
-            try r.get("model.llm.layers.{d}.attn.wq_du.weight", L),
-            try r.get("model.llm.layers.{d}.attn.wk_dv.weight", L),
-            try r.get("model.llm.layers.{d}.attn.wv_dv.weight", L),
-            try r.get("model.llm.layers.{d}.attn.wr_du.weight", L),
-            try r.get("model.llm.layers.{d}.attn.gate_attn.weight", L),
-            try r.get("model.llm.layers.{d}.attn.attn_sink_proj.weight", L),
+            try r.get("model.llm.layers.{d}.attn.wq_du.weight", L),     try r.get("model.llm.layers.{d}.attn.wk_dv.weight", L),
+            try r.get("model.llm.layers.{d}.attn.wv_dv.weight", L),     try r.get("model.llm.layers.{d}.attn.wr_du.weight", L),
+            try r.get("model.llm.layers.{d}.attn.gate_attn.weight", L), try r.get("model.llm.layers.{d}.attn.attn_sink_proj.weight", L),
         };
         for (0..n) |row| {
             matvec(w[0], xin[0][row], q[row]);
@@ -484,9 +457,7 @@ pub const Ref = struct {
         const proj = try r.get("model.llm.layers.{d}.attn.rel_logits_proj.proj", L);
         const extent: usize = proj.dim(1);
         for (0..n) |row| {
-            const position: f64 = @floatFromInt(row + 1);
-            const floor: f64 = @floatFromInt(t.log_floor);
-            const tau: f64 = if (global) 1 + t.log_alpha * @log(@max(position / floor, 1)) else 1;
+            const tau: f64 = if (global) 1 + t.log_alpha * @log(@max(@as(f64, @floatFromInt(row + 1)) / @as(f64, @floatFromInt(t.log_floor)), 1)) else 1;
             for (0..hd.q) |hh| {
                 clipScaled(q[row][hh * hd.dim ..][0..hd.dim], qs.bytes, hh * hd.dim, t.qk_clip, tau);
                 clipScaled(rel[row][hh * dr ..][0..dr], rs.bytes, hh * dr, t.rel_clip, tau);

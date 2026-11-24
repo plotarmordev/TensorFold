@@ -139,6 +139,7 @@ pub fn build(b: *std.Build) void {
     @import("zig/build/h3_image_contract.zig").steps(b, target, optimize);
     @import("zig/build/h3_image_vision.zig").steps(b, target, optimize, test_step);
     @import("zig/build/ling_host.zig").tests(b, target, test_step);
+    @import("zig/build/visit_plan_host.zig").tests(b, target, test_step);
     @import("zig/build/inkling2_host.zig").tests(b, target, test_step);
     @import("zig/build/gpt_oss_host.zig").tests(b, test_step);
     @import("zig/build/digest.zig").steps(b, test_step, draft_ids, build_options);

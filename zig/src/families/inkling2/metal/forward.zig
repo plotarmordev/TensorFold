@@ -17,7 +17,6 @@ pub const Segment = struct { cache: *state.Cache, rows: usize };
 pub const Options = struct {
     all: bool = false,
     ids: ?Ref = null,
-    flight: ?*mtl.CommandBuffer = null,
     taps: ?state.Ref = null,
     /// A prompt's rows: its projections run on the tensor units where the GPU has them.
     prompt: bool = false,
@@ -139,7 +138,7 @@ fn bankAndReset(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, rows:
 }
 
 /// Ends with a barrier: the norms are written.
-fn prepareAttentionInputs(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visit, rows: usize) void {
+fn prepareAttentionInputs(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visits.Step, rows: usize) void {
     const lp = m.weight_plan.at(v.layer);
     const w = &m.weights.layers[v.layer];
     if (v.layer == 0) {
@@ -149,7 +148,7 @@ fn prepareAttentionInputs(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scra
         glue.arRows(&m.glue, e, at(s.blocks, 0), at(s.partial, 0), r(q), at(s.ar, 0), lp.attn_sources, @intCast(lp.attn_queries), @intCast(rows));
     }
     e.barrier();
-    const gated = v.hasMessages();
+    const gated = v.pass > 0;
     if (gated) {
         const controllers = w.controllers.?;
         const core = v.layer - 6;
@@ -185,25 +184,25 @@ fn stagePostConv(m: *const Model, e: mtl.ComputeEncoder, s: *const state.Scratch
 }
 
 /// Every stream's attention output convolved and added to the running sum, beside the staging of its taps; a barrier.
-fn attentionPartial(m: *const Model, e: mtl.ComputeEncoder, s: *const state.Scratch, segments: []const Segment, v: *const layer_plan.Visit, boundary: usize) void {
+fn attentionPartial(m: *const Model, e: mtl.ComputeEncoder, s: *const state.Scratch, segments: []const Segment, v: *const layer_plan.Visits.Step, boundary: usize) void {
     const H = state.hidden;
     var base: usize = 0;
     for (segments) |seg| {
-        stagePostConv(m, e, s, seg.cache, v.cache_slot, 2, at(s.attn_dense, 0), base, seg.rows);
-        runtime(m, e, .attention_partial, &.{ at(s.p, base * H * 2), seg.cache.history(v.cache_slot, 2), at(s.attn_dense, base * H * 2), r(m.weights.layers[v.layer].attn_conv), at(s.blocks, base * state.block_slots * H * 2), at(s.partial, base * H * 4) }, seg.rows * H, boundary);
+        stagePostConv(m, e, s, seg.cache, v.of(.conv).?, 2, at(s.attn_dense, 0), base, seg.rows);
+        runtime(m, e, .attention_partial, &.{ at(s.p, base * H * 2), seg.cache.history(v.of(.conv).?, 2), at(s.attn_dense, base * H * 2), r(m.weights.layers[v.layer].attn_conv), at(s.blocks, base * state.block_slots * H * 2), at(s.partial, base * H * 4) }, seg.rows * H, boundary);
         base += seg.rows;
     }
     e.barrier();
 }
 
 /// Every stream's expert output convolved into the running p, which it leaves widened as the next visit's partial.
-fn mlpPartial(m: *const Model, e: mtl.ComputeEncoder, s: *const state.Scratch, segments: []const Segment, v: *const layer_plan.Visit) void {
+fn mlpPartial(m: *const Model, e: mtl.ComputeEncoder, s: *const state.Scratch, segments: []const Segment, v: *const layer_plan.Visits.Step) void {
     const H = state.hidden;
     var base: usize = 0;
     for (segments) |seg| {
         const t = at(s.partial, base * H * 4);
-        stagePostConv(m, e, s, seg.cache, v.cache_slot, 3, at(s.mlp_out, 0), base, seg.rows);
-        runtime(m, e, .mlp_partial, &.{ t, seg.cache.history(v.cache_slot, 3), at(s.mlp_out, base * H * 2), r(m.weights.layers[v.layer].mlp_conv), at(s.p, base * H * 2), t }, seg.rows * H, 0);
+        stagePostConv(m, e, s, seg.cache, v.of(.conv).?, 3, at(s.mlp_out, 0), base, seg.rows);
+        runtime(m, e, .mlp_partial, &.{ t, seg.cache.history(v.of(.conv).?, 3), at(s.mlp_out, base * H * 2), r(m.weights.layers[v.layer].mlp_conv), at(s.p, base * H * 2), t }, seg.rows * H, 0);
         base += seg.rows;
     }
     e.barrier();
@@ -221,23 +220,23 @@ const Attend = struct {
 };
 
 /// Every stream's attention a step at a time: a step's launches run side by side, and a barrier ends each step.
-fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visit, segments: []const Segment, prompt: bool) !void {
+fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visits.Step, segments: []const Segment, prompt: bool) !void {
     const w = &m.weights.layers[v.layer];
     const prep = ap.Prep{ .qk_clip = m.config.text.qk_clip, .rel_clip = m.config.text.rel_clip, .floor = @floatFromInt(m.config.text.log_floor), .alpha = m.config.text.log_alpha, .eps = m.config.text.eps };
     var items: [state.max_segments]Attend = undefined;
     var base: usize = 0;
     for (segments, items[0..segments.len], 0..) |seg, *it, si| {
         const cache = seg.cache;
-        const layer0 = cache.attentionLayer(&m.weight_plan, v.cache_slot, seg.rows);
+        const layer0 = cache.attentionLayer(&m.weight_plan, v.of(.conv).?, seg.rows);
         it.* = .{
             .cache = cache,
             .base = base,
             .rows = seg.rows,
             // A prompt's rows on a sliding layer: the prompt kernel, a tile of keys a chunk.
             .rr = .{ .rows = @intCast(seg.rows), .heads = 24, .kv_heads = 8, .last_pos = @intCast(cache.len + seg.rows - 1), .streams = 1, .prompt = prompt and m.attention.units and layer0.window > 0 },
-            .layer = .{ .window = layer0.window, .ring = @intCast(cache.ring(v.cache_slot)), .chunk = if (prompt and m.attention.units and layer0.window > 0) ap.tile_keys else layer0.chunk, .tau = layer0.tau },
+            .layer = .{ .window = layer0.window, .ring = @intCast(cache.ring(v.of(.conv).?)), .chunk = if (prompt and m.attention.units and layer0.window > 0) ap.tile_keys else layer0.chunk, .tau = layer0.tau },
             .meta = .{ .pos = a(at(s.pos, base * 4)), .seg_of = a(at(s.seg_of, base * 4)), .segs = a(at(s.segs, si * @sizeOf(ap.Seg))) },
-            .kv = .{ .k = a(cache.keys(v.cache_slot)), .v = a(cache.values(v.cache_slot)) },
+            .kv = .{ .k = a(cache.keys(v.of(.conv).?)), .v = a(cache.values(v.of(.conv).?)) },
         };
         base += seg.rows;
     }
@@ -266,29 +265,29 @@ fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: 
 
 const ConvInput = struct { raw: Ref, projected: Ref, normalized: Ref, taps: Ref, old: Ref, state: usize };
 
-fn convInput(s: *state.Scratch, cache: *state.Cache, v: *const layer_plan.Visit, local_ungated: bool, base: usize, key: bool, rows: usize) ConvInput {
+fn convInput(s: *state.Scratch, cache: *state.Cache, v: *const layer_plan.Visits.Step, local_ungated: bool, base: usize, key: bool, rows: usize) ConvInput {
     const cs: usize = if (key) 0 else 1;
     const normalized = if (key) at(s.k_norm, 0) else if (local_ungated) at(s.q_norm, 0) else at(s.v_norm, 0);
     return .{
         .raw = if (key) at(s.k_conv, base * state.kv_width * 2) else at(s.v_conv, base * state.kv_width * 2),
         .projected = if (key) at(s.k_raw, base * state.kv_width * 2) else at(s.v_raw, base * state.kv_width * 2),
         .normalized = at(normalized.buf, normalized.off + base * state.hidden * 2),
-        .taps = staged(s, cache, rows, v.cache_slot, cs, 0),
-        .old = cache.history(v.cache_slot, cs),
+        .taps = staged(s, cache, rows, v.of(.conv).?, cs, 0),
+        .old = cache.history(v.of(.conv).?, cs),
         .state = cs,
     };
 }
 
 /// A convolution's three old rows and its new rows staged for the commit, beside the convolution that reads both.
-fn stageConvInput(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, cache: *state.Cache, v: *const layer_plan.Visit, base: usize, key: bool, rows: usize) void {
-    const c = convInput(s, cache, v, !v.hasMessages() and m.weight_plan.at(v.layer).kind != .global, base, key, rows);
-    copyBf16(m, e, cache.history(v.cache_slot, c.state), c.taps, 3 * state.kv_width);
-    copyBf16(m, e, c.projected, staged(s, cache, rows, v.cache_slot, c.state, 3), rows * state.kv_width);
+fn stageConvInput(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, cache: *state.Cache, v: *const layer_plan.Visits.Step, base: usize, key: bool, rows: usize) void {
+    const c = convInput(s, cache, v, v.pass == 0 and m.weight_plan.at(v.layer).kind != .global, base, key, rows);
+    copyBf16(m, e, cache.history(v.of(.conv).?, c.state), c.taps, 3 * state.kv_width);
+    copyBf16(m, e, c.projected, staged(s, cache, rows, v.of(.conv).?, c.state, 3), rows * state.kv_width);
 }
 
-fn convInputForAttention(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, cache: *state.Cache, v: *const layer_plan.Visit, base: usize, rows: usize, key: bool) void {
+fn convInputForAttention(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, cache: *state.Cache, v: *const layer_plan.Visits.Step, base: usize, rows: usize, key: bool) void {
     const w = &m.weights.layers[v.layer];
-    const c = convInput(s, cache, v, !v.hasMessages() and m.weight_plan.at(v.layer).kind != .global, base, key, rows);
+    const c = convInput(s, cache, v, v.pass == 0 and m.weight_plan.at(v.layer).kind != .global, base, key, rows);
     switch (if (key) w.attn.k_conv else w.attn.v_conv) {
         .static => |weight| glue.convStatic(&m.glue, e, c.old, c.projected, r(weight), c.raw, @intCast(rows), state.kv_width),
         .dynamic => |d| glue.convDynamic(&m.glue, e, c.old, c.projected, c.normalized, r(d.static_w), r(d.projection), c.raw, @intCast(rows), state.kv_width),
@@ -352,11 +351,11 @@ fn routedExperts(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, laye
 }
 
 /// A visit's launches in dependency order; a barrier follows every step a later launch reads.
-fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visit, segments: []const Segment, rows: usize, taps: ?state.Ref, prompt: bool) !void {
+fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visits.Step, segments: []const Segment, rows: usize, taps: ?state.Ref, prompt: bool) !void {
     const lp = m.weight_plan.at(v.layer);
-    const gated = v.hasMessages();
+    const gated = v.pass > 0;
     if (taps) |to| {
-        const channel: ?usize = switch (v.cache_slot) {
+        const channel: ?usize = switch (v.of(.conv).?) {
             5 => 0,
             23 => 1,
             41 => 2,
@@ -366,7 +365,7 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     }
     const w = &m.weights.layers[v.layer];
     // The partial AR source is p widened, which the visit before left; a reset restores p, so it widens again.
-    if (v.pass > 1 and v.layer == 6) {
+    if (v.pass > 0 and v.layer == 6) {
         bankAndReset(m, e, s, rows);
         widen(m, e, at(s.p, 0), at(s.partial, 0), rows * state.hidden);
         e.barrier();
@@ -400,7 +399,7 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     try routedExperts(m, e, s, v.layer, rows);
     e.barrier();
     mlpPartial(m, e, s, segments, v);
-    if (v.cache_slot == 5) copyBf16(m, e, at(s.p, 0), at(s.prelude, 0), rows * state.hidden);
+    if (v.of(.conv).? == 5) copyBf16(m, e, at(s.p, 0), at(s.prelude, 0), rows * state.hidden);
 }
 
 /// A cache with a window open keeps its histories: `state.commit` takes them from the rows the window keeps.
@@ -452,7 +451,7 @@ pub fn runShared(m: *const Model, s: *state.Scratch, segments: []const Segment, 
     e.barrier();
     widen(m, e, at(s.p, 0), at(s.partial, 0), rows * state.hidden);
     e.barrier();
-    for (m.weight_plan.visits[0..m.weight_plan.n_visits], 0..) |*v, vi| {
+    for (m.weight_plan.visits.slice(), 0..) |*v, vi| {
         try visit(m, e, s, v, segments, rows, options.taps, options.prompt);
         if (n_parts < cuts.len and vi + 1 == cuts[n_parts]) {
             e.end();
@@ -480,10 +479,6 @@ pub fn runShared(m: *const Model, s: *state.Scratch, segments: []const Segment, 
     commitFullHistories(m, e, s, segments);
     e.end();
     cb.commit();
-    if (options.flight) |flight| {
-        flight.* = cb.retain();
-        return;
-    }
     cb.wait();
     for (parts[0..n_parts]) |part| if (part.failure()) |msg| {
         std.log.err("inkling2_loop forward: {s}", .{msg});
