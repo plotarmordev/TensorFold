@@ -8,5 +8,5 @@
   `MuseSparkTpPlatform`, as the native server already does, since fabric/tp's sockets and verbs are POSIX.
 - The H3-Image "selftest scratch" test opens its folder iterable, so `zig build test` lists it on Linux
   (it failed on TOP's Spark at the merge base too).
-- A clean checkout at `bccab3ab` builds 230/230 steps, including `tf-cuda-test.exe`, `tensorfold-native.exe` and
-  `tf-muse.exe`, with MSVC-hosted nvcc 13.5 for `sm_121`. Receipt: `docs/receipts/windows-cuda-build-bccab3ab/`.
+- A clean checkout at `22c92fff` builds 230/230 steps, including `tf-cuda-test.exe`, `tensorfold-native.exe` and
+  `tf-muse.exe`, with MSVC-hosted nvcc 13.5 for `sm_121`. Receipt: `docs/receipts/windows-cuda-build-22c92fff/`.

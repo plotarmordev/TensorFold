@@ -1,0 +1,2 @@
+# The collapsed build log is a byte-exact receipt (CRLF); normalizing it would change its sha256.
+*.log -text
