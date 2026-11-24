@@ -93,9 +93,10 @@ results are not evidence for this card's bar.
 ## Mia's DGX Spark recipe next to ours
 
 [MiaAI-Lab/Inkling-2-Mini-DGX-Spark-TensorFold](https://github.com/MiaAI-Lab/Inkling-2-Mini-DGX-Spark-TensorFold) at
-`6061fa89a34d2a245bc4a230f04948f312347a5e` (24 Nov 2026) is a Docker recipe around TensorFold at `dc2ca8a1` (PR #4441,
-C4) plus seventeen patches, built in `nvcr.io/nvidia/pytorch:26.07-py3` with Zig 0.17.0 (`zig build fatbins native
--Doptimize=fast -Dnative-fp-decode=true`, kernels embedded for sm_80/86/120/121), `libtfgrammar.so` over xgrammar v0.2.8
+`6061fa89a34d2a245bc4a230f04948f312347a5e` (24 Nov 2026; Apache-2.0 in `LICENSE`, TensorFold's MIT notice in
+`NOTICE`) is a Docker recipe around TensorFold at `dc2ca8a1` (PR #4441, C4) plus seventeen patches, built in
+`nvcr.io/nvidia/pytorch:26.07-py3` with Zig 0.17.0 (`zig build fatbins native -Doptimize=fast
+-Dnative-fp-decode=true`, kernels embedded for sm_80/86/120/121), `libtfgrammar.so` over xgrammar v0.2.8
 (`97787376`), and libjpeg-turbo/libwebp for JPEG and WebP. `-Doptimize=fast` is Zig 0.17's ReleaseFast.
 
 **Weights.** Its default is the upstream `thinkingmachines/Inkling-2-Mini` at revision `7a67ae23`: shard
@@ -115,7 +116,7 @@ top_k 20 · DSpark drafts`, so the table is sampled, not the config defaults. Th
 which the repository does not ship, and sends temperature 0. The published table therefore cannot be regenerated from
 the recipe's files and is treated below as Mia's deployment result, not as a reproducible baseline.
 
-**The seventeen patches against `c99eb630d`** (`P` present, `partial` mechanism without the patch's path, `M` missing):
+**The seventeen patches against `c99eb630d`** (`partial`: the mechanism exists without the patch's path; `M`: missing):
 
 | Patch | What it does | Ours |
 |---|---|---|
@@ -159,8 +160,10 @@ agreement prompts (five short, one ~4k) compared by token sha and text sha.
   `tf-dc2ca8a1/` (TensorFold's tree), `Inkling-2-Mini/` (revision `7a67ae23`), and the toolchain archives
   `../minimax-h3-cuda/toolchain-stage.sh` stages. The patches are applied to the staged tree and built with the
   Dockerfile's flags.
-- Duration: two builds (about 9 min each) and two measurement phases; our 128k prefill is about 11 min at 512-row prompt
-  passes, so `MEASURE_S` defaults to 1,800 s, above the one-GPU-slot 600 s rule, and the Desk serializes the job.
+- Duration: two builds (about 9 min each, as our receipt's 525 s build was) and two measurement phases; our 128k prefill
+  is unmeasured and, at the receipt's 199 tok/s prompt rate, about 11 min at 512-row prompt passes, so the prefill phase
+  defaults to a 1,800 s bound (`PREFILL_S`; decode 900 s, agreement 600 s), above the one-GPU-slot 600 s rule, and
+  the Desk serializes the job.
 
 Receipt: pending the GPU window (`swarm gpu-run plotarmordev/TensorFold <head>
 docs/recipes/inkling-2-mini-cuda/mia-compare.sh`).

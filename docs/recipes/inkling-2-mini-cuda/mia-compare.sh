@@ -46,11 +46,10 @@ mtp=$(sha256sum "$model/mtp.safetensors" | cut -d' ' -f1)
 echo "checkpoint $model: shard $shard, MTP $mtp"
 
 # Mia's arm: her tree, her 17 patches in order, the Dockerfile's build flags.
+rm -rf /work/mia-c4
 mkdir -p /work/mia-c4
 cp -a "$tree/." /work/mia-c4/
 git -C /work/mia-c4 init -q
-git -C /work/mia-c4 add -A
-git -C /work/mia-c4 -c user.name=job -c user.email=job@localhost commit -qm "TensorFold dc2ca8a1"
 for p in "$mia"/patches/*.patch; do
     git -C /work/mia-c4 apply --check "$p"
     git -C /work/mia-c4 apply "$p"
@@ -75,7 +74,7 @@ arm() {
     "$bin" "$@" >"$log.server.log" 2>&1 &
     pid=$!
     trap 'kill $pid 2>/dev/null || :' EXIT
-    python3 - 8188 <<'EOF'
+    python3 - <<'EOF'
 import time, urllib.request
 for _ in range(900):
     try:
@@ -87,7 +86,12 @@ raise SystemExit("the server did not answer /v1/models in 15 min")
 EOF
     mem "$label loaded"
     for phase in decode prefill agree; do
-        timeout "${MEASURE_S:-1800}" python3 "$client" --url http://127.0.0.1:8188 --out "$log.jsonl" \
+        case $phase in
+            decode) bound=${DECODE_S:-900} ;;
+            prefill) bound=${PREFILL_S:-1800} ;;
+            agree) bound=${AGREE_S:-600} ;;
+        esac
+        timeout "$bound" python3 "$client" --url http://127.0.0.1:8188 --out "$log.jsonl" \
             --phase "$phase" || echo "PHASE $phase of $label exited $?"
         mem "$label after $phase"
     done
