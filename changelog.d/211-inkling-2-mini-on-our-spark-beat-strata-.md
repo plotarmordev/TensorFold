@@ -2,6 +2,7 @@
 
 - `docs/recipes/inkling-2-mini-cuda/hillclimb.sh` now measures same-prompt c1/c64 and 64 distinct prompts from a
   committed, hashed set. Every request must produce a valid timing; failed arms are logged and the server stops on exit.
+  The ceiling and each arm run as their own job under `timeout 580`, outside the build; a cut-off arm is ledgered.
 - On TOP's GB10 (job `top-975292aaf4c0`) the stored checkpoint's no-draft engine gave 32.6–32.9 tok/s at one
   stream and 590–597 total at 64 on same-prompt runs, with no request failed and 0/32 tokens off float64. Both
   tested levers remained inside noise and were rejected; no mixed-prompt result or kept speed lever has been

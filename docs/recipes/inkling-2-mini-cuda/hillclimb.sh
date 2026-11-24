@@ -1,25 +1,51 @@
 #!/bin/sh
 # Inkling 2 Mini decode levers on TOP's GB10, the inference-optimisation skill's way:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/hillclimb.sh
-# setup.sh's cold build and exactness gates run first and log "build: N s". Only the measurement then runs under
-# `timeout 580` and logs "measure: N s": the no-draft ceilings at 1 and 64 streams, then fresh servers control, lever A,
-# control, lever B, control. Each arm runs same-prompt c1 (6 reps), same-prompt c64 and
-# mixed-prompt c64 (3 reps each), greedy, 128 tokens. Every stream must produce a valid timing. Keep a lever only if
-# its median beats both neighbouring controls by over 3% at one level/case without losing over 3% elsewhere.
-# Every successful or failed arm lands in /work/out/inkling2/ledger.jsonl.
+# setup.sh's cold build and exactness gates run first and log "build: N s". Each measurement then runs as its own job
+# under `timeout 580` and logs "measure NAME: N s": the no-draft ceilings at 1 and 64 streams, then fresh servers
+# control, lever A, control, lever B, control, one after another. Each arm runs same-prompt c1 (6 reps), same-prompt
+# c64 and mixed-prompt c64 (3 reps each), greedy, 128 tokens. Every stream must produce a valid timing. Keep a lever
+# only if its median beats both neighbouring controls by over 3% at one level/case without losing over 3% elsewhere.
+# Every successful, failed or cut-off arm lands in /work/out/inkling2/ledger.jsonl; the first failing job ends the run
+# with its exit status.
 set -eu
 if [ "${1:-}" != measure ]; then
     start=$(date +%s)
     . docs/recipes/inkling-2-mini-cuda/setup.sh
     echo "build: $(($(date +%s) - start)) s"
     export model out
-    start=$(date +%s)
-    status=0
-    timeout --signal=INT --kill-after=20s 580 sh "$0" measure || status=$?
-    echo "measure: $(($(date +%s) - start)) s"
-    exit "$status"
+    job() {
+        start=$(date +%s)
+        status=0
+        timeout --signal=INT --kill-after=20s 580 sh "$0" measure "$@" || status=$?
+        echo "measure $1: $(($(date +%s) - start)) s"
+        if [ "$status" = 124 ] || [ "$status" = 137 ]; then
+            printf '{"arm":"%s","failed":"cut off at 580 s"}\n' "$1" | tee -a "$out/ledger.jsonl"
+        fi
+        return "$status"
+    }
+    job ceiling
+    job control-1
+    job warps-1 TF_NVFP4_DECODE_WARPS=1
+    job control-2
+    job half-0 TF_QMMF_HALF_BELOW=0
+    job control-3
+    python3 - "$out/ledger.jsonl" <<'EOF'
+import json, sys
+rows = {r["arm"]: r for r in map(json.loads, open(sys.argv[1]))}
+for lever, (a, b) in {"warps-1": ("control-1", "control-2"), "half-0": ("control-2", "control-3")}.items():
+    c, before, after = rows[lever], rows[a], rows[b]
+    gains = {k: c[k] / max(before[k], after[k]) - 1 for k in ("same-1", "same-64", "mixed-64")}
+    worst = {k: c[k] / min(before[k], after[k]) - 1 for k in gains}
+    kept = any(g > 0.03 for g in gains.values()) and all(w > -0.03 for w in worst.values())
+    print(f"RESULT inkling2 mini lever {lever} ({c['env']}): " + ", ".join(
+          f"{k} {c[k]} vs {before[k]}/{after[k]} ({gains[k]:+.1%} over better control)" for k in gains) +
+          f": {'kept' if kept else 'rejected'}")
+EOF
+    exit
 fi
-python3 docs/recipes/inkling-2-mini-cuda/ceiling.py "$model" 273 1 64
+shift
+[ "$1" != ceiling ] || exec python3 docs/recipes/inkling-2-mini-cuda/ceiling.py "$model" 273 1 64
 prompts=docs/recipes/inkling-2-mini-cuda/prompts-64.json
 prompt_sha=$(sha256sum "$prompts" | cut -d' ' -f1)
 server=
@@ -104,20 +130,4 @@ if bad:
     raise SystemExit(f"{name}: invalid measurements in {', '.join(bad)}")
 EOF
 }
-arm control-1
-arm warps-1 TF_NVFP4_DECODE_WARPS=1
-arm control-2
-arm half-0 TF_QMMF_HALF_BELOW=0
-arm control-3
-python3 - "$out/ledger.jsonl" <<'EOF'
-import json, sys
-rows = {r["arm"]: r for r in map(json.loads, open(sys.argv[1]))}
-for lever, (a, b) in {"warps-1": ("control-1", "control-2"), "half-0": ("control-2", "control-3")}.items():
-    c, before, after = rows[lever], rows[a], rows[b]
-    gains = {k: c[k] / max(before[k], after[k]) - 1 for k in ("same-1", "same-64", "mixed-64")}
-    worst = {k: c[k] / min(before[k], after[k]) - 1 for k in gains}
-    kept = any(g > 0.03 for g in gains.values()) and all(w > -0.03 for w in worst.values())
-    print(f"RESULT inkling2 mini lever {lever} ({c['env']}): " + ", ".join(
-          f"{k} {c[k]} vs {before[k]}/{after[k]} ({gains[k]:+.1%} over better control)" for k in gains) +
-          f": {'kept' if kept else 'rejected'}")
-EOF
+arm "$@"
