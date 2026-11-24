@@ -219,6 +219,25 @@ pub const Cache = struct {
     }
 };
 
+/// The keeps' staged-tap copies, encoded into `e` by whoever owns the round's submission.
+pub fn encodeKeep(e: mtl.BlitEncoder, caches: []const *Cache, accepted: []const usize) void {
+    for (caches, accepted) |c, kept| for (0..visit_slots) |slot| for (0..conv_states) |state| {
+        e.copy(c.taps, convByteOffset(slot, state, kept, stage_rows), c.conv, convByteOffset(slot, state, 0, 3), 3 * convWidth(state) * 2);
+    };
+}
+
+/// The keeps' host side once their copies are encoded: the kept rows join each cache's length and tap.
+pub fn settleKeep(caches: []const *Cache, accepted: []const usize) void {
+    for (caches, accepted) |c, kept| {
+        const start = c.len;
+        c.len += kept;
+        if (c.tap.buf != null and c.tap.start == start) {
+            c.tap.rows = kept;
+        } else c.tap = .{};
+        c.pending = null;
+    }
+}
+
 /// Keep the first `accepted` rows of each cache's open window, all in one command buffer: the three staged taps
 /// that end at a window's last kept row are its new histories. Rejected KV positions are overwritten on replay.
 pub fn commit(queue: mtl.Queue, caches: []const *Cache, accepted: []const usize) !void {
@@ -231,9 +250,7 @@ pub fn commit(queue: mtl.Queue, caches: []const *Cache, accepted: []const usize)
         defer pool.pop();
         const cb = queue.commandBuffer();
         const e = cb.blit();
-        for (caches, accepted) |c, kept| for (0..visit_slots) |slot| for (0..conv_states) |state| {
-            e.copy(c.taps, convByteOffset(slot, state, kept, stage_rows), c.conv, convByteOffset(slot, state, 0, 3), 3 * convWidth(state) * 2);
-        };
+        encodeKeep(e, caches, accepted);
         e.end();
         cb.commit();
         cb.wait();
@@ -242,14 +259,7 @@ pub fn commit(queue: mtl.Queue, caches: []const *Cache, accepted: []const usize)
             return error.GpuFailed;
         }
     }
-    for (caches, accepted) |c, kept| {
-        const start = c.len;
-        c.len += kept;
-        if (c.tap.buf != null and c.tap.start == start) {
-            c.tap.rows = kept;
-        } else c.tap = .{};
-        c.pending = null;
-    }
+    settleKeep(caches, accepted);
 }
 
 pub const fields = [_][]const u8{
