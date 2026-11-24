@@ -60,6 +60,21 @@ before that, so it gives no gate line, no SUMMARY and no per-suite time. The ful
 Never run on this head: the rest of `window_rows`'s paged cases, GLM, MLA, q35 contiguous, MTP rows, weight-only and
 family-set, and with them the run's SUMMARY. None of these is an H3 suite.
 
+The rest is now split into nine TOP jobs, each running its measured part under `timeout 600`. Each is a wrapper
+`docs/recipes/minimax-h3-cuda/plant-203-PART.sh` on side branch `gpu/203-plant-h3` (`6d6faf83f`). Parts `g0` to `g5` run
+`kernel-contract @window_rows %I/6 -tf_md_conv3x3`, the gates from `window_rows` on with every sixth kernel from the
+Ith. `back`, `after` and `limits` run `kernel-contract-suites PART`, the full run's tail one part at a time; the tail
+alone took about 750 s in earlier receipts. Job `g0` ran on the GB10 and its gates finished within the cap (exit 1 in 595 s):
+
+```
+(filtered) SUMMARY 87 kernels: 87 pass gates 1-4, 0 fail, 0 known findings; 61 controls: 61 red as planted, 0 missed; 41 limit problems; gates 583904 ms, limits 10597 ms
+```
+
+Its exit 1 comes from the 41 live-limit problems: a shard checks every registered launch's live limits. The log was
+read through its last 80 lines, so it does not name the 41 records. Those lines show the H3 and DSv41 records passing,
+so these are presumed to be the same stale non-H3 records as the five-SM audit, but this is unverified. Not yet run:
+`g1` to `g5`, `back`, `after` and `limits`, at about 10 min of TOP each plus the queue.
+
 ## CI on #3733
 
 At `2f5e1ca37` (23 Nov), every job passes: `zig`, `zig-b`, `zig-windows`, `zig-macos-dev-tools`, `fmt`, `pytest`,
