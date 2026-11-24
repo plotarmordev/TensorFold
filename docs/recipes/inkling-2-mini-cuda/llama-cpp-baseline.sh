@@ -25,15 +25,29 @@ done
 mem "server loaded"
 # the receipt names what the server did with -c and -ngl
 grep -m 2 -E 'n_ctx_slot|offloaded' "$out/server.log" || :
+# The bench warm-up fills llama.cpp's slot cache; measure the code prompt cold before it.
+python3 - <<'EOF'
+import json, statistics, sys, time, urllib.request
+sys.path.insert(0, "tools")
+from bench_concurrent import PROMPTS
+prompt = next(p["prompt"] for p in PROMPTS if p["name"] == "code")
+rates = []
+for _ in range(3):
+    body = json.dumps({"prompt": prompt, "n_predict": 1, "temperature": 0, "cache_prompt": False}).encode()
+    request = urllib.request.Request("http://127.0.0.1:8189/completion", body, {"Content-Type": "application/json"})
+    start = time.perf_counter()
+    with urllib.request.urlopen(request, timeout=300) as response:
+        tokens = json.load(response)["timings"]["prompt_n"]
+    rates.append(tokens / (time.perf_counter() - start))
+print(f"RESULT llama.cpp q4_k_m gb10 1 stream code prompt, uncached: {tokens} tokens, median {statistics.median(rates):.1f} tok/s (prompt tokens over the one-token reply's time)")
+EOF
 for level in 1 4; do
     python3 tools/bench_concurrent.py http://127.0.0.1:8189 inkling-2-mini --levels "$level" --tokens 256 --reps 3 \
         --temperatures 0 --label "llama-$level" --output "$out/streams-$level.json"
     mem "after $level streams"
 done
 python3 - "$out" <<'EOF'
-import json, statistics, sys, time, urllib.request
-sys.path.insert(0, "tools")
-from bench_concurrent import PROMPTS
+import json, sys, urllib.request
 out = sys.argv[1]
 def post(path, body):
     req = urllib.request.Request(f"http://127.0.0.1:8189{path}", json.dumps(body).encode(), {"Content-Type": "application/json"})
@@ -48,15 +62,6 @@ for level in (1, 4):
         r = c["request"]
         print(f"RESULT llama.cpp q4_k_m gb10 {level} stream(s) {c['prompt']}: first token {r['ttft_s']} s, prompt {r['prompt_ttft_tps']} tok/s, decode {c['per_stream_tps']} tok/s a stream, {c['aggregate_tps']} total")
 print(f"RESULT llama.cpp q4_k_m gb10 aggregate decode: 1 stream {agg[1]:.1f} tok/s, 4 streams {agg[4]:.1f} tok/s ({agg[4] / agg[1]:.2f}x)")
-# bench_concurrent.py's warm-up sends the measured prompt first, so llama.cpp's slot cache answers every 1-stream
-# request from it and prompt_ttft_tps (cold requests only) stays null; this times the code prompt uncached, alone.
-code = next(p["prompt"] for p in PROMPTS if p["name"] == "code")
-cold = []
-for _ in range(3):
-    t = time.perf_counter()
-    n = post("/completion", {"prompt": code, "n_predict": 1, "temperature": 0, "cache_prompt": False})["timings"]["prompt_n"]
-    cold.append(n / (time.perf_counter() - t))
-print(f"RESULT llama.cpp q4_k_m gb10 1 stream code prompt, uncached: {n} tokens, median {statistics.median(cold):.1f} tok/s (prompt tokens over the one-token reply's time)")
 # run-script.sh's float64 reference continuation of this prompt (job top-16bffb6ca094: TensorFold equals it on all 32)
 prompt = "The three laws of thermodynamics, explained for a curious student:"
 want = "\n\n  1. Energy cannot be created or destroyed, only transformed.\n  2. Entropy (disorder) in a closed system always increases."

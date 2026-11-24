@@ -7,7 +7,7 @@ RssAnon + RssShmem. RssFile stays out: a mapped weight file's pages are page cac
 (printed beside the peak) counts them. The fall in MemAvailable since the last sample before the server counts every
 byte once, with whatever else the job held meanwhile.
 """
-import glob, os, subprocess, sys, time
+import glob, os, signal, subprocess, sys, time
 
 name, command = sys.argv[1], sys.argv[2:]
 
@@ -35,7 +35,16 @@ def gpu_kib() -> int:
     return 1024 * sum(int(mib) for mib in rows)
 
 
-job = subprocess.Popen(command)
+job = subprocess.Popen(command, start_new_session=True)
+
+
+def stop(_signum, _frame):
+    os.killpg(job.pid, signal.SIGTERM)
+    job.wait()
+    sys.exit(124)
+
+
+signal.signal(signal.SIGTERM, stop)
 before = kib("/proc/meminfo")["MemAvailable"]
 peak, hwm, fall, seen = (0, 0, 0), 0, 0, False
 while job.poll() is None:

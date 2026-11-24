@@ -44,8 +44,10 @@ here, gave 5.7 tok/s at one stream and 9.4 at four on the same GB10 (job `top-07
 ## Against llama.cpp: Unsloth's UD-Q4_K_M GGUF on the same GB10
 
 `compare.sh` builds llama.cpp b12611's CUDA `llama-server` from the Desk's staged sources, checks the GGUF's sha256
-(`78fcedcf…34ae`) and serves it at the receipt's settings (4 slots of 8,192 positions, all layers on the GPU,
-greedy, 256 tokens, 3 reps, medians). Job `top-b77911768550` at `b65744605`; TensorFold's column is the receipt above.
+(`78fcedcf…34ae`), the gcc archive and the b12611 source tree, and serves it at the receipt's settings (4 slots of
+8,192 positions, all layers on the GPU, greedy, 256 tokens, 3 reps, medians). Job `top-b77911768550` at `b65744605`;
+the uncached one-stream prompt and source pin were checked by job `top-c0075bd36227` at `941dbada`. TensorFold's column
+is the receipt above.
 
 | | TensorFold (bf16 safetensors) | llama.cpp (UD-Q4_K_M) |
 |---|---|---|
@@ -54,15 +56,19 @@ greedy, 256 tokens, 3 reps, medians). Job `top-b77911768550` at `b65744605`; Ten
 | Decode total, 4 streams (code / chat) | 118.7 / 120.1 tok/s | 85.9 / 87.6 tok/s |
 | 4 streams over 1 | 3.65x | 2.24x |
 | First token, 1 stream (code / chat) | 0.076 s / 0.036 s | 0.067 s / 0.130 s |
+| Prompt, 1 stream (code, uncached) | 196.8 tok/s | 106.4 tok/s (15 tokens / one-token response time; median of 3) |
 | Prompt, 4 streams (code) | 82.3 tok/s | 43.0 tok/s |
 | Memory, server loaded | 20.0 GiB GPU (`nvidia-smi`) | 18.1 GiB GPU (`nvidia-smi`); peak 20.57 GiB: 18.18 GPU + 2.38 resident |
-| Greedy vs the float64 reference, 32 tokens | 32 of 32 | 32 of 32 free-running; 31 of 32 teacher-forced (differs at 5) |
+| Continuation text / teacher-forced tokens vs float64 reference | 32 of 32 token picks | Same free-running text when re-tokenized / 31 of 32 token picks (differs at 5) |
 
-llama.cpp's one-stream prompt speed is blank: `bench_concurrent.py` recorded none for it at that level. llama.cpp
-decodes one stream 18% faster from 18% fewer weight bytes; at 4 streams TensorFold's total is 37% higher.
-TensorFold's memory is a sample after loading, not `peak-memory.py`'s process peak. Quality: both engines reproduce
-the float64 reference's 32 greedy tokens; teacher-forced on the reference's prefix, the GGUF picks another token once
-(position 5), where TensorFold picks none.
+`bench_concurrent.py` warms up with the same code prompt before measuring: llama.cpp's slot cache answers every
+one-stream request, so `prompt_ttft_tps` is null (only cold requests qualify). The separate uncached `/completion`
+measurement above supplies the missing one-stream comparison; it times the full one-token response rather than first
+streamed token, so its client latency includes that token's transfer. llama.cpp decodes one stream 18% faster from 18%
+fewer weight bytes; at 4 streams TensorFold's total is 37% higher. TensorFold's memory is a sample after loading, not
+`peak-memory.py`'s process peak. Quality: llama.cpp's free-running text matches the 32-token reference continuation
+when re-tokenized, but its teacher-forced token picks agree at 31 of 32 positions (different at position 5);
+TensorFold's token picks agree at all 32 positions.
 
 ## RTX Spark (N1X): what differs and what must change
 
