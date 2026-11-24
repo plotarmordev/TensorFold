@@ -89,3 +89,78 @@ no same-session TOP measurement in this receipt. Neither published pack nor the 
 engine; Mini CUDA has no draft path (`takes_drafter = false`). Card 209 proposes a CUDA DSpark tree on #4128's kernels,
 then fp4 tensor-core experts at 64 streams and a smaller pack. Cards 215 and 219 own that work, but their future
 results are not evidence for this card's bar.
+
+## Mia's DGX Spark recipe next to ours
+
+[MiaAI-Lab/Inkling-2-Mini-DGX-Spark-TensorFold](https://github.com/MiaAI-Lab/Inkling-2-Mini-DGX-Spark-TensorFold) at
+`6061fa89a34d2a245bc4a230f04948f312347a5e` (24 Nov 2026) is a Docker recipe around TensorFold at `dc2ca8a1` (PR #4441,
+C4) plus seventeen patches, built in `nvcr.io/nvidia/pytorch:26.07-py3` with Zig 0.17.0 (`zig build fatbins native
+-Doptimize=fast -Dnative-fp-decode=true`, kernels embedded for sm_80/86/120/121), `libtfgrammar.so` over xgrammar v0.2.8
+(`97787376`), and libjpeg-turbo/libwebp for JPEG and WebP. `-Doptimize=fast` is Zig 0.17's ReleaseFast.
+
+**Weights.** Its default is the upstream `thinkingmachines/Inkling-2-Mini` at revision `7a67ae23`: shard
+`65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1`, `mtp.safetensors`
+`7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2`, ModelOpt NVFP4 experts in layers 0–19, MXFP8 in
+20–23, bf16 dense and MTP. `RERISKED=1` instead serves Blackfrost's `Inkling-2-Mini-Derisked` from a local folder the
+recipe never downloads: a behaviourally modified derivative with most refusals removed, whose deployment kit targets
+vLLM only and whose MTP module alone matches upstream's. Its screenshots and numbers are that derivative served by
+another engine, not this recipe on upstream weights; only the upstream shard counts here.
+
+**Settings and harness.** `scripts/config.sh`: `CONTEXT=262144`, `PARALLEL=8`, `KV_DTYPE=fp8`, `DRAFTS=1` (DSpark
+`--drafter`), `VISION=1`, `TF_INKLING2_ATTN_FP8=1` (patch 0012, lossy), `TF_INKLING2_PREFILL_TC=1` (patch 0015, lossy),
+`MAX_TOKENS=32768`, temperature 1.0/top_p 1/top_k 0; its published decode table is headed `temp 0.7 · thinking on ·
+top_k 20 · DSpark drafts`, so the table is sampled, not the config defaults. The harness is sparkDash
+(`MiaAI-Lab/sparkDash` at `86f972e2`), Mia's dashboard: its decode-benchmark panel runs concurrency 1, 2, 3, 4, 6, 8 at
+500 tokens a stream. The repository's `tools/bench_streams.py` describes the same rows but imports `tools/bench.py`,
+which the repository does not ship, and sends temperature 0. The published table therefore cannot be regenerated from
+the recipe's files and is treated below as Mia's deployment result, not as a reproducible baseline.
+
+**The seventeen patches against `c99eb630d`** (`P` present, `partial` mechanism without the patch's path, `M` missing):
+
+| Patch | What it does | Ours |
+|---|---|---|
+| 0001 | Drafted verify windows: exact conv rollback, DSpark taps | partial — `Model.rewind`/`keep` restore suffixes, `facts.exact_width` is 1, no taps |
+| 0002 | DSpark head wired into serving (`--drafter`) | partial — `dspark.zig:Head.draft` stands alone; `takes_drafter = false`, `draft` returns `NoDraftHead` |
+| 0003 | `--kv-cache fp8`: E4M3 K/V with an fp32 scale | M — `kernels.zig:Cache` is bf16 only |
+| 0004 | Inkling reply parser (reasoning/content split, tool calls) | M |
+| 0005 | Vectorized relative table, layer-batched loop mix, row-tiled gates, batched DSpark holds | M |
+| 0006 | FP8 draft unembedding/phi, keyed sampled drafts, verify/hold costs | M |
+| 0007 | Two warps an expert unit, split gate-up/down | M |
+| 0008 | Certified lazy unembedding head, warp top-k, z-block cap, FP8 draft layers | M |
+| 0009 | Fused router, six-projection GEMM, fused sliding prompt attention | M |
+| 0010 | Numeric `reasoning_effort`, Inkling "none means off", reasoning field | M — compatibility |
+| 0011 | Double-buffered bf16 decode K/V prefetch (`cp.async`) | M |
+| 0012 | Opt-in FP8 attention projections | M — lossy |
+| 0013 | CUDA grammar masks and Inkling structured output/tool choice | partial — `verify` returns `StructuresUnsupported` |
+| 0014 | Prompt rows 512 → 4,096, 64-entry wide CUDA-graph cache | partial — one-row decode graphs exist, `prompt_rows = 512` |
+| 0015 | Opt-in native block-scaled prefill tensor cores | M — lossy prefill, decode unchanged |
+| 0016 | Native CUDA `inkling2_vision` | partial — `opening` refuses images |
+| 0017 | Server fixes: grammar freed on a failed stream, tool-call guard, limits | M — not speed |
+
+**Missing transferable gains.** Exact paths: 0014 (4,096-row prompt passes; at `prompt_rows = 512` every prompt chunk
+reads each expert again), 0009 and 0005 (fused router and projections, tiled loop mix), 0007 (two-warp expert split),
+0008 (certified lazy head, warp top-k), 0011 (`cp.async` decode prefetch), 0001–0002 (verify window and serving the head
+we already have kernels for), 0003 (fp8 KV: a memory lever first, lossy). Lossy and opt-in: 0012 (98.26% teacher-forced
+agreement by her README) and 0015 (96.3% agreement, 732/734 on her set). 0004, 0010, 0013, 0016 and 0017 are parser,
+compatibility, structured output, vision and server work. None is a demonstrated gain on our tree; a gain the paired run
+prices gets its own card, and this page does not change our measured baseline.
+
+**The paired run.** `mia-compare.sh` builds both arms from the staged trees and serves them serially on one GB10 with the
+same checkpoint; `mia-compare.py` drives each with greedy decode at 1/2/4/8 streams on the prose and code prompts (256
+tokens, median of 3), prefill from ~4k to ~128k tokens with a fresh text a repetition (median by prefill seconds), and six
+agreement prompts (five short, one ~4k) compared by token sha and text sha.
+
+- Same checkpoint: the shard and MTP SHA-256 gates above; another revision stops the job.
+- Matched settings: `--context 131072 --parallel 8`, bf16 KV, drafts off, greedy (temperature 0, top_p 1, seed 0),
+  thinking at the server default. Her defaults cannot be matched on this head: our Mini CUDA has no fp8 KV and refuses
+  `--drafter`, so the pair holds what both can serve and her levers stay quoted from her README.
+- Her table's settings would compare a greedy arm against a sampled one, so they are not the pair's settings.
+- Staged by the Desk (the job has no network, so no Docker image): `mia-inkling/` (her repository at `6061fa89`),
+  `tf-dc2ca8a1/` (TensorFold's tree), `Inkling-2-Mini/` (revision `7a67ae23`), and the toolchain archives
+  `../minimax-h3-cuda/toolchain-stage.sh` stages. The patches are applied to the staged tree and built with the
+  Dockerfile's flags.
+- Duration: two builds (about 9 min each) and two measurement phases; our 128k prefill is about 11 min at 512-row prompt
+  passes, so `MEASURE_S` defaults to 1,800 s, above the one-GPU-slot 600 s rule, and the Desk serializes the job.
+
+Receipt: pending the GPU window (`swarm gpu-run plotarmordev/TensorFold <head>
+docs/recipes/inkling-2-mini-cuda/mia-compare.sh`).
