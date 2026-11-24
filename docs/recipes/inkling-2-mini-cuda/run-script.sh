@@ -34,6 +34,8 @@ EOF
     nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
     echo "model $model: $(cat "$model"/*.safetensors | sha256sum | cut -d' ' -f1)"
     zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/sm121
+    echo "$model" >/work/sm121/model-dir
+    [ -z "${INKLING2_BUILD_ONLY:-}" ] || exit 0 # trunk-ab.sh times its own runs on this build
     INKLING2_TIMED=1 exec timeout 600 sh "$0" "$@"
 fi
 bin=/work/sm121/bin
