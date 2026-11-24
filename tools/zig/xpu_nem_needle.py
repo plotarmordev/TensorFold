@@ -3,7 +3,8 @@
 import os, re, subprocess, sys, time, json
 from tokenizers import Tokenizer
 # prefill runs through `tensorfold-xpu run --prefill` in windows; --window uses tf-xpu-nem_gen-test (each step windowed)
-ck = os.path.expanduser("~/models/nemotron-3.5-lightning-mlx4"); binp = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "zig-out", "bin"); rows = "512"; depths = [10, 50, 90]; lens = []; window = False
+root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ck = os.path.expanduser("~/models/nemotron-3.5-lightning-mlx4"); binp = os.path.join(root, "zig-out", "bin"); rows = "512"; depths = [10, 50, 90]; lens = []; window = False
 # default lengths 8192 32768 65536 131072 (max 262144); reports FOUND (code in the answer before first EOS) or MISSED
 a = sys.argv[1:]
 while a:
@@ -25,7 +26,8 @@ H = tok.encode(txt[:max(2_000_000, need * 8)]).ids
 assert len(H) >= need, (len(H), need)
 nd = tok.encode("\n\nThe secret code is 7391-ALPHA. Remember it.\n\n").ids
 q = tok.encode("\n\nQuestion: What is the secret code mentioned in the text above?\nAnswer: The secret code is").ids
-d = "/tmp/nem_needle"; os.makedirs(d, exist_ok=True)
+# token files and reports stay in the worktree's own scratch, which goes with the card (AGENTS.md)
+d = os.path.join(root, ".scratch", "nem_needle"); os.makedirs(d, exist_ok=True)
 print(f"{'L':>7} {'depth':>5}  verdict  {'prefill tok/s':>13} {'decode tok/s':>12} {'peak GB':>8} {'wall s':>7}  answer", flush=True)
 for L in lens:
     for D in depths:
