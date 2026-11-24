@@ -1,34 +1,40 @@
 #!/bin/sh
 # Inkling 2 Mini's K/V pages by TMA bulk copies on TOP's GB10:
-#   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/kv-pages.sh
-# After setup.sh's build and gates: the attention contract on the candidate and on a control built from the same
-# tree with TF_INK2_KV_LOADS=1 (the per-thread loads the bulk copies replace; the unchanged prompt kernel must
-# equal the fold's bytes in both), then fresh servers control, candidate, control at 64 streams, 1K and 8K
-# context, greedy, 128 tokens, 3 reps, each stream its own prompt of about 860 or 8,000 tokens. Achieved K/V
-# bandwidth is the bytes a decoded token's attention reads by the cache layout (40 sliding visits of at most 1,024
-# keys, 8 global visits of the whole context; 8 key heads, K and V 512 B a key) times the measured decode rate,
-# not a counter. Any failed request stops the job. The compile records print last.
+#   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/kv-pages.sh (1K; kv-pages-8k.sh: 8K)
+# After setup.sh's build and gates, the candidate and a control built from the same tree with TF_INK2_KV_LOADS=1
+# (the per-thread loads the bulk copies replace) dump the attention contract's outputs at every served form: 1 row
+# and multi-row verify, keys to 1M wrapping the sliding (2,048) and global (4,096) rings, page tails (1,030,
+# 16,390, 20,000, 300,000 keys). Both builds' bytes must match. Then fresh servers control, candidate, control at
+# 64 streams, one context a job, greedy, 128 tokens, 3 reps, each stream its own prompt of about 860 or 8,000
+# tokens. Achieved K/V bandwidth is the bytes a decoded token's attention reads by the cache layout (40 sliding
+# visits of at most 1,024 keys, 8 global visits of the whole context; 8 key heads, K and V 512 B a key) times the
+# measured decode rate, not a counter. Any failed request or the 600 s bound stops the job.
 set -eu
+if [ "${INKLING_KV_PAGES_DEADLINE:-}" != 1 ]; then
+    INKLING_KV_PAGES_DEADLINE=1 exec timeout --signal=INT --kill-after=20s 580 sh "$0"
+fi
 . docs/recipes/inkling-2-mini-cuda/setup.sh
-mkdir -p /work/attn-usage
-for arm in candidate control; do
-    define=$([ "$arm" = control ] && echo "-DTF_INK2_KV_LOADS=1" || echo -O3)
-    /usr/local/cuda/bin/nvcc -fatbin -std=c++20 --expt-relaxed-constexpr -O3 $define -I zig/kernels/cuda \
-        -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_86,code=sm_86 -gencode=arch=compute_89,code=sm_89 \
-        -gencode=arch=compute_120,code=sm_120 -gencode=arch=compute_121,code=sm_121 -o "/work/attn-usage/$arm.fatbin" \
-        zig/kernels/cuda/inkling2/attention.cu
-    /usr/local/cuda/bin/cuobjdump --dump-resource-usage "/work/attn-usage/$arm.fatbin" | awk -v arm="$arm" '
-        /arch = / { arch = $3 } /Function tf_ink2_attn/ { fn = $2 } /REG:|SHARED:/ && fn { print "RESULT", arm, arch, fn, $0 }'
-done
-"$bin/tf-cuda-test" kernel-contract "inkling2 attn"
-NVCC_PREPEND_FLAGS="$NVCC_PREPEND_FLAGS -DTF_INK2_KV_LOADS=1" ZIG_LOCAL_CACHE_DIR=/work/zig-control-cache \
-    zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/control
 control=/work/control
+build() {
+    zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast -Dcuda-test-dump=true \
+        --prefix "$1"
+}
+build /work/sm121
+NVCC_PREPEND_FLAGS="$NVCC_PREPEND_FLAGS -DTF_INK2_KV_LOADS=1" ZIG_LOCAL_CACHE_DIR=/work/zig-control-cache build "$control"
 cmp "$control/native/bin/tensorfold-native" /work/sm121/native/bin/tensorfold-native >/dev/null && {
     echo "the control build repeated the candidate's binary" >&2; exit 1;
 }
-"$control/bin/tf-cuda-test" kernel-contract "inkling2 attn"
-"$bin/tf-cuda-test" kernel-contract "inkling2_attn"
+contract() {
+    TF_CUDA_DUMP=1 "$1/bin/tf-cuda-test" kernel-contract "inkling2 attn" >"$1.log" 2>&1 || { cat "$1.log"; exit 1; }
+    grep -v '^DUMP ' "$1.log"
+    grep '^DUMP ' "$1.log" >"$1.dump" || :
+}
+contract /work/sm121
+contract "$control"
+[ -s "$control.dump" ] && cmp -s /work/sm121.dump "$control.dump" || {
+    echo "attention outputs differ between the bulk copies and the per-thread loads" >&2; exit 1;
+}
+echo "PASS attention outputs: $(wc -l <"$control.dump") served forms byte-identical, bulk copies and per-thread loads"
 prompts() {
     python3 - "$out" "$1" "$2" <<'PY'
 import json, random, sys, urllib.request
@@ -102,9 +108,8 @@ for arm in ('control-1', 'candidate', 'control-2'):
           f'end to end {statistics.median(r["end_to_end_tps"] for r in reps):.1f} tok/s (medians of 3)')
 PY
 }
-for context in 1024 8192; do
-    for arm in control-1 candidate control-2; do
-        arm "$context" "$arm" "$([ "$arm" = candidate ] && echo /work/sm121/native/bin/tensorfold-native || echo "$control/native/bin/tensorfold-native")"
-    done
-    summary "$context"
+context=${KV_PAGES_CONTEXT:-1024}
+for arm in control-1 candidate control-2; do
+    arm "$context" "$arm" "$([ "$arm" = candidate ] && echo /work/sm121/native/bin/tensorfold-native || echo "$control/native/bin/tensorfold-native")"
 done
+summary "$context"
