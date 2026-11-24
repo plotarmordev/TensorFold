@@ -29,7 +29,7 @@ pub fn name(kind: p.Kind) []const u8 {
         .ar => "control: metal inkling2 glue ar tf_inkling2_ar",
         .conv_static => "control: metal inkling2 glue conv_static tf_inkling2_conv_static",
         .conv_dynamic => "control: metal inkling2 glue conv_dynamic tf_inkling2_conv_dynamic",
-        .router => "control: metal inkling2 glue router tf_inkling2_router",
+        .router => "control: metal inkling2 glue router tf_inkling2_route",
         .swiglu => "control: metal inkling2 glue swiglu tf_inkling2_swiglu",
         .logits => "control: metal inkling2 glue logits tf_inkling2_logits",
         .expert_pick => "control: metal inkling2 glue expert_pick tf_inkling2_expert_pick",

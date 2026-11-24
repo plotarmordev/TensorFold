@@ -140,40 +140,37 @@ kernel void tf_inkling2_conv_dynamic(
 }
 
 struct InkRouteArgs { uint rows; };
-// The router's first launch: fp32 dots[row][e] = weight[e] . x[row], a simdgroup an expert, 8 columns a lane a step.
-[[max_total_threads_per_threadgroup(256)]]
-kernel void tf_inkling2_route_scores(
-    const device bfloat* x [[buffer(0)]], const device bfloat* weight [[buffer(1)]],
-    device float* dots [[buffer(2)]], constant InkRouteArgs& a [[buffer(3)]],
-    uint2 tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
-    uint lane [[thread_index_in_simdgroup]]) {
-  const uint e = tg.x * 8 + sg, row = tg.y;
-  if (e >= 128 || row >= a.rows) return;
-  const device bfloat* w = weight + size_t(e) * 2304;
-  const device bfloat* v = x + size_t(row) * 2304;
-  float acc = 0.0f;
-  for (uint i = 8 * lane; i < 2304; i += 256) {
-    const float4 w0 = float4(*(const device bfloat4*)(w + i)), w1 = float4(*(const device bfloat4*)(w + i + 4));
-    const float4 v0 = float4(*(const device bfloat4*)(v + i)), v1 = float4(*(const device bfloat4*)(v + i + 4));
-    acc += dot(w0, v0) + dot(w1, v1);
-  }
-  const float sum = simd_sum(acc);
-  if (lane == 0) dots[row * 128 + e] = sum;
-}
 
-// The second: the eight greatest score + bias, the lowest expert on a tie, written in ascending expert order.
-kernel void tf_inkling2_router(
-    const device float* dots [[buffer(0)]], const device float* bias [[buffer(1)]],
-    device uint* ids [[buffer(2)]], device float* weights [[buffer(3)]],
-    constant InkRouteArgs& a [[buffer(4)]],
-    uint t [[thread_position_in_threadgroup]], uint row [[threadgroup_position_in_grid]]) {
+// Scores and the top eight in one launch: a threadgroup a row, a simdgroup sixteen of the row's experts in
+// sequence, each dot in the same lane order as the old route_scores; the pick is the old router's, verbatim.
+[[max_total_threads_per_threadgroup(256)]]
+kernel void tf_inkling2_route(
+    const device bfloat* x [[buffer(0)]], const device bfloat* weight [[buffer(1)]],
+    const device float* bias [[buffer(2)]], device uint* ids [[buffer(3)]],
+    device float* weights [[buffer(4)]], constant InkRouteArgs& a [[buffer(5)]],
+    uint t [[thread_position_in_threadgroup]], uint row [[threadgroup_position_in_grid]],
+    uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
   if (row >= a.rows) return;
   threadgroup float scores[128], keys[128], chosen[8];
   threadgroup uint ranks[128], picked[8];
-  if (t < 128) {
-    scores[t] = ink_sigmoid(dots[row * 128 + t]);
-    keys[t] = scores[t] + bias[t];
+  const device bfloat* v = x + size_t(row) * 2304;
+  for (uint b = 0; b < 2; ++b) {
+    const uint e = b * 8 * 8 + sg; // simdgroup s takes experts 64b + s .. + 63: eight bands of eight.
+    for (uint band = 0; band < 8; ++band) {
+      const uint expert = e + band * 8;
+      const device bfloat* w = weight + size_t(expert) * 2304;
+      float acc = 0.0f;
+      for (uint i = 8 * lane; i < 2304; i += 256) {
+        const float4 w0 = float4(*(const device bfloat4*)(w + i)), w1 = float4(*(const device bfloat4*)(w + i + 4));
+        const float4 v0 = float4(*(const device bfloat4*)(v + i)), v1 = float4(*(const device bfloat4*)(v + i + 4));
+        acc += dot(w0, v0) + dot(w1, v1);
+      }
+      const float sum = simd_sum(acc);
+      if (lane == 0) scores[expert] = ink_sigmoid(sum);
+    }
   }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (t < 128) keys[t] = scores[t] + bias[t];
   threadgroup_barrier(mem_flags::mem_threadgroup);
   // Among ordered keys the scan in the last branch takes the greatest first: an expert's rank says the same.
   bool unordered = false;
