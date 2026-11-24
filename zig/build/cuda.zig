@@ -138,7 +138,9 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     runner.addImport("moss_image_cuda", b.createModule(.{ .root_source_file = b.path("zig/src/families/moss_image/cuda_kernels.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "cuda", .module = cuda }} }));
     runner.addImport("prompt_pages", b.createModule(.{ .root_source_file = b.path("zig/src/native/cuda_prompt_pages.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "engine_api", .module = mods.api }, .{ .name = "core", .module = mods.core } } })); // TF_KV_SHARE's store, for the pages checks
     const runner_exe = b.addExecutable(.{ .name = "tf-cuda-test", .root_module = runner });
-    b.installArtifact(runner_exe);
+    const runner_install = b.addInstallArtifact(runner_exe, .{});
+    b.getInstallStep().dependOn(&runner_install.step);
+    b.step("tf-cuda-test", "Build and install tf-cuda-test alone").dependOn(&runner_install.step);
     // tf-cuda-limits: kernel-contract-limits alone, built without the contracts' test sources
     const limits_exe = b.addExecutable(.{ .name = "tf-cuda-limits", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/limits_main.zig"), .target = target, .optimize = optimize, .link_libc = true, .strip = strip, .imports = &.{ .{ .name = "cuda", .module = cuda }, .{ .name = "core", .module = mods.core } } }) });
     b.step("tf-cuda-limits", "Build kernel-contract-limits alone: the fatbins' launches against their records, no GPU").dependOn(&b.addInstallArtifact(limits_exe, .{}).step);
