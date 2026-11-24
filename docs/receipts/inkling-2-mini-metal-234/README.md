@@ -1,0 +1,102 @@
+# Inkling 2 Mini on Metal, M5 Ultra: card 234's receipt
+
+Apple M5 Ultra, 256 GB, macOS 27.0, the official checkpoint with its own `mtp.safetensors` as the DSpark drafter,
+`tensorfold-native` from `zig build native -Doptimize=ReleaseFast`, `--context 65536`. The Desk's Mac GPU window,
+24 Nov 02:02-02:38 HKT, one lock held for the whole sequence (`run.sh`); the load average at each step is in its line
+below, since other cards' CPU work kept running.
+
+Control: card 210's tip `781eeab52`. Candidate: `630378dc0` on that base (a verify window keeps its convolution
+histories in place; every stream's keep shares one command buffer).
+
+## Ceiling
+
+A plain step reads about 5.6 GB: 8 of 128 experts (5.1 MB each) in 48 layer passes (24 layers, the 12 core ones three
+times) is 1.96 GB, the other layer weights 2.7 GB over the same passes, the bf16 LM head 0.93 GB. `bandwidth.py` over
+4 GiB arrays, six timed passes each, at 05:04 (load 123, the GPU otherwise idle):
+
+| pass | GB/s (median) | ms a pass |
+|---|---|---|
+| read (sum) | 1,021 | 4.20 4.14 4.15 5.59 4.22 4.26 |
+| add (2R+1W) | 1,029 | 13.18 12.89 12.52 12.53 12.45 12.36 |
+| copy (1R+1W) | 1,004 | 8.48 8.55 8.53 8.59 8.56 8.56 |
+
+Three earlier runs at 03:46, beside other cards' GPU work, read 388-991 and are not used. At 1,020 GB/s a plain step's
+floor is 5.5 ms, 182 tok/s, and at a practical 75% of it 137 tok/s. The 16.1 ms plain step (62 tok/s) is 34% of the
+floor; DSpark at one stream, 3.33 tokens a 28.2 ms round, is 20% of its 3.33 × 182 bound. Bytes do not set the step:
+its dependent chain of kernels does, so the hold lever cuts launches and waits, not reads.
+
+## DSpark hold lever
+
+`bench.sh` (card 210's): medians of three reps, `--levels 1,4 --tokens 256 --temperatures 0 --alone --serial`.
+
+| tok/s (code / chat) | control | candidate | control | candidate | #4618 |
+|---|---|---|---|---|---|
+| 1 stream | 118.9 / 96.8 | 120.2 / 93.3 | 122.2 / 45.6* | 118.0 / 95.3 | 123 |
+| 4 streams | 275.7 / 227.7 | **282.7 / 233.6** | 274.9 / 190.3* | **285.7 / 235.7** | 281 |
+| 4-stream round, code | 39.3 ms | 38.5 ms | 39.4 ms | 37.9 ms | |
+
+\* reps 81/32/46 and 112/190/216: disturbed, not used.
+
+- At four streams the lever is kept: code is 2.5-3.9% over both controls, chat 2.6-3.5% over the clean control, a
+  round is 1 ms shorter at the same 2.81 tokens. #4618 reads 281 there.
+- At one stream it is inside noise (118.0-120.2 against 118.9-122.2). Bar not reached: one stream reads 118.0-120.2
+  tok/s at `1038e2d4` against #4618's 123. Strata v0.2.19 reads 108.9-114.5 on M5 Max, another chip: a deployment
+  comparison, not a chip one.
+- Plain at 05:00-05:04 (load 80-127) moved single reps by up to 40%; its repeat is below.
+- Every cell: 0 failed requests, every concurrent reply equal to its run alone (12 of 12), drafted equal to plain.
+
+## Repeat, 24 Nov 11:02-11:09
+
+A second Desk window for this card alone, idle GPU, load 3-20; candidate `f8b9b3c0a` (the lever plus its rollback
+test), control `781eeab52`, both built before the first bench, one lock over the six sessions. The two controls agree
+within 0.3% in every cell but plain chat.
+
+| tok/s (code / chat) | control | candidate | control |
+|---|---|---|---|
+| DSpark, 1 stream | 126.6 / 93.0 | 124.3 / 95.3 | 126.8 / 92.9 |
+| DSpark, 4 streams | 282.1 / 229.3 | **288.0 / 237.3** | 281.4 / 228.9 |
+| DSpark 4-stream round, code | 38.8 ms | 37.9 ms | 38.6 ms |
+| plain, 1 stream | 61.6 / 61.0* | 60.1 / 59.8 | 61.5 / 56.3* |
+| plain, 4 streams | 210.2 / 223.0* | 221.5 / 221.0 | 210.0 / 126.4* |
+
+\* plain chat: the controls are 8% apart at one stream and 43% at four (reps 110.4/192.6/126.4), so both pairs are
+disturbed and plain chat is not compared.
+
+- The lever repeats at four streams: code 2.1-2.3% and chat 3.5-3.7% over both controls, a round 0.7-0.9 ms shorter.
+- At one stream it gains nothing: code 124.3 (reps 127.4, 116.2, 124.3) against 126.6-126.8, chat 95.3 against 93.
+- Plain code reads 60.1 against 61.5-61.6 at one stream and 221.5 against 210.0-210.2 at four.
+- #4618 reports 123 at one stream and 281 at four; it was not run on this Mac, so these medians are not a claim to
+  beat it. At this window's low load the controls already read 126.6-126.8 at one stream.
+- A second candidate pass at 11:09-11:14 ran as load rose to 50 (DSpark four-stream code reps 282.4, 252.5, 238.6;
+  plain reps down to 41) and is not used. Every cell of both passes: 0 failed requests, every concurrent reply equal
+  to its run alone, drafted equal to plain.
+
+## Prefill at 45K
+
+`prefill.sh` with the drafter on: **2,365 tok/s** median (2,164-2,368), first token in 19.5-21.3 s; card 210 read
+2,439 without the drafter. Each repeat equals its fresh reply but reads 0 cached tokens with `--drafter`, where card
+210's plain session read 46,080: the drafter session does not reuse the prompt cache.
+
+## Engines at 1 and 64 streams
+
+oMLX's own 4-bit MTP build `Inkling-2-Mini-oQ4e-mtp` is the only competitor measured on this Mac (Strata and
+llama.cpp were not). Card 235's `engines.sh` ran both engines in one session, TensorFold on its default 8 lanes, under
+other cards' CPU load (35-77). oMLX streams each code reply in one chunk after 13 s, so its code cells are unmeasured;
+the comparison is on chat.
+
+| chat, tok/s total, paired medians | TensorFold, 8 lanes | oMLX |
+|---|---|---|
+| 1 stream | **49.0** | 38.4 |
+| 64 streams | 141.4 | **225.6** |
+
+- oMLX leads at 64 streams: on 8 lanes, 56 of TensorFold's 64 requests queued (168 of 192 waited 10-55 s). A second
+  paired session read 48.0 against 24.8 and 154.8 against 203.3.
+- Unpaired, no oMLX in its session: `engines.sh` here, DSpark on 64 lanes with no request queued, read chat 90.2 at
+  one stream and 306.6 at 64, code 115.4 and 399.1.
+- 0 failed requests in every cell of both engines.
+
+## Files
+
+`cells.jsonl`: every cell (medians, reps, round, `alone`, `serial`); `prefill45k.txt`; `bandwidth.py` measures the
+ceiling's bandwidth; `engines.sh` runs TensorFold's receipt cells; `run.sh` reproduces the sequence: bandwidth, DSpark
+and plain control/candidate/control, prefill and engines.

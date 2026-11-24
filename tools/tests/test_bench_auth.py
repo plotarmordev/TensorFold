@@ -13,6 +13,7 @@ import urllib.error
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import bench_auth
 import bench_concurrent
 import bench_openai
 
@@ -152,6 +153,16 @@ class AuthTests(unittest.TestCase):
                                     self.assertEqual(exc.code, 1)
                 self.assertNotIn(KEY, stdout.getvalue() + stderr.getvalue())
                 self.assertIn("RuntimeError", stdout.getvalue() + stderr.getvalue())
+
+    def test_credentials_nested_in_tuples_and_depth_tallies_are_redacted(self):
+        nested = {"depths": [([1, KEY], (KEY, {"note": KEY}))], KEY: (KEY,)}
+        self.assertNotIn(KEY, json.dumps(bench_auth.redact(nested, KEY)))
+        for drafted in ([2, KEY], [2, -1], [2, 1.5], [2, True]):
+            with self.subTest(drafted=drafted):
+                run = {"speculative": {"depth_drafted": drafted, "depth_accepted": [1, 0]}}
+                self.assertIsNone(bench_concurrent.depth_counts(run))
+        run = {"speculative": {"depth_drafted": [4, 2], "depth_accepted": [3, 1]}}
+        self.assertEqual(bench_concurrent.depth_counts(run), [[4, 2], [3, 1]])
 
 
 @contextlib.contextmanager

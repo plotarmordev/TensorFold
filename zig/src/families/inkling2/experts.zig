@@ -13,7 +13,8 @@ pub const listed_from = 17;
 /// Calls of at least this many rows take the prompt kernel (32 members by 64 columns a block).
 pub const wide_from = 512;
 
-/// main's experts module beside the family's grouped projections.
+/// main's experts module beside the family's grouped projections. Contract-only: the served engine routes through
+/// `modelopt.zig`, and the combine here reads a -1 pick's unwritten slot at weight 0 instead of skipping it.
 pub const Kernels = struct {
     main: ex.Experts,
     mod: cuda.Module,

@@ -21,6 +21,14 @@ pub const units_chunk: u32 = 256;
 pub const TokenArgs = extern struct { token: u32 };
 pub const CountArgs = extern struct { count: u32 };
 pub const BaseArgs = extern struct { rows: u32, vocab: u32 };
+pub const CohortArgs = extern struct { streams: u32, row: u32 };
+pub const PackArgs = extern struct { active: [steps]u32, first: u32, count: u32 };
+/// Drafts a block's rows 1..7 hold: the recurrent steps' depths.
+pub const steps: u32 = block_rows - 1;
+/// Streams one greedy hold's cohort takes; a wider hold samples on the host as sampled streams do.
+pub const cohort_streams: u32 = 16;
+/// Rows one unembed launch takes: four streams' drafts share each weight row's read.
+pub const tile_rows: u32 = 4 * steps;
 
 /// Round through binary32 and nearest-even BF16, returning an exactly representable FP64 value.
 pub fn roundBf16(v: anytype) f64 {
@@ -131,6 +139,9 @@ pub const Chain = struct {
     pub fn load(device: mtl.Device, text: []const u8) !Chain {
         const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
         defer lib.deinit();
+        return fromLibrary(device, lib);
+    }
+    pub fn fromLibrary(device: mtl.Device, lib: mtl.Library) !Chain {
         const step = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_chain_step", false);
         errdefer step.deinit();
         return .{ .step = step, .pick = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_chain_pick", false) };
@@ -139,6 +150,72 @@ pub const Chain = struct {
         c.pick.deinit();
         c.step.deinit();
         c.* = undefined;
+    }
+};
+
+/// The greedy cohort's five kernels, outside `Pipelines`: one launch each over the hold's active streams.
+pub const Cohort = struct {
+    qkv: mtl.Pipeline,
+    step: mtl.Pipeline,
+    pick: mtl.Pipeline,
+    logits: mtl.Pipeline,
+    pack: mtl.Pipeline,
+
+    pub fn load(device: mtl.Device, text: []const u8) !Cohort {
+        const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
+        defer lib.deinit();
+        return fromLibrary(device, lib);
+    }
+    pub fn fromLibrary(device: mtl.Device, lib: mtl.Library) !Cohort {
+        const qkv = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_cohort_qkv", false);
+        errdefer qkv.deinit();
+        const step = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_cohort_step", false);
+        errdefer step.deinit();
+        const pick = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_cohort_pick", false);
+        errdefer pick.deinit();
+        const logits = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_cohort_logits", false);
+        errdefer logits.deinit();
+        return .{ .qkv = qkv, .step = step, .pick = pick, .logits = logits, .pack = try mtl.Pipeline.init(device, lib, "tf_ink2_dspark_cohort_pack", false) };
+    }
+    pub fn deinit(c: *Cohort) void {
+        c.pack.deinit();
+        c.logits.deinit();
+        c.pick.deinit();
+        c.step.deinit();
+        c.qkv.deinit();
+        c.* = undefined;
+    }
+};
+
+/// A cohort's slot order, deepest first: each depth's active slots are then a prefix of `slots`.
+pub const Order = struct {
+    /// The hold's item at each slot; the first `active[0]` are used.
+    slots: [cohort_streams]usize,
+    /// Slots with a draft after depth v, so depth v runs streams 0 .. active[v].
+    active: [steps]u32,
+    /// The first packed base row of each depth.
+    first: [steps]usize,
+    /// Base rows the drafts pack into: every slot's.
+    rows: usize,
+
+    /// Slots deepest first, input order kept among equals; each depth at most `steps`.
+    pub fn sort(depths: []const u32) Order {
+        std.debug.assert(depths.len > 0 and depths.len <= cohort_streams);
+        var out: Order = .{ .slots = undefined, .active = @splat(0), .first = @splat(0), .rows = 0 };
+        for (depths, 0..) |depth, item| {
+            std.debug.assert(depth <= steps);
+            var place = item;
+            while (place > 0 and depths[out.slots[place - 1]] < depth) : (place -= 1) out.slots[place] = out.slots[place - 1];
+            out.slots[place] = item;
+        }
+        for (out.slots[0..depths.len]) |item| {
+            for (0..depths[item]) |v| out.active[v] += 1;
+        }
+        for (0..steps) |v| {
+            out.first[v] = out.rows;
+            out.rows += out.active[v];
+        }
+        return out;
     }
 };
 
@@ -259,7 +336,7 @@ pub fn residualNorm(p: *const Pipelines, e: mtl.ComputeEncoder, x: Ref, residual
 
 /// Gate and up projections are BF16 rows with 9216 entries; only this SwiGLU product is stored here.
 pub fn swiglu(p: *const Pipelines, e: mtl.ComputeEncoder, gate: Ref, up: Ref, out: Ref, count: u32) void {
-    std.debug.assert(count == 8 * intermediate);
+    std.debug.assert(count % (8 * intermediate) == 0);
     e.setPipeline(p.swiglu);
     bind(e, &.{ gate, up, out });
     e.setValue(CountArgs{ .count = count }, 3);
@@ -306,7 +383,7 @@ pub fn base(p: *const Pipelines, e: mtl.ComputeEncoder, unembed: Ref, y: Ref, ou
     e.setPipeline(p.base);
     bind(e, &.{ unembed, y, out });
     e.setValue(BaseArgs{ .rows = rows, .vocab = vocabulary_count }, 3);
-    std.debug.assert(rows <= 7);
+    std.debug.assert(rows <= tile_rows);
     groups(e, (@as(usize, vocabulary_count) + 7) / 8, 256);
 }
 /// Folded Phi/beta correction and target-style 30 tanh softcap, restricted to Mini's 200058 logits.
@@ -315,4 +392,57 @@ pub fn finalLogits(p: *const Pipelines, e: mtl.ComputeEncoder, base_values: Ref,
     bind(e, &.{ base_values, phi, beta, lambda, out });
     e.setValue(CountArgs{ .count = vocab }, 5);
     threads(e, vocab, 256);
+}
+
+/// The cohort's row zero of each block copies its embedded anchor; `anchors` holds `streams` contiguous rows.
+pub fn cohortInitializeRows(p: *const Pipelines, e: mtl.ComputeEncoder, anchors: Ref, mask_embed: Ref, out: Ref, streams: u32) void {
+    std.debug.assert(streams > 0 and streams <= cohort_streams);
+    e.setPipeline(p.init_rows);
+    bind(e, &.{ anchors, mask_embed, out });
+    e.dispatchGroups(mtl.Size.of(block_rows, streams, 1), mtl.Size.of(256, 1, 1));
+}
+
+/// `blockQkv` over `streams` eight-row blocks: each block's rows take `anchors[stream]` as their first position.
+pub fn cohortQkv(c: *const Cohort, e: mtl.ComputeEncoder, q_raw: Ref, k_raw: Ref, v_raw: Ref, q_norm: Ref, k_norm: Ref, q: Ref, k: Ref, v: Ref, anchors: Ref, streams: u32) void {
+    std.debug.assert(streams > 0 and streams <= cohort_streams);
+    e.setPipeline(c.qkv);
+    bind(e, &.{ q_raw, k_raw, v_raw, q_norm, k_norm, q, k, v, anchors });
+    e.dispatchGroups(mtl.Size.of(40, streams * block_rows, 1), mtl.Size.of(128, 1, 1));
+}
+
+/// The cohort's unembed input: packed rows `first` .. `first` + `count`, a draft row a stream a depth.
+pub fn cohortPack(c: *const Cohort, e: mtl.ComputeEncoder, x: Ref, out: Ref, args: PackArgs) void {
+    std.debug.assert(args.count > 0 and args.first + args.count <= steps * cohort_streams);
+    e.setPipeline(c.pack);
+    bind(e, &.{ x, out });
+    e.setValue(args, 2);
+    e.dispatchGroups(mtl.Size.of(cohort_streams, steps, 1), mtl.Size.of(256, 1, 1));
+}
+
+/// Depth `row` for streams 0 .. `streams`: stream s takes kappa row 7s + row after the token held[8s + row].
+pub fn cohortStep(c: *const Cohort, e: mtl.ComputeEncoder, state: Ref, kappa_rows: Ref, rnn_weight: Ref, markov_w1: Ref, z: Ref, next_state: Ref, lambda: Ref, held: Ref, row: u32, streams: u32) void {
+    std.debug.assert(row < steps and streams > 0 and streams <= cohort_streams);
+    e.setPipeline(c.step);
+    bind(e, &.{ state, kappa_rows, rnn_weight, markov_w1, z, next_state, lambda });
+    e.setValue(CohortArgs{ .streams = streams, .row = row }, 7);
+    e.setBuffer(held.buf, held.off, 8);
+    groups(e, streams, 256);
+}
+
+/// Final logits of base rows `row` .. for streams 0 .. `streams`: lambda row s, out row s.
+pub fn cohortLogits(c: *const Cohort, e: mtl.ComputeEncoder, base_values: Ref, phi: Ref, beta: Ref, lambda: Ref, out: Ref, row: u32, streams: u32) void {
+    std.debug.assert(streams > 0 and streams <= cohort_streams);
+    e.setPipeline(c.logits);
+    bind(e, &.{ base_values, phi, beta, lambda, out });
+    e.setValue(CohortArgs{ .streams = streams, .row = row }, 5);
+    threads(e, vocab, 256);
+}
+
+/// Depth `row`'s picks for streams 0 .. `streams`: held[8s + row + 1] is the first greatest of logits row s.
+pub fn cohortPick(c: *const Cohort, e: mtl.ComputeEncoder, logits: Ref, held: Ref, row: u32, streams: u32) void {
+    std.debug.assert(row < steps and streams > 0 and streams <= cohort_streams);
+    e.setPipeline(c.pick);
+    bind(e, &.{ logits, held });
+    e.setValue(CohortArgs{ .streams = streams, .row = row }, 2);
+    groups(e, streams, 1024);
 }

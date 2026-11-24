@@ -21,7 +21,7 @@ pub const Set = struct {
     embeds: [2]G(rows.Embed) = undefined,
     dots: [6]G(rows.Rowdot) = undefined,
     caps: [2]G(rows.Softcap) = undefined,
-    topks: [2]K(route.Topk) = undefined,
+    topks: [3]K(route.Topk) = undefined,
     gateups: [2]G(route.Gateup) = undefined,
     tails: [3]G(route.Tail) = undefined,
     convs: [8]G(conv.Conv) = undefined,
@@ -43,7 +43,7 @@ pub const Set = struct {
         const dots = [_]rows.Dot{ .router, .sink, .taps, .router, .taps, .router };
         for (&set.dots, dots, 0..) |*x, d, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .dot = d, .tiles = i == 3 or i == 4, .short = i == 5 } };
         for (&set.caps, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .wrong = i == 1 } };
-        for (&set.topks, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .unbiased = i == 1 } };
+        for (&set.topks, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .unbiased = i == 1, .repick = i == 2 } };
         for (&set.gateups, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .swapped = i == 1 } };
         for (&set.tails, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .f32_out = i == 1, .shifted = i == 2 } };
         const cf = [_]conv.Form{ .kv_static, .kv_dynamic, .attn, .attn_boundary, .mlp, .kv_static, .attn, .kv_static };
