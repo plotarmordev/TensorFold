@@ -2,13 +2,13 @@
 const std = @import("std");
 const server = @import("root.zig");
 const harness = @import("speech_stream_test.zig");
-const gpa = std.testing.allocator;
+const Script = harness.Script;
+const Served = harness.Served;
+const Bytes = harness.Bytes;
 const frame = harness.frame;
 const pcm = harness.pcm;
 const expectHeader = harness.expectHeader;
-const Bytes = harness.Bytes;
-const Script = harness.Script;
-const Served = harness.Served;
+const gpa = std.testing.allocator;
 
 test "voices: HTTP listing and reference rows use the family CLI builder" {
     var arena = std.heap.ArenaAllocator.init(gpa);
