@@ -25,6 +25,8 @@ pub const Kernels = struct {
     ar_fn: cuda.Function,
     messages_fn: cuda.Function,
     gate_fn: cuda.Function,
+    gate_down_fn: cuda.Function,
+    gate_linear_fn: cuda.Function,
     project_qkv_fn: cuda.Function,
     round_bf16_fn: cuda.Function,
 
@@ -37,6 +39,8 @@ pub const Kernels = struct {
             .ar_fn = try mod.function("tf_ink2_loop_ar"),
             .messages_fn = try mod.function("tf_ink2_loop_messages"),
             .gate_fn = try mod.function("tf_ink2_loop_gate"),
+            .gate_down_fn = try mod.function("tf_ink2_loop_gate_down"),
+            .gate_linear_fn = try mod.function("tf_ink2_loop_gate_linear"),
             .project_qkv_fn = try mod.function("tf_ink2_loop_project_qkv"),
             .round_bf16_fn = try mod.function("tf_ink2_loop_round_bf16"),
         };
@@ -107,6 +111,20 @@ pub fn gate(
     for ([_]i32{ int(rows), int(c) }) |v| a.add(v);
     a.add(eps);
     try go(k.gate_fn, s, .{ .x = @intCast(rows) }, 256, &a);
+}
+
+/// Decode gate in two dependent launches, using BF16 [rows][64] caller-owned scratch.
+pub fn gateParallel(k: *const Kernels, s: cuda.Stream, h: u64, m: u64, down: u64, forget: u64, gain: u64, out: u64, zeta: u64, rows: usize, c: usize, eps: f32) !void {
+    if (rows == 0 or c == 0 or zeta == 0) return error.Inkling2LoopGateShape;
+    var a: cuda.Args = .{};
+    for ([_]u64{ h, m, down, zeta }) |v| a.add(v);
+    a.add(int(c));
+    a.add(eps);
+    try go(k.gate_down_fn, s, .{ .x = @intCast(rows), .y = rank / 2 }, 256, &a);
+    var b: cuda.Args = .{};
+    for ([_]u64{ h, m, forget, gain, zeta, out }) |v| b.add(v);
+    b.add(int(c));
+    try go(k.gate_linear_fn, s, .{ .x = @intCast(rows), .y = @intCast((c + 255) / 256) }, 256, &b);
 }
 
 /// Mini QKV: normalized BF16 uq/uk/uv, query-side u_q; per-visit K/V conv/cache, then wo/post-conv; no history.

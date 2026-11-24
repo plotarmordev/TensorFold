@@ -242,6 +242,66 @@ extern "C" __global__ void __launch_bounds__(256)
     ink2l::gate(h, m, down, forget, gain, out, c, eps);
 }
 
+// A rank pair per block; identical 256-thread norm and dot reduction to the unsplit gate.
+extern "C" __global__ void __launch_bounds__(256)
+    tf_ink2_loop_gate_down(const float* h, const float* m, const uint16_t* down,
+                            uint16_t* zeta, int c, float eps) {
+    __shared__ float sh[2 * 32];
+    __shared__ float inv_h, inv_m;
+    const size_t row = blockIdx.x;
+    const int rank = blockIdx.y * 2;
+    const float* hr = h + row * c;
+    const float* mr = m + row * c;
+    float ss[2] = {0.0f, 0.0f};
+    for (int i = threadIdx.x; i < c; i += blockDim.x) {
+        ss[0] = __fmaf_rn(hr[i], hr[i], ss[0]);
+        ss[1] = __fmaf_rn(mr[i], mr[i], ss[1]);
+    }
+    ink2l::blockSums<2>(ss, sh);
+    if (threadIdx.x == 0) {
+        inv_h = rsqrtf(__fadd_rn(__fdiv_rn(ss[0], static_cast<float>(c)), eps));
+        inv_m = rsqrtf(__fadd_rn(__fdiv_rn(ss[1], static_cast<float>(c)), eps));
+    }
+    __syncthreads();
+    float acc[2] = {0.0f, 0.0f};
+    const uint16_t* d0 = down + static_cast<size_t>(rank) * 2 * c;
+    const uint16_t* d1 = d0 + 2 * c;
+    for (int i = threadIdx.x; i < 2 * c; i += blockDim.x) {
+        const bool message = i >= c;
+        const float x = message ? mr[i - c] : hr[i];
+        const float n = ink2l::bfr(__fmul_rn(x, message ? inv_m : inv_h));
+        acc[0] = __fmaf_rn(ink2l::bf(d0[i]), n, acc[0]);
+        acc[1] = __fmaf_rn(ink2l::bf(d1[i]), n, acc[1]);
+    }
+    ink2l::blockSums<2>(acc, sh);
+    if (threadIdx.x == 0) {
+        zeta[row * ink2l::kRank + rank] = ink2l::tobf(acc[0]);
+        zeta[row * ink2l::kRank + rank + 1] = ink2l::tobf(acc[1]);
+    }
+}
+
+// Output blocks consume the completed BF16 rank vector; each output retains its original rank order.
+extern "C" __global__ void __launch_bounds__(256)
+    tf_ink2_loop_gate_linear(const float* h, const float* m, const uint16_t* forget,
+                              const uint16_t* gain, const uint16_t* zeta, float* out, int c) {
+    const size_t row = blockIdx.x;
+    const int i = blockIdx.y * blockDim.x + threadIdx.x;
+    if (i >= c) return;
+    const uint16_t* f = forget + static_cast<size_t>(i) * ink2l::kRank;
+    const uint16_t* g = gain + static_cast<size_t>(i) * ink2l::kRank;
+    const uint16_t* zr = zeta + row * ink2l::kRank;
+    float sf = 0.0f, sg = 0.0f;
+    for (int r = 0; r < ink2l::kRank; ++r) {
+        const float z = ink2l::bf(zr[r]);
+        sf = __fmaf_rn(ink2l::bf(f[r]), z, sf);
+        sg = __fmaf_rn(ink2l::bf(g[r]), z, sg);
+    }
+    const float keep = __fsub_rn(1.0f, tanhf(sf));
+    const float old = __fmul_rn(keep, h[row * c + i]);
+    const float added = __fmul_rn(tanhf(sg), m[row * c + i]);
+    out[row * c + i] = __fadd_rn(old, added);
+}
+
 // Mini QKV launch uses three independently normalized inputs; other kernels and cache/partial layouts are unchanged.
 extern "C" __global__ void __launch_bounds__(256)
     tf_ink2_loop_project_qkv(const uint16_t* __restrict__ uq, const uint16_t* __restrict__ uk,

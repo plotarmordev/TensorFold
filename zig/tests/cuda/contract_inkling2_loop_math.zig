@@ -318,9 +318,11 @@ const gate_shapes = [_]c.Shape{
 };
 
 /// Host reference preserves BF16 n/zeta and all four FP32 output steps; control substitutes F for Gain.
+/// `split` runs decode's gateParallel (rank blocks, then output blocks) against the same reference.
 pub const Gate = struct {
     kern: *const lm.Kernels,
     wrong_gain: bool = false,
+    split: bool = false,
     shape: c.Shape = undefined,
     h: []f32 = &.{},
     m: []f32 = &.{},
@@ -329,9 +331,10 @@ pub const Gate = struct {
     gain: []u16 = &.{},
     dev: [5]u64 = @splat(0),
     out: u64 = 0,
+    zeta: u64 = 0,
 
     pub fn spec(self: *const Gate) c.Spec {
-        return .{ .name = if (self.wrong_gain) "control: inkling2 loop rank-64 gate with forget weights again instead of gain" else "inkling2 loop tf_ink2_loop_gate (BF16 down input/result, FP32 F/G tanh and four output steps)", .accum = .f32, .depth = depth, .out = .f32, .served = if (self.wrong_gain) gate_shapes[0..2] else &gate_shapes };
+        return .{ .name = if (self.wrong_gain) "control: inkling2 loop rank-64 gate with forget weights again instead of gain" else if (self.split) "inkling2 loop gateParallel (tf_ink2_loop_gate_down then tf_ink2_loop_gate_linear)" else "inkling2 loop tf_ink2_loop_gate (BF16 down input/result, FP32 F/G tanh and four output steps)", .accum = .f32, .depth = depth, .out = .f32, .served = if (self.wrong_gain) gate_shapes[0..2] else &gate_shapes };
     }
 
     fn depth(s: c.Shape) usize {
@@ -378,11 +381,16 @@ pub const Gate = struct {
         }
         self.dev = .{ try ref.input(rig, self.h), try ref.input(rig, self.m), try ref.input(rig, self.d), try ref.input(rig, self.f), try ref.input(rig, self.gain) };
         self.out = try rig.output(shape.rows * cols * 4);
+        if (self.split) self.zeta = try rig.scratch(shape.rows * lm.rank * 2);
         return true;
     }
 
     pub fn run(self: *Gate, rig: *rig_.Rig) !void {
-        try lm.gate(self.kern, rig.s, self.dev[0], self.dev[1], self.dev[2], self.dev[3], if (self.wrong_gain) self.dev[3] else self.dev[4], self.out, self.shape.rows, self.shape.n, eps);
+        const gain = if (self.wrong_gain) self.dev[3] else self.dev[4];
+        if (self.split)
+            try lm.gateParallel(self.kern, rig.s, self.dev[0], self.dev[1], self.dev[2], self.dev[3], gain, self.out, self.zeta, self.shape.rows, self.shape.n, eps)
+        else
+            try lm.gate(self.kern, rig.s, self.dev[0], self.dev[1], self.dev[2], self.dev[3], gain, self.out, self.shape.rows, self.shape.n, eps);
     }
 
     pub fn count(self: *const Gate) usize {

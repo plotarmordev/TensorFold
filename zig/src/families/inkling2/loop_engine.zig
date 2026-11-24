@@ -69,6 +69,7 @@ const Scratch = struct {
     raw: u64, // three FP32 AR/gate rows per token
     messages: u64, // four FP32 message rows per token
     normalized: u64, // three BF16 rows per token
+    gate_zeta: u64, // BF16 [rows][64] for decode's parallel gate
     t: u64,
     q_raw: u64,
     rel_raw: u64,
@@ -248,6 +249,7 @@ pub const Model = struct {
             .raw = try m.alloc(3 * rows * h * 4),
             .messages = try m.alloc(4 * rows * h * 4),
             .normalized = try m.alloc(3 * rows * h * 2),
+            .gate_zeta = try m.alloc(window_rows * loop_math.rank * 2),
             .t = try m.alloc(rows * h * 4),
             .q_raw = try m.alloc(rows * q * 2),
             .rel_raw = try m.alloc(rows * c.global.q * c.d_rel * 2),
@@ -389,8 +391,7 @@ pub const Model = struct {
                     for (0..3) |role| try loop_math.ar(&k.loop, s, m.arBlocks(blocks, partial, query, m.s.raw + role * raw_stride, 1, true, rows));
                 }
                 for (0..3) |role| {
-                    const ctl = lw.controllers[role];
-                    try loop_math.gate(&k.loop, s, m.s.raw + role * raw_stride, m.s.messages + role * raw_stride, ctl.down, ctl.forget, ctl.gain, m.s.raw + role * raw_stride, rows, h, c.eps);
+                    try m.gate(k, s, lw.controllers[role], m.s.raw + role * raw_stride, m.s.messages + role * raw_stride, rows);
                     const norms = [3]u64{ lw.attn.norms[role], lw.attn.norms[role], lw.attn.norms[role] };
                     try ops.mix(&k.glue, s, m.mixArgs(&.{}, m.s.raw + role * raw_stride, 0, norms, m.s.normalized + role * norm_stride, 1, false, rows));
                 }
@@ -472,8 +473,7 @@ pub const Model = struct {
             const mlp_blocks = m.s.blocks[0..n_blocks];
             if (messages) {
                 try loop_math.ar(&k.loop, s, m.arBlocks(mlp_blocks, m.s.t, mlp_query, m.s.raw, 1, false, rows));
-                const ctl = lw.controllers[3];
-                try loop_math.gate(&k.loop, s, m.s.raw, m.s.messages + 3 * raw_stride, ctl.down, ctl.forget, ctl.gain, m.s.raw, rows, h, c.eps);
+                try m.gate(k, s, lw.controllers[3], m.s.raw, m.s.messages + 3 * raw_stride, rows);
                 try ops.mix(&k.glue, s, m.mixArgs(&.{}, m.s.raw, 0, .{ lw.mlp_norm, lw.mlp_norm, lw.mlp_norm }, m.s.normalized, 1, false, rows));
             } else {
                 try ops.mix(&k.glue, s, m.mixArgs(mlp_blocks, m.s.t, mlp_query, .{ lw.mlp_norm, lw.mlp_norm, lw.mlp_norm }, m.s.normalized, 1, false, rows));
@@ -507,6 +507,15 @@ pub const Model = struct {
         try ops.rowdot(&k.glue, s, m.s.hidden + head0 * h * 2, m.w.unembed, m.s.logits, heads, c.unpadded_vocab, h, false, false);
         try loop_math.roundBf16(&k.loop, s, m.s.logits, m.s.logits, heads * c.unpadded_vocab);
         try ops.softcap(&k.glue, s, m.s.logits, heads * c.unpadded_vocab, c.logit_cap);
+    }
+
+    /// A controller's gate in place on `x`; decode rows spread it over rank and output blocks (the same bits).
+    fn gate(m: *const Model, k: *const Kernels, s: cuda.Stream, ctl: weights_.Controller, x: u64, msg: u64, rows: usize) !void {
+        const c = m.w.c.text;
+        if (rows <= window_rows)
+            try loop_math.gateParallel(&k.loop, s, x, msg, ctl.down, ctl.forget, ctl.gain, x, m.s.gate_zeta, rows, c.hidden, c.eps)
+        else
+            try loop_math.gate(&k.loop, s, x, msg, ctl.down, ctl.forget, ctl.gain, x, rows, c.hidden, c.eps);
     }
 
     pub const Saved = snapshot.Saved;
