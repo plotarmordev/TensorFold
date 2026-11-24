@@ -21,6 +21,67 @@ pub fn roundCaps(w: *Weights, on: bool) void {
     for (w.layers) |*l| l.experts.round_caps = on;
 }
 
+/// The attention projections' and unembedding's lane format: bf16 as stored, or MXFP8 rounded at load
+/// (TF_INKLING2_TRUNK=mxfp8), which halves the bytes a decode token reads from them.
+pub const Trunk = enum {
+    bf16,
+    mxfp8,
+
+    pub fn fromEnv() !Trunk {
+        const v = std.c.getenv("TF_INKLING2_TRUNK") orelse return .bf16;
+        return std.meta.stringToEnum(Trunk, std.mem.span(v)) orelse error.Inkling2Trunk;
+    }
+};
+
+/// bf16 rows into e4m3 codes and a UE8M0 byte per 32 inputs: the least power of two that brings the group's
+/// largest magnitude to e4m3's 448 or below, so no code saturates.
+fn quantizeMxfp8(codes: []u8, scales: []u8, src: []const u16) void {
+    const g = cuda.mxfp8.group;
+    std.debug.assert(codes.len == src.len and scales.len * g == src.len);
+    for (scales, 0..) |*s, i| {
+        const x = src[i * g ..][0..g];
+        var amax: f32 = 0;
+        for (x) |b| amax = @max(amax, @abs(widen(b)));
+        s.* = e8m0For(amax);
+        for (codes[i * g ..][0..g], x) |*c, b|
+            c.* = core.exlr8.codec.e4m3FromF32(std.math.ldexp(widen(b), 127 - @as(i32, s.*)));
+    }
+}
+
+fn widen(b: u16) f32 {
+    return @bitCast(@as(u32, b) << 16);
+}
+
+fn e8m0For(amax: f32) u8 {
+    if (amax == 0) return 127;
+    const f = std.math.frexp(amax / 448.0); // amax / 448 = m * 2^e, m in [0.5, 1)
+    const e = if (f.significand == 0.5) f.exponent - 1 else f.exponent;
+    return @intCast(std.math.clamp(e + 127, 1, 254));
+}
+
+test "MXFP8 trunk rounding keeps each group's largest weight unsaturated and every weight within e4m3's step" {
+    var src: [64]u16 = undefined;
+    for (&src, 0..) |*b, i| {
+        const v = (@as(f32, @floatFromInt(i)) - 20.5) * @as(f32, if (i < 32) 0.013 else 7.0);
+        b.* = @truncate(@as(u32, @bitCast(v)) >> 16);
+    }
+    src[40] = 0x4400; // 512, over 448: the group scales by 2^1 and 512 lands exactly on 256
+    var codes: [64]u8 = undefined;
+    var scales: [2]u8 = undefined;
+    quantizeMxfp8(&codes, &scales, &src);
+    try std.testing.expectEqual(@as(u8, 128), scales[1]);
+    try std.testing.expectEqual(@as(u8, 0x78), codes[40]);
+    for (src, codes, 0..) |b, c, i| {
+        const v = widen(b);
+        const unit = std.math.ldexp(@as(f32, 1), @as(i32, scales[i / 32]) - 127);
+        const back = core.exlr8.codec.e4m3Value(c) * unit;
+        try std.testing.expect(@abs(back - v) <= @abs(v) / 16 + unit * std.math.ldexp(@as(f32, 1), -10));
+    }
+    try std.testing.expectEqual(@as(u8, 127), e8m0For(0));
+    try std.testing.expectEqual(@as(u8, 127), e8m0For(448));
+    try std.testing.expectEqual(@as(u8, 128), e8m0For(449));
+}
+
 /// One packed buffer a layer, rows [q | gate | rel | sink padded to 64 | k | v]: views of it, every one at the
 /// parts' own K slices (one count for all six, else refused), so a fused product's rows carry the separate bits.
 pub const Fused = struct {
@@ -95,6 +156,7 @@ pub const Weights = struct {
     ones: u64 = 0, // fp32 [max taps] of 1.0: dense rows' scaled form rounds the dynamic taps to bf16
     buffers: std.ArrayList(DeviceBuffer) = .empty,
     bytes: usize = 0,
+    trunk: Trunk = .bf16,
 
     pub fn deinit(w: *Weights) void {
         for (w.buffers.items) |*b| b.free();
@@ -116,7 +178,6 @@ pub const Weights = struct {
         const f = Fused.of(&w.config.text);
         const k = parts[0].dim(1);
         const offs = [6]usize{ f.q, f.gate, f.rel, f.sink, f.k, f.v };
-        const npad = cuda.modelopt.padded(f.all);
         const src = try w.gpa.alloc(u16, f.all * k);
         defer w.gpa.free(src);
         @memset(src, 0);
@@ -125,37 +186,59 @@ pub const Weights = struct {
             if (t.dim(1) != k or o + t.dim(0) > e) return error.Inkling2FusedShape;
             @memcpy(std.mem.sliceAsBytes(src[o * k ..][0 .. t.dim(0) * k]), t.bytes[0 .. t.dim(0) * k * 2]);
         }
-        const out = try w.gpa.alloc(u16, npad * k);
-        defer w.gpa.free(out);
-        cuda.qmmf.packBf16(out, src, f.all, k);
-        const base = try w.upload(d, std.mem.sliceAsBytes(out));
+        const base = try w.rows(d, src, f.all, k);
         const sk = cuda.qmmf.splitK(parts[0].dim(0), k);
         for (parts) |t| if (cuda.qmmf.splitK(t.dim(0), k) != sk) return error.Inkling2FusedSlices;
-        const view = struct {
-            fn at(ptr: u64, row: usize, n: usize, kk: usize, slices: u32) !Lane {
-                return cuda.qmmf.pinned(cuda.modelopt.bf16Weight(ptr + row * kk * 2, n, kk), slices);
-            }
-        };
-        a.qx = try view.at(base, 0, f.qx, k, sk);
-        a.all = try view.at(base, 0, f.all, k, sk);
+        a.qx = try cuda.qmmf.pinned(view(base, 0, f.qx), sk);
+        a.all = try cuda.qmmf.pinned(view(base, 0, f.all), sk);
         const lanes = [_]*Lane{ &a.wq, &a.gate, &a.wr, &a.sink, &a.wk, &a.wv };
-        for (lanes, parts, offs) |l, t, o| l.* = try view.at(base, o, t.dim(0), k, sk);
+        for (lanes, parts, offs) |l, t, o| l.* = try cuda.qmmf.pinned(view(base, o, t.dim(0)), sk);
     }
 
-    /// A bf16 [n, k] projection (its first `rows` rows) in the lane's order, padded to 128 rows.
-    fn lane(w: *Weights, d: *const cuda.Driver, t: Tensor, rows: usize) !Lane {
+    /// A bf16 [n, k] projection's first `n` rows in the trunk's lane format.
+    fn lane(w: *Weights, d: *const cuda.Driver, t: Tensor, n: usize) !Lane {
         const k = t.dim(t.rank - 1);
-        const n = rows;
-        const npad = cuda.modelopt.padded(n);
-        const out = try w.gpa.alloc(u16, npad * k);
-        defer w.gpa.free(out);
         const src = try w.gpa.alloc(u16, n * k);
         defer w.gpa.free(src);
         @memcpy(std.mem.sliceAsBytes(src), t.bytes[0 .. n * k * 2]);
-        cuda.qmmf.packBf16(out, src, n, k);
-        return cuda.modelopt.bf16Weight(try w.upload(d, std.mem.sliceAsBytes(out)), n, k);
+        return w.rows(d, src, n, k);
+    }
+
+    /// bf16 rows [n, k] uploaded in the trunk's lane order, padded to 128 rows.
+    fn rows(w: *Weights, d: *const cuda.Driver, src: []const u16, n: usize, k: usize) !Lane {
+        const npad = cuda.modelopt.padded(n);
+        switch (w.trunk) {
+            .bf16 => {
+                const out = try w.gpa.alloc(u16, npad * k);
+                defer w.gpa.free(out);
+                cuda.qmmf.packBf16(out, src, n, k);
+                return cuda.modelopt.bf16Weight(try w.upload(d, std.mem.sliceAsBytes(out)), n, k);
+            },
+            .mxfp8 => {
+                const groups = k / cuda.mxfp8.group;
+                const raw_ = try w.gpa.alloc(u8, n * (k + groups));
+                defer w.gpa.free(raw_);
+                quantizeMxfp8(raw_[0 .. n * k], raw_[n * k ..], src);
+                const out = try w.gpa.alloc(u8, npad * (k + groups));
+                defer w.gpa.free(out);
+                cuda.mxfp8.packCodes(out[0 .. npad * k], raw_[0 .. n * k], n, k);
+                cuda.mxfp8.packScales(out[npad * k ..], raw_[n * k ..], n, k);
+                const base = try w.upload(d, out);
+                return cuda.mxfp8.weight(base, base + npad * k, n, k);
+            },
+        }
     }
 };
+
+/// Rows [row, row + n) of a packed projection; `row` is a multiple of 64, a whole tile in either format.
+fn view(base: Lane, row: usize, n: usize) Lane {
+    var v = base;
+    v.codes += row * base.k * @as(u64, if (base.mode == .bf16) 2 else 1);
+    if (base.mode == .mxfp8) v.scales += row * (base.k / cuda.mxfp8.group);
+    v.n = @intCast(n);
+    v.npad = @intCast(cuda.modelopt.padded(n));
+    return v;
+}
 
 fn get(ck: *core.checkpoint.Checkpoint, comptime fmt: []const u8, args: anytype) !Tensor {
     var buf: [128]u8 = undefined;
@@ -217,7 +300,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []co
     defer core.checkpoint.cache.close(&ck);
     var prec: [config.max_layers]plan_.Precision = undefined;
     try admit(gpa, &ck, &c, prec[0..c.text.layers]);
-    var w: Weights = .{ .gpa = gpa, .config = c, .plan = try plan_.build(&c.text, prec[0..c.text.layers]) };
+    var w: Weights = .{ .gpa = gpa, .config = c, .plan = try plan_.build(&c.text, prec[0..c.text.layers]), .trunk = try Trunk.fromEnv() };
     errdefer w.deinit();
     const t = &c.text;
     w.layers = try gpa.alloc(Layer, t.layers);
@@ -259,9 +342,9 @@ fn layer(w: *Weights, d: *const cuda.Driver, ck: *core.checkpoint.Checkpoint, i:
     };
     const pre = "model.llm.layers.{d}.attn.";
     try w.fused(d, .{
-        try get(ck, pre ++ "wq_du.weight", L),          try get(ck, pre ++ "gate_attn.weight", L),
-        try get(ck, pre ++ "wr_du.weight", L),          try get(ck, pre ++ "attn_sink_proj.weight", L),
-        try get(ck, pre ++ "wk_dv.weight", L),          try get(ck, pre ++ "wv_dv.weight", L),
+        try get(ck, pre ++ "wq_du.weight", L), try get(ck, pre ++ "gate_attn.weight", L),
+        try get(ck, pre ++ "wr_du.weight", L), try get(ck, pre ++ "attn_sink_proj.weight", L),
+        try get(ck, pre ++ "wk_dv.weight", L), try get(ck, pre ++ "wv_dv.weight", L),
     }, &a);
     if (global) {
         a.k_conv = try raw(w, d, ck, "model.llm.layers.{d}.attn.k_sconv.static_w", L);
