@@ -219,10 +219,14 @@ pub const Probe = struct {
         const nv = isNv(p.kind);
         const ids = hr(p.refs[if (nv) 5 else 3]);
         const out = hr(p.refs[if (nv) 6 else 4]);
-        try host.group(&p.pipes, e, ids, p.call());
-        e.barrier();
-        const launch = if (isTurned(p.kind)) &host.unitsTurned else &host.units;
-        try launch(&p.pipes, e, !isGu(p.kind), hr(p.refs[0]), hr(p.refs[1]), hr(p.refs[2]), if (nv) .{ .amax = hr(p.refs[3]), .denominator = hr(p.refs[4]) } else null, out, p.call());
+        if (isGu(p.kind) and !isTurned(p.kind)) {
+            try host.guUnits(&p.pipes, e, ids, hr(p.refs[0]), hr(p.refs[1]), hr(p.refs[2]), if (nv) .{ .amax = hr(p.refs[3]), .denominator = hr(p.refs[4]) } else null, out, p.call());
+        } else {
+            try host.group(&p.pipes, e, ids, p.call());
+            e.barrier();
+            const launch = if (isTurned(p.kind)) &host.unitsTurned else &host.units;
+            try launch(&p.pipes, e, !isGu(p.kind), hr(p.refs[0]), hr(p.refs[1]), hr(p.refs[2]), if (nv) .{ .amax = hr(p.refs[3]), .denominator = hr(p.refs[4]) } else null, out, p.call());
+        }
         try p.rig.finish(pass);
     }
 

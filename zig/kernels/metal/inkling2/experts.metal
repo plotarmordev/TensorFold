@@ -176,7 +176,7 @@ inline bfloat ink2_act(float gate_dot, float up_dot) {
 
 // ---- Grouped by expert: the same sums a row as the kernels above, with each weight block decoded once a pass. ----
 struct Ink2GroupArgs { uint pairs, experts, cap; };
-struct Ink2GroupedArgs { uint k, n, topk, cap; };
+struct Ink2GroupedArgs { uint k, n, topk, cap, pairs; };
 #define INK2_PASS 4u
 
 // Expert e's route pairs in pair order: counts[e], then members[e][0 .. counts[e]).

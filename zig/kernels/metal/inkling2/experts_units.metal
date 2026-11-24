@@ -30,14 +30,13 @@ inline bfloat4 ink2_mx_quad(device const uchar* w, device const uchar* scales, u
 }
 
 // Threadgroup (x, e): weight rows 32x .. 32x + 31 of expert e by its pairs, 16 a band; FP8 is MXFP8, else NVFP4.
-template <bool FP8, bool GU>
+template <bool FP8, bool GU, typename Members>
 inline void ink2_units(device const bfloat* X, device const uchar* W, device const uchar* S, float phi,
-                       device const uint* counts, device const uint* members, device bfloat* Y,
+                       uint count, Members members, device bfloat* Y,
                        constant Ink2GroupedArgs& a, uint2 tg, uint sg, uint lane, threadgroup float* part) {
   // GU: X is by row and the 2n interleaved gate and up rows give Y[pair][n]; else X is by pair. 32 divides the rows.
   const uint K = GU ? INK2_GU_K : INK2_DOWN_K, rows_w = GU ? 2u * a.n : a.n, steps = K / 128u;
   const uint expert = tg.y, w0 = 32u * tg.x;
-  const uint count = counts[expert];
   if (count == 0u) return;
   const uint wb = FP8 ? K : K / 2u, sb = FP8 ? K / 32u : K / 16u;
   const short2 home = tfp::frag_home(ushort(lane));
@@ -47,7 +46,7 @@ inline void ink2_units(device const bfloat* X, device const uchar* W, device con
   for (uint band = 0u; band < count; band += 16u) {
     const uint m0 = band + hy, m1 = band + hy + 8u;
     const bool live0 = m0 < count, live1 = m1 < count;
-    const uint p0 = members[expert * a.cap + min(m0, count - 1u)], p1 = members[expert * a.cap + min(m1, count - 1u)];
+    const uint p0 = members[min(m0, count - 1u)], p1 = members[min(m1, count - 1u)];
     device const bfloat* x0 = X + ulong(GU ? p0 / a.topk : p0) * K + hx;
     device const bfloat* x1 = X + ulong(GU ? p1 / a.topk : p1) * K + hx;
     tfp::frag<float> lo = tfp::frag<float>(0.0f), hi = tfp::frag<float>(0.0f);
@@ -89,16 +88,40 @@ inline void ink2_units(device const bfloat* X, device const uchar* W, device con
   }
 }
 
+// Every gate-up tile has its own ordered member list. Tile zero publishes it for down.
+inline uint ink2_gu_members(device const int* ids, device uint* counts, device uint* members,
+                            constant Ink2GroupedArgs& a, uint2 tg, uint t, threadgroup uint* local,
+                            threadgroup uint& count) {
+  if (t == 0u) {
+    uint n = a.pairs ? 0u : counts[tg.y];
+    if (a.pairs) {
+      for (uint p = 0u; p < a.pairs; ++p) if (uint(ids[p]) == tg.y) {
+        local[n] = p;
+        if (tg.x == 0u) members[tg.y * a.cap + n] = p;
+        ++n;
+      }
+      if (tg.x == 0u) counts[tg.y] = n;
+    }
+    count = n;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (!a.pairs) for (uint i = t; i < count; i += 256u) local[i] = members[tg.y * a.cap + i];
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  return count;
+}
+
 [[kernel, max_total_threads_per_threadgroup(256)]] void tf_ink2_nvfp4_gu_units(
     device const bfloat* X [[buffer(0)]], device const uchar* W [[buffer(1)]],
     device const uchar* S [[buffer(2)]], device const float* amax [[buffer(3)]],
-    device const float* denominator [[buffer(4)]], device const uint* counts [[buffer(5)]],
-    device const uint* members [[buffer(6)]], device bfloat* Y [[buffer(7)]],
-    constant Ink2GroupedArgs& a [[buffer(8)]],
+    device const float* denominator [[buffer(4)]], device uint* counts [[buffer(5)]],
+    device uint* members [[buffer(6)]], device bfloat* Y [[buffer(7)]],
+    constant Ink2GroupedArgs& a [[buffer(8)]], device const int* ids [[buffer(9)]],
     uint2 tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
-    uint lane [[thread_index_in_simdgroup]]) {
+    uint lane [[thread_index_in_simdgroup]], uint t [[thread_index_in_threadgroup]]) {
   threadgroup float part[4096];
-  ink2_units<false, true>(X, W, S, ink2_phi(amax, denominator, tg.y), counts, members, Y, a, tg, sg, lane, part);
+  threadgroup uint local[1024], count;
+  const uint n = ink2_gu_members(ids, counts, members, a, tg, t, local, count);
+  ink2_units<false, true>(X, W, S, ink2_phi(amax, denominator, tg.y), n, local, Y, a, tg, sg, lane, part);
 }
 
 [[kernel, max_total_threads_per_threadgroup(256)]] void tf_ink2_nvfp4_down_units(
@@ -110,18 +133,20 @@ inline void ink2_units(device const bfloat* X, device const uchar* W, device con
     uint2 tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
   threadgroup float part[4096];
-  ink2_units<false, false>(X, W, S, ink2_phi(amax, denominator, tg.y), counts, members, Y, a, tg, sg, lane, part);
+  ink2_units<false, false>(X, W, S, ink2_phi(amax, denominator, tg.y), counts[tg.y], members + tg.y * a.cap, Y, a, tg, sg, lane, part);
 }
 
 [[kernel, max_total_threads_per_threadgroup(256)]] void tf_ink2_mxfp8_gu_units(
     device const bfloat* X [[buffer(0)]], device const uchar* W [[buffer(1)]],
-    device const uchar* S [[buffer(2)]], device const uint* counts [[buffer(3)]],
-    device const uint* members [[buffer(4)]], device bfloat* Y [[buffer(5)]],
-    constant Ink2GroupedArgs& a [[buffer(6)]],
+    device const uchar* S [[buffer(2)]], device uint* counts [[buffer(3)]], device uint* members [[buffer(4)]],
+    device bfloat* Y [[buffer(5)]], constant Ink2GroupedArgs& a [[buffer(6)]],
+    device const int* ids [[buffer(7)]],
     uint2 tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
-    uint lane [[thread_index_in_simdgroup]]) {
+    uint lane [[thread_index_in_simdgroup]], uint t [[thread_index_in_threadgroup]]) {
   threadgroup float part[4096];
-  ink2_units<true, true>(X, W, S, 1.0f, counts, members, Y, a, tg, sg, lane, part);
+  threadgroup uint local[1024], count;
+  const uint n = ink2_gu_members(ids, counts, members, a, tg, t, local, count);
+  ink2_units<true, true>(X, W, S, 1.0f, n, local, Y, a, tg, sg, lane, part);
 }
 
 [[kernel, max_total_threads_per_threadgroup(256)]] void tf_ink2_mxfp8_down_units(
@@ -132,7 +157,7 @@ inline void ink2_units(device const bfloat* X, device const uchar* W, device con
     uint2 tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
   threadgroup float part[4096];
-  ink2_units<true, false>(X, W, S, 1.0f, counts, members, Y, a, tg, sg, lane, part);
+  ink2_units<true, false>(X, W, S, 1.0f, counts[tg.y], members + tg.y * a.cap, Y, a, tg, sg, lane, part);
 }
 
 // Threadgroup (x, e): 16 weight rows of expert e by its pairs, 32 a band: ink2_units' tile turned, for wide chunks.

@@ -163,10 +163,10 @@ pub fn combine(p: *const Pipelines, e: mtl.ComputeEncoder, down: Ref, ids: Ref, 
 }
 
 const GroupArgs = extern struct { pairs: u32, experts: u32, cap: u32 };
-const GroupedArgs = extern struct { k: u32, n: u32, topk: u32, cap: u32 };
+const GroupedArgs = extern struct { k: u32, n: u32, topk: u32, cap: u32, pairs: u32 };
 
-fn groupedArgs(c: Call) GroupedArgs {
-    return .{ .k = c.k, .n = c.n, .topk = c.topk, .cap = group_cap };
+fn groupedArgs(c: Call, pairs: u32) GroupedArgs {
+    return .{ .k = c.k, .n = c.n, .topk = c.topk, .cap = group_cap, .pairs = pairs };
 }
 
 fn counts(p: *const Pipelines) Ref {
@@ -199,30 +199,39 @@ pub fn guGrouped(p: *const Pipelines, e: mtl.ComputeEncoder, x: Ref, w: Ref, sca
         .nvfp4 => {
             const g = nv_globals orelse return error.MissingNvfp4Globals;
             for ([_]Ref{ x, w, scales, g.amax, g.denominator, counts(p), members(p), out }, 0..) |b, i| e.setBuffer(b.buf, b.off, i);
-            e.setValue(groupedArgs(c), 8);
+            e.setValue(groupedArgs(c, 0), 8);
             launchGrouped(p, e, .nvfp4_gu_grouped, c);
         },
         .mxfp8 => {
             for ([_]Ref{ x, w, scales, counts(p), members(p), out }, 0..) |b, i| e.setBuffer(b.buf, b.off, i);
-            e.setValue(groupedArgs(c), 6);
+            e.setValue(groupedArgs(c, 0), 6);
             launchGrouped(p, e, .mxfp8_gu_grouped, c);
         },
     }
 }
 
 const Globals = struct { amax: Ref, denominator: Ref };
+/// Small gate-up windows list their pairs inside each expert's tile, without a group launch.
+pub fn guUnits(p: *const Pipelines, e: mtl.ComputeEncoder, ids: Ref, x: Ref, w: Ref, scales: Ref, globals: ?Globals, out: Ref, c: Call) !void {
+    const fused = c.rows <= 32;
+    if (!fused) {
+        try group(p, e, ids, c);
+        e.barrier();
+    }
+    try launchUnits(p, e, false, c.rows > turned_rows, if (fused) ids else null, x, w, scales, globals, out, c);
+}
 
 /// gu, or the down products (`down`), after group on the tensor units: an op is 16 of an expert's pairs by 32 rows.
 pub fn units(p: *const Pipelines, e: mtl.ComputeEncoder, down: bool, x: Ref, w: Ref, scales: Ref, nv_globals: ?Globals, out: Ref, c: Call) !void {
-    return launchUnits(p, e, down, c.rows > turned_rows, x, w, scales, nv_globals, out, c);
+    return launchUnits(p, e, down, c.rows > turned_rows, null, x, w, scales, nv_globals, out, c);
 }
 
 /// The same products on the turned tiles, 16 rows by 32 of an expert's pairs an op: the same sums, for wide chunks.
 pub fn unitsTurned(p: *const Pipelines, e: mtl.ComputeEncoder, down: bool, x: Ref, w: Ref, scales: Ref, nv_globals: ?Globals, out: Ref, c: Call) !void {
-    return launchUnits(p, e, down, true, x, w, scales, nv_globals, out, c);
+    return launchUnits(p, e, down, true, null, x, w, scales, nv_globals, out, c);
 }
 
-fn launchUnits(p: *const Pipelines, e: mtl.ComputeEncoder, down: bool, turned: bool, x: Ref, w: Ref, scales: Ref, nv_globals: ?Globals, out: Ref, c: Call) !void {
+fn launchUnits(p: *const Pipelines, e: mtl.ComputeEncoder, down: bool, turned: bool, ids: ?Ref, x: Ref, w: Ref, scales: Ref, nv_globals: ?Globals, out: Ref, c: Call) !void {
     try plan.check(c);
     const pipes = p.units orelse return error.NoTensorUnits;
     // Gate and up rows interleave, so gu has two weight rows an output; the kernels fix the columns of each product.
@@ -232,12 +241,14 @@ fn launchUnits(p: *const Pipelines, e: mtl.ComputeEncoder, down: bool, turned: b
         .nvfp4 => {
             const g = nv_globals orelse return error.MissingNvfp4Globals;
             for ([_]Ref{ x, w, scales, g.amax, g.denominator, counts(p), members(p), out }, 0..) |b, i| e.setBuffer(b.buf, b.off, i);
-            e.setValue(groupedArgs(c), 8);
+            if (!down and !turned) e.setBuffer((ids orelse x).buf, (ids orelse x).off, 9);
+            e.setValue(groupedArgs(c, if (ids != null) c.rows * c.topk else 0), 8);
             e.setPipeline(pipes[(if (turned) @as(usize, 6) else 0) + @intFromBool(down)]);
         },
         .mxfp8 => {
             for ([_]Ref{ x, w, scales, counts(p), members(p), out }, 0..) |b, i| e.setBuffer(b.buf, b.off, i);
-            e.setValue(groupedArgs(c), 6);
+            if (!down and !turned) e.setBuffer((ids orelse x).buf, (ids orelse x).off, 7);
+            e.setValue(groupedArgs(c, if (ids != null) c.rows * c.topk else 0), 6);
             e.setPipeline(pipes[(if (turned) @as(usize, 6) else 0) + 2 + @as(usize, @intFromBool(down))]);
         },
     }
@@ -272,12 +283,12 @@ pub fn downGrouped(p: *const Pipelines, e: mtl.ComputeEncoder, act: Ref, w: Ref,
         .nvfp4 => {
             const g = nv_globals orelse return error.MissingNvfp4Globals;
             for ([_]Ref{ act, w, scales, g.amax, g.denominator, counts(p), members(p), out }, 0..) |b, i| e.setBuffer(b.buf, b.off, i);
-            e.setValue(groupedArgs(c), 8);
+            e.setValue(groupedArgs(c, 0), 8);
             launchGrouped(p, e, .nvfp4_down_grouped, c);
         },
         .mxfp8 => {
             for ([_]Ref{ act, w, scales, counts(p), members(p), out }, 0..) |b, i| e.setBuffer(b.buf, b.off, i);
-            e.setValue(groupedArgs(c), 6);
+            e.setValue(groupedArgs(c, 0), 6);
             launchGrouped(p, e, .mxfp8_down_grouped, c);
         },
     }
