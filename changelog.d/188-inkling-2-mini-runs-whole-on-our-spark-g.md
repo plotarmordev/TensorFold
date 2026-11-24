@@ -8,6 +8,7 @@
 - `docs/recipes/inkling-2-mini-cuda/run-script.sh` runs the original checkpoint on TOP's GB10: the serving checks,
   the float64 reference and its planted control, then first-token time, prompt speed, decode speed, memory
   (`/proc/meminfo`) and the bandwidth limit at 1 and 4 streams; 4 streams must give 1.5 times one stream's total.
+  After the build, every check and both levels run inside `timeout 600`.
   The recipe's README notes what RTX Spark (native Windows and WSL2) needs.
 - `tf-cuda-test kernel-contract "inkling2 loop"` checks the served `loop.cu` message mix and three gate launches
   against FP64 references, with planted controls (an aliased block, a gate reading the wrong role plane).

@@ -17,15 +17,15 @@ checkpoint's headers) over 273 GB/s.
 
 ## Receipt: TOP's GB10, one capped run
 
-Job `top-bde5d508e589` at `fbbd43cbe`, `--context 8192`, greedy, 256 tokens, 3 reps, medians. This is one run with
-these settings, not a benchmark.
+Job `top-0b05213c9f06` at `4a5089e70`, `--context 8192`, greedy, 256 tokens, 3 reps, medians; the build ran first, then
+every check and both levels inside `timeout 600`. This is one run with these settings, not a benchmark.
 
 | Streams | First token (code / chat) | Prompt (code) | Decode a stream (code / chat) | Total decode (code / chat) | Failed |
 |---|---|---|---|---|---|
-| 1 | 0.076 s / 0.036 s | 196.8 tok/s | 32.9 / 32.8 tok/s | 32.9 / 32.8 tok/s | 0 |
-| 4 | 0.189 s / 0.090 s | 82.3 tok/s | 29.9 / 30.2 tok/s | 118.7 / 120.1 tok/s | 0 |
+| 1 | 0.075 s / 0.037 s | 199.4 tok/s | 32.9 / 32.8 tok/s | 32.9 / 32.8 tok/s | 0 |
+| 4 | 0.186 s / 0.091 s | 83.7 tok/s | 29.8 / 29.8 tok/s | 117.9 / 118.8 tok/s | 0 |
 
-The 4-stream gate takes each level's better prompt: 120.1 over 32.9 tok/s, 3.65x. Every stream sends the same prompt,
+The 4-stream gate takes each level's better prompt: 118.8 over 32.9 tok/s, 3.61x. Every stream sends the same prompt,
 so the four streams route to the same experts; mixed traffic may give a lower 4-stream rate.
 
 Checks in the same job: the CUDA engine matched the host reference token for token, fresh and resumed prompts gave
@@ -33,8 +33,8 @@ identical logits and tokens, and two lanes in shared rounds kept their tokens; 0
 the float64 reference (smallest reference margin 0.11), and its planted control (no messages) differed at 6. The
 kernel contract passed gates 1-4 on all 5 loop kernels with both planted controls red.
 
-Memory, sampled after each step (not process peaks): host used (`/proc/meminfo`) was 10.4 GiB before the server,
-30.7 GiB with Mini loaded for 4 streams, and the same after both levels; the server held 20.0 GiB of GPU memory
+Memory, sampled after each step (not process peaks): host used (`/proc/meminfo`) was 11.1 GiB before the server,
+31.8 GiB with Mini loaded for 4 streams and 32.2 GiB after both levels; the server held 20.0 GiB of GPU memory
 (`nvidia-smi`).
 
 Bandwidth limit: a decoded token reads about 5.55 GB of weights (core layers 3 passes, 8 of 128 experts a visit, the
