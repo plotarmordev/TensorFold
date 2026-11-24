@@ -59,7 +59,7 @@ timeout 600 sh -eu -c '
                 --reps 3 --temperatures 0 --label "$name-$level" --output "$out/$name-$level.json" >/dev/null
             python3 -c "import json, sys; cells = json.load(open(sys.argv[1]))[\"cells\"]
 assert not any(c.get(\"failed\") for c in cells), \"a request failed\"
-for c in cells: print(f\"RESULT {sys.argv[2]} gb10 {sys.argv[3]} stream(s) {c[\"prompt\"]}: decode {c[\"per_stream_tps\"]} tok/s a stream, {c[\"aggregate_tps\"]} total\")" \
+for c in cells: print(\"RESULT {} gb10 {} stream(s) {}: decode {} tok/s a stream, {} total\".format(sys.argv[2], sys.argv[3], c[\"prompt\"], c[\"per_stream_tps\"], c[\"aggregate_tps\"]))" \
                 "$out/$name-$level.json" "$name" "$level"
         done
         kill "$server"

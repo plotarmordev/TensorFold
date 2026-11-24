@@ -11,4 +11,6 @@
 - `docs/recipes/inkling-2-mini-llamacpp/` built mainline b12651 and Unsloth's tree on TOP and measured both at 1
   and 4 streams on card 232's UD-Q4_K_M GGUF (job `top-d561fdb4ceb9`): Unsloth 44.7/45.3 tok/s solo and 139.8/117.1
   at 4 streams over mainline's 38.4/39.2 and 85.5/88.8 — +16% solo (down from its 1.54× on 1.8 TB/s cards, under
-  GB10's ≈21 ms weight-read floor) and 1.32–1.63× at 4 streams, where it passes TensorFold's 118.7 on code prompts.
+  GB10's ≈21 ms weight-read floor) and 1.32–1.63× at 4 streams. A same-head rerun gave 121.9 on 4-stream code, so
+  its lead over TensorFold's 118.7 there is 3–18%, and no pin-off run ties it to particular pins; the recipe's
+  result formatter now runs on Python before 3.12.

@@ -263,7 +263,7 @@ against b12651's source adds seven CUDA files, all graph-pattern fusions matched
 | [#413](https://github.com/unslothai/llama.cpp/pull/413) `260b1ffa4` | relative bias read inside the vector flash attention (`fattn-rel.cu`) | −240 kernels, tg128 +2–6% | yes (as #386) |
 | [#414](https://github.com/unslothai/llama.cpp/pull/414) `f766457c8` | depth mix: rms_norm, concat, q·stack, softmax, mix → 1 (`depth-mix.cu`) | −300 kernels, tg128 +2–3% | yes: `tf_ink2_mix` / `tf_ink2_mix_rows` |
 | [#400](https://github.com/unslothai/llama.cpp/pull/400) `a5667a9c0` | `mul_mat_vec_f` up to 8 rows a block | pp512 +36%, tg flat | n/a: TensorFold's mix is one kernel |
-| [#415](https://github.com/unslothai/llama.cpp/pull/415) `a7c4e14de`, [#416](https://github.com/unslothai/llama.cpp/pull/416), [#418](https://github.com/unslothai/llama.cpp/pull/418) | matvec instead of mma at 2–8 columns, one q8_1 copy shared by same-input matmuls, flat concat | 4 streams 1.21–1.35× | n/a as named (TensorFold has no same-input matmul pairs or concat nodes to collapse); its measured share is real: these pins are where Unsloth's 4-stream code lead (139.8 vs our 118.7) comes from → card 258 |
+| [#415](https://github.com/unslothai/llama.cpp/pull/415) `a7c4e14de`, [#416](https://github.com/unslothai/llama.cpp/pull/416), [#418](https://github.com/unslothai/llama.cpp/pull/418) | matvec instead of mma at 2–8 columns, one q8_1 copy shared by same-input matmuls, flat concat | 4 streams 1.21–1.35× | n/a as named (TensorFold has no same-input matmul pairs or concat nodes to collapse); no pin-off run here, so their share of Unsloth's 4-stream code total (121.9–139.8 vs our 118.7) is unmeasured → card 258 |
 | [#417](https://github.com/unslothai/llama.cpp/pull/417), [#421](https://github.com/unslothai/llama.cpp/pull/421) | MoE matvec 4 rows (cc 12.x keeps 2); one cache entry per looped expert | host-expert runs only | n/a on GB10 (unified memory, every expert resident) |
 | [#405](https://github.com/unslothai/llama.cpp/pull/405) `b5ed9f284` | loads Unsloth's padded-vocab DSpark drafter | 126.6 vs 102.1 greedy, B200 | no: lever 1 (cards 236, 246) |
 
@@ -287,16 +287,17 @@ Unsloth's tree from source with card 232's flags plus `-fa on`, and serves 232's
 | TensorFold (bf16 checkpoint, 188's engine) | 32.9 / 32.8 | 118.7 / 120.1 | job `top-b77911768550` (232) |
 | llama.cpp b12611, UD-Q4_K_M | 38.8 / 39.1 | 85.9 / 87.6 | job `top-b77911768550` (232) |
 | llama.cpp b12651, UD-Q4_K_M | 38.4 / 39.2 | 85.5 / 88.8 | job `top-d561fdb4ceb9`, this branch at `a0efea99d` (waits: jobs `top-28403507400a`, `top-87b11998bb03`, `top-68cf8da0fc84`, `top-2faa590d03a5` ran before staging) |
-| Unsloth b12651-mix-c7059d6, UD-Q4_K_M | **44.7 / 45.3** | **139.8 / 117.1** | job `top-d561fdb4ceb9` |
+| Unsloth b12651-mix-c7059d6, UD-Q4_K_M | **44.7 / 45.3** | **139.8 / 117.1**; code 121.9 on the review's same-head rerun | job `top-d561fdb4ceb9`; review rerun |
 | *RTX PRO 6000, Unsloth's docs (UD-Q4_K_XL, tg1024)* | *125.24 (Unsloth) / 81.35 (mainline b12649)* | — | Unsloth |
 
 Measured on GB10: Unsloth over mainline is **+16% solo** (45.3 / 39.2 chat; expected above: the removed kernel time
 is a smaller share under a ≈21 ms weight-read floor than under ≈3 ms on the 1.8 TB/s cards, so 1.54× shrank to
-1.15–1.17×) and **1.63× / 1.32× at 4 streams** (code / chat; the small-batch pins apply only at 2–8 rows, so this
-gain was always expected to be larger there than solo). Against TensorFold's rows, Unsloth's build now leads solo
-(45.3 vs 32.9 chat, on ≈3.3 GB a token against our 5.55 GB) and on 4-stream code (139.8 vs 118.7); TensorFold still
-leads 4-stream chat (120.1 vs 117.1). Solo, llama.cpp's byte read is the pack's — the UD-Q4_K_M GGUF is ≈16.6 GB —
-so the pack-size lever (card 252) would recover most of that lead for TensorFold.
+1.15–1.17×) and **1.43–1.63× / 1.32× at 4 streams** (code, across the two runs / chat). The 4-stream code total
+moved from 139.8 to 121.9 between two runs of the same build, so one run does not fix it; neither run switched pins
+off, so which pins carry the 4-stream gain is not measured here. Against TensorFold's rows, Unsloth's build leads
+solo (45.3 vs 32.9 chat, on ≈3.3 GB of weights a token against our 5.55 GB) and on 4-stream code (121.9–139.8 vs
+118.7); TensorFold still leads 4-stream chat (120.1 vs 117.1). Solo, llama.cpp reads fewer weight bytes a token than
+our bf16 trunk does, so the pack-size lever (card 252) would recover most of that lead for TensorFold.
 
 ### Mia's 45.8 tok/s: Derisked is not a faster model
 
@@ -307,10 +308,10 @@ shard has the checkpoint's layout and bytes a token, so it cannot read fewer byt
 [sparkDash](https://github.com/MiaAI-Lab/sparkDash) (`86f972e2`, `server/collectors/DecodeBench.js`) streams
 `/v1/chat/completions` at temperature 0.7, top_k 20, thinking on; a 1.39× lead at one stream on the same bytes points
 to drafting in her TensorFold build ([INFERENCE]: her server's flags are not published). For scale: Unsloth's plain
-llama.cpp build, no drafting, decodes 45.3 tok/s solo on the same GB10 — but on ≈16.6 GB of UD-Q4_K_M weights, so
-byte-identical comparisons still need drafting. Matching it on our GB10 needs our server with DSpark (card 236's
-branch) and sparkDash's Node collectors staged for the job; that is follow-up 4 below, with sparkDash's prefill
-sweep (4k–128k), which TensorFold has no GB10 receipt for.
+llama.cpp build, no drafting, decodes 45.3 tok/s solo on the same GB10 — but on UD-Q4_K_M weights (≈3.3 GB read a
+token from a 16.6 GB file), so byte-identical comparisons still need drafting. Matching it on our GB10 needs our
+server with DSpark (card 236's branch) and sparkDash's Node collectors staged for the job; that is follow-up 4 below,
+with sparkDash's prefill sweep (4k–128k), which TensorFold has no GB10 receipt for.
 
 ### Inco's Splash: a 4-bit GGUF and a block-diffusion drafter
 
@@ -339,7 +340,7 @@ measures it and DFlash2's acceptance against DSpark's.
 |---|---|---|---|---|
 | Fused glue: conv chain, clip, SiTU, depth mix, rel bias in attention | Unsloth #386, #401, #402, #411, #413, #414 | in | taken | — |
 | Controller gate fusion and dependent launches (PDL off for Mini: `qmmf.zig` `pdl` false) | Unsloth #412 | missing | 2–3 ms of 30.4: +7–11% ([INFERENCE], no per-kernel GB10 profile) | 253 |
-| Small-batch kernel choice, q8_1 reuse, flat concat | Unsloth #415, #416, #418 | n/a as named (no same-input matmul pairs or concat nodes to collapse) | none at 1 stream; at 4 streams Unsloth's code total 139.8 beats our 118.7 — measured, transfer unproven | 258 |
+| Small-batch kernel choice, q8_1 reuse, flat concat | Unsloth #415, #416, #418 | n/a as named (no same-input matmul pairs or concat nodes to collapse) | none at 1 stream; at 4 streams Unsloth's code total (121.9–139.8 over two runs) beats our 118.7, with no pin-off run to tie it to these pins | 258 |
 | MoE cache dedupe, 4-row MoE matvec | Unsloth #417, #421 | n/a on GB10 | — | — |
 | W=4 beam-tree DSpark | Strata 1; Unsloth #405 | missing on CUDA (chain drafter on 236's branch) | unmeasured; Mia's 45.8 at the same bytes suggests ≈1.4× | 236, then 209's follow-up 2 |
 | Block-diffusion drafter (DFlash2) | Splash | missing | unmeasured on our hardware; sampled on an H200, 4.8–5.0 (code) and 3.9 (chat) tokens a cycle against MTP/DSpark's 2.95–3.66 ([INFERENCE]: a larger gain than DSpark's) | 255 |
@@ -371,10 +372,11 @@ which cards 236 and 246 already carry.
 5. **Card 255: Splash and DFlash2 on our M5 Ultra.** Serve Splash 1.7.2 with `UD-Q4_K_M` and its DFlash2 draft in a
    Mac GPU window (after the owner agrees to the install), beside DSpark's 122.5 / 91.9, and compare accepted tokens a
    cycle. Gain: unmeasured; DFlash2's published acceptance is 1.3–1.6× DSpark's.
-6. **Card 258: close Unsloth's 4-stream code-prompt lead.** Its build's 139.8 tok/s code total at 4 streams (job
-   `top-d561fdb4ceb9`) beats our 118.7 while our chat total still leads (120.1 vs 117.1). Profile where the code-prompt
-   gap comes from — Unsloth's small-batch pins (#415, #416, #418) are the likely mechanism but patch llama.cpp paths
-   TensorFold does not have — land what transfers, and re-measure beside these rows.
+6. **Card 258: close Unsloth's 4-stream code-prompt lead.** Its build's code total at 4 streams (139.8 in job
+   `top-d561fdb4ceb9`, 121.9 on the review's same-head rerun) beats our 118.7 while our chat total still leads (120.1
+   vs 117.1). First repeat both arms enough times to fix the spread, then run Unsloth's build with and without pins
+   #415, #416 and #418 to measure their share; profile TensorFold's 4-stream code step, land what transfers, and
+   re-measure beside these rows.
 
 ## Windows on ARM: Inkling builds exist; none is Strata's or tuned for the N1X
 
