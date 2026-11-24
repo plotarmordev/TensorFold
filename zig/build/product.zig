@@ -132,18 +132,13 @@ fn cudaServer(b: *std.Build, o: Options, build_options: *std.Build.Step.Options,
 /// The CUDA server; with neither nvcc nor prebuilt images, every image is an empty file, for a compile-only check.
 fn cudaProduct(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, nvcc: ?[]const u8, prebuilt: ?[]const u8, build_options: *std.Build.Step.Options, sm: []const u8) *std.Build.Step.Compile {
     const cuda_build = @import("cuda.zig");
-    const version: ?std.Build.LazyPath = if (nvcc) |tool| blk: {
-        const run = b.addSystemCommand(&.{ tool, "--version" });
-        run.has_side_effects = true;
-        break :blk run.captureStdOut(.{});
-    } else null;
     const target_sm = catalog.Target.parse(sm);
     var images: [catalog.kernels.len]?std.Build.LazyPath = @splat(null);
     const check = b.addRunArtifact(b.addExecutable(.{ .name = "check-product-fatbins", .root_module = b.createModule(.{ .root_source_file = b.path("zig/build/check_product_fatbins.zig"), .target = b.graph.host }) }));
     const empty = b.addWriteFiles();
     for (catalog.kernels, &images) |k, *image| {
         if (nvcc) |tool| {
-            image.* = @import("cuda_fatbin.zig").fatbin(b, tool, version.?, k, sm);
+            image.* = @import("cuda_fatbin.zig").fatbin(b, tool, k, sm);
         } else if (prebuilt == null) {
             image.* = empty.add(b.fmt("{s}.fatbin", .{k.name}), "");
         } else {

@@ -3,12 +3,12 @@
 const std = @import("std");
 
 pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, opts: @import("options.zig").Cuda, test_step: *std.Build.Step) void {
-    const image = if (opts.nvcc) |nvcc| @import("cuda_fatbin.zig").fatbin(b, nvcc, b.addSystemCommand(&.{ nvcc, "--version" }).captureStdOut(.{}), .{ .name = "h3", .flags = &.{"-O3"} }, opts.sms) else b.addWriteFiles().add("h3-compile-only.fatbin", "");
+    const image = if (opts.nvcc) |nvcc| @import("cuda_fatbin.zig").fatbin(b, nvcc, .{ .name = "h3", .flags = &.{"-O3"} }, opts.sms) else b.addWriteFiles().add("h3-compile-only.fatbin", "");
     const cuda = @import("cuda.zig").runtime(b, target, optimize, &.{});
     const core = @import("h3_host.zig").coreModule(b, target);
     const h3 = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/cuda.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "cuda", .module = cuda }, .{ .name = "core", .module = core } } });
     h3.addAnonymousImport("fatbin_h3", .{ .root_source_file = image });
-    const modulation = if (opts.nvcc) |nvcc| @import("cuda_fatbin.zig").fatbin(b, nvcc, b.addSystemCommand(&.{ nvcc, "--version" }).captureStdOut(.{}), .{ .name = "h3_image_modulation", .flags = &.{ "-O3", "--fmad=false" } }, opts.sms) else b.addWriteFiles().add("h3-modulation-compile-only.fatbin", "");
+    const modulation = if (opts.nvcc) |nvcc| @import("cuda_fatbin.zig").fatbin(b, nvcc, .{ .name = "h3_image_modulation", .flags = &.{ "-O3", "--fmad=false" } }, opts.sms) else b.addWriteFiles().add("h3-modulation-compile-only.fatbin", "");
     h3.addAnonymousImport("fatbin_h3_modulation", .{ .root_source_file = modulation });
     const exe = b.addExecutable(.{ .name = "tf-h3-image-cuda", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/h3_image_cuda.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{
         .{ .name = "h3cuda", .module = h3 },

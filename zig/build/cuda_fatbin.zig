@@ -9,7 +9,7 @@ pub const Target = catalog.Target;
 pub const Profile = catalog.Profile;
 pub const profile = catalog.profile;
 
-pub fn fatbin(b: *std.Build, nvcc: []const u8, version: std.Build.LazyPath, k: Kernel, sms: []const u8) std.Build.LazyPath {
+pub fn fatbin(b: *std.Build, nvcc: []const u8, k: Kernel, sms: []const u8) std.Build.LazyPath {
     var choices = std.mem.tokenizeScalar(u8, sms, ',');
     var any = false;
     while (choices.next()) |sm| {
@@ -17,7 +17,9 @@ pub fn fatbin(b: *std.Build, nvcc: []const u8, version: std.Build.LazyPath, k: K
     }
     if (!any) return b.addWriteFiles().add(b.fmt("unsupported-{s}.fatbin", .{k.name}), "");
     const run = b.addSystemCommand(&.{ nvcc, "-fatbin" });
-    run.addFileInput(version);
+    // nvcc's own bytes key every image, so a new compiler rebuilds them; a side-effect `nvcc --version` capture is
+    // rewritten each build and missed every image's cache
+    run.addFileInput(.{ .cwd_relative = nvcc });
     run.addArgs(&torch_flags);
     // CUDA 13's headers with cl.exe need MSVC's conforming preprocessor and M_SQRT2's math define; under a CJK system
     // code page, C4819 (a header character it cannot represent) buries the real errors in thousands of warnings.

@@ -1,7 +1,7 @@
 //! DeepSeek contract images use the same built artifacts as their named installs.
 const std = @import("std");
 const list = @import("dsv41_units.zig");
-pub fn images(b: *std.Build, runner: *std.Build.Step.Compile, install: *std.Build.Step, kernels: anytype, files: []const ?std.Build.LazyPath, prebuilt: ?[]const u8, nvcc: ?[]const u8, version: ?std.Build.LazyPath, sms: []const u8, cuobjdump: ?[]const u8) void {
+pub fn images(b: *std.Build, runner: *std.Build.Step.Compile, install: *std.Build.Step, kernels: anytype, files: []const ?std.Build.LazyPath, prebuilt: ?[]const u8, nvcc: ?[]const u8, sms: []const u8, cuobjdump: ?[]const u8) void {
     const empty = b.addWriteFiles().add("empty-contract-deepseek.fatbin", "");
     for (list.units ++ list.optional) |k| {
         const common = for (kernels, 0..) |known, i| {
@@ -10,7 +10,7 @@ pub fn images(b: *std.Build, runner: *std.Build.Step.Compile, install: *std.Buil
         const file = if (common) |i| files[i] else if (prebuilt) |dir|
             b.graph.cwdRelativePath(b.pathJoin(&.{ dir, b.fmt("{s}.fatbin", .{k.name}) }))
         else if (nvcc) |tool|
-            @import("cuda.zig").fatbin(b, tool, version.?, k, sms)
+            @import("cuda.zig").fatbin(b, tool, k, sms)
         else
             null;
         runner.root_module.addAnonymousImport(b.fmt("contract_fatbin_{s}", .{k.name}), .{ .root_source_file = file orelse empty });
