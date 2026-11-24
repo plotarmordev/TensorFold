@@ -34,7 +34,8 @@ pub const Trunk = enum {
 };
 
 /// bf16 rows into e4m3 codes and a UE8M0 byte per 32 inputs: the least power of two that brings the group's
-/// largest magnitude to e4m3's 448 or below, so no code saturates.
+/// largest magnitude to e4m3's 448 or below. Inside the scale byte's clamp, 1..254 (2^-126..2^127), no code
+/// saturates; outside it — unreachable at bf16's range — one can.
 fn quantizeMxfp8(codes: []u8, scales: []u8, src: []const u16) void {
     const g = cuda.mxfp8.group;
     std.debug.assert(codes.len == src.len and scales.len * g == src.len);
@@ -460,4 +461,40 @@ test "the fused rows: parts in order, sink padded to 64 rows, every view on a 64
     // Mini's six parts share 4 K slices at K 2304 (the fused views pin them); the tiny checkpoint's share 1 at K 256
     for ([_]usize{ 3072, 1024, 384, 24 }) |n| try std.testing.expectEqual(@as(u32, 4), cuda.qmmf.splitK(n, 2304));
     for ([_]usize{ 512, 256, 64, 4 }) |n| try std.testing.expectEqual(@as(u32, 1), cuda.qmmf.splitK(n, 256));
+}
+
+// view(base, row, n) must land each part's pointers on that part's first row of the fused packing, mxfp8 and bf16.
+test "a fused view's row and scale offsets match packCodes' and packScales' packed rows" {
+    const a = std.testing.allocator;
+    const k = 256;
+    const f = Fused{ .q = 0, .gate = 64, .rel = 128, .sink = 192, .k = 256, .v = 320, .qx = 256, .all = 384 };
+    const npad = cuda.mxfp8.padded(f.all);
+    const parts = [6]struct { off: usize, n: usize }{ .{ .off = f.q, .n = 64 }, .{ .off = f.gate, .n = 64 }, .{ .off = f.rel, .n = 64 }, .{ .off = f.sink, .n = 64 }, .{ .off = f.k, .n = 64 }, .{ .off = f.v, .n = 64 } };
+
+    // bf16: a view's codes is the part's row offset in the packed matrix's u16 words.
+    const bbase = cuda.modelopt.bf16Weight(0, f.all, k);
+    for (parts) |p| {
+        const v = view(bbase, p.off, p.n);
+        try std.testing.expectEqual(@as(u64, p.off * k * 2), v.codes);
+        try std.testing.expectEqual(@as(u32, @intCast(p.n)), v.n);
+    }
+
+    // mxfp8: codes then the scale plane in one upload; each part's scales start at its first packed scale row.
+    var rawc: [384 * 256]u8 = undefined;
+    var raws: [384 * 8]u8 = undefined;
+    for (&rawc, 0..) |*b, i| b.* = @truncate(@as(u32, @intCast(i)));
+    for (&raws, 0..) |*b, i| b.* = @truncate(@as(u32, @intCast(i * 7)));
+    const flat = try a.alloc(u8, npad * (k + k / cuda.mxfp8.group));
+    defer a.free(flat);
+    cuda.mxfp8.packCodes(flat[0 .. npad * k], &rawc, f.all, k);
+    cuda.mxfp8.packScales(flat[npad * k ..], &raws, f.all, k);
+    const mbase = cuda.mxfp8.weight(0, npad * k, f.all, k);
+    for (parts) |p| {
+        const v = view(mbase, p.off, p.n);
+        try std.testing.expectEqual(@as(u64, p.off * k), v.codes);
+        try std.testing.expectEqual(npad * k + @as(u64, p.off * (k / cuda.mxfp8.group)), v.scales);
+        // The view's pointer lands on row p.off's first scale bytes: g*128 + r*2 interleave 2 bytes a row.
+        const at: usize = @intCast(v.scales);
+        try std.testing.expectEqualSlices(u8, raws[p.off * k / cuda.mxfp8.group ..][0..2], flat[at..][0..2]);
+    }
 }

@@ -51,5 +51,12 @@ for c in json.load(open(sys.argv[1]))["cells"]:
     kill $server
     wait $server || :
 done
+rc=0
 TF_INKLING2_TRUNK=mxfp8 /work/sm121/bin/tf-cuda-test inkling2-mini-ref "$model" 32 \
-    "The three laws of thermodynamics, explained for a curious student:" || echo "RESULT trunk mxfp8: tokens differ from the bf16 reference"
+    "The three laws of thermodynamics, explained for a curious student:" >"$out/mxfp8-ref.log" 2>&1 || rc=$?
+cat "$out/mxfp8-ref.log"
+# A RESULT line marks a finished run whose tokens differ; a nonzero exit without one is a failed run, not a diff.
+if [ "$rc" -ne 0 ]; then
+    grep -q '^RESULT ' "$out/mxfp8-ref.log" || exit "$rc"
+    echo "RESULT trunk mxfp8: tokens differ from the bf16 reference"
+fi

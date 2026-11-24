@@ -5,7 +5,9 @@
   relative bias in attention, elementwise chains, banded attention), about 7,300 → 3,400 kernels a token. TensorFold's
   Mini engine already fuses all but the loop controller's gate. It marks Unsloth's and Strata's levers in or missing
   with an expected GB10 gain, finds Mia's "Derisked" weights to be a refusal edit at unchanged bytes, and names the
-  biggest missing lever (an MXFP8/NVFP4 trunk, +34–58%), not built here because Mini's engine is not on `main`. Inco's
+  biggest missing lever (an MXFP8/NVFP4 trunk, +34–58%). MXFP8 is built here: `TF_INKLING2_TRUNK=mxfp8` decodes at
+  41.7 tok/s solo and 144.8–149.7 at 4 streams against bf16's 32.9 / 117.2–121.0, with 1 of 32 greedy tokens
+  differing from the float64 reference (job `top-751b5c791bc7`); NVFP4 and the quality gate are card 252. Inco's
   Splash 1.7.2 joins the list (Unsloth's UD-Q4_K_M weights and a DFlash2 block-diffusion drafter); cards 252–255
   and 258 carry the missing levers.
 - `docs/recipes/inkling-2-mini-llamacpp/` built mainline b12651 and Unsloth's tree on TOP and measured both at 1
