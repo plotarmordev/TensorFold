@@ -50,10 +50,11 @@ its dependent chain of kernels does, so the hold lever cuts launches and waits, 
   | 4 streams | 205.0 / 169.7 | 159.0 / 179.1 | 204.9 / 155.7 |
   | round p50, 1 / 4 streams, code | 16.9 / 18.2 ms | 16.7 / 18.3 ms | 16.4 / 18.1 ms |
 
-  Host load moved single reps by up to 40% (control code at four streams: 205.0, 127.2, 209.5), so the medians cannot
-  separate the builds; the per-round time, which the load does not reach, can: it is equal within 0.5 ms at both
-  stream counts, as the lever only touches the drafted path. The earlier candidate cells (61.1 / 62.6 and 223.7 / 224.1
-  at load 9) match card 210's 61.0-62.3 / 216-221.
+  Host load moved single reps by up to 40% (control code at four streams: 205.0, 127.2, 209.5), so these medians do
+  not establish throughput parity between the builds; the lever only touches the drafted path, and the per-round p50
+  above is a hint, not a throughput result. A repeat of these three cells under stable load is pending the next Mac
+  GPU window. The earlier candidate cells (61.1 / 62.6 and 223.7 / 224.1 at load 9) match card 210's 61.0-62.3 /
+  216-221.
 - Every cell: 0 failed requests, every concurrent reply equal to its run alone (12 of 12), drafted equal to plain.
 
 ## Prefill at 45K
@@ -64,7 +65,8 @@ its dependent chain of kernels does, so the hold lever cuts launches and waits, 
 
 ## Engines at 1 and 64 streams
 
-oMLX's own 4-bit MTP build `Inkling-2-Mini-oQ4e-mtp`, the fastest other engine on this Mac, from card 235's
+oMLX's own 4-bit MTP build `Inkling-2-Mini-oQ4e-mtp`, the fastest measured competitor (Strata and llama.cpp were not
+measured on this Mac, and the oMLX cells come from earlier sessions than TensorFold's), from card 235's
 `engines.sh`; TensorFold from `engines.sh` here, DSpark on 64 lanes. Card 235's script started TensorFold on its
 default 8 lanes, so at 64 streams 56 requests queued (168 of 192 waited 10-55 s) and read 141.4 / 154.8; that is fixed
 here, and no request queued. All runs were under other cards' CPU load (35-77). oMLX streams each code reply in one
@@ -75,7 +77,7 @@ chunk after 13 s, so its code cells are unmeasured in every run, card 235's too;
 | 1 stream | **90.2** (89.5-91.5) | 38.4 / 24.8 |
 | 64 streams | **306.6** (229.4-311.2) | 225.6 / 203.3 |
 
-- TensorFold leads at both against oMLX's 4-bit build: 2.3× at one stream, 1.36-1.51× at 64.
+- TensorFold leads at both against oMLX's 4-bit build, across sessions: 2.3× at one stream, 1.36-1.51× at 64.
 - TensorFold's code cells in the same session: 115.4 at one stream (96.5-117.7), 239.8 at four (194.3-273.5, load
   60-77, under the clean 282.7-285.7 above), 399.1 at 64 (309.3-456.4).
 - 0 failed requests in every cell of both engines.
@@ -83,4 +85,5 @@ chunk after 13 s, so its code cells are unmeasured in every run, card 235's too;
 ## Files
 
 `cells.jsonl`: every cell (medians, reps, round, `alone`, `serial`); `prefill45k.txt`; `bandwidth.py` measures the
-ceiling's bandwidth; `engines.sh` runs TensorFold's receipt cells; `run.sh` reproduces the sequence.
+ceiling's bandwidth; `engines.sh` runs TensorFold's receipt cells; `run.sh` reproduces the sequence: bandwidth, DSpark
+and plain control/candidate/control, prefill and engines.
