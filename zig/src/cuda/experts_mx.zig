@@ -100,7 +100,7 @@ pub const Softcap = struct {
         if (grid < 1) return;
         const smem: u32 = if (tiles) experts.Nvfp4Experts.promptSmem(2, prompt_wn) else 0;
         const cfg: launch_.Config = .{ .grid = .{ .x = @intCast(grid), .y = 1, .z = 1 }, .block = .{ .x = 128 }, .shared = smem };
-        try launch_.launch(c.fns[@intFromEnum(form)], cfg, s, &a);
+        try launch_.launch(c.fns[@backingInt(form)], cfg, s, &a);
     }
 };
 
@@ -142,14 +142,18 @@ pub const Mxfp8Experts = struct {
         return e.launchEntry(try entry(prompt, epi), s, epi, in, l, p, out, items, skip);
     }
 
-    /// Decode rows of a plan routed at tile 64 (items of 64 pairs): the staged entries, an item's weights read once.
-    pub fn runStaged(e: *const Mxfp8Experts, s: Stream, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
-        const fi: usize = switch (epi) {
+    /// The staged entry for decode rows of a plan routed at tile 64: the prompt entries and the staged fp32 down.
+    pub fn stagedEntry(epi: Epi) usize {
+        return switch (epi) {
             .up => 3,
             .down_f32 => 5,
             .down_bf16 => 4,
         };
-        return e.launchEntry(fi, s, epi, in, l, p, out, items, skip);
+    }
+
+    /// Decode rows of a plan routed at tile 64 (items of 64 pairs): the staged entries, an item's weights read once.
+    pub fn runStaged(e: *const Mxfp8Experts, s: Stream, epi: Epi, in: Rows, l: Layer, p: Plan, out: u64, items: usize, skip: i32) !void {
+        return e.launchEntry(stagedEntry(epi), s, epi, in, l, p, out, items, skip);
     }
 
     /// Entry `fi` on a plan of at most `items` items: a decode entry's units of 16 pairs, or a staged entry's items of 64.
