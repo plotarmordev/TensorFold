@@ -1,9 +1,10 @@
 #!/bin/sh
 # Inkling 2 Mini on TOP's GB10, llama.cpp's side of the README's comparison:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/compare.sh
-# Prints the bytes of the weights each engine loads, builds llama-server, then measures it under peak-memory.py with
-# the measured part capped at 10 minutes. TensorFold's side is run-script.sh's own job (its float64 reference alone
-# takes over 4 minutes); the README sets the two side by side.
+# Prints each engine's weight files on disk (TensorFold's include the draft head mtp.safetensors, which serve does not
+# load), builds llama-server, then measures it under peak-memory.py with the measured part capped at 10 minutes.
+# TensorFold's side is run-script.sh's own job (its float64 reference alone takes over 4 minutes); the README sets the
+# two side by side.
 set -eu
 here=docs/recipes/inkling-2-mini-cuda
 pilot=/assets/drama3-pilot

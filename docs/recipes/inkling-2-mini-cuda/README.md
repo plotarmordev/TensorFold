@@ -51,21 +51,24 @@ is the receipt above.
 
 | | TensorFold (bf16 safetensors) | llama.cpp (UD-Q4_K_M) |
 |---|---|---|
-| Weights on disk | 20,161,820,584 bytes (18.78 GiB) | 16,610,544,608 bytes (15.47 GiB) |
+| Weights on disk | 20,161,820,584 bytes (18.78 GiB, with the 635,801,416-byte draft head `mtp.safetensors`) | 16,610,544,608 bytes (15.47 GiB) |
 | Decode, 1 stream (code / chat) | 32.9 / 32.8 tok/s | 38.8 / 39.1 tok/s |
-| Decode total, 4 streams (code / chat) | 118.7 / 120.1 tok/s | 85.9 / 87.6 tok/s |
-| 4 streams over 1 | 3.65x | 2.24x |
-| First token, 1 stream (code / chat) | 0.076 s / 0.036 s | 0.067 s / 0.130 s |
-| Prompt, 1 stream (code, uncached) | 196.8 tok/s | 106.4 tok/s (15 tokens / one-token response time; median of 3) |
-| Prompt, 4 streams (code) | 82.3 tok/s | 43.0 tok/s |
+| Decode total, 4 streams (code / chat) | 117.9 / 118.8 tok/s | 85.9 / 87.6 tok/s |
+| 4 streams over 1 | 3.61x | 2.24x |
+| First token, 1 stream (code / chat) | 0.075 s / 0.037 s | 0.067 s (slot cache hit) / 0.130 s |
+| Prompt, 1 stream (code, uncached) | 199.4 tok/s | 106.4 tok/s (15 tokens / one-token response time; median of 3) |
+| Prompt, 4 streams (code) | 83.7 tok/s | 43.0 tok/s (cold requests only) |
 | Memory, server loaded | 20.0 GiB GPU (`nvidia-smi`) | 18.1 GiB GPU (`nvidia-smi`); peak 20.57 GiB: 18.18 GPU + 2.38 resident |
 | Continuation text / teacher-forced tokens vs float64 reference | 32 of 32 token picks | Same free-running text when re-tokenized / 31 of 32 token picks (differs at 5) |
 
 `bench_concurrent.py` warms up with the same code prompt before measuring: llama.cpp's slot cache answers every
-one-stream request, so `prompt_ttft_tps` is null (only cold requests qualify). The separate uncached `/completion`
-measurement above supplies the missing one-stream comparison; it times the full one-token response rather than first
-streamed token, so its client latency includes that token's transfer. llama.cpp decodes one stream 18% faster from 18%
-fewer weight bytes; at 4 streams TensorFold's total is 37% higher. TensorFold's memory is a sample after loading, not
+one-stream request, so its code first token is a cache hit and `prompt_ttft_tps` is null (only cold requests
+qualify). The separate uncached `/completion` measurement above supplies the missing one-stream comparison; it times
+the full one-token response (0.14 s) rather than first streamed token, so its client latency includes that token's
+transfer. At 4 streams the prompt figure is likewise the median of cold requests only; later rounds likely reuse the
+slots the first filled, so it is about one round's requests rather than a median of 3. llama.cpp decodes one stream
+18% faster from 18% fewer weight bytes on disk (15% fewer without the draft head, which `serve` does not load); at 4
+streams TensorFold's total is 37% higher. TensorFold's memory is a sample after loading, not
 `peak-memory.py`'s process peak. Quality: llama.cpp's free-running text matches the 32-token reference continuation
 when re-tokenized, but its teacher-forced token picks agree at 31 of 32 positions (different at position 5);
 TensorFold's token picks agree at all 32 positions.
