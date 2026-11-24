@@ -82,3 +82,25 @@ no same-session TOP measurement in this receipt. Neither published pack nor the 
 engine; Mini CUDA has no draft path (`takes_drafter = false`). Card 209 proposes a CUDA DSpark tree on #4128's kernels,
 then fp4 tensor-core experts at 64 streams and a smaller pack. Cards 215 and 219 own that work, but their future
 results are not evidence for this card's bar.
+
+## K/V pages by TMA bulk copies
+
+`kv-pages.sh`, job `top-fe6b1f3ecd90` at `d5b2cafd7`: attention stages each 64-key K/V page into shared memory with
+`cp.async.bulk` on sm_90+; the control is the same tree built with `TF_INK2_KV_LOADS=1` (the per-thread loads).
+The attention contract passed on both builds. At 64 streams (64 distinct prompts, greedy, 128 tokens, medians of 3),
+all 192 replies per context were byte-identical across control, candidate, control.
+
+| Context (prompt) | Arm | Achieved K/V, GB/s | 64-stream decode, tok/s | End to end, tok/s |
+|---|---|---:|---:|---:|
+| 1K (858) | control | 24 | 133.7 | 133.5 |
+| 1K (858) | candidate | 24 | 132.3 | 132.2 |
+| 1K (858) | control | 24 | 133.9 | 133.7 |
+| 8K (7,814) | control | 16 | 38.2 | 22.5 |
+| 8K (7,814) | candidate | 16 | 37.9 | 22.4 |
+| 8K (7,814) | control | 16 | 38.4 | 22.6 |
+
+The bulk copies are output-neutral and within 1% of their controls (no speedup). Achieved K/V is derived from the
+cache layout and the decode rate, not read from a counter; at 16–24 GB/s it is far from the GB10's 273 GB/s, so
+attention K/V reads do not limit 64-stream decode here. The Desk has no same-machine Strata SQ-20 figure on TOP;
+the only one there is SQ-10's 382.5 tok/s at 64 streams (`top-edfe387b00e5`, its own `--bench`, about 64-token
+prompts). That figure is above this receipt's 1K figures, but the workloads differ, so it is not a matched comparison.
