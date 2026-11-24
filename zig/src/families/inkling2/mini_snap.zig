@@ -21,10 +21,6 @@ fn rowBytes(m: *const mm.Model) usize {
     return @as(usize, m.c.local.dim) * 2;
 }
 
-fn convWidth(m: *const mm.Model, site: mm.Site) usize {
-    return if (site == .k or site == .v) @as(usize, m.c.local.kv) * m.c.local.dim else m.c.hidden;
-}
-
 /// Each copy of `slot`'s state at `at`, in order: per visit K then V, each head's kept positions in runs of
 /// consecutive ring rows; then the visit's four conv states ([3][C] fp32).
 pub fn each(m: *const mm.Model, slot: usize, at: usize, ctx: anytype, comptime f: fn (@TypeOf(ctx), dev: u64, off: usize, len: usize) anyerror!void) !void {
@@ -47,8 +43,8 @@ pub fn each(m: *const mm.Model, slot: usize, at: usize, ctx: anytype, comptime f
             }
         };
         for (std.enums.values(mm.Site)) |site| {
-            const n = 3 * convWidth(m, site) * 4;
-            try f(ctx, m.conv[v][@intFromEnum(site)] + slot * n, off, n);
+            const n = 3 * mm.Model.convWidth(m, site) * 4;
+            try f(ctx, mm.Model.convState(m, slot, v, site), off, n);
             off += n;
         }
     }

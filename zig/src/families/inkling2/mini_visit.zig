@@ -19,11 +19,12 @@ pub const Rows = struct {
     n: usize,
     streams: usize,
     prompt: bool,
+    record: bool, // save exact fp32 conv inputs for possible draft rejection
     last_pos: u32,
     n_tiles: u32,
 
     /// Ids, positions, segments and tiles of `chains` uploaded on `s`.
-    pub fn stage(m: *Model, s: cuda.Stream, chains: []const mm.Chain, rows: usize, prompt: bool) !Rows {
+    pub fn stage(m: *Model, s: cuda.Stream, chains: []const mm.Chain, rows: usize, prompt: bool, record: bool) !Rows {
         const gpa = m.gpa;
         const ints = try gpa.alloc(i32, 3 * rows);
         defer gpa.free(ints);
@@ -55,7 +56,7 @@ pub const Rows = struct {
         for (0..2) |side| try m.upload(s, m.s.segs[side], std.mem.sliceAsBytes(segs[side][0..chains.len]));
         try m.upload(s, m.s.conv_segs, std.mem.sliceAsBytes(cs[0..chains.len]));
         try m.upload(s, m.s.tiles, std.mem.sliceAsBytes(tiles[0..n_tiles]));
-        return .{ .n = rows, .streams = chains.len, .prompt = prompt, .last_pos = last, .n_tiles = @intCast(n_tiles) };
+        return .{ .n = rows, .streams = chains.len, .prompt = prompt, .record = record, .last_pos = last, .n_tiles = @intCast(n_tiles) };
     }
 };
 
@@ -142,7 +143,8 @@ fn conv(m: *Model, k: *const Kernels, s: cuda.Stream, r: *const Rows, v: u32, si
     var c = a;
     c.state = m.conv[v][@intFromEnum(site)];
     c.segs = m.s.conv_segs;
-    c.state_stride = 3 * @as(i64, c.c);
+    c.state_stride = @intCast(m.conv_slot_bytes / 4);
+    if (r.record) c.hist = m.conv_hist[v][@intFromEnum(site)];
     c.rows = @intCast(r.n);
     try ops.conv(&k.ops, s, c, r.streams);
 }
