@@ -521,6 +521,8 @@ pub const Model = struct {
             self.stamps.?.clock = mtl.counters.sampleClocks(self.device);
         }
         try self.next(&pass);
+        var queued: gpu_turn.Queue(mtl.CommandBuffer, 4) = .{};
+        errdefer queued.drain() catch {};
         const enc = &pass.enc;
         // a first frame's rows enter like video rows on every pass and are never stepped
         const media = self.text + self.condition;
@@ -529,25 +531,20 @@ pub const Model = struct {
         self.rowsIn(enc.*, self.video_latents, self.w_video_in, self.b_video_in, self.video, self.video_in, media + self.audio);
         try self.lap(&pass, "rows in");
         // Keep blocks queued to hide host wake-up latency without submitting the entire forward ahead of speech.
-        var queued: [3]mtl.CommandBuffer = undefined;
-        var n: usize = 0;
         const routed = step + self.routed_steps >= self.adaln.len / self.rows;
         for (0..self.blocks.len) |index| {
             try block.run(self, &pass, index, routed);
             const t = self.give_way orelse continue;
             pass.enc.end();
             pass.cb.commit();
-            if (n == queued.len) {
-                pass.gpu += try finish(queued[0]);
-                std.mem.copyForwards(mtl.CommandBuffer, queued[0 .. n - 1], queued[1..n]);
-                n -= 1;
-            }
-            queued[n] = pass.cb;
-            n += 1;
+            try queued.add(pass.cb, 3);
             self.paused += gpu_turn.yield(t.io, t.at);
             try self.next(&pass);
         }
-        for (queued[0..n]) |cb| pass.gpu += try finish(cb);
+        try queued.drain();
+        pass.gpu += queued.gpu;
+        // speech that began while the last blocks drained goes before the final norm and output heads are committed
+        if (self.give_way) |t| self.paused += gpu_turn.yield(t.io, t.at);
         const last = self.blocks[self.blocks.len - 1].tables;
         // Only the stepped rows are ever read: prompt rows are re-copied into x each step and head_norm skips them.
         const skip = media * hidden * 2;
@@ -571,7 +568,6 @@ pub const Model = struct {
         pass.enc.end();
         pass.cb.commit();
         pass.gpu += try finish(pass.cb);
-        if (self.give_way) |t| self.paused += gpu_turn.yield(t.io, t.at);
         if (video_velocity.len > 0) @memcpy(video_velocity, self.video_velocity.slice(f32, video_velocity.len));
         if (audio_velocity.len > 0) @memcpy(audio_velocity, self.audio_velocity.slice(f32, audio_velocity.len));
         const wall = mtl.clock.seconds() - started;

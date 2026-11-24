@@ -46,6 +46,9 @@ pub const VideoOffer = vision_types.VideoOffer;
 pub const VisionOpen = vision_types.VisionOpen;
 pub const ImageShare = vision_types.ImageShare;
 pub const Size = vision_types.Size;
+pub const visionGate = vision_types.gate;
+pub const visionDeclared = vision_types.declared;
+pub const visionWords = vision_types.words;
 pub const ocr = @import("engine_ocr.zig");
 
 pub const SpeechRequest = @import("speech_api.zig").SpeechRequest;
@@ -300,6 +303,9 @@ pub const Open = struct {
     execution_witness: bool = false, // --execution-witness: an engine on a supported path attests it (Info.witness)
     rank: u32 = 0,
     given: Given = .{},
+    /// The build's release (rank aliases retire by it) and where `tp` came from, for the start-up line.
+    release: []const u8 = "",
+    launch_from: []const u8 = "",
     master: []const u8 = "",
     master_port: u16 = 29551,
     /// --policy: the engine's policy as `key=value,...`; empty: its defaults.
@@ -517,5 +523,6 @@ pub const save_guard = @import("save_guard");
 
 test {
     _ = @import("engine_api_test.zig");
+    _ = vision_types;
     _ = @import("engine_capabilities.zig");
 }
