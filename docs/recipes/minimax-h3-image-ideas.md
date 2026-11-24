@@ -101,11 +101,22 @@ other runner leaves the CPU idle.
 ### Considered, not ranked
 
 - **FastH3's routed attention in the last steps.** The video engines already ship it, and it drops tiles where
-  pooled far-field keys keep them. Card 187 measured it on the Mac behind `--routed-steps N` (FastH3's top fifth of
+  pooled far-field keys keep them. Card 186 measured it on the Spark as `--routed-steps N`, the video engines'
+  `h3_topk` with no pooled branch. At 2048² with the last two of six steps routed, attention plus routing is about
+  2x faster in those steps. The warm picture went from 14.31 s to 13.91 s (2.8%), and every gate holds against the
+  dense picture (latent cosine 0.9985 or better, PSNR 29.7-36.7 dB, mean diff 3.35 or less) on the fox and three
+  unseen prompts. It is kept, opt-in, for a different picture
+  ([minimax-h3-cuda.md](minimax-h3-cuda.md#card-186-fasth3s-routed-attention-in-the-last-steps--opt-in-the-gates-hold)).
+  Card 187 measured it on the Mac behind `--routed-steps N` (FastH3's top fifth of
   picture tiles, no pooled branch, since the release weights were trained dense): at 2048, routing steps 5 and 6
   saves about 0.2 s a step, but canal's picture misses the 28.2 dB floor by 1.6 dB (fast mode 3.3 dB), with pilot
   and foundry passing. It stays opt-in and off by default
   ([minimax-h3-image-metal.md](minimax-h3-image-metal.md#card-187-fasth3s-routed-attention-in-the-last-steps-measured-and-rejected-as-a-default)).
+- **INT8 attention, QK and PV on the integer tensor cores.** Card 179 measured it on the Spark: 168 registers against
+  217, but 2.26-2.28 s of attention against main's 1.76-1.81 s, and all four pictures missed the gates (cosine
+  0.924-0.994, PSNR 16.6-26.0 dB) because u8 probability codes drop the diffuse rows' mass. Not kept; QK alone in
+  int8 with P·V in bf16 is the open shape
+  ([minimax-h3-cuda.md](minimax-h3-cuda.md#card-179-dense-attentions-qk-and-pv-on-the-int8-tensor-cores--measured-not-kept)).
 - **The decoder in larger tiles on the tensor units.** About 1.7% of a 4096 run.
 - **Caching the prompt's rows, or keeping its encoder apart from the transformer.** SGLang and vLLM-Omni cache
   conditioning; h3-image-mlx and the maintainer's tools run the encoder and the transformer as separate processes.
@@ -130,8 +141,12 @@ The bar is h3-image-mlx's 356.84 s at 4096 x 4096 on an M5 Pro, at int8; these c
    - Low steps on the half (or quarter) grid's tiles and positions, then `cascade.lift`, then the rest at full size.
    - Without `cascade` the run is byte-identical to today's.
    - m = 4 passes idea 1's gates with transformer time at most 0.50x card 1's; the table per schedule in this recipe.
-3. **H3-Image: pooled far-field keys at 16,384 rows and above (`far=pool`).**
+3. **H3-Image: pooled far-field keys at 8,192 rows and above (`far=pool`).**
    - A kernel test that equal keys give dense attention's output; off below 8,192 rows; idea 2's gates hold.
+   - Built as `--far-pool` (card 182): a band of 16 full-resolution picture rows around each query tile, since a tile
+     is half a 128-wide picture row. Pooled on all six steps it moved the layout (cosine 0.70); pooled on the last
+     two it passes card 80's gates (cosine 0.9991, PSNR 31.0-31.3 dB) for 4096's steps 55-59 s to 49-50 s (Metal
+     recipe, card 182).
 4. **H3-Image: GPU and SME2 row split for the linear layers.**
    - At least 1.07x on idea 3's product with PSNR at least 50 dB. Measured at 1.015x at most (card 174): stopped.
 5. **H3-Image at 4096 x 4096 in at most 180 s on an M5 Pro, at least 1.98x faster than h3-image-mlx**, cards 2 and 3

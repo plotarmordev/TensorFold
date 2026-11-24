@@ -61,7 +61,7 @@ last two hold the families with only a Metal, HIP or scoring backend.
 | 10. FP4/FP8 decode | yes | yes | yes | no (affine) | yes |
 | 11. Fused proj. | done [#1783] | done¹ | done¹ | done [#1783] | done [#1783] |
 | 12. Add + norm | done H[#2099] | no (bound <1 %) | yes | done¹ | done [#796] |
-| 13. MoE grouped | done [#605] | done [#1351], open M[#2784] | done [#864] | no (dense) | done [#558] |
+| 13. MoE grouped | done [#605] | done [#1351], open M[#2784] | done [#864]; paired C experiment (REV25 E1) | no (dense) | done [#558] |
 | 14. CUDA graphs | done¹ | done [#1786] | open [#2279] | done [#1174] | done [#615] |
 | 15. MTP | done [#1562]; yes C [#2485] (dense) | done [#1925] | done [#1585]; wide C open [#2257] | done [#1385] | done [#997] |
 | 16. DFlash(2) | done [#1465] | yes | done C[#979], open M[#3152] | done C¹ M[#879] | yes |
@@ -416,6 +416,12 @@ below; these are estimates for planning a port, not results.
     Flash Next on Metal before tensor units groups a decode window's 4-bit experts from five rows up, each
     (row, expert) pair keeping the per-row kernels' sums ([#2784], plan in [#2764]); its shared rounds do not yet.
 
+    REV25 E1 adds an opt-in GLM CUDA experiment: two paired prompt chunks share one grouped route and 128-pair
+    block-16 NVFP4 items, with separate per-chunk activations and slot rows (`TF_GLM_PAIR_EXPERTS=1`). Each pair
+    keeps its own K loop and epilogue; shared prefixes and slot combines retain the original piece and slot order.
+    Default-off allocations and the existing 64-pair kernels are unchanged. Device timing and token hashes are not
+    yet run, so no speedup is claimed; EXL3 and block-32/CSF0 keep the original two-pass path.
+
 14. **CUDA graphs for decode and verify.** Each decode or verify shape is captured once and replayed, which removes the
     host's launch cost from every step. `TENSORFOLD_GEMMA4_GRAPHS=0` (and the same switch for Kolibri, Spark
     and Dory) keeps those eager. GLM's capture is [#2279] (open), for [#1490].
@@ -458,6 +464,10 @@ below; these are estimates for planning a port, not results.
 17. **DSpark drafters.** A drafter that ships with the release (DeepSeek-V4.1's `mtp.i` blocks, MiniMax-M3.1's, Kimi
     K3's) drafts from the target's taps with a confidence schedule. Applies wherever a DSpark drafter exists for the
     target.
+
+    | Family | Gain (measured) | Where |
+    | --- | --- | --- |
+    | deepseek_v41 (M), timed cost table | opt-in; M5 Ultra code +1..+6 %, 3 chat cells −2..−4 %; M3 Ultra 5 cells +1..+4 %, 3 −1..−2 % | [#2952] |
 
 18. **Copy drafts.** Where a reply repeats earlier text, the lane host drafts the continuation from the context
     (`copy_index.zig`) and the target verifies it. It needs no drafter weights; [#2022] brought verified root and
@@ -786,6 +796,7 @@ below; these are estimates for planning a port, not results.
 [#3652]: https://github.com/ashhart/TensorFold/issues/3652
 [#2784]: https://github.com/ashhart/TensorFold/pull/2784
 [#2950]: https://github.com/ashhart/TensorFold/pull/2950
+[#2952]: https://github.com/ashhart/TensorFold/pull/2952
 [#2764]: https://github.com/ashhart/TensorFold/issues/2764
 [#1603]: https://github.com/ashhart/TensorFold/issues/1603
 [#2977]: https://github.com/ashhart/TensorFold/pull/2977

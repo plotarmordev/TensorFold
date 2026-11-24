@@ -259,6 +259,46 @@ test "picture tiles: prefix then target in tiles of up to 64, admitted by the ca
     try testing.expectError(error.H3EmptyMedia, p.tiles(a.allocator(), 0, 1));
 }
 
+test "picture far field: every target key once, full in the query's band, pooled elsewhere; off at ungated sizes" {
+    var a = arena();
+    defer a.deinit();
+    const x = a.allocator();
+    // 4096 x 4096 with 24 text rows: 1 prefix tile, 128 x 128 target rows in 256 tiles, 64 pooled rows
+    const f = (try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 256, .columns = 256 } })).?;
+    try testing.expectEqual(@as(usize, 64), f.pooled);
+    try testing.expectEqual(@as(usize, 1 + 4 * p.far_band + 64 - p.far_band), f.per_query);
+    try testing.expectEqual(256 * f.per_query, f.list.len);
+    for (0..256) |t| {
+        const keys = f.list[t * f.per_query ..][0..f.per_query];
+        try testing.expectEqual(@as(i32, 0), keys[0]);
+        // each pooled row r covers target tiles 4r..4r+3 exactly once: as those four, or as pooled tile 257 + r
+        var full: [64]u8 = @splat(0);
+        var pooled: [64]u8 = @splat(0);
+        for (keys[1..]) |k| if (k >= 257) {
+            pooled[@intCast(k - 257)] += 1;
+        } else {
+            full[@intCast(@divFloor(k - 1, 4))] += 1;
+        };
+        for (0..64) |r| try testing.expect((full[r] == 4 and pooled[r] == 0) or (full[r] == 0 and pooled[r] == 1));
+        // the query's own pooled row is always full; the band clamps at the picture's edges
+        try testing.expectEqual(@as(u8, 4), full[t / 4]);
+    }
+    try testing.expectEqualSlices(i32, &.{ 0, 1, 2, 3, 4 }, f.list[0..5]);
+    try testing.expectEqual(@as(i32, 257 + p.far_band), f.list[1 + 4 * p.far_band]);
+    // 100 text rows: 2 prefix tiles, so target tiles start at 2 and pooled rows at 2 + 256
+    const two = (try p.far(x, .{ .text = 100, .references = &.{}, .target = .{ .rows = 256, .columns = 256 } })).?;
+    try testing.expectEqual(f.per_query + 1, two.per_query);
+    try testing.expectEqualSlices(i32, &.{ 0, 1, 2, 3, 4, 5 }, two.list[0..6]);
+    try testing.expectEqual(@as(i32, 258 + p.far_band), two.list[2 + 4 * p.far_band]);
+    // only the gated 4096 x 4096 pools: 4096 x 2048 (8,192 rows) has no picture gate, nor 4096 x 4608, 2048 x 2048 or
+    // 2048 x 8192; references keep it dense
+    try testing.expect(try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 128, .columns = 256 } }) == null);
+    try testing.expect(try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 288, .columns = 256 } }) == null);
+    try testing.expect(try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 128, .columns = 128 } }) == null);
+    try testing.expect(try p.far(x, .{ .text = 24, .references = &.{}, .target = .{ .rows = 512, .columns = 128 } }) == null);
+    try testing.expect(try p.far(x, .{ .text = 24, .references = &.{.{ .rows = 64, .columns = 64 }}, .target = .{ .rows = 256, .columns = 256 } }) == null);
+}
+
 test "picture model folder: the image pipeline and partition, its heads file, an audio-free transformer" {
     var a = arena();
     defer a.deinit();

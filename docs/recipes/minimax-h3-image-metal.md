@@ -68,15 +68,17 @@ waits make the request slower than an unprofiled one, so the kernel seconds are 
 At startup the server puts every weight file it maps (text encoder, refiner, transformer, step heads) and the decoder's
 bf16 weights in one residency set on the three stages' queues (`holdWeights`), and prints the GiB it holds: 117.6 on
 the release folder, the refiner's shard counted twice since it is mapped twice. macOS unwires GPU memory idle for a
-second or two, so without the set each stage's first commit re-wires its weights on every request. Weights past 70% of
-RAM, or a macOS without residency sets, leave the server running as before. There is no keepalive: a request after a
-pause of more than a second or two re-wires once, in its prompt (about 1.4 s more, measured after 20 and 60 s).
+second or two, so without the set each stage's first commit re-wires its weights on every request. An idle ticker
+commits a tiny command buffer every 400 ms between requests so the set stays wired across pauses. If the weights
+cannot be held resident (past 70% of RAM, or a macOS without residency sets) or the idle ticker cannot start, it exits
+instead of serving unwarmed.
 
 Run `zig build test-h3-image-server -Doptimize=Debug` or `-Doptimize=ReleaseSafe` for the synthetic resident gates.
-Both pass all four tests: fresh/reused latent parity across prompt and layout changes, failed-bind cleanup including
-the final tag allocation, over-long-line recovery, and the shared serializer's scratch cleanup. Picture fixtures use
-the aligned safetensors serializer so these checks run with alignment safety enabled. The line-reader gate checks
-that the next request is read, not full image generation after an oversized line.
+Both pass the resident gates, among them: fresh/reused latent parity across prompt and layout changes and after an
+idle pause the ticker spans, failed-bind cleanup including the final tag allocation, over-long-line recovery, both
+fail-closed startup refusals, and the shared serializer's scratch cleanup. Picture fixtures use the aligned
+safetensors serializer so these checks run with alignment safety enabled. The line-reader gate checks that the next
+request is read, not full image generation after an oversized line.
 
 ## Edit, end to end
 
@@ -1408,6 +1410,64 @@ The window confirms the quiet round at six steps: even on pure step GPU time (9.
 normal / 7.8 s fast totals under this host load (8.8-45.0); the best warm totals in the window were main 12.40 s and
 head 12.32 s at six steps, and main 11.00 s (`timing_valid=false`; 11.62 s valid) and head 12.20 s in fast mode.
 
+### Card 184: the int8 weights packed in fragment order, kept
+
+Card 150's table puts the int8 product at 25-28% of its path's ceiling, each B fragment gathered as eight scalar
+reads. Bind now quantizes every block's four projections straight into the order the MMA's right operand takes them
+(`h3_packed` in `h3_gemm.metal`, `packedAt` in `kernels.zig`): each 32-row band, then each 16-deep K step, holds 32
+lanes of 16 bytes, a lane's two 16 x 16 fragments for one `mma_16x32`. `h3_gemm_32x64_i8` loads them as one 16-byte
+read where main made eight; A, the fold order and every value are main's. `h3_quantize_rows` takes a fourth parameter
+(nonzero writes packed); the step's own input quantizers stay row-major.
+
+Isolated replays, the same harness as card 150 (`tools/zig/metal_bench.swift`, main's kernel against this card's on the
+same int8 operands, head's B packed by `packedAt`), warm medians of eight command buffers in µs, three sets a side
+under `/tmp/tensorfold-model.lock`; every output byte-identical to main's on all four shapes:
+
+| `h3_gemm_32x64_i8` launch | Shape M x N x K | Card 150 | main, set 1 | head, set 1 | main, set 2 | head, set 2 |
+|---|---|---:|---:|---:|---:|---:|
+| qkv | 4,120 x 21,504 x 5,376 | 6.88 ms | 9.16 ms | 5.82 ms (-36%) | 17.45 ms | 13.63 ms (-22%) |
+| attention out | 4,120 x 5,376 x 7,168 | 2.54 ms | 3.15 ms | 2.81 ms (-11%) | 6.45 ms | 4.97 ms (-23%) |
+| fc1 (gate+value) | 4,120 x 28,672 x 5,376 | 9.13 ms | 15.35 ms | 7.40 ms (-52%) | 22.88 ms | 17.81 ms (-22%) |
+| fc2 | 4,120 x 5,376 x 14,336 | 5.22 ms | 5.27 ms | 4.10 ms (-22%) | 13.00 ms | 10.04 ms (-23%) |
+
+Set 1 ran at load 92-95, set 2 at 26-41 while another card's resident server shared the GPU, so neither is a quiet
+rate; within a set, head beats main on every shape and every one of the three runs.
+
+Card 184's own served A/B (ReleaseFast `tf-h3-image-server`, main `bc1012c35` against this card's head, card 34's
+pilot cold then harbour, meadow and steam warm and unseen) found no window where both sides started under load 8:
+seven sessions ran at load 5.6-40.8, and the one quiet main start was followed by head at 20. Its latents and PNGs
+were sha1-identical between the builds, the pilot's latent `776b443a…` (card 135's pin) and PNG `85098fa9…`, but its
+timings are not counted. The kept decision rests on card 197's quiet pairs below. Receipts for the isolated replays
+and the loaded sessions (`bench.py`, `bench-load92.log`, `bench.log`, `session.sh`, `contract.log`, the sessions'
+server output and `loads.txt`) are in `h3-image-runs/184`, outside the repo.
+
+Card 197 repeated the served A/B in a quiet window with the same builds and session method on three prompts none of
+them had seen (a lighthouse, a fish market, a glacier cave). Three pairs alternated main and head, and each session
+started only once no TensorFold build or model run was going and the 1-minute load was under 8. All 24 latents and
+PNGs are sha1-identical between the builds, the pilot's still `776b443a…` / `85098fa9…`, and every step is
+`timing_valid=true`. Seconds of the six steps, cold then the three warm (total in brackets):
+
+| Session | Load | pilot (cold) | lighthouse | market | glacier |
+|---|---|---|---|---|---|
+| main | 4.5 → 5.0 | 9.23 (11.00) | 9.33 (10.80) | 9.33 (10.82) | 9.35 (10.84) |
+| head | 4.9 → 5.5 | 7.67 (9.65) | 7.63 (9.31) | 7.63 (9.32) | 7.66 (9.46) |
+| main | 5.5 → 9.8 | 9.69 (11.80) | 9.34 (10.91) | 9.33 (10.83) | 9.69 (11.84) |
+| head | 7.3 → 6.0 | 8.13 (10.11) | 7.63 (9.32) | 7.63 (9.33) | 7.63 (9.34) |
+| main | 5.6 → 4.1 | 9.22 (11.14) | 9.34 (10.87) | 9.34 (10.89) | 9.35 (10.90) |
+| head | 4.1 → 7.0 | 8.37 (12.96) | 7.71 (9.96) | 7.64 (9.57) | 8.03 (9.97) |
+
+Medians over the nine warm pictures a side, in seconds, with each stage's range in brackets:
+
+| Build | prompt | case | bind | six steps | decoder | total |
+|---|---|---|---|---|---|---|
+| main | 0.22 (0.22-0.22) | 0.01 (0.00-0.02) | 0.66 (0.62-0.71) | 9.34 (9.33-9.69) | 0.62 (0.61-1.28) | 10.87 (10.80-11.84) |
+| head | 0.22 (0.22-0.38) | 0.01 (0.00-0.02) | 0.85 (0.84-1.01) | 7.63 (7.63-8.03) | 0.62 (0.61-0.88) | 9.34 (9.31-9.97) |
+
+The 1.71 s step gain is over four times either side's spread, and head's bind costs 0.19 s of it back. Head's last
+cold took 2.98 s to bind as load rose, and its pilot's steps ran 8.37 s. Receipts
+(`gate.sh`, `session.sh`, the prompts, server output, latents, PNGs and `loads.txt`) are in `h3-image-runs/197`,
+outside the repo. Pair 1 there is left out: main started at load 9.4.
+
 ### Card 151: a faster `h3_attention`, measured and reverted
 
 `h3_attention` already runs q·kᵀ and p·v on the tensor units (`matmul2d`, 8 simdgroups, 64-row query tiles) with an
@@ -1863,6 +1923,62 @@ warm A/B were not built. One build note for any later SME2 work here: Apple clan
 non-streaming SVE (`cntd`) into the streaming prologue, and the M5 traps it (SIGILL); `-march=armv8.6-a+sme2` builds
 and runs.
 
+### Card 182: pooled far-field keys at 4096, opt-in (`--far-pool`): -6 s of steps, gated
+
+The ideas page's idea 2, behind `--far-pool` on `tf-h3-image` and `tf-h3-image-server`. Without the flag nothing
+changes: `h3_attention`'s pooled-tile branch sits under `H3_FAR`, defined only with the flag, and its key tile lists
+keep their layout (`P[3]` picks one list for all, one per head and query tile for routed steps, or one per query tile
+for the far field); the only new kernel, `h3_far_pool`, is never dispatched. Measured: the branch's default pictures
+are byte-identical to main's at 2048 and 4096, seeds 42 and 7.
+
+With the flag, a text-to-image 4096 x 4096 target (128 x 128 rows, `picture.far_grid`), the one size the gates below
+passed at, binds `picture.far`. After `h3_heads`, `h3_far_pool` averages each 2 x 2 block of the target's keys and
+values (fp32 sums, rounded to bf16) into tiles past the case's own, one pooled row of 64 a tile. The prefix's query
+tile attends every tile as before. A target query tile attends the prefix, a band of `far_band` = 8 pooled rows (16
+picture rows) at full resolution around its own, and the other pooled rows as one tile each, with ln 4 added to a
+pooled logit: 89 key tiles in place of 257 at 4096 x 4096 with 24 text rows. Every other size, and pictures with
+references, stay dense. With `tf-h3-image-server --routed-steps N`, the far field wins on the steps it pools; earlier
+steps still route.
+
+Pooled from the first step, the picture is clean but laid out differently (another fox in another pose): latent
+cosine 0.70, PSNR 12.0 dB. The early steps fix the layout from long-range attention, so `far_from_step` = 4 pools only
+the last two steps. From step 3 the cosine held (0.996) but PSNR (27.9 dB) and the mean difference (5.8) missed.
+
+Three tests, no weights: `test-h3-geometry` checks that every target key is read once, full inside the query's band
+and pooled outside it, that 4096 x 4096 pools, and that 4096 x 2048, 4096 x 4608, 2048, 2048 x 8192 and a
+picture with references stay dense. `test-h3-gemm` checks that attention with pooled far keys matches dense attention
+when each 2 x 2 block's keys and values are equal: 1.95e-3 worst against outputs up to 0.4375, one bf16 step. Without
+the ln 4 the same check misses by 0.26. It also checks that a far-field library's routed steps read each head's own
+chosen tiles, bit for bit the plain library's.
+
+Runs: an M5 Ultra, ReleaseFast `tf-h3-image-server`, one session at a time under `/tmp/tensorfold-model.lock`, card
+34's prompt; seed 42 is each size's first request, seed 7 the warm one. The host's load average was 20-70 (other
+builds), so the decoder times swing; 6-step seconds, every run:
+
+| Session | 2048 s42 | 2048 s7 | 4096 s42 | 4096 s7 |
+|---|---|---|---|---|
+| main | 10.54 | 9.25 | 54.34 | 59.03 |
+| branch, no flag | 11.24 | 10.49 | 57.66 | 55.44 |
+| branch, no flag (4096 only) | | | 54.38 | 56.53 |
+| `--far-pool`, from step 0 (rejected) | 13.80 | 9.24 | 39.47 | 40.48 |
+| `--far-pool`, from step 3 (rejected) | | | 46.94 | 59.51 |
+| `--far-pool`, from step 4 (trial build, 4096 only) | | | 49.15 | 49.04 |
+| `--far-pool`, from step 4 | 10.20 | 9.31 | 49.25 | 70.80 |
+| `--far-pool`, from step 4 (4096 only) | | | 50.30 | 49.99 |
+
+Warm (seed 7) 4096 steps: 55.4-59.0 s dense, 49.0-50.0 s with the flag (one 70.8 s under a load of 72), about 0.88x
+or -6 s.
+Only 4096 x 4096 pools. 2048 and 4096 x 2048 stay dense: with the flag `tf-h3-image` and `tf-h3-image-server` print
+`far-pool: off at 4096x2048, not gated` and bind normal mode, so the picture is normal mode's bytes. Gates,
+`--far-pool` (from step 4) against the same seed without it, card 80's rule (latent cosine at least 0.99, PSNR at
+least 28.2 dB, mean pixel difference at most 4.1), on the 4096 x 4096 square:
+
+| Seed | Cosine | PSNR | Mean | |
+|---|---|---|---|---|
+| 4096 s42 | 0.999089 | 31.32 dB | 3.63 | pass |
+| 4096 s7 | 0.999096 | 30.97 dB | 3.78 | pass |
+| 2048 s42, s7 | 1 | identical | 0 | pass, PNG byte-identical |
+
 ### Card 180: step caching, measured and reverted
 
 A `--step-cache X` option on `tf-h3-image-server` skipped a step's transformer pass and stepped the resident latent
@@ -1998,6 +2114,80 @@ The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.
 Canal misses the floor by 1.64 dB in normal mode and 3.26 dB in fast mode, so routing stays off by default: about 0.4 s
 of a 10-12 s warm picture does not pay for a gate that fails. Receipts are in `h3-image-runs/187`, outside the repo.
 
+### Card 191: the decoder's attention tiles in registers, as the Spark's card 175
+
+`h3d_attention` now runs on 8 x 8 simdgroup matrices. A threadgroup of 128 threads (four simdgroups, 32 queries) stages
+a tile-head's keys 32 at a time in fp32. Each simdgroup's q·kᵀ scores, all 288 key slots, stay in its registers. The
+max-subtracted softmax runs there in place, a row's max and total shuffled over its four lanes (^1, ^8). The weights
+are then the A operand of p·v as the values stream through the same 8.5 KiB tile. Only keys and values touch
+threadgroup memory: 8,704 bytes, where main's kernel held 11,264 bytes of queries and weights.
+One kernel serves every Apple GPU (simdgroup matrices date from the M1), so the tensor-unit and simd forms no longer
+differ here. Only the M5 Ultra was run.
+
+Same session, M5 Ultra, ReleaseFast `tf-h3-image-decoder` for main `35ff44def` and this card, the same 2048x2048
+latent (128 x 128, 121 tiles, card 152's `cand-2`). Each run took `/tmp/tensorfold-model.lock` for itself
+(`zsystem flock`) and was one process: weights loaded, then one decode. Attention's time is the difference against a
+throwaway build of each that dispatches `h3d_attention` twice a block. The second dispatch reads q, k and v warm, so
+this is a lower bound. Load (one minute) 11.5-11.9. Seconds, GPU / decode wall:
+
+| Run | main | main, attention twice | card | card, attention twice |
+|---|---|---|---|---|
+| 1 | 0.61 / 0.63 | 0.77 / 0.80 | 0.49 / 0.52 | 0.54 / 0.57 |
+| 2 | 0.56 / 0.58 | 0.76 / 0.79 | 0.45 / 0.47 | 0.51 / 0.55 |
+
+Decoder attention goes from 0.16-0.20 s to 0.05-0.06 s a picture, and the whole decoder's GPU time from
+0.56-0.61 s to 0.45-0.49 s. **Kept.** The picture differs from main's by the sums' new order alone: 56.54 dB
+(mean 0.14, max 5) against card 80's 28.2 dB floor. Each build's two-dispatch PNG is byte-identical to its own one-dispatch
+PNG. `tf-h3-image-contract --only "image decoder"` passes gates 1-4 on all 10 decoder kernels, and all 12 controls go
+red as planted, with no limit problems. The attention bound's denominator is now a lane's 72 weights and two shuffles.
+Its control (staging drops the last key) goes red at shapes. `tf-h3-image-decoder selftest` passes.
+The script (`ab.sh`), its log and the PNGs are in `h3-image-runs/191`, outside the repo.
+
+### Card 192: the prompt encoder in int8 at a scale per 128 of K, measured and reverted
+
+This ported CUDA card 173 to Metal. Qwen3-VL's 50 text layers ran q/k/v (one product), o, gate/up (one product) and
+down as int8 with one scale per 128 of K on both operands. The weights were quantized once at load into private
+buffers, about 24 GiB beside the mapped bf16 layers. Each product's input rows were quantized by `h3_quantize_rows`,
+then summed by `h3_gemm_32x64_i8` with its K block made a template parameter (128 here, 256 for the picture). A
+`--bf16` flag kept main's encoder. On the tiny synthetic checkpoint the selftest held the int8 rows at cosine
+0.99977 (text) and 0.99980 (a reference's rows) against float64, and a second run was byte for byte the same.
+`--bf16`'s cases for canal and orchard were byte-identical to main's.
+
+The A/B ran main `35ff44def` against the card, one ReleaseFast server per side, each session holding
+`/tmp/tensorfold-model.lock` (66 s main, 114 s card). Each session ran card 34's pilot fox cold, then the canal, orchard
+and foundry prompts (unseen; 35, 37 and 42 tokens), all at seed 42, 2048x2048. Load was 83-112 through main's
+session and 48-89 through the card's, and live speech shared the GPU during the card's. Every request, in seconds
+(prompt / 6 steps / decoder / total):
+
+| Request | main (bf16) | card (int8) |
+|---|---|---|
+| cold fox | 0.29 / 11.33 / 0.64 / 13.55 | 0.50 / 28.92 / 4.17 / 47.76 |
+| canal | 0.22 / 10.76 / 0.66 / 12.47 | 5.58 / 14.96 / 2.23 / 25.06 |
+| orchard | 0.22 / 9.36 / 0.67 / 11.19 | 0.78 / 10.75 / 2.42 / 15.89 |
+| foundry | 0.22 / 10.67 / 0.81 / 12.75 | 1.11 / 11.03 / 2.59 / 17.01 |
+
+The card's walls carry the load and the speech: 0.58 s of canal's prompt waited for speech, and its fox took 14.15 s to
+bind the transformer. The encoder's own GPU time is the steadier measure. In the served runs it was 0.21 s for main
+on every unseen prompt against 0.26-0.34 s for the card. In a quiet one-shot `tf-h3-image-prompt` run (canal and
+orchard, one locked session) it was 0.29-0.30 s for main and `--bf16` against 0.18 s for int8. At 35-42 rows the bf16
+encoder already costs about 0.2 s of a 10-12 s warm picture. The Spark's 1.9-2.5 s, which card 173 cut, has no
+counterpart here, so the best case is about 0.1 s.
+
+The picture fails card 80's rule (latent cosine at least 0.99, PSNR at least 28.2 dB, mean pixel difference at most
+4.1) against main on every prompt:
+
+| Prompt | latent cosine | PSNR | mean |
+|---|---|---|---|
+| fox | 0.994437 | 27.129 dB | 4.031 |
+| canal | 0.858195 | 13.135 dB | 36.057 |
+| orchard | 0.989453 | 23.222 dB | 7.307 |
+| foundry | 0.977522 | 21.206 dB | 11.750 |
+
+The refined rows themselves stay close: cosine 0.999885 (canal) and 0.999820 (orchard) against main's, with the worst
+rows at 0.999645 and 0.998905. Six distilled steps carry that 1e-4 into a different picture, worst on canal, the same
+prompt that failed card 187's routing. With no speed to win on the Mac and the gate lost on all four prompts, the
+code is reverted. Receipts are in `h3-image-runs/192`, outside the repo.
+
 ### Next, ranked
 
 | # | Idea | Size | Basis |
@@ -2005,7 +2195,7 @@ of a 10-12 s warm picture does not pay for a gate that fails. Receipts are in `h
 | 1 | SGLang's conditioning cache | under -2 s at warm 2048 | Residency landed with card 50: warm 2048 went from 27 s to 16.4-16.6 s, more than the 6.3 s of loader logs the projection counted, since each one-shot tool also re-reads its files and rebuilds its kernels. A conditioning cache would skip only the prompt (1.2-2.0 s warm); it needs separate accounting and cannot omit prompt work in an uncached comparison. |
 | 2 | PNG writing | landed overlapped (card 170, -0.13 s at 2048); upper estimate -18 s at 4096, -4 s at 2048 in parallel bands | Card 170 streams each tile row's band into one `flate.Compress` while the GPU decodes the next: the bytes stay main's. Parallel bands could remove much more but change compressed bytes, so they do not satisfy the PNG byte-identity gate; a decoded-pixel gate in its place needs explicit approval before runs. |
 | 3 | int8 weights and activations on the M5's tensor units | about -30 s of the 60 s of steps at 4096 | The steps are compute-bound: a 2048 step is about 183 TFLOP in 1.83 s, a 4096 step about 1,020 TFLOP in 10 s, both near 100 TFLOPS of bf16. int8 `matmul2d` at twice bf16's rate would halve the GEMMs. ComfyUI's int8 here shows the other half: dequantized before each product, its steps are 1.7-1.9x slower than our bf16, so int8 weights alone buy only bytes. Not bit-identical; it needs its own latent gate. SGLang's FP8 on an RTX PRO 6000: -32% at 2048, -22% at 4K. |
-| 4 | Attention | up to -15 s at 4096 | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. |
+| 4 | Attention | `--far-pool` landed opt-in (card 182): -6 s of 4096's 55-59 s of steps; dense attention still up to -15 s | At 16,408 rows attention is about 38% of a step's work, growing with the square of the rows: 4096's step is 5.4x 2048's for 4x the rows. SGLang's fused QK-norm and rotary saves under 1% of a step here. Card 182's pooled far field passes the gates only on the last two steps (pooled from step 0 it was -15 s but moved the layout, cosine 0.70); next is a cheaper early step that keeps long-range keys, such as a wider band or 4 x 4 pooling only beyond it. |
 | 5 | Step caching (TeaCache, FBCache, cache-dit) | measured, lost twice (card 180) | Neither form keeps card 80's rule. Reusing the last velocity: one skip at step 2 gives 15.9-20.6 dB, step 6 alone 21.76 dB. Reusing blocks 1-49's residual behind a first-block gate (FBCache): block 0's branch moves 49-80% a step, four to ten times FBCache's gates, and skipping step 3 alone gives 19.8-25.4 dB against the 28.2 floor. Six distilled steps leave no step close enough to its neighbour to reuse; closed. |
 | 6 | Decoder tiling | under -2 s | Its 441 tiles already take 4.1 s of GPU; SGLang batches its tiles the same way. |
 

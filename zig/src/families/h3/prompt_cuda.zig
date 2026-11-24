@@ -1,6 +1,7 @@
 //! MiniMax-H3-Image's prompt stage on CUDA: Qwen3-VL's text model to layer 50, then condition_proj and
-//! the refiner, all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products sum K in reference
-//! order; refiner products use cuBLASLt with FP32 sums. Every value the reference stores in bf16 is rounded to bf16
+//! the refiner, all on the GPU at the Metal kernels' and the host reference's rounding. Text-encoder products
+//! run int8 at a scale per 128 of K on our TMA product by default, or (`--bf16`) sum K in reference order;
+//! refiner products use cuBLASLt with FP32 sums. Every value the reference stores in bf16 is rounded to bf16
 //! by a kernel before the next step reads it.
 //! The text model's layer weights and the refiner's tensors live in one resident device arena, loaded
 //! once by `loadResident`; a warm prompt moves no weights at all.
@@ -15,13 +16,14 @@ pub const checkpoint = @import("checkpoint.zig");
 pub const cache = @import("prompt_cache.zig");
 const report = @import("report.zig");
 const bf16_round = @import("bf16_round");
+const int8 = @import("cuda_int8.zig");
 
 const D = rules.head_dim;
 const mode_qwen: c_int = 0;
 const mode_h3: c_int = 1;
 
 const image align(16) = @embedFile("fatbin_h3_image_prompt").*;
-const kernel_names = [_][:0]const u8{ "h3p_norm", "h3p_heads", "h3p_attention", "h3p_glu", "h3p_add", "h3p_scatter_add", "h3p_embed", "h3p_splice", "h3p_linear", "h3p_round" };
+const kernel_names = [_][:0]const u8{ "h3p_norm", "h3p_heads", "h3p_attention", "h3p_glu", "h3p_add", "h3p_scatter_add", "h3p_embed", "h3p_splice", "h3p_linear", "h3p_round", "h3p_quantize_groups", "h3p_gemm_int8_groups" };
 
 /// A presentation's vision rows, as prompt.Vision: the tower's merged rows at its image pads in bf16,
 /// and DeepStack's three blocks added after encoder layers 0 to 2.
@@ -46,10 +48,13 @@ pub const LayerSet = rules.Layer(Tensor);
 /// A refiner block's tensors in rules.Block field order.
 pub const BlockSet = rules.Block(Tensor);
 
+/// A text layer's int8 products — q/k/v as one, gate/up as one — beside its fp32 norms.
+const Layer8 = struct { qkv: int8.Product, o: int8.Product, gu: int8.Product, down: int8.Product, norm1: u64, norm2: u64, q_norm: u64, k_norm: u64 };
+
 /// The parts of the one device scratch a pass draws from, each part aligned to 256 bytes. Products
 /// all write the shared fp32 `p` (they run one at a time on one stream), then `h3p_round` moves the
 /// value to its bf16 buffer — out of place, so a round never writes what another thread still reads.
-const EncodePart = enum { x, xn, p, qb, kb, vb, att, gb, ub, act, cos, sin, idx, vision, deep };
+const EncodePart = enum { x, xn, p, qb, kb, vb, att, gb, ub, act, cos, sin, idx, vision, deep, xq, xs };
 const RefinePart = enum { x, xn, p, qkv, att, wide, act };
 
 fn Scratch(comptime Part: type) type {
@@ -90,7 +95,8 @@ fn asF32(a: std.mem.Allocator, bytes: []const u8) ![]f32 {
 pub const Resident = struct {
     arena: cuda.DeviceBuffer,
     embed: u64,
-    layers: []rules.Layer(u64),
+    layers: []rules.Layer(u64), // one of layers and layers8 is empty: bf16 (`--bf16`) or int8
+    layers8: []Layer8,
     cond_w: u64,
     cond_b: u64,
     final_norm: u64,
@@ -124,15 +130,16 @@ fn fill(r: *Runner, a: std.mem.Allocator, at: *usize, arena: u64, shape: rules.S
     return ptr;
 }
 
-/// Every tensor of the prompt stage onto the device once: `embed`, each layer's set from `layer`,
-/// condition_proj's weight and bias, the final norm and each block's set from `block`, in one
-/// arena whose slots the returned Resident names. The copies queue on the runner's stream ahead of
-/// any encode or refine; the caller's mapped bytes may be dropped once the call returns.
+/// Every tensor of the prompt stage onto the device once: `embed`, each layer's set from `layer`
+/// (int8 products when `quantized`), condition_proj's pair, the final norm and each block's set from
+/// `block`, in one arena the returned Resident names. The copies queue on the runner's stream ahead
+/// of any encode; the caller's mapped bytes may be dropped once the call returns.
 pub fn loadResident(
     r: *Runner,
     a: std.mem.Allocator,
     g: rules.Text,
     front: rules.Refiner,
+    quantized: bool,
     embed: Tensor,
     layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet,
     ctx: *anyopaque,
@@ -146,7 +153,10 @@ pub fn loadResident(
     const front_specs = rules.frontTensors(front);
     const block_specs = rules.blockTensors(front);
     var total = slotOf(.{ g.vocab, g.hidden });
-    for (layer_specs) |spec| total += slotOf(spec[2]) * g.layers;
+    if (quantized) {
+        for (productShapes(g)) |nk| total += std.mem.alignForward(usize, int8.Groups.bytes(nk[0], nk[1]), 256) * g.layers;
+        total += (2 * slotOf(.{ g.hidden, 0 }) + 2 * slotOf(.{ D, 0 })) * g.layers;
+    } else for (layer_specs) |spec| total += slotOf(spec[2]) * g.layers;
     for (front_specs) |spec| total += slotOf(spec[2]);
     for (block_specs) |spec| total += slotOf(spec[2]) * front.blocks;
     var arena = try cuda.DeviceBuffer.alloc(&r.driver, total);
@@ -157,7 +167,8 @@ pub fn loadResident(
     var res: Resident = .{
         .arena = arena,
         .embed = undefined,
-        .layers = try a.alloc(rules.Layer(u64), g.layers),
+        .layers = try a.alloc(rules.Layer(u64), if (quantized) 0 else g.layers),
+        .layers8 = try a.alloc(Layer8, if (quantized) g.layers else 0),
         .cond_w = undefined,
         .cond_b = undefined,
         .final_norm = undefined,
@@ -165,11 +176,12 @@ pub fn loadResident(
     };
     var at: usize = 0;
     res.embed = try fill(r, a, &at, res.arena.ptr, .{ g.vocab, g.hidden }, embed);
-    for (0..g.layers) |li| {
+    if (quantized) try loadLayers8(r, a, g, &at, res.arena.ptr, layer, ctx, res.layers8);
+    for (res.layers, 0..) |*l, li| {
         const set = try layer(ctx, li);
         inline for (comptime std.meta.fieldNames(LayerSet), layer_specs) |field, spec| {
             std.debug.assert(std.mem.eql(u8, field, spec[0]));
-            @field(res.layers[li], field) = try fill(r, a, &at, res.arena.ptr, spec[2], @field(set, field));
+            @field(l, field) = try fill(r, a, &at, res.arena.ptr, spec[2], @field(set, field));
         }
     }
     const front_tensors: [3]Tensor = .{ cond_w, cond_b, final_norm };
@@ -184,6 +196,31 @@ pub fn loadResident(
         }
     }
     return res;
+}
+
+/// The int8 products' (n, k): q/k/v fused, o, gate/up fused, down.
+fn productShapes(g: rules.Text) [4][2]usize {
+    const qh = g.heads * D;
+    return .{ .{ qh + 2 * g.kv_heads * D, g.hidden }, .{ g.hidden, qh }, .{ 2 * g.ffn, g.hidden }, .{ g.hidden, g.ffn } };
+}
+
+/// Each text layer's products quantized into the arena at a scale per 128 of K, its norms beside them.
+fn loadLayers8(r: *Runner, a: std.mem.Allocator, g: rules.Text, at: *usize, arena: u64, layer: *const fn (ctx: *anyopaque, li: usize) anyerror!LayerSet, ctx: *anyopaque, out: []Layer8) !void {
+    if (try r.ctx.capability() < 90) return error.H3Int8RequiresSm90; // the TMA images trap below sm_90
+    const nk = productShapes(g);
+    for (nk) |s| try int8.Groups.checkGeometry(s[0], s[1]);
+    var staging = try cuda.DeviceBuffer.alloc(&r.driver, @max(nk[0][0], nk[2][0]) * g.hidden * 2);
+    defer {
+        cuda.completion.drain(&r.driver, r.stream, "h3 prompt cuda: a quantize did not drain");
+        staging.free();
+    }
+    const f = r.function("h3p_quantize_groups");
+    for (out, 0..) |*l, li| {
+        const set = try layer(ctx, li);
+        var p: [4]int8.Product = undefined;
+        inline for (&p, nk, .{ .{ set.q, set.k, set.v }, .{set.o}, .{ set.gate, set.up }, .{set.down} }) |*to, s, parts| to.* = try int8.Groups.load(f, r, staging.ptr, arena, at, s, parts);
+        l.* = .{ .qkv = p[0], .o = p[1], .gu = p[2], .down = p[3], .norm1 = try fill(r, a, at, arena, .{ g.hidden, 0 }, set.norm1), .norm2 = try fill(r, a, at, arena, .{ g.hidden, 0 }, set.norm2), .q_norm = try fill(r, a, at, arena, .{ D, 0 }, set.q_norm), .k_norm = try fill(r, a, at, arena, .{ D, 0 }, set.k_norm) };
+    }
 }
 
 /// One product's plan: cuBLASLt bf16 in, fp32 sums, fp32 out. The bias variant's plan is separate so a
@@ -277,6 +314,23 @@ pub const Runner = struct {
         try cuda.launch.launch(r.function(name), .{ .grid = grid, .block = .{ .x = threads } }, r.stream, args);
     }
 
+    /// The int8 layer's input-row scratch: `rows` quantized into `xq`, their group scales at `xs`.
+    const Quantized = struct { groups: int8.Groups, xq: u64, xs: u64, rows: usize };
+
+    /// y (rows, n) fp32 = x (rows, k) bf16 · wᵀ: an int8 `w` quantizes x at a scale per 128 of K for
+    /// the TMA product; a bf16 one (a device pointer) runs h3p_linear.
+    fn product(r: *const Runner, q: Quantized, x: u64, w: anytype, y: u64, n: usize, k: usize) !void {
+        if (@TypeOf(w) == u64) return r.linear(x, w, y, q.rows, n, k);
+        errdefer cuda.completion.drain(&r.driver, r.stream, "h3 prompt cuda: an int8 product did not drain");
+        try int8.Groups.quantize(r.function("h3p_quantize_groups"), r.stream, x, q.xq, q.xs, q.rows, k, q.rows);
+        try q.groups.gemm(r.function("h3p_gemm_int8_groups"), r.stream, q.xq, q.xs, w.q, w.s, y, q.rows, n, k);
+    }
+
+    fn projected(r: *const Runner, q: Quantized, x: u64, w: anytype, p: u64, to: u64, n: usize, k: usize) !void {
+        try r.product(q, x, w, p, n, k);
+        try r.round(p, to, q.rows * n);
+    }
+
     /// The driver, its primary context, the prompt kernels and the cuBLASLt plans; all freed by deinit.
     /// Heap-made: the stream, events and buffers each hold `&r.driver`, which a returned copy would move.
     pub fn init(gpa: std.mem.Allocator) !*Runner {
@@ -312,7 +366,7 @@ pub const Runner = struct {
     /// `bytes` through the two pinned stages onto `dst` in 64 MiB windows, each stage waited only when
     /// its turn comes again, so a copy runs while the other window is filled; the uploads order ahead
     /// of later work on the runner's stream.
-    fn copy(r: *Runner, bytes: []const u8, dst: u64) !void {
+    pub fn copy(r: *Runner, bytes: []const u8, dst: u64) !void {
         var done: usize = 0;
         var turn: usize = 0;
         while (done < bytes.len) {
@@ -388,22 +442,25 @@ pub const Runner = struct {
 
     /// The text model's rows leaving its last run layer [T, hidden] bf16 for `ids` at M-RoPE positions
     /// `pos`, vision rows spliced at the pads when given. `res` holds the weights on the device, so
-    /// a warm call moves none — only the rotary tables, ids and vision rows cross.
+    /// a warm call moves none — only the rotary tables, ids and vision rows cross. Its int8 layers run
+    /// q/k/v and gate/up as one product each; every product's fp32 rows round as the bf16 path's do.
     pub fn encode(r: *Runner, a: std.mem.Allocator, g: rules.Text, res: *const Resident, ids: []const u32, pos: []const [3]i32, vision: ?Vision, out: []u16) !void {
         const T = ids.len;
         const H = g.hidden;
         const qh = g.heads * D;
         const kvh = g.kv_heads * D;
-        if (T == 0 or pos.len != T or out.len != T * H or g.layers == 0 or res.layers.len < g.layers) return error.H3PromptRows;
+        if (T == 0 or pos.len != T or out.len != T * H or g.layers == 0 or @max(res.layers.len, res.layers8.len) < g.layers) return error.H3PromptRows;
         const n = if (vision) |v| try v.check(T, H) else 0;
+        const qkv_n = qh + 2 * kvh;
         var sizes = std.enums.EnumArray(EncodePart, usize).initFill(T * H * 2);
-        // `p` holds one product's fp32 rows at a time; the rest are bf16 buffers at their width
-        sizes.set(.p, T * @max(H, @max(qh, g.ffn)) * 4);
-        sizes.set(.qb, T * qh * 2);
+        // `p` holds one product's fp32 rows at a time; the rest are bf16 buffers at their width,
+        // `qb` and `gb` wide enough for the int8 layer's fused q/k/v and gate/up rows
+        sizes.set(.p, T * @max(H, @max(qkv_n, 2 * g.ffn)) * 4);
+        sizes.set(.qb, T * qkv_n * 2);
         sizes.set(.kb, T * kvh * 2);
         sizes.set(.vb, T * kvh * 2);
         sizes.set(.att, T * qh * 2);
-        sizes.set(.gb, T * g.ffn * 2);
+        sizes.set(.gb, T * 2 * g.ffn * 2);
         sizes.set(.ub, T * g.ffn * 2);
         sizes.set(.act, T * g.ffn * 2);
         sizes.set(.cos, T * 64 * 4);
@@ -411,6 +468,8 @@ pub const Runner = struct {
         sizes.set(.idx, (T + n) * 4);
         sizes.set(.vision, n * H * 2);
         sizes.set(.deep, 3 * n * H * 2);
+        sizes.set(.xq, T * @max(H, @max(qh, g.ffn)));
+        sizes.set(.xs, T * @max(H, @max(qh, g.ffn)) / 128 * 4);
         var s = try Scratch(EncodePart).make(&r.driver, sizes);
         defer s.buf.free();
         errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt encode did not drain");
@@ -444,29 +503,28 @@ pub const Runner = struct {
         defer ended.deinit();
         errdefer cuda.completion.drain(&r.driver, r.stream, "H3 prompt timing did not drain");
         try begun.record(r.stream);
-        for (0..g.layers) |li| {
-            const w = res.layers[li];
+        const groups: int8.Groups = if (res.layers8.len > 0) .{ .enc = try int8.encoder(&r.driver), .sms = @intCast(try r.ctx.attribute(.multiprocessor_count)) } else undefined;
+        const q: Quantized = .{ .groups = groups, .xq = s.at(.xq), .xs = s.at(.xs), .rows = T };
+        inline for (.{ res.layers8, res.layers }) |layers| for (layers[0..@min(layers.len, g.layers)], 0..) |w, li| {
+            // int8 layers project q/k/v and gate/up as one fused product each, so their rows interleave
+            const fused = @TypeOf(w) == Layer8;
+            const row: [3]usize = if (fused) .{ qkv_n, qkv_n, qkv_n } else .{ qh, kvh, kvh };
+            const kv: [2]u64 = if (fused) .{ s.at(.qb) + qh * 2, s.at(.qb) + (qh + kvh) * 2 } else .{ s.at(.kb), s.at(.vb) };
+            const up = if (fused) s.at(.gb) + g.ffn * 2 else s.at(.ub);
+            const gu_row = if (fused) 2 * g.ffn else g.ffn;
             try r.norm(s.at(.x), w.norm1, s.at(.xn), T, H, g.eps, mode_qwen);
-            try r.linear(s.at(.xn), w.q, s.at(.p), T, qh, H);
-            try r.round(s.at(.p), s.at(.qb), T * qh);
-            try r.linear(s.at(.xn), w.k, s.at(.p), T, kvh, H);
-            try r.round(s.at(.p), s.at(.kb), T * kvh);
-            try r.linear(s.at(.xn), w.v, s.at(.p), T, kvh, H);
-            try r.round(s.at(.p), s.at(.vb), T * kvh);
-            try r.heads(s.at(.qb), s.at(.kb), w.q_norm, w.k_norm, .{ s.at(.cos), s.at(.sin) }, g.heads, g.kv_heads, qh, kvh, D, T, g.eps, mode_qwen);
-            try r.attention(s.at(.qb), s.at(.kb), s.at(.vb), s.at(.att), T, g.heads, g.kv_heads, qh, kvh, kvh, D, true);
-            try r.linear(s.at(.att), w.o, s.at(.p), T, H, qh);
+            if (fused) try r.projected(q, s.at(.xn), w.qkv, s.at(.p), s.at(.qb), qkv_n, H) else inline for (.{ w.q, w.k, w.v }, .{ s.at(.qb), kv[0], kv[1] }, row) |m, to, width| try r.projected(q, s.at(.xn), m, s.at(.p), to, width, H);
+            try r.heads(s.at(.qb), kv[0], w.q_norm, w.k_norm, .{ s.at(.cos), s.at(.sin) }, g.heads, g.kv_heads, row[0], row[1], D, T, g.eps, mode_qwen);
+            try r.attention(s.at(.qb), kv[0], kv[1], s.at(.att), T, g.heads, g.kv_heads, row[0], row[1], row[2], D, true);
+            try r.product(q, s.at(.att), w.o, s.at(.p), H, qh);
             try r.add(s.at(.x), s.at(.p), T * H);
             try r.norm(s.at(.x), w.norm2, s.at(.xn), T, H, g.eps, mode_qwen);
-            try r.linear(s.at(.xn), w.gate, s.at(.p), T, g.ffn, H);
-            try r.round(s.at(.p), s.at(.gb), T * g.ffn);
-            try r.linear(s.at(.xn), w.up, s.at(.p), T, g.ffn, H);
-            try r.round(s.at(.p), s.at(.ub), T * g.ffn);
-            try r.glu(s.at(.gb), s.at(.ub), s.at(.act), T, g.ffn, g.ffn, g.ffn, mode_qwen);
-            try r.linear(s.at(.act), w.down, s.at(.p), T, H, g.ffn);
+            if (fused) try r.projected(q, s.at(.xn), w.gu, s.at(.p), s.at(.gb), 2 * g.ffn, H) else inline for (.{ w.gate, w.up }, .{ s.at(.gb), up }) |m, to| try r.projected(q, s.at(.xn), m, s.at(.p), to, g.ffn, H);
+            try r.glu(s.at(.gb), up, s.at(.act), T, g.ffn, gu_row, gu_row, mode_qwen);
+            try r.product(q, s.at(.act), w.down, s.at(.p), H, g.ffn);
             try r.add(s.at(.x), s.at(.p), T * H);
             if (n > 0 and li < 3) try r.indexed("h3p_scatter_add", s.at(.x), s.at(.deep) + li * n * H * 2, s.at(.idx) + T * 4, n, H);
-        }
+        };
         try ended.record(r.stream);
         try ended.synchronize();
         r.gpu = @as(f64, try cuda.Event.elapsedMs(begun, ended)) / 1000;
