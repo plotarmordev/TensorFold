@@ -8,22 +8,24 @@
 # 64 streams, one context a job, greedy, 128 tokens, 3 reps, each stream its own prompt of about 860 or 8,000
 # tokens. Achieved K/V bandwidth is the bytes a decoded token's attention reads by the cache layout (40 sliding
 # visits of at most 1,024 keys, 8 global visits of the whole context; 8 key heads, K and V 512 B a key) times the
-# measured decode rate, not a counter. Any failed request or the 600 s bound stops the job.
+# measured decode rate, not a counter. Setup and builds run first; the measurement runs under `timeout 600`, and any
+# failed request stops the job.
 set -eu
-if [ "${INKLING_KV_PAGES_DEADLINE:-}" != 1 ]; then
-    INKLING_KV_PAGES_DEADLINE=1 exec timeout --signal=INT --kill-after=20s 580 sh "$0"
-fi
-. docs/recipes/inkling-2-mini-cuda/setup.sh
 control=/work/control
-build() {
-    zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast -Dcuda-test-dump=true \
-        --prefix "$1"
-}
-build /work/sm121
-NVCC_PREPEND_FLAGS="$NVCC_PREPEND_FLAGS -DTF_INK2_KV_LOADS=1" ZIG_LOCAL_CACHE_DIR=/work/zig-control-cache build "$control"
-cmp "$control/native/bin/tensorfold-native" /work/sm121/native/bin/tensorfold-native >/dev/null && {
-    echo "the control build repeated the candidate's binary" >&2; exit 1;
-}
+if [ -z "${KV_PAGES_MEASURE:-}" ]; then
+    . docs/recipes/inkling-2-mini-cuda/setup.sh
+    build() {
+        zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast -Dcuda-test-dump=true \
+            --prefix "$1"
+    }
+    build /work/sm121
+    NVCC_PREPEND_FLAGS="$NVCC_PREPEND_FLAGS -DTF_INK2_KV_LOADS=1" ZIG_LOCAL_CACHE_DIR=/work/zig-control-cache build "$control"
+    cmp "$control/native/bin/tensorfold-native" /work/sm121/native/bin/tensorfold-native >/dev/null && {
+        echo "the control build repeated the candidate's binary" >&2; exit 1;
+    }
+    export model out
+    KV_PAGES_MEASURE=1 exec timeout -k 5 600 sh "$0"
+fi
 contract() {
     TF_CUDA_DUMP=1 "$1/bin/tf-cuda-test" kernel-contract "inkling2 attn" >"$1.log" 2>&1 || { cat "$1.log"; exit 1; }
     grep -v '^DUMP ' "$1.log"
