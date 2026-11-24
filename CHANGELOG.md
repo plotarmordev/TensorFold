@@ -4,6 +4,32 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Qwen3.5/3.8 on CUDA: `TF_Q35_GROUP_PROJ=1` runs same-input projections (MLP gate+up, GDN qkv+z and a+b, attention q+k+v) as segments of one qmmf launch, each keeping its own split-K and K-slice accumulation, so every output is computed exactly as by its own launch; off by default (#N).
+
+- Drama 3: the GB10 check script passes again after #4144. A PCM-only difference within one 16-bit step is reported, and every exact check still has to pass (#4463). Thanks @plotarmordev.
+
+- GLM-5.3-Flash on Metal: the rows-store staging permit is now sized from the model's whole image at the window, so deep saves past 1 GiB are kept and a restarted server resumes instead of prefilling again; `TF_GLM_STAGING_GIB` overrides it (#4216). Thanks @devopsfortunato.
+
+
+
+- Inkling 2 on HIP: attention kernels under the kernel contract (#N).
+
+- Qwen3.6-35B-A3B on Metal: the text-only checkpoint serves on the routed expert path, `--vision` refuses it by name, and `tf-qwen27-run --stages DIR` writes each layer's stream for a float64 comparison (#3239). Thanks to @cshintov.
+
+- Metal Qwen3.8-27B with MTP drafts: `TF_Q27_MTP_GPU_PICK=1` runs each MTP absorb in one command buffer and picks draft tokens on the GPU, removing two blocking waits per absorb and the CPU pass over the vocabulary; off by default (#N).
+
+- Idol: octree and decode-trace allocation failures now unwind cleanly and free what they hold, with successful output unchanged (#4304).
+
+
+
+- Idol runs end to end natively on M5 Metal: `tf-idol-generate` takes one preprocessed picture through DINOv3, the FLUX.2 VAE, the denoiser's 50 guided steps and both decoders to a 3DGS PLY and camera. On an M5 Ultra it is 29.1 s against 95.4 s for the SDK's IdolPipeline on MPS (excluding its preprocess), the denoiser 27.5 s against 93.9 s, at a 2.71 GB peak footprint against 12.88 GB. Given the SDK's starting and VAE noise the PLY's points sit as close to the SDK's as sampling resolves, and the camera's angles within 0.006 rad (#1780, after #1773, #1774 and #1775, for #1757). Thanks to @jayleaton.
+
+- Flash Next on CUDA: the MTP draft rows' best value, first id and log-sum-exp run over 32 one-warp blocks a row in place of one 1024-thread block, with the same bytes (#4632).
+
+
+
+- Desktop: the app typecheck passes again after two engine types were restored (#4829).
+
 - GLM on CUDA: a prefill cancelled between chunks keeps its completed shared-cache prefix (#N).
 
 - Ling-3.0-tiny on ARM CPUs: an exact decoder for the published 4-bit GGUF, built and launched on aarch64 Linux (#N).
@@ -14,15 +40,11 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 - HIP Qwen: use the policy prompt step on lone RDNA 3.5 iGPUs while preserving admitted streams and requested prompt caches (#4207). Thanks to @AbrahamCete.
 
-
-
 - MOSS-Image contract: the reference for `tf_me_conv` now follows fp32 `expf` overflow, so its sums check no longer fails on inputs near -89 (#4794).
 
 - HIP decode: multi-row rounds weigh each slot's rows from one read of their values (#N).
 
 - H3 on Macs: long image renders give way to live speech on the GPU (#N).
-
-
 
 - GLM TP=2 decode on CUDA: `TF_GLM_WIDE_EXPERT_TILE=1` runs routed-expert down for decode windows wider than 16 rows with the 64-pair factored tile that matches gate-up, keeping each output's K order; off by default (#N).
 
