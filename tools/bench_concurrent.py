@@ -19,7 +19,9 @@ the reply's usage. A request that fails to connect or errors counts in ``failed`
 server with a small listen backlog resets simultaneous connections; those resets are reported, not hidden).
 Each request also carries bench_metrics' figures (prompt/TTFT tok/s, token ITL/TPOT, chunk estimates, round gaps) and
 bench_stream's boundaries and completion class (docs/cache-benchmarks.md defines them); each rep pools them over its
-streams, and each cell gives medians ("request" and "pooled") and its completion classes.
+streams, and each cell gives medians ("request" and "pooled") and its completion classes. ``drafts``: the cell's
+speculative rounds, drafted and accepted tokens summed over its reps' requests, when the server reports them for all,
+and ``depth_drafted``/``depth_accepted``, the head chain's drafted and kept rows at each depth, when it reports those.
 Every stream of a default cell sends the same prompt (greedy: and gets the same reply), so a mixture-of-experts
 model routes all of them to the same experts, which can flatter multi-stream rates. ``--prompts FILE`` (for example
 tools/bench_prompts.json) runs one "distinct" cell instead, where request i sends the file's item i (modulo its length).
@@ -191,10 +193,32 @@ def overlapped(runs: list[dict]) -> bool | None:
     return any(b[0] < a[1] for a, b in zip(spans, spans[1:])) if len(spans) > 1 else None
 
 
+DRAFT_KEYS = ("rounds", "drafted", "accepted")
+DEPTH_KEYS = ("depth_drafted", "depth_accepted")
+
+
 def draft_count(run: dict, key: str) -> int | None:
     """A run's speculative count, None when the server reported none."""
     value = (run.get("speculative") or {}).get(key)
     return value if type(value) is int and value >= 0 else None
+
+
+def depth_counts(run: dict) -> list[list[int]] | None:
+    """A run's per-depth drafted and kept rows, None unless the server reported both as nonnegative integers."""
+    spec = run.get("speculative") or {}
+    pair = [spec.get(k) for k in DEPTH_KEYS]
+    ok = all(type(v) is list and all(type(n) is int and n >= 0 for n in v) for v in pair)
+    return pair if ok else None
+
+
+def sum_depths(rows) -> list[int]:
+    """Element-wise sums of per-depth tallies of any lengths."""
+    out: list[int] = []
+    for row in rows:
+        out.extend([0] * (len(row) - len(out)))
+        for i, v in enumerate(row):
+            out[i] += v
+    return out
 
 
 def serial_evidence(alone: dict) -> dict:
@@ -324,6 +348,8 @@ def main() -> None:
                     rep["ttft_s"] = [round(r["ttft_s"], 2) if r["ttft_s"] is not None else None for r in runs]
                     rep["errors"] = [r["error"] for r in runs if r.get("error")]
                     rep["thinking_modes"] = sorted({r["thinking"] for r in runs if "thinking" in r})
+                    rep["drafts"] = [[draft_count(r, k) for k in DRAFT_KEYS] for r in runs]
+                    rep["depths"] = [depth_counts(r) for r in runs]
                     rep["requests"] = [{k: r.get(k) for k in ("prompt_tokens", "ttft_s", "decode_tps", "thinking", "thinking_off_requested",
                                                               "completion", "token_timing", *METRICS)}
                                        for r in runs]
@@ -366,6 +392,12 @@ def main() -> None:
                     cell[key] = statistics.median(r[key] for r in reps) if valid else None
                 if all("steady_tps" in r for r in reps):
                     cell["steady_tps"] = round(statistics.median(r["steady_tps"] for r in reps), 1)
+                counts = [c for r in reps for c in r["drafts"]]
+                if counts and all(None not in c for c in counts):
+                    cell["drafts"] = dict(zip(DRAFT_KEYS, map(sum, zip(*counts))))
+                    depths = [d for r in reps for d in r["depths"]]
+                    if all(d is not None for d in depths):
+                        cell["drafts"].update(zip(DEPTH_KEYS, (sum_depths(d[i] for d in depths) for i in range(2))))
                 if alone:
                     checks = [v for r in reps for v in r["equal_alone"]]
                     cell["alone"] = {"equal": checks.count(True), "unequal": checks.count(False),

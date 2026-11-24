@@ -268,6 +268,7 @@ extern "C" __global__ void __launch_bounds__(256) tf_ink2_rowdot(const uint16_t*
 }
 
 // Router picks per row: top-K of score + bias (ties to the lower id), weights score / sum(scores) * scale (fp32).
+// A row left with only NaN candidates gets no pick for the rest: id -1, weight 0, which the expert kernels skip.
 extern "C" __global__ void __launch_bounds__(512) tf_ink2_topk(const float* __restrict__ scores, const float* __restrict__ bias,
                                                               int* __restrict__ pick, float* __restrict__ wts, int E, int K,
                                                               float scale) {
@@ -302,12 +303,12 @@ extern "C" __global__ void __launch_bounds__(512) tf_ink2_topk(const float* __re
             int mi = bi[0];
             for (int i = 1; i < nw; ++i)
                 if (bv[i] > m || (bv[i] == m && bi[i] < mi)) { m = bv[i]; mi = bi[i]; }
-            chosen_id[k] = mi;
-            chosen[k] = scores[row * E + mi];
+            chosen_id[k] = mi == 0x7fffffff ? -1 : mi;
+            chosen[k] = mi == 0x7fffffff ? 0.0f : scores[row * E + mi];
         }
         __syncthreads();
         const int got = chosen_id[k];
-        if (got % blockDim.x == static_cast<int>(threadIdx.x)) sel[got / blockDim.x] = -INFINITY;
+        if (got >= 0 && got % blockDim.x == static_cast<int>(threadIdx.x)) sel[got / blockDim.x] = -INFINITY;
         __syncthreads();
     }
     if (threadIdx.x == 0) {

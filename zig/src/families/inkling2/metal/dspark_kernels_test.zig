@@ -154,6 +154,19 @@ test "folded correction rounds bias then logits before the thirty softcap" {
     try t.expect(saturated <= 30 and saturated > 29.9);
 }
 
+test "DSpark cohort depth order packs each active prefix without losing a stream" {
+    const depths = [_]u32{ 2, 7, 1, 4, 7 };
+    const order = k.Order.sort(&depths);
+    try t.expectEqualSlices(usize, &.{ 1, 4, 3, 0, 2 }, order.slots[0..depths.len]);
+    try t.expectEqualSlices(u32, &.{ 5, 4, 3, 3, 2, 2, 2 }, &order.active);
+    try t.expectEqualSlices(usize, &.{ 0, 5, 9, 12, 15, 17, 19 }, &order.first);
+    try t.expectEqual(@as(usize, 21), order.rows);
+    for (order.active, 0..) |active, step| {
+        for (order.slots[0..active]) |item| try t.expect(depths[item] > step);
+        for (order.slots[active..depths.len]) |item| try t.expect(depths[item] <= step);
+    }
+}
+
 test "the tensor-unit attention spans the kept keys in whole chunks, and none without a key" {
     try t.expectEqual(@as(u32, 0), k.unitsSpan(0, false, 0).chunks);
     try t.expectEqual(@as(u32, 0), k.unitsSpan(700, false, 700).chunks);

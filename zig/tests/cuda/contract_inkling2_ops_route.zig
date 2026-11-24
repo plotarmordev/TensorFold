@@ -17,7 +17,7 @@ const top = 8;
 const route_scale: f32 = 8;
 
 const topk_rule = "the 8 largest score + bias, the lower id on ties, a NaN never picked, a pick's value then -inf; " ++
-    "weights score / (sum of the picks' scores + 1e-20) x 8 in fp32";
+    "a row out of non-NaN candidates picks -1 at weight 0; weights score / (sum of the picks' scores + 1e-20) x 8 in fp32";
 
 /// Rows x experts x picks: every row of a call, a block each.
 pub fn topkSpec(unbiased: bool) c.Spec {
@@ -61,12 +61,13 @@ pub const Topk = struct {
         for (self.scores) |*v| v.* = ref.int(rng, 1, 63) / 64;
         self.bias = try a.alloc(f32, E);
         for (self.bias) |*v| v.* = ref.int(rng, -16, 16) / 64;
-        if (fill == .nonfinite and shape.rows >= 4) {
+        if (fill == .nonfinite and shape.rows >= 5) {
             for ([_]usize{ 0, 5, 9, 100, E - 1 }) |e| self.scores[e] = ref.nan;
             self.scores[E + 7] = ref.inf;
             for (0..E / 2) |e| self.scores[2 * E + 2 * e] = -ref.inf;
             for ([_]usize{ 3, 40 }) |e| self.scores[3 * E + e] = ref.inf;
             self.scores[3 * E + 41] = -ref.inf;
+            for (self.scores[4 * E ..][3..E]) |*v| v.* = ref.nan; // three candidates for eight picks
         }
         const zero = try a.alloc(f32, E);
         defer a.free(zero);
@@ -103,16 +104,18 @@ pub const Topk = struct {
                     best = v;
                     id = e;
                 };
-                if (id == std.math.maxInt(usize)) return try std.fmt.bufPrint(msg, "row {d}: the fixture leaves no pick {d}", .{ r, k });
                 ids[k] = id;
+                if (id == std.math.maxInt(usize)) continue;
                 sel[id] = -std.math.inf(f32);
                 t += sc[id];
             }
             for (0..K) |k| {
-                const want_w = sc[ids[k]] / (t + 1e-20) * route_scale;
+                const none = ids[k] == std.math.maxInt(usize);
+                const want_id: i32 = if (none) -1 else @intCast(ids[k]);
+                const want_w: f32 = if (none) 0 else sc[ids[k]] / (t + 1e-20) * route_scale;
                 const id = ref.readI32(got, r * K + k);
                 const w = ref.readF32(got, rows * K + r * K + k);
-                if (id != @as(i32, @intCast(ids[k])) or !ref.sameF32(w, want_w)) return try std.fmt.bufPrint(msg, "row {d} pick {d}: ({d}, {e}) where ({d}, {e}) is due", .{ r, k, id, w, ids[k], want_w });
+                if (id != want_id or !ref.sameF32(w, want_w)) return try std.fmt.bufPrint(msg, "row {d} pick {d}: ({d}, {e}) where ({d}, {e}) is due", .{ r, k, id, w, want_id, want_w });
             }
         }
         return null;

@@ -312,10 +312,7 @@ pub const Model = struct {
         var ids: [prompt_rows]i32 = undefined;
         var pos: [prompt_rows]i32 = undefined;
         var seg_of: [prompt_rows]i32 = @splat(0);
-        for (tokens, 0..) |token, i| {
-            ids[i] = @intCast(token);
-            pos[i] = @intCast(p0 + i);
-        }
+        try packRows(tokens, p0, c.vocab, ids[0..rows], pos[0..rows]);
         try m.upload(s, m.s.ids, std.mem.sliceAsBytes(ids[0..rows]));
         try m.upload(s, m.s.pos, std.mem.sliceAsBytes(pos[0..rows]));
         try m.upload(s, m.s.seg_of, std.mem.sliceAsBytes(seg_of[0..rows]));
@@ -554,6 +551,25 @@ pub const Model = struct {
         m.gpa.destroy(saved);
     }
 };
+
+/// Embedding ids and positions for one forward; refuses an id past the embedding table before anything reaches the device.
+fn packRows(tokens: []const u32, p0: usize, vocab: u32, ids: []i32, pos: []i32) !void {
+    for (tokens) |token| if (token >= vocab) return error.BadToken;
+    for (tokens, ids, pos, 0..) |token, *id, *p, i| {
+        id.* = @intCast(token);
+        p.* = @intCast(p0 + i);
+    }
+}
+
+test "a prompt or draft id past the vocabulary is refused before upload" {
+    var ids: [3]i32 = @splat(-1);
+    var pos: [3]i32 = @splat(-1);
+    try std.testing.expectError(error.BadToken, packRows(&.{ 5, 200064, 7 }, 10, 200064, &ids, &pos));
+    try std.testing.expectEqualSlices(i32, &.{ -1, -1, -1 }, &ids);
+    try packRows(&.{ 5, 200063, 7 }, 10, 200064, &ids, &pos);
+    try std.testing.expectEqualSlices(i32, &.{ 5, 200063, 7 }, &ids);
+    try std.testing.expectEqualSlices(i32, &.{ 10, 11, 12 }, &pos);
+}
 
 test "pass snapshots and rollback layout cover every visit" {
     const config_test = @import("config_test.zig");
