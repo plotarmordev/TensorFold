@@ -11,10 +11,14 @@ the inputs and flags we could pin.
 | Own `--bench`, both packs, 1/4/64 streams | `bottom-c5e4253968cb` | card 242's `strata-job.sh` | BOTTOM GB10 |
 | HTTP bench, SQ-20, 1/4/64 streams | `bottom-8e4de9ca491c` (measure 351 s) | `1e17bb6ca` | BOTTOM GB10 |
 | HTTP bench, SQ-10, 1/4/64 streams | `bottom-93a2de938e6e` (measure 269 s) | `1e17bb6ca` | BOTTOM GB10 |
+| HTTP KV dtype and rates, SQ-20, 1/4/64 streams | `top-f850ea7b36f4` (measure 367 s) | `0f1cb35ed` | TOP GB10 |
+| HTTP KV dtype and rates, SQ-10, 1/4/64 streams | `top-48f19d7e71b3` (measure 276 s) | `0f1cb35ed` | TOP GB10 |
 
-The Desk ran every job on BOTTOM in DeepSeek windows, not on TOP, at the Lead's call (card 242, 24 Nov). Full logs:
+The Desk ran every rate job on BOTTOM in DeepSeek windows, not on TOP, at the Lead's call (card 242, 24 Nov). Full logs:
 Desk `jobs/tf247-strata/sq20-1e17.log`, `sq10-1e17.log`. Scripts: `strata-sq{20,10}-{1,4,64}.sh` and
-`strata-http-sq{20,10}.sh`, all through `strata-job.sh`, which prints every setting below as `[settings]` lines.
+`strata-http-sq{20,10}.sh`, all through `strata-job.sh`, which prints every setting below as `[settings]` lines. The
+two TOP jobs are `swarm gpu-run` runs of `strata-http-sq{20,10}.sh` at `0f1cb35ed`; they re-measured the HTTP cells
+and recorded the KV dtype each level's server reported in `/metrics`.
 
 ## Results (tok/s total across streams, median of 3)
 
@@ -30,6 +34,9 @@ Desk `jobs/tf247-strata/sq20-1e17.log`, `sq10-1e17.log`. Scripts: `strata-sq{20,
 Own bench: decode only, the `[bench]` line's `decode=… tps agg`. HTTP: every stream's usage tokens over the makespan
 (first request sent to last reply done), prefill included, so it runs below a decode rate. No HTTP cell failed a
 request.
+
+The TOP rerun at `0f1cb35ed` read inside 5% of the BOTTOM rates in every cell (SQ-10 at 64: 264.1 / 236.6 same /
+different; SQ-20: 196.3 / 174.7), so the table's numbers stand for both machines.
 
 ## Settings
 
@@ -54,11 +61,11 @@ request.
     one 16-token warm-up request a cell.
   - Same prompt: the first chat prompt of `tools/bench_prompts.json` (31 tokens) on every stream. Different prompts:
     request i gets chat prompt i mod their count (21-47 tokens).
-  - KV dtype: not recorded by these runs. The server logs no `kv_dtype=` line (the engine reports it only in its
-    `INFO` protocol line, which the server keeps in `/metrics`), so the jobs at `1e17bb6ca` printed none. Control
-    passes no `--kv`, so the engine's auto rule applies: fp16 at 1 and 4 slots, fp8 at 64 `[INFERENCE]`, from
-    `ink_main.cpp` at v0.2.19. `strata-job.sh` now prints a `[kv]` line per pack and level from `/metrics` and fails
-    when the dtype is absent; a rerun records it.
+  - KV dtype, measured per level on TOP (`top-f850ea7b36f4`, `top-48f19d7e71b3`), read by `metrics-kv.py` from
+    the engine's `INFO` `kv_dtype` that the server keeps only in `/metrics`: fp16 at 1 and 4 streams, fp8 at 64,
+    for both packs — the engine's auto rule from `ink_main.cpp` at v0.2.19 (control passes no `--kv`), and the same
+    fp8 the earlier TOP probe printed for SQ-10 at 64. `metrics-kv-test.py` (`zig build test-strata-kv`) checks the
+    reader fails when `/metrics` carries no dtype.
 
 ## What still differs from the published 805.8
 
