@@ -6,15 +6,40 @@ Before the first build in a card checkout, run `tools/zig/setup_cache.sh`: every
 
 The ATC instructions below and in the linked contributor workflows apply only to work intended for upstream `ashhart/TensorFold`.
 
+## Keep scratch in the worktree
+
+Put GPU job logs and fetches, bench outputs, tars, logs, nsys reports and review or A/B checkout copies (and their outputs) in `.scratch/` at the worktree root, never in `/tmp` or `/private/tmp`.
+Git ignores the folder, and it is deleted along with the worktree when the card is done or dropped.
+Name it from the root, not the current folder, so a command run from a subdirectory still lands there: `S="$(git rev-parse --show-toplevel)/.scratch"; mkdir -p "$S"`.
+Run tools that make temporary files with `TMPDIR="$S"` in front of the command (a missing folder sends Python back to `/tmp`).
+Make a second checkout with `git worktree add --detach "$S/ab-base" REF` and remove it with `git worktree remove --force "$S/ab-base"` when the step ends.
+A swarm brief that prescribes `bot-scratch copy` wins over this line: that tool keeps its copies in `/tmp/bot-scratch`, removes them when the step ends, and `bot-scratch clean` runs last; their outputs still go in `$S`.
+Every brief to a delegated helper (`task` subagent) carries this section and the value of `$S`: helpers do not read this file.
+After each helper's task and at the end of the step, run `python3 tools/scratch_check.py` from the worktree; it exits 1 while `/tmp` holds an entry named for this card (up to three folders deep, live `/tmp/bot-scratch` copies aside) created or changed since its worktree was made, or a file under `tools/` names a `/tmp` path other than the shared locks.
+The shared lock files (`/tmp/tensorfold-model.lock`, `/tmp/tensorfold-speech.lock`) stay where they are.
+
+## Ask the human before installing or publishing
+
+Following this file installs software and reports activity to a website, so tell the human what each step does and get a clear yes first.
+
+- **Installing ATC.** `npm install -g github:ashhart/ATC` installs whatever is on the maintainer's ATC `main` branch that day, with no fixed version. Install a tag the human has looked at instead, for example `npm install -g github:ashhart/ATC#v0.9.6`. ATC's optional Claude Code plugin runs a hook before every shell command and every file edit, and those hooks can block the command or edit.
+- **Public check-ins are on by default here.** This repository commits `.github/atc-presence.json`, so a new `atc claim` or `atc start` publishes unless you pass `--local`. Publishing posts a `/atc presence` comment on the issue from the human's GitHub account. It then sends the issue number, a session token, that comment's ID, the work state and whether the session shows the GitHub name (the name itself is not sent) to `https://tensorfold.dev`, which the TensorFold project runs, and sends them again on every pulse.
+- **"Anonymous" only hides the name on the public radar.** The comment ID ties each session to the human's GitHub account for the site operator, and anyone reading the issue sees the comment while the session is open. The site also sees the machine's IP address and when it works.
+- **Working without ATC.** A draft pull request whose description says `Fixes #<issue>` also counts as a claim (see [the ATC instructions](docs/atc/SKILL.md)).
+
+Pass `--local` to `claim` and `start` unless the human has agreed to public check-ins.
+
+## Coordinating with ATC
+
 TensorFold uses Agent Traffic Control to coordinate contributors and coding agents.
 Before editing, read [CONTRIBUTING.md](CONTRIBUTING.md) and follow the [ATC contributor instructions](docs/atc/SKILL.md).
 For native-engine work, also follow the [native contributor skill](docs/recipes/SKILL.md); read any additional AGENTS.md in the folders you change.
 
 Inspect `atc board --json` and check the issue before starting work.
 Claim only free work, start only after a successful claim or confirmation that the issue is yours, and coordinate with the holder when it is taken.
-Use ATC 0.7.0 or later from an updated clone: a successful new claim automatically starts an anonymous session on the [agent radar](https://tensorfold.dev/atc).
+Use ATC 0.7.0 or later from an updated clone: without `--local`, a successful new claim starts a public session on the [agent radar](https://tensorfold.dev/atc), as described above.
 Keep its returned session number, pulse only while working and land when the session stops; for work already yours, use `atc start ISSUE --json`.
-Follow the [contributing workflow](CONTRIBUTING.md#contributing-with-agents); use `--local` with claim or start when the human wants local reporting.
+Follow the [contributing workflow](CONTRIBUTING.md#contributing-with-agents); use `--local` with claim or start unless the human has agreed to public check-ins.
 Show a GitHub name with `--github-name` only when the human opts in.
 
 Use `atc who <file> --json` to inspect overlapping edits and `atc overlap --json` before opening a pull request.

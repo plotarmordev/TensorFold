@@ -2,6 +2,7 @@
 
 pub const startup_receipt = @import("profile").startup_receipt;
 pub const benchmark_group = @import("benchmark_group.zig");
+pub const chunked_write = @import("chunked_write.zig");
 pub const weight_only = @import("weight_only.zig");
 pub const profile = @import("profile");
 pub const safetensors = @import("safetensors.zig");
@@ -14,6 +15,7 @@ pub const digest_cache = @import("digest_cache.zig");
 pub const checkpoint_identity = @import("checkpoint_identity.zig");
 pub const checkpoint_read_ahead = @import("checkpoint_read_ahead.zig");
 pub const checkpoint = @import("checkpoint.zig");
+pub const checkpoint_file_cache = @import("checkpoint_file_cache.zig");
 pub const dfloat11_config = @import("dfloat11_config.zig");
 pub const checkpoint_fixture = @import("checkpoint_fixture.zig");
 pub const dfloat11_fixtures = @import("dfloat11_fixtures.zig");
@@ -32,7 +34,6 @@ pub const torch_pth = @import("torch_pth.zig"); // torch.save archives read with
 pub const wav = @import("wav.zig"); // reference clips in, speech out
 pub const proposal_vocab = @import("proposal_vocab.zig");
 pub const ids_json = @import("ids_json.zig");
-pub const json_read = @import("json_read.zig");
 pub const affine4_host = @import("affine4_host.zig");
 pub const affine4_fold = @import("affine4_fold.zig");
 pub const shard_edit = @import("shard_edit.zig");
@@ -139,7 +140,6 @@ test {
     _ = prompt_tail;
     _ = @import("copy_index.zig");
     _ = ids_json;
-    _ = json_read;
     _ = proposal_vocab;
     _ = proposal_rows;
     _ = nvfp4;
