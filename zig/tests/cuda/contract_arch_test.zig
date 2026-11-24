@@ -146,13 +146,14 @@ test "kernel-contract shards: N of them run each kernel once, and only I/N is a 
         var owners: usize = 0;
         var word: [8]u8 = undefined;
         for (1..n + 1) |at| {
-            const s = g.Shard.parse(try std.fmt.bufPrint(&word, "{d}/{d}", .{ at, n })).?;
+            const s = (try g.Shard.parse(try std.fmt.bufPrint(&word, "{d}/{d}", .{ at, n }))).?;
             try std.testing.expectEqual(at == 1, s.first());
             if (s.has(i)) owners += 1;
         }
         try std.testing.expectEqual(@as(usize, 1), owners);
     };
-    for ([_][]const u8{ "0/4", "5/4", "1/0", "h3d", "sm_120/121", "2/", "/2" }) |w| try std.testing.expect(g.Shard.parse(w) == null);
+    for ([_][]const u8{ "h3d", "sm_120/121" }) |w| try std.testing.expect(try g.Shard.parse(w) == null);
+    for ([_][]const u8{ "0/4", "5/4", "1/0", "2/", "/2", "1/4x" }) |w| try std.testing.expectError(error.BadShard, g.Shard.parse(w));
 }
 
 test {

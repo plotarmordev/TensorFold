@@ -343,12 +343,14 @@ pub const Shard = struct {
     at: usize = 0,
     of: usize = 1,
 
-    /// "I/N" (I from 1 to N), else null: any other word names kernels.
-    pub fn parse(word: []const u8) ?Shard {
+    /// "I/N" (I from 1 to N); null for a word naming kernels; error.BadShard for a word that starts as a shard's
+    /// (a digit or "/" before its "/") but is not one, so "0/4" stops the run instead of naming no kernel.
+    pub fn parse(word: []const u8) error{BadShard}!?Shard {
         const cut = std.mem.indexOfScalar(u8, word, '/') orelse return null;
-        const i = std.fmt.parseInt(usize, word[0..cut], 10) catch return null;
-        const n = std.fmt.parseInt(usize, word[cut + 1 ..], 10) catch return null;
-        return if (i >= 1 and i <= n) .{ .at = i - 1, .of = n } else null;
+        if (cut > 0 and !std.ascii.isDigit(word[0])) return null;
+        const i = std.fmt.parseInt(usize, word[0..cut], 10) catch return error.BadShard;
+        const n = std.fmt.parseInt(usize, word[cut + 1 ..], 10) catch return error.BadShard;
+        return if (i >= 1 and i <= n) .{ .at = i - 1, .of = n } else error.BadShard;
     }
 
     pub fn has(s: Shard, i: usize) bool {

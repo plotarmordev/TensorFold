@@ -82,7 +82,7 @@ const images = struct {
 /// Gates 1-4 on every registered CUDA kernel and each control at its own gate, then gate 5; `words`: a leading
 /// "I/N" is this process's shard of them, the rest contract_after.zig's `only`.
 pub fn run(gpu: check.Gpu, words: []const []const u8) !void {
-    const shard: ?g.Shard = if (words.len > 0) g.Shard.parse(words[0]) else null;
+    const shard: ?g.Shard = if (words.len > 0) try g.Shard.parse(words[0]) else null;
     const only = words[@intFromBool(shard != null)..];
     var t: g.Tally = .{};
     var t0 = check.now(gpu.io);
