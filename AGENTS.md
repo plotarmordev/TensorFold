@@ -2,6 +2,7 @@
 
 Swarm cards worked in `plotarmordev/TensorFold` are local: do not run `atc check`, `atc claim` or `atc start` for them.
 A local card number is never an upstream issue number.
+Before the first build in a card checkout, run `tools/zig/setup_cache.sh`: every `zig build` there then writes to the shared cache outside the checkout ([Keep checkouts small](CONTRIBUTING.md#keep-checkouts-small)).
 
 The ATC instructions below and in the linked contributor workflows apply only to work intended for upstream `ashhart/TensorFold`.
 
