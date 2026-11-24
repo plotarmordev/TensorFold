@@ -1,6 +1,7 @@
 # Sourced by run-script.sh and hillclimb.sh: finds the checkpoint, unpacks the staged toolchain, builds sm_121 into
 # /work/sm121 and runs the exactness gates (#4387's serving checks, 32 greedy tokens against the float64 reference
-# and its planted control). Sets $model, $bin and $out; any failure stops the job.
+# and its planted control). Sets $model, $bin and $out; any failure stops the job. With INKLING_ENV_ONLY=1 it stops
+# after the toolchain, with an empty $out: no build, checkpoint digest or gates.
 pilot=/assets/drama3-pilot
 staged=$pilot/cuda-build-toolchain
 zig=zig-aarch64-linux-0.17.0
@@ -26,6 +27,7 @@ tar -C /work -xJf "$staged/$gcc.tar.xz"
 export PATH=/work/$zig:$PATH ZIG_GLOBAL_CACHE_DIR=/work/zig-cache ZIG_LOCAL_CACHE_DIR=/work/zig-cache
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
+[ -z "${INKLING_ENV_ONLY:-}" ] || { rm -rf "$out"; mkdir -p "$out"; return; }
 nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv,noheader
 echo "model $model: $(cat "$model"/*.safetensors | sha256sum | cut -d' ' -f1)"
 zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/sm121

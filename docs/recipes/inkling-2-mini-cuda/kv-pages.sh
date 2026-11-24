@@ -1,42 +1,42 @@
 #!/bin/sh
 # Inkling 2 Mini's K/V pages by TMA bulk copies on TOP's GB10:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/kv-pages.sh (1K; kv-pages-8k.sh: 8K)
-# After setup.sh's build and gates, the candidate and a control built from the same tree with TF_INK2_KV_LOADS=1
+# The whole job runs under `timeout 600`, so setup.sh only unpacks the toolchain (its build and gates are other
+# receipts'). The candidate and a control built from the same tree with TF_INK2_KV_LOADS=1, through an nvcc wrapper
 # (the per-thread loads the bulk copies replace) dump the attention contract's outputs at every served form: 1 row
 # and multi-row verify, keys to 1M wrapping the sliding (2,048) and global (4,096) rings, page tails (1,030,
 # 16,390, 20,000, 300,000 keys). Both builds' bytes must match. Then fresh servers control, candidate, control at
 # 64 streams, one context a job, greedy, 128 tokens, 3 reps, each stream its own prompt of about 860 or 8,000
-# measured decode rate, not a counter. Setup, builds and the byte comparison run first and log "setup: N s"; the
-# three arms run under `timeout 600`, log "measure: N s" and stop the job on any failed request.
+# tokens. Achieved K/V is derived from the cache layout and the
+# measured decode rate, not a counter. Setup, builds and the byte comparison log "setup: N s"; the arms log
+# "measure: N s" and stop the job on any failed request.
 set -eu
+[ -n "${KV_PAGES_BOUNDED:-}" ] || KV_PAGES_BOUNDED=1 exec timeout -k 5 600 sh "$0"
 control=/work/control
 start=$(date +%s)
-if [ -z "${KV_PAGES_MEASURE:-}" ]; then
-    . docs/recipes/inkling-2-mini-cuda/setup.sh
-    build() {
-        zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast -Dcuda-test-dump=true \
-            --prefix "$1"
-    }
-    build /work/sm121
-    NVCC_PREPEND_FLAGS="$NVCC_PREPEND_FLAGS -DTF_INK2_KV_LOADS=1" ZIG_LOCAL_CACHE_DIR=/work/zig-control-cache build "$control"
-    cmp "$control/native/bin/tensorfold-native" /work/sm121/native/bin/tensorfold-native >/dev/null && {
-        echo "the control build repeated the candidate's binary" >&2; exit 1;
-    }
-    contract() {
-        TF_CUDA_DUMP=1 "$1/bin/tf-cuda-test" kernel-contract "inkling2 attn" >"$1.log" 2>&1 || { cat "$1.log"; exit 1; }
-        grep -v '^DUMP ' "$1.log"
-        grep '^DUMP ' "$1.log" >"$1.dump" || :
-    }
-    contract /work/sm121
-    contract "$control"
-    [ -s "$control.dump" ] && cmp -s /work/sm121.dump "$control.dump" || {
-        echo "attention outputs differ between the bulk copies and the per-thread loads" >&2; exit 1;
-    }
-    echo "PASS attention outputs: $(wc -l <"$control.dump") served forms byte-identical, bulk copies and per-thread loads"
-    echo "setup: $(($(date +%s) - start)) s"
-    export model out
-    KV_PAGES_MEASURE=1 exec timeout -k 5 600 sh "$0"
-fi
+INKLING_ENV_ONLY=1 . docs/recipes/inkling-2-mini-cuda/setup.sh
+build() {
+    zig build install native -Dsm=121 -Dnvcc="$2" -Doptimize=ReleaseFast -Dcuda-test-dump=true --prefix "$1"
+}
+build /work/sm121 /usr/local/cuda/bin/nvcc
+printf '#!/bin/sh\nexec /usr/local/cuda/bin/nvcc -DTF_INK2_KV_LOADS=1 "$@"\n' >/work/nvcc-kv-loads
+chmod +x /work/nvcc-kv-loads
+build "$control" /work/nvcc-kv-loads
+cmp "$control/native/bin/tensorfold-native" /work/sm121/native/bin/tensorfold-native >/dev/null && {
+    echo "the control build repeated the candidate's binary" >&2; exit 1;
+}
+contract() {
+    TF_CUDA_DUMP=1 "$1/bin/tf-cuda-test" kernel-contract "inkling2 attn" >"$1.log" 2>&1 || { cat "$1.log"; exit 1; }
+    grep -v '^DUMP ' "$1.log"
+    grep '^DUMP ' "$1.log" >"$1.dump" || :
+}
+contract /work/sm121
+contract "$control"
+[ -s "$control.dump" ] && cmp -s /work/sm121.dump "$control.dump" || {
+    echo "attention outputs differ between the bulk copies and the per-thread loads" >&2; exit 1;
+}
+echo "PASS attention outputs: $(wc -l <"$control.dump") served forms byte-identical, bulk copies and per-thread loads"
+echo "setup: $(($(date +%s) - start)) s"
 start=$(date +%s)
 prompts() {
     python3 - "$out" "$1" "$2" <<'PY'
