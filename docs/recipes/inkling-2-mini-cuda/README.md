@@ -70,10 +70,13 @@ only, one at a time; the head and step list below are the brief.
 
 ### Ours on TOP's GB10, one capped run
 
-Job pending: `swarm gpu-run plotarmordev/TensorFold <head> docs/recipes/inkling-2-mini-cuda/run-script.sh`.
-The prior receipt of the same engine and checkpoint (card 211's, job `top-0b05213c9f06` at `4a5089e70`,
-`--parallel 4`): 32.9 tok/s at one stream, 117.9/118.8 total at four, 0 failed, 0 of 32 reference tokens off,
-67% of the 49 tok/s weight-read ceiling (5.55 GB a token at 273 GB/s).
+Job `top-7ed89a976853` at `d0a93a07f`: the build and `kernel-contract "inkling2 loop"` passed (6 kernels, 4 planted
+controls red), then `inkling2-serving` stopped the run with `host-reference case=1 mismatch=MiniServingTokenMismatch`:
+the sampled case (seed 37, temperature 0.8, top_k 64, top_p 0.95) draws other tokens on CUDA than the host does over the
+same logits. Greedy (case 0) passed. The reference, control and serve steps did not run. That is an engine defect on
+main, outside this card's doc scope. The prior receipt of the same engine and checkpoint (card 211's, job
+`top-0b05213c9f06` at `4a5089e70`, `--parallel 4`): 32.9 tok/s at one stream, 117.9/118.8 total at four, 0 failed,
+0 of 32 reference tokens off, 67% of the 49 tok/s weight-read ceiling (5.55 GB a token at 273 GB/s).
 
 ### Ours on the RTX Spark N1X, native Windows
 
