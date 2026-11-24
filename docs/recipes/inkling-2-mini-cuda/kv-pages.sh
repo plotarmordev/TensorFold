@@ -1,8 +1,9 @@
 #!/bin/sh
 # Inkling 2 Mini's K/V pages by TMA bulk copies on TOP's GB10:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/kv-pages.sh (1K; kv-pages-8k.sh: 8K)
-# The whole job runs under `timeout 600`, so setup.sh only unpacks the toolchain (its build and gates are other
-# receipts'). The candidate and a control built from the same tree and cache with -Dinkling2-kv-loads=true (the
+# TOP runs every job's build cold (the zig cache is under the per-job checkout), so the builds cannot share a
+# bounded run. The job is therefore unbounded: setup.sh only unpacks the toolchain (its build and gates are other
+# receipts'), then the candidate and a control built from the same tree with -Dinkling2-kv-loads=true (the
 # per-thread loads the bulk copies replace; only that kernel image and the executables rebuild) dump the attention
 # contract's outputs at every served form: 1 row and multi-row verify, keys to 1M wrapping the sliding (2,048) and
 # global (4,096) rings, page tails (1,030, 16,390, 20,000, 300,000 keys). Both builds' bytes must match. Then fresh
@@ -11,7 +12,7 @@
 # not a counter. Setup, builds and the byte comparison log "setup: N s"; the arms log "measure: N s" and stop the
 # job on any failed request.
 set -eu
-[ -n "${KV_PAGES_BOUNDED:-}" ] || KV_PAGES_BOUNDED=1 exec timeout -k 5 600 sh "$0"
+
 control=/work/control
 start=$(date +%s)
 INKLING_ENV_ONLY=1 . docs/recipes/inkling-2-mini-cuda/setup.sh
@@ -36,6 +37,7 @@ contract "$control"
 }
 echo "PASS attention outputs: $(wc -l <"$control.dump") served forms byte-identical, bulk copies and per-thread loads"
 echo "setup: $(($(date +%s) - start)) s"
+
 start=$(date +%s)
 prompts() {
     python3 - "$out" "$1" "$2" <<'PY'
