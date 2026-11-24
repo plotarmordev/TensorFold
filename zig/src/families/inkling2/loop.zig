@@ -1,168 +1,131 @@
-//! Inkling 2 Mini's loop host layout: 48 private visit caches, whole-state snapshots and one-rank admission.
+//! Inkling 2 Mini's loop launches (inkling2/loop.cu): cross-pass message mixes and the core inputs' rank-r gates.
+//! C2 stand-in: the arithmetic #4337's Metal implementation runs; the kernel contract for these is C2's slice.
 const std = @import("std");
+const cuda = @import("cuda");
 const config = @import("config.zig");
-const plan_ = @import("plan.zig");
 
-pub fn validateLoad(c: *const config.Config, rank: usize, images: bool) !void {
-    if (rank != 1) return error.Inkling2LoopOneRankOnly;
-    if (images) return error.Inkling2LoopTextOnly;
-    const lp = c.text.loop orelse return error.Inkling2LoopRequired;
-    if (lp.gate_rank != 64) return error.UnsupportedLoopGateRank;
-}
+pub const max_blocks = config.max_blocks;
+pub const max_queries = 4;
+pub const max_gates = 3;
+pub const max_rank = 128;
+const threads = 256;
+const lin_threads = 128; // loop.cu kLin
 
-pub const SnapshotSlot = struct {
-    kv_offset: u64,
-    kv_bytes: u64,
-    conv_offset: u64,
-    conv_bytes: u64,
+/// loop.cu's LoopMixArgs, field for field.
+pub const MixArgs = extern struct {
+    blocks: [max_blocks]u64 = @splat(0),
+    partial: u64,
+    query: [max_queries]u64 = @splat(0),
+    out: u64,
+    out_stride: i64,
+    n_blocks: i32,
+    partial_f32: i32,
+    nq: i32,
+    rows: i32,
+    h: i32,
+    eps: f32,
+    scale: f32,
 };
 
-/// A stream or a saved prompt owns the same complete layout: no visit shares KV or convolution state with another.
-pub const CacheLayout = struct {
-    slots: [config.max_visits]SnapshotSlot,
-    n: u32,
-    bytes: u64,
-
-    pub fn init(c: *const config.Text, p: *const plan_.Plan, context: u32) !CacheLayout {
-        if (context == 0 or context > c.max_context or p.n_visits != c.visitCount()) return error.BadLoopCache;
-        var out: CacheLayout = undefined;
-        out.n = p.n_visits;
-        out.bytes = 0;
-        const conv_values = 3 * (2 * @as(u64, c.local.kv * c.local.dim) + 2 * @as(u64, c.hidden));
-        for (p.visits[0..p.n_visits], 0..) |visit, i| {
-            const layer = p.layers[visit.layer];
-            const rows: u32 = @intCast(@min(2048, context));
-            const tokens = if (layer.kind == .global)
-                std.mem.alignForward(u32, context, 64)
-            else
-                std.mem.alignForward(u32, c.window + rows - 1, 64);
-            const kv = try std.math.mul(u64, tokens, 2 * @as(u64, layer.heads.kv * layer.heads.dim * 2));
-            // The recurrence rounds each site then widens its complete state to FP32 before the FMAs.
-            const conv = try std.math.mul(u64, conv_values, 4);
-            out.slots[i] = .{ .kv_offset = out.bytes, .kv_bytes = kv, .conv_offset = 0, .conv_bytes = conv };
-            out.bytes = try std.math.add(u64, out.bytes, kv);
-        }
-        var conv_offset = out.bytes;
-        for (out.slots[0..out.n]) |*slot| {
-            slot.conv_offset = conv_offset;
-            conv_offset = try std.math.add(u64, conv_offset, slot.conv_bytes);
-        }
-        out.bytes = conv_offset;
-        return out;
-    }
-
-    pub fn at(l: *const CacheLayout, visit: u32) SnapshotSlot {
-        return l.slots[visit];
-    }
+/// loop.cu's LoopGateArgs, field for field.
+pub const GateArgs = extern struct {
+    h: [max_gates]u64 = @splat(0),
+    msg: u64,
+    msg_stride: i64,
+    slot: [max_gates]i32 = @splat(0),
+    down_w: [max_gates]u64 = @splat(0),
+    forget: [max_gates]u64 = @splat(0),
+    gain: [max_gates]u64 = @splat(0),
+    norm: [max_gates]u64 = @splat(0),
+    down: u64,
+    out: u64,
+    out_stride: i64,
+    rows: i32,
+    h_dim: i32,
+    rank: i32,
+    eps_unit: f32,
+    eps: f32,
+    ys: u64 = 0, // fp32 [gates][rows, H] scratch: the gated rows before their norm
 };
 
-/// The serial lane adapter's admission rule. One request occupies one complete 48-visit stream.
-pub const Admission = struct {
-    context: u32,
+pub const Kernels = struct {
+    mod: cuda.Module,
+    mix: cuda.Function,
+    gate_down: cuda.Function,
+    gate_lin: cuda.Function,
+    gate_mix: cuda.Function,
 
-    pub fn fits(a: Admission, prompt: u32, max_tokens: u32) bool {
-        return prompt <= a.context and max_tokens <= a.context - prompt;
-    }
-};
-
-/// A prompt-cache save or restore copies every byte of this layout, including all four convolution recurrences.
-pub fn snapshotBytes(l: *const CacheLayout) u64 {
-    return l.bytes;
-}
-
-pub const Snapshot = struct {
-    bytes: []u8,
-
-    pub fn save(gpa: std.mem.Allocator, state: []const u8, l: *const CacheLayout) !Snapshot {
-        if (state.len != l.bytes) return error.BadLoopSnapshot;
-        return .{ .bytes = try gpa.dupe(u8, state) };
+    pub fn load(d: *const cuda.Driver) !Kernels {
+        if (!cuda.kernels.available) return error.BuiltWithoutKernels;
+        var mod = try cuda.Module.load(d, cuda.kernels.inkling2_loop);
+        errdefer mod.unload();
+        return .{
+            .mod = mod,
+            .mix = try mod.function("tf_ink2_loop_mix"),
+            .gate_down = try mod.function("tf_ink2_loop_gate_down"),
+            .gate_lin = try mod.function("tf_ink2_loop_gate_lin"),
+            .gate_mix = try mod.function("tf_ink2_loop_gate_mix"),
+        };
     }
 
-    pub fn restore(s: *const Snapshot, state: []u8, l: *const CacheLayout) !void {
-        if (s.bytes.len != l.bytes or state.len != l.bytes) return error.BadLoopSnapshot;
-        @memcpy(state, s.bytes);
-    }
-
-    pub fn deinit(s: *Snapshot, gpa: std.mem.Allocator) void {
-        gpa.free(s.bytes);
-        s.* = undefined;
+    pub fn unload(k: *Kernels) void {
+        k.mod.unload();
+        k.* = undefined;
     }
 };
 
-test "a saved prompt restores every visit byte and owns its copy" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var why: config.Why = .{};
-    const c = try config.parse(arena.allocator(), @import("config_test.zig").mini, &why);
-    var prec: [24]plan_.Precision = @splat(.nvfp4);
-    const p = try plan_.build(&c.text, &prec);
-    const layout = try CacheLayout.init(&c.text, &p, 1);
-    const state = try std.testing.allocator.alloc(u8, @intCast(layout.bytes));
-    defer std.testing.allocator.free(state);
-    for (state, 0..) |*v, i| v.* = @truncate(i * 29 + 7);
-    var saved = try Snapshot.save(std.testing.allocator, state, &layout);
-    defer saved.deinit(std.testing.allocator);
-    @memset(state, 0xa5);
-    try saved.restore(state, &layout);
-    try std.testing.expectEqualSlices(u8, saved.bytes, state);
-    try std.testing.expectError(error.BadLoopSnapshot, Snapshot.save(std.testing.allocator, state[0 .. state.len - 1], &layout));
+/// The shapes the kernels hold: blocks, queries, gates and rank in their arrays; a refusal names the bound.
+pub fn mixFits(a: MixArgs) error{Inkling2LoopShape}!void {
+    if (a.rows <= 0 or a.h <= 0 or a.nq <= 0 or a.nq > max_queries or a.n_blocks < 0 or a.n_blocks > max_blocks)
+        return error.Inkling2LoopShape;
 }
 
-test "Mini has 48 independent KV and convolution slots and a whole-state snapshot" {
-    const config_test = @import("config_test.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var why: config.Why = .{};
-    const c = try config.parse(a, config_test.mini, &why);
-    var prec: [24]plan_.Precision = @splat(.nvfp4);
-    const p = try plan_.build(&c.text, &prec);
-    const layout = try CacheLayout.init(&c.text, &p, 1_048_576);
-    try std.testing.expectEqual(@as(u32, 48), layout.n);
-    try std.testing.expectEqual(@as(u64, 3072 * 2 * 8 * 128 * 2), layout.at(0).kv_bytes);
-    try std.testing.expectEqual(@as(u64, 1_048_576 * 2 * 8 * 128 * 2), layout.at(5).kv_bytes);
-    try std.testing.expectEqual(@as(u64, 34_866_888_704), layout.bytes);
-    try std.testing.expectEqual(layout.bytes, snapshotBytes(&layout));
-    try std.testing.expect((Admission{ .context = 8192 }).fits(8000, 192));
-    try std.testing.expectEqual(@as(u64, 79_872), layout.at(0).conv_bytes);
+pub fn gateFits(a: GateArgs, count: usize) error{Inkling2LoopShape}!void {
+    if (a.rows <= 0 or a.h_dim <= 0 or a.rank <= 0 or a.rank > max_rank or count == 0 or count > max_gates or a.ys == 0)
+        return error.Inkling2LoopShape;
 }
 
-test "Mini loop load is one-rank text-only with rank-64 gated controllers" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var why: config.Why = .{};
-    const c = try config.parse(arena.allocator(), @import("config_test.zig").mini, &why);
-    try validateLoad(&c, 1, false);
-    try std.testing.expectError(error.Inkling2LoopOneRankOnly, validateLoad(&c, 2, false));
-    try std.testing.expectError(error.Inkling2LoopTextOnly, validateLoad(&c, 1, true));
+/// fp32 mixes of `nq` queries over a row's blocks and partial (no norm): a block a row.
+pub fn mix(k: *const Kernels, s: cuda.Stream, a: MixArgs) !void {
+    try mixFits(a);
+    var args: cuda.Args = .{};
+    args.add(a);
+    try cuda.launch.launch(k.mix, .{ .grid = .{ .x = @intCast(a.rows) }, .block = .{ .x = threads } }, s, &args);
 }
 
-test "pass two resets and only completed passes with a successor capture message banks" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var why: config.Why = .{};
-    const c = try config.parse(arena.allocator(), @import("config_test.zig").mini, &why);
-    var prec: [24]plan_.Precision = @splat(.nvfp4);
-    const p = try plan_.build(&c.text, &prec);
-    const lp = c.text.loop.?;
-    var banks: u32 = 0;
-    for (p.visits[0..p.n_visits]) |visit| {
-        if (visit.pass == 2 and visit.layer == lp.core_start) try std.testing.expect(visit.hasMessages());
-        if (visit.pass > 0 and visit.pass < lp.passes and visit.layer + 1 == lp.core_end) banks += 1;
-    }
-    try std.testing.expectEqual(lp.passes - 1, banks);
+/// The gates' rank-r down rows, then the gated, normed inputs: a block a (row, gate) each.
+pub fn gates(k: *const Kernels, s: cuda.Stream, a: GateArgs, n: usize) !void {
+    try gateFits(a, n);
+    var args: cuda.Args = .{};
+    args.add(a);
+    const grid: cuda.Dim3 = .{ .x = @intCast(a.rows), .y = @intCast(n) };
+    const h: u32 = @intCast(a.h_dim);
+    // spread over the GPU: rank rows 8 a block, outputs 128 a block; the norm a block a row and gate
+    const down: cuda.Dim3 = .{ .x = grid.x, .y = grid.y, .z = @intCast(std.math.divCeil(i32, a.rank, threads / 32) catch unreachable) };
+    try cuda.launch.launch(k.gate_down, .{ .grid = down, .block = .{ .x = threads }, .shared = 2 * h * 4 }, s, &args);
+    const lin: cuda.Dim3 = .{ .x = grid.x, .y = grid.y, .z = std.math.divCeil(u32, h, lin_threads) catch unreachable };
+    try cuda.launch.launch(k.gate_lin, .{ .grid = lin, .block = .{ .x = lin_threads } }, s, &args);
+    try cuda.launch.launch(k.gate_mix, .{ .grid = grid, .block = .{ .x = threads } }, s, &args);
 }
 
-test "pass snapshots and rollback layout cover every visit" {
-    const config_test = @import("config_test.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var why: config.Why = .{};
-    const c = try config.parse(arena.allocator(), config_test.mini, &why);
-    var precisions: [24]plan_.Precision = @splat(.nvfp4);
-    const p = try plan_.build(&c.text, &precisions);
-    const layout = try CacheLayout.init(&c.text, &p, 4096);
-    try std.testing.expectEqual(@as(u32, 48), layout.n);
-    try std.testing.expect(layout.at(17).kv_offset != layout.at(29).kv_offset);
-    try std.testing.expectEqual(@as(u64, layout.at(46).conv_offset + layout.at(46).conv_bytes), layout.at(47).conv_offset);
+test "loop: the argument structs keep loop.cu's layouts" {
+    try std.testing.expectEqual(@as(usize, 8 * 8 + 8 + 4 * 8 + 8 + 8 + 5 * 4 + 2 * 4 + 4), @sizeOf(MixArgs));
+    try std.testing.expectEqual(@as(usize, 3 * 8 + 8 + 8 + 3 * 4 + 4 + 4 * 3 * 8 + 3 * 8 + 3 * 4 + 2 * 4 + 4 + 8), @sizeOf(GateArgs));
+}
+
+test "loop: shapes past the kernels' arrays are refused by name" {
+    const ok: MixArgs = .{ .partial = 1, .out = 1, .out_stride = 0, .n_blocks = 1, .partial_f32 = 0, .nq = 4, .rows = 1, .h = 2304, .eps = 1e-6, .scale = 1 };
+    try mixFits(ok);
+    var bad = ok;
+    bad.nq = 5;
+    try std.testing.expectError(error.Inkling2LoopShape, mixFits(bad));
+    bad = ok;
+    bad.n_blocks = 9;
+    try std.testing.expectError(error.Inkling2LoopShape, mixFits(bad));
+    const g: GateArgs = .{ .ys = 1, .msg = 1, .msg_stride = 0, .down = 1, .out = 1, .out_stride = 0, .rows = 1, .h_dim = 2304, .rank = 64, .eps_unit = 1e-6, .eps = 1e-6 };
+    try gateFits(g, 3);
+    try std.testing.expectError(error.Inkling2LoopShape, gateFits(g, 4));
+    var wide = g;
+    wide.rank = 129;
+    try std.testing.expectError(error.Inkling2LoopShape, gateFits(wide, 1));
 }

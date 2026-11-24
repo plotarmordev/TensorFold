@@ -59,6 +59,7 @@ pub fn tau(pos: usize) f64 {
     return tauAt(pos, floor_pos);
 }
 
+
 /// The log-scaling factor at `pos` for a model's n_floor: 1 + alpha ln(max((pos + 1) / floor, 1)).
 pub fn tauAt(pos: usize, floor: f64) f64 {
     return 1 + alpha * @log(@max(@as(f64, @floatFromInt(pos + 1)) / floor, 1));
@@ -96,6 +97,11 @@ pub const Call = struct {
     fn groupSize(call: *const Call) usize {
         return call.heads / call.kv;
     }
+    /// heads / kv: the query heads one key head serves.
+    pub fn perKv(call: *const Call) usize {
+        return call.groupSize();
+    }
+
 
     /// The fp32 sums' longest chain at a row: a 64-key tile's adds and its rescale (`chain.tile`), then the folds.
     fn depth(call: *const Call, pos: usize) f64 {

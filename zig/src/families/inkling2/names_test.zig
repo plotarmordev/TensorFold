@@ -236,12 +236,11 @@ test "the plan: global layers 5 and 11, blocks of six, three attention queries b
     try t.expectEqual(@as(u32, 3), p.at(11).attn_sources);
     try t.expectEqual(@as(u32, 3), p.final_sources);
     try t.expectError(error.PrecisionCount, plan.build(&c.text, prec[0..11]));
-    try t.expectEqual(@as(u32, 12), p.n_visits);
-    for (0..p.n_visits) |i| {
-        const v = p.visit(@intCast(i));
-        try t.expectEqual(@as(u32, @intCast(i)), v.layer);
-        try t.expectEqual(@as(u32, @intCast(i)), v.cache_slot);
-        try t.expect(!v.hasMessages());
+    try t.expectEqual(@as(u32, 12), p.visits.len);
+    for (p.visits.slice(), 0..) |v, i| {
+        try t.expectEqual(@as(u16, @intCast(i)), v.layer);
+        try t.expectEqual(@as(u16, @intCast(i)), v.of(.conv).?);
+        try t.expectEqual(@as(u16, 0), v.pass);
     }
 }
 
@@ -253,19 +252,17 @@ test "Mini's visit plan repeats only the core, gives all 48 visits private state
     var prec: [24]plan.Precision = undefined;
     try names.precisions(try unfold(a, mini_model_fixture, "inkling2-mini-model"), 24, &prec);
     const p = try plan.build(&c.text, &prec);
-    try t.expectEqual(@as(u32, 48), p.n_visits);
+    try t.expectEqual(@as(u32, 48), p.visits.len);
     try t.expectEqual(@as(u32, 8), p.visitCount(.global));
     try t.expectEqual(@as(u32, 40), p.visitCount(.local));
-    for (0..p.n_visits) |i| {
-        const v = p.visit(@intCast(i));
-        const layer: u32 = if (i < 6) @intCast(i) else if (i < 42) 6 + @as(u32, @intCast((i - 6) % 12)) else @intCast(i - 24);
-        const pass: u32 = if (i >= 6 and i < 42) 1 + @as(u32, @intCast((i - 6) / 12)) else 0;
+    for (p.visits.slice(), 0..) |v, i| {
+        const layer: u16 = if (i < 6) @intCast(i) else if (i < 42) 6 + @as(u16, @intCast((i - 6) % 12)) else @intCast(i - 24);
+        const pass: u16 = if (i >= 6 and i < 42) @as(u16, @intCast((i - 6) / 12)) else 0;
         try t.expectEqual(layer, v.layer);
         try t.expectEqual(pass, v.pass);
-        try t.expectEqual(@as(u32, @intCast(i)), v.cache_slot);
-        try t.expectEqual(pass >= 2, v.hasMessages());
-        const previous: ?u32 = if (pass == 2) 6 else if (pass == 3) 18 else null;
-        try t.expectEqual(previous, v.previous_core_start);
+        try t.expectEqual(@as(u16, @intCast(i)), v.of(.conv).?);
+        try t.expectEqual(pass >= 1, p.messages(@intCast(i)));
+        try t.expectEqual(pass >= 1 and layer == 6, p.restarts(@intCast(i)));
     }
     try t.expectEqual(@as(u32, 5), p.final_sources);
 }
