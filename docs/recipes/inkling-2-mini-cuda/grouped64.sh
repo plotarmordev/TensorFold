@@ -1,8 +1,10 @@
 #!/bin/sh
-# Run on TOP through swarm gpu-run: same-prompt and distinct-prompt 64-stream greedy decode.
+# Run on TOP through swarm gpu-run: 64-stream greedy decode of one prompt, and of tools/bench_prompts.json's 16 prompts
+# (each sent to 4 streams). Memory is sampled before load, after load and after the benches, not a peak.
 set -eu
 . docs/recipes/inkling-2-mini-cuda/setup.sh
 "$bin/tf-cuda-test" stored-experts ckpt "$model"
+"$bin/tf-cuda-test" inkling2-round64 "$model" "$out/ids.txt"
 mem() {
     awk -v label="$1" '/^MemTotal:/ {total = $2} /^MemAvailable:/ {avail = $2} END {used = (total-avail)/1048576; printf "%s host used %.1f GiB, available %.1f GiB\n", label, used, avail/1048576; if (used >= 128) exit 1}' /proc/meminfo
     nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader
@@ -33,12 +35,12 @@ mem loaded
 python3 tools/bench_concurrent.py http://127.0.0.1:8188 inkling-2-mini --levels 64 --tokens 128 --reps 3 \
     --temperatures 0 --alone --label grouped64-same --output "$out/grouped64-same.json"
 python3 tools/bench_concurrent.py http://127.0.0.1:8188 inkling-2-mini --levels 64 --tokens 128 --reps 3 \
-    --temperatures 0 --prompts tools/bench_prompts.json --alone --label grouped64-distinct \
-    --output "$out/grouped64-distinct.json"
+    --temperatures 0 --prompts tools/bench_prompts.json --alone --label grouped64-16x4 \
+    --output "$out/grouped64-16x4.json"
 mem after
 python3 - "$out" <<'PY'
 import json, statistics, sys
-for kind in ('same', 'distinct'):
+for kind in ('same', '16x4'):
     cells = json.load(open(f'{sys.argv[1]}/grouped64-{kind}.json'))['cells']
     for cell in cells:
         same = cell.get('alone', {})
