@@ -49,7 +49,8 @@ class SetupCacheTests(unittest.TestCase):
     def checkout(self, name):
         root = self.work / name
         (root / "tools/zig").mkdir(parents=True)
-        scripts = ("setup_cache.sh", "outside_checkout.py", "check_mlx_ops.py", *(f"{tool}_build.sh" for tool in TOOLS),
+        scripts = ("setup_cache.sh", "outside_checkout.py", "check_mlx_ops.py", "test_fabric.sh", "cuda_sass_compare.py",
+                   "cuda_sass_identity.py", "cuda_sass_sources.py", *(f"{tool}_build.sh" for tool in TOOLS),
                    *(f"xpu_fixtures_{name}.py" for name in FIXTURES))
         for script in scripts:
             shutil.copy(ROOT / "tools/zig" / script, root / "tools/zig" / script)
@@ -134,15 +135,48 @@ class SetupCacheTests(unittest.TestCase):
         swiftc.parent.mkdir()
         swiftc.write_text('#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\ntouch "$2"\n')
         swiftc.chmod(0o755)
-        env = {key: value for key, value in self.env.items() if key != "ZIG_LOCAL_CACHE_DIR"}
+        env = {key: value for key, value in self.env.items() if key not in ("ZIG_LOCAL_CACHE_DIR", "PYTHONDONTWRITEBYTECODE")}
         env.update(HOME=str(home), PATH=f"{swiftc.parent}{os.pathsep}{os.environ['PATH']}",
                    PYTHONPATH=f"{root / 'tools/zig'}{os.pathsep}{self.python_stubs()}")
-        result = subprocess.run(["python3", "-B", "-c", MLX_CHECK], cwd=root, env=env, capture_output=True, text=True)
+        result = subprocess.run(["python3", "-c", MLX_CHECK], cwd=root, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         staged = Path(result.stdout.strip())
         self.assertEqual(staged.parents[3], home / ".cache/tensorfold/zig/checkouts")
         self.assertTrue(staged.is_dir())
         self.assertTrue((staged.parents[1] / "metal_bench").is_file())
+        self.assertEqual(list(root.iterdir()), [root / "tools"])
+        self.assertEqual(list(root.rglob("__pycache__")), [])
+
+    def test_sass_compare_defaults_its_output_outside_checkout(self):
+        root = self.checkout("card")
+        home = self.work / "home"
+        env = {key: value for key, value in self.env.items() if key != "ZIG_LOCAL_CACHE_DIR"}
+        env["HOME"] = str(home)
+        # The fixture checkout lacks the CUDA sources, so the snapshot fails after the output folder is made.
+        result = subprocess.run(["python3", "-B", "tools/zig/cuda_sass_compare.py", ".", ".", "--plan-only"],
+                                cwd=root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        output, = (home / ".cache/tensorfold/zig/sass-compare").iterdir()
+        self.assertTrue((output / "summary.json").is_file())
+        self.assertIn(str(output), result.stdout)
+        self.assertEqual(list(root.iterdir()), [root / "tools"])
+
+    def test_fabric_tests_build_outside_checkout_without_setup(self):
+        root = self.checkout("card")
+        home = self.work / "home"
+        mcdma = self.work / "mcdma"
+        (mcdma / "rpc").mkdir(parents=True)
+        (mcdma / "rpc/libmcdma_rpc.c").write_text("")
+        env = self.stubs()
+        (Path(env["ZIG"]).parent / "cc").write_text('#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\ntouch "$2"\n')
+        (Path(env["ZIG"]).parent / "cc").chmod(0o755)
+        env = {key: value for key, value in env.items() if key != "ZIG_LOCAL_CACHE_DIR"}
+        env.update(HOME=str(home), TF_MCDMA_SRC=str(mcdma))
+        result = subprocess.run(["bash", root / "tools/zig/test_fabric.sh"], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        fabric, = home.glob(".cache/tensorfold/zig/checkouts/*/fabric")
+        self.assertTrue((fabric / "tf-linktest").is_file())
+        self.assertEqual(len(list(fabric.glob("libmcdma-rpc.*"))), 1)
         self.assertEqual(list(root.iterdir()), [root / "tools"])
 
     def test_fixture_generators_default_outside_checkout(self):
@@ -228,6 +262,17 @@ class SetupCacheTests(unittest.TestCase):
                 self.assertNotEqual(self.setup_cache(root).returncode, 0)
             self.assertEqual((kept / name / "object").read_text(), "built")
             self.assertEqual(os.readlink(linked / name), str(self.work / "elsewhere"))
+
+    def test_setup_refuses_a_link_whose_target_adds_a_trailing_newline(self):
+        root = self.checkout("card")
+        (root / "nested").mkdir()
+        newline = Path(f"{self.cache}\n")  # Command substitution would read this target as the shared cache.
+        newline.symlink_to(root / "nested", target_is_directory=True)
+        (root / ".zig-cache").symlink_to(newline)
+        result = self.setup_cache(root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("different .zig-cache link", result.stderr)
+        self.assertEqual(os.readlink(root / ".zig-cache"), str(newline))
 
     def test_concurrent_setups_leave_one_link_and_no_stray_ones(self):
         root = self.checkout("card")

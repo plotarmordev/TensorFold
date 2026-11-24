@@ -13,7 +13,9 @@ link() {
     # -n: a concurrent run's fresh link is not followed, so no link lands inside the target;
     # a lost race leaves that link, any other failure is retried to show ln's own error.
     [ -L "$root/$1" ] || ln -sn "$2" "$root/$1" 2>/dev/null || [ -L "$root/$1" ] || ln -sn "$2" "$root/$1"
-    [ "$(readlink "$root/$1")" = "$2" ] || { echo "different $1 link already exists" >&2; exit 1; }
+    # Compared in Python: command substitution would strip a trailing newline from the existing link's target.
+    python3 -c 'import os, sys; sys.exit(os.readlink(sys.argv[1]) != sys.argv[2])' "$root/$1" "$2" ||
+        { echo "different $1 link already exists" >&2; exit 1; }
 }
 link .zig-cache "$cache"
 link zig-out "$out"
