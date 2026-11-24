@@ -5,6 +5,7 @@ const config = @import("config.zig");
 const t = std.testing;
 pub const real = @embedFile("fixtures/config.json");
 pub const tiny = @embedFile("fixtures/tiny_config.json");
+pub const mini = @embedFile("fixtures/mini_config.json");
 
 fn refused(json: []const u8, from: []const u8, to: []const u8, want: anyerror, says: []const u8) !void {
     if (std.mem.count(u8, json, from) != 1) return error.EditAnchor;
@@ -44,6 +45,40 @@ test "Inkling 2 Small's config.json parses: 48 layers, 8 global, 384 experts, 8 
     try t.expectEqual(@as(u32, 256), m.rank);
     try t.expectEqualSlices(u32, &.{ 5, 11, 17, 23, 29, 35, 41, 48 }, m.taps[0..m.taps_n]);
     try t.expectEqualSlices(bool, &.{ true, true, false, true, true }, m.local[0..5]);
+}
+
+test "Inkling 2 Mini's config.json parses: 24 weight layers, 48 visits and four drafter taps" {
+    var why: config.Why = .{};
+    const c = try config.parse(t.allocator, mini, &why);
+    try t.expectEqual(@as(u32, 2304), c.text.hidden);
+    try t.expectEqual(@as(u32, 24), c.text.layers);
+    try t.expectEqual(@as(u32, 48), c.text.visits());
+    try t.expectEqual(config.Heads{ .q = 24, .kv = 8, .dim = 128 }, c.text.global);
+    try t.expectEqual(@as(u32, 8192), c.text.log_floor);
+    try t.expectEqual(@as(u32, 128), c.text.experts);
+    try t.expectEqual(@as(u32, 1152), c.text.expert_inter);
+    try t.expectEqual(@as(f32, 8), c.text.route_scale);
+    const loop = c.text.loop.?;
+    try t.expectEqual(@as(u32, 6), loop.start);
+    try t.expectEqual(@as(u32, 18), loop.end);
+    try t.expectEqual(@as(u32, 3), loop.passes);
+    try t.expectEqual(@as(u32, 64), loop.rank);
+    try t.expectEqual(@as(u32, 2304), c.vision.text_hidden);
+    const m = c.mtp.?;
+    try t.expectEqual(@as(u32, 3), m.layers);
+    try t.expectEqual(@as(u32, 9216), m.inter);
+    try t.expectEqualSlices(u32, &.{ 5, 23, 41, 48 }, m.taps[0..m.taps_n]);
+    try t.expectEqualSlices(bool, &.{ true, false, true }, m.local[0..3]);
+}
+
+test "loop layouts the engine does not run are refused by their config key" {
+    try refused(mini, "\"is_varloop\": false", "\"is_varloop\": true", error.Unsupported, "is_varloop must be false");
+    try refused(mini, "\"core_start\": 6", "\"core_start\": 0", error.Layout, "must start after layer 0");
+    try refused(mini, "\"core_start\": 6", "\"core_start\": 7", error.Layout, "multiples of the 6-layer");
+    try refused(mini, "\"core_end\": 18", "\"core_end\": 24", error.Layout, "multiples of the 6-layer");
+    try refused(mini, "\"core_end\": 18,", "\"core_end\": 30,", error.Layout, "fit inside the 24 physical layers");
+    try refused(mini, "Inkling2LoopForConditionalGeneration", "Inkling2ForConditionalGeneration", error.NotInkling2, "model_type and architectures must match");
+    try refused(mini, "\"model_type\": \"inkling2_loop\"", "\"model_type\": \"inkling2\"", error.NotInkling2, "model_type and architectures must match");
 }
 
 test "tiny-random's config.json parses: 12 layers, 96 experts, width 128, no quantization_config" {
@@ -109,6 +144,16 @@ test "an mlp_ratio past 1024 is refused instead of overflowing, as is a block lo
     try refused(tiny, "\"mlp_ratio\": 4.0", "\"mlp_ratio\": 1e39", error.Layout, "at most 1024");
     try refused(tiny, "\"n_layers_per_attn_res_block\": 6", "\"n_layers_per_attn_res_block\": 13", error.Layout, "is past num_hidden_layers");
     try refused(tiny, "\"n_layers_per_attn_res_block\": 6", "\"n_layers_per_attn_res_block\": 4294967295", error.Layout, "is past num_hidden_layers");
+}
+
+test "attention-residual blocks past the mixes' eight and widths the attention kernels do not run are refused" {
+    var why: config.Why = .{};
+    try t.expectEqual(@as(u32, config.max_blocks), (try config.parse(t.allocator, real, &why)).text.layers / 6);
+    try refused(real, "\"n_layers_per_attn_res_block\": 6", "\"n_layers_per_attn_res_block\": 5", error.Layout, "into more than the residual mixes' 8 blocks");
+    try refused(tiny, "\"n_layers_per_attn_res_block\": 6", "\"n_layers_per_attn_res_block\": 1", error.Layout, "splits 12 layers into more than");
+    try refused(tiny, "\"head_dim\": 128,\n    \"d_rel\"", "\"head_dim\": 64,\n    \"d_rel\"", error.Unsupported, "head_dim 64 is not 128");
+    try refused(tiny, "\"swa_head_dim\": 128", "\"swa_head_dim\": 256", error.Unsupported, "swa_head_dim 256 is not 128");
+    try refused(tiny, "\"d_rel\": 16", "\"d_rel\": 32", error.Unsupported, "d_rel 32 is not 16");
 }
 
 test "a scoring function, a layer count, a quantization_config and a root that the engine cannot read are refused" {

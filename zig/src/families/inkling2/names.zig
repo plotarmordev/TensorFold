@@ -1,6 +1,6 @@
-//! Inkling 2 Small's weight map: each tensor the config implies, with dtype and shape, checked against headers.
+//! Inkling 2's weight map (Small and the looped Mini): each tensor the config implies, dtype and shape, vs headers.
 const std = @import("std");
-const st = @import("safetensors");
+const st = @import("core").safetensors;
 const config = @import("config.zig");
 const plan = @import("plan.zig");
 
@@ -77,6 +77,24 @@ fn experts(c: *const Text, i: u32, prec: plan.Precision, sink: anytype) !void {
     }
 }
 
+/// The loop's tensors: four controllers a core layer (attention q, k, v inputs and the MLP input: a rank-r down
+/// projection of [state, message] and two [hidden, r] gates) and the cross-pass queries, two rows a core layer each.
+fn loop(c: *const Text, l: config.Loop, sink: anytype) !void {
+    const h: u64 = c.hidden;
+    const r: u64 = l.rank;
+    const rows: u64 = 2 * @as(u64, l.end - l.start);
+    try put(sink, "model.llm.middle_cycle_cross_pass_queries", .{}, .f32, &.{ rows, h });
+    try put(sink, "model.llm.middle_cycle_cross_pass_kv_queries", .{}, .f32, &.{ rows, h });
+    for (l.start..l.end) |i| inline for (controllers) |gate| {
+        const pre = "model.llm.layers.{d}.controllers." ++ gate;
+        try put(sink, pre ++ ".down_weight", .{i}, .bf16, &.{ r, 2 * h });
+        try put(sink, pre ++ ".forget_weight", .{i}, .bf16, &.{ h, r });
+        try put(sink, pre ++ ".gain_weight", .{i}, .bf16, &.{ h, r });
+    };
+}
+
+/// A core layer's controllers in the order the engine holds them: the attention's q, k and v inputs, then the MLP's.
+pub const controllers = [_][]const u8{ "attn", "k", "v", "mlp" };
 fn backbone(c: *const Text, prec: []const plan.Precision, sink: anytype) !void {
     const h: u64 = c.hidden;
     try put(sink, "model.llm.embed.weight", .{}, .bf16, &.{ c.vocab, h });
@@ -84,6 +102,7 @@ fn backbone(c: *const Text, prec: []const plan.Precision, sink: anytype) !void {
     try put(sink, "model.llm.norm.weight", .{}, .bf16, &.{h});
     try put(sink, "model.llm.unembed.weight", .{}, .bf16, &.{ c.vocab, h });
     try put(sink, "model.llm.attn_res.output_query", .{}, .f32, &.{h});
+
     for (0..c.layers) |k| {
         const i: u32 = @intCast(k);
         try put(sink, "model.llm.attn_res.mlp_queries.{d}", .{i}, .f32, &.{h});
@@ -93,11 +112,13 @@ fn backbone(c: *const Text, prec: []const plan.Precision, sink: anytype) !void {
             try put(sink, "model.llm.attn_res.attn_queries.{d}", .{i}, .f32, dims);
         }
         try attention(c, i, sink);
+
         try put(sink, "model.llm.layers.{d}.attn_sconv.weight", .{i}, .bf16, &.{ h, 1, config.conv_taps });
         try put(sink, "model.llm.layers.{d}.mlp_norm.weight", .{i}, .bf16, &.{h});
         try put(sink, "model.llm.layers.{d}.mlp_sconv.weight", .{i}, .bf16, &.{ h, 1, config.conv_taps });
         try experts(c, i, prec[i], sink);
     }
+    if (c.loop) |l| try loop(c, l, sink);
 }
 
 fn vision(v: config.Vision, sink: anytype) !void {
@@ -131,8 +152,8 @@ fn draft(m: config.Mtp, text: *const Text, sink: anytype) !void {
     const q: u64 = @as(u64, m.q_heads) * m.head_dim;
     const kv: u64 = @as(u64, m.kv_heads) * m.head_dim;
     const rank: u64 = m.rank;
-    // fuse_weight's six rows do not follow from the config, so any row count passes
-    try put(sink, "fuse_weight", .{}, .bf16, &.{ any, m.taps_n });
+    // One fusion row per draft layer plus the Markov head, one column per target visit tap.
+    try put(sink, "fuse_weight", .{}, .bf16, &.{ m.layers + 1, m.taps_n });
     try put(sink, "mask_embed", .{}, .bf16, &.{h});
     try put(sink, "norm.weight", .{}, .bf16, &.{h});
     try put(sink, "markov_head.dflare_norm.weight", .{}, .bf16, &.{h});

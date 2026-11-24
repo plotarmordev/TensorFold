@@ -2,6 +2,7 @@
 
 pub const startup_receipt = @import("profile").startup_receipt;
 pub const benchmark_group = @import("benchmark_group.zig");
+pub const chunked_write = @import("chunked_write.zig");
 pub const weight_only = @import("weight_only.zig");
 pub const profile = @import("profile");
 pub const safetensors = @import("safetensors.zig");
@@ -14,6 +15,7 @@ pub const digest_cache = @import("digest_cache.zig");
 pub const checkpoint_identity = @import("checkpoint_identity.zig");
 pub const checkpoint_read_ahead = @import("checkpoint_read_ahead.zig");
 pub const checkpoint = @import("checkpoint.zig");
+pub const checkpoint_file_cache = @import("checkpoint_file_cache.zig");
 pub const dfloat11_config = @import("dfloat11_config.zig");
 pub const checkpoint_fixture = @import("checkpoint_fixture.zig");
 pub const dfloat11_fixtures = @import("dfloat11_fixtures.zig");
@@ -26,6 +28,7 @@ pub const draft_depth = @import("draft_depth.zig");
 pub const prompt_tail = @import("prompt_tail.zig");
 pub const CopyIndex = @import("copy_index.zig").CopyIndex;
 pub const recurrent_workspace = @import("recurrent_workspace.zig");
+pub const visit_plan = @import("visit_plan.zig"); // a looped stack's steps and state slots (Dory, Inkling 2 Mini)
 pub const tokenizer = @import("tokenizer"); // a module of its own, so the native server shares it
 pub const proposal_rows = @import("proposal_rows.zig");
 pub const torch_pth = @import("torch_pth.zig"); // torch.save archives read without Python: Drama 3's codec
@@ -57,6 +60,7 @@ pub const contract = @import("contract.zig");
 pub const nvfp4 = @import("nvfp4.zig");
 pub const nvfp4_csf32 = @import("nvfp4_csf32.zig");
 pub const modelopt = @import("modelopt.zig");
+pub const expert_decode = @import("expert_decode.zig");
 /// Pictures as 0.6.6 loaded them: PNG, JPEG through the pinned libjpeg-turbo, orientation, the shared bicubic resizes.
 pub const picture = @import("picture/picture.zig");
 /// Qwen-VL image input every Qwen3.5-VL checkpoint shares: settings, geometry, M-RoPE positions, the tower's tables.
@@ -88,6 +92,7 @@ test {
     _ = checkpoint_weights;
     _ = audio;
     _ = safetensors;
+    _ = expert_decode;
     _ = gguf;
     _ = affine4_host;
     _ = rope_yarn;
@@ -150,6 +155,7 @@ test {
     _ = kv_pool;
     _ = kv_prompts;
     _ = state_walk;
+    _ = visit_plan;
 }
 
 pub const frame_rounds = @import("frame_rounds.zig");

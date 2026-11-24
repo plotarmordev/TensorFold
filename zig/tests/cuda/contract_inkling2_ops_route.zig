@@ -4,6 +4,7 @@ const cuda = @import("cuda");
 const core = @import("core");
 const rig_ = @import("contract_rig.zig");
 const ref = @import("contract_inkling2_ops_ref.zig");
+const M = @import("contract_inkling2_model.zig");
 
 const c = core.contract.spec;
 const g = core.contract.gates;
@@ -12,17 +13,21 @@ const Sums = ref.Sums;
 const ops = ref.ops;
 const step = ref.step;
 
-const experts = 384;
-const top = 8;
 const route_scale: f32 = 8;
 
 const topk_rule = "the 8 largest score + bias, the lower id on ties, a NaN never picked, a pick's value then -inf; " ++
     "weights score / (sum of the picks' scores + 1e-20) x 8 in fp32";
 
-/// Rows x experts x picks: every row of a call, a block each.
-pub fn topkSpec(unbiased: bool) c.Spec {
-    const served = &[_]c.Shape{ .{ .rows = 16, .n = experts, .k = top }, .{ .rows = 1, .n = experts, .k = top }, .{ .rows = 128, .n = experts, .k = top }, .{ .rows = 2048, .n = experts, .k = top } };
-    const name = if (unbiased) "control: inkling2 ops tf_ink2_topk without the selection bias" else "inkling2 ops tf_ink2_topk (sigmoid scores, bias, route scale 8)";
+fn topkServed(comptime m: M.Model) []const c.Shape {
+    const E = m.experts;
+    const top = m.top;
+    return &.{ .{ .rows = 16, .n = E, .k = top }, .{ .rows = 1, .n = E, .k = top }, .{ .rows = 128, .n = E, .k = top }, .{ .rows = 2048, .n = E, .k = top } };
+}
+
+/// Rows x experts x picks: every row of a call, a block each (Small: 384 experts, Mini: 128, both top 8).
+pub fn topkSpec(unbiased: bool, mini: bool) c.Spec {
+    const served = if (mini) topkServed(M.mini) else topkServed(M.small);
+    const name = if (unbiased) M.named("control: inkling2 ops tf_ink2_topk without the selection bias", mini) else M.named("inkling2 ops tf_ink2_topk (sigmoid scores, bias, route scale 8)", mini);
     return .{ .name = name, .accum = .none, .depth = ref.noSums, .out = .raw, .nan = .{ .stated = topk_rule }, .served = if (unbiased) served[0..2] else served };
 }
 
@@ -30,6 +35,7 @@ pub fn topkSpec(unbiased: bool) c.Spec {
 pub const Topk = struct {
     kern: *const ops.Kernels,
     unbiased: bool = false,
+    mini: bool = false,
     shape: c.Shape = undefined,
     scores: []f32 = &.{},
     bias: []f32 = &.{},
@@ -37,7 +43,7 @@ pub const Topk = struct {
     out: [2]u64 = @splat(0),
 
     pub fn spec(self: *const Topk) c.Spec {
-        return topkSpec(self.unbiased);
+        return topkSpec(self.unbiased, self.mini);
     }
 
     pub fn control(self: *const Topk) ?g.Gate {
@@ -122,7 +128,7 @@ pub const Topk = struct {
 const had: f64 = @as(f32, 0.08838834764831845); // exl3_decode.cuh's HAD_SCALE, as fp32 holds it
 const gate_cap: f32 = 4;
 const up_cap: f32 = 25;
-const width = 1152; // a rank's 2,304-wide expert intermediate at TP=2
+const width = 1152; // Small's width at TP=2; Mini runs one rank with the same full width.
 const fixture_experts = 8;
 
 /// fwht128 and tf_exl3_fwht alike: butterflies (lo + hi, lo - hi) at strides 1, 2, ..., 64 of the 128 values.
@@ -142,7 +148,7 @@ fn gateDepth(s: c.Shape) usize {
 
 /// (row, slot) pairs x a rank's width x the gate/up's K splits: 1 row, 16, a 128-row window, a 2,048-row window.
 pub fn gateupSpec(swapped: bool) c.Spec {
-    const served = &[_]c.Shape{ .{ .rows = 8, .n = width, .k = 4 }, .{ .rows = 128, .n = width, .k = 4 }, .{ .rows = 1024, .n = width, .k = 4 }, .{ .rows = 16384, .n = width, .k = 4 } };
+    const served = &[_]c.Shape{ .{ .rows = 8, .n = width, .k = 4 }, .{ .rows = 128, .n = width, .k = 4 }, .{ .rows = 1024, .n = width, .k = 4 }, .{ .rows = 16384, .n = width, .k = 4 }, .{ .rows = 8, .n = width, .k = 2 }, .{ .rows = 128, .n = width, .k = 2 }, .{ .rows = 1024, .n = width, .k = 2 }, .{ .rows = 16384, .n = width, .k = 2 } };
     const name = if (swapped) "control: inkling2 ops tf_ink2_gateup with the caps swapped" else "inkling2 ops tf_ink2_gateup (softcapped SwiGLU, gate cap 4, up cap 25)";
     return .{ .name = name, .accum = .f32, .depth = gateDepth, .out = .f16, .tiles = .{ .{}, .{ .size = 128, .step = 128, .min = 128 }, .{} }, .served = if (swapped) served[0..2] else served };
 }
