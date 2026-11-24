@@ -2,7 +2,8 @@
 
 Apple M5 Ultra, 256 GB, macOS 27.0, the official checkpoint with its own `mtp.safetensors` as the DSpark drafter,
 `tensorfold-native` from `zig build native -Doptimize=ReleaseFast`, `--context 65536`, greedy. Control: the base
-branch's tip `90fac7967`. Candidate: this branch's head.
+branch's tip `90fac7967`. Candidate: `8b3ad49a3`, since reverted: it measured no faster and `profile.md` prices its
+saving at 0.1% of a round.
 
 ## What a round submits
 

@@ -1,6 +1,5 @@
-# Inkling 2 Mini on Metal: a DSpark round's keep, absorb and hold share one submission
-- Keep stages its blits and advances cache bookkeeping; the following draft stages the accepted-row absorb and
-  greedy hold. The next readback encodes all three in one command buffer, commits once and waits once instead of
-  three submissions and waits. Verify still runs separately: its sampled tokens and accepted path need the host.
-- Prompt forwards and snapshot saves drain staged work before touching the shared taps or cache histories. Released
-  streams drop their staged buffers. Sampled holds still read each pick between steps.
+# Inkling 2 Mini on Metal: a one-stream DSpark round profiled; one submission a round measured no faster
+- Folding keep, absorb and the greedy hold into one submission saved two commit-and-waits (14 µs each) of a 27 ms
+  round and read 113.4 tok/s against controls 118.5 / 120.9 on the M5 Ultra, so the change is not kept.
+- `docs/receipts/inkling-2-mini-metal-248/profile.md` splits the round (verify 60%, draft 40%, host waits 0.1%) and
+  names the target forward's barrier chain, 3× its bandwidth floor, as the next lever.
