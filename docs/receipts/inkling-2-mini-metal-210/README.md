@@ -81,9 +81,13 @@ nvcc register, static shared-memory and thread-bound records on sm_80/86/89/120/
 those `RECORD` lines replaced the zero placeholders in `inkling2_experts_records.zig`. The subsequent local
 `zig build test test-golden` passed (1,038/1,038 steps, 9,183 passed, 92 skipped).
 
-At `d29431d5f` the same job's contract step on TOP's GB10 (sm_121) passed `tf_ink2_topk` gates 1-4 with the new
-rule, a row out of non-NaN candidates picking -1 at weight 0 (8 shapes exact, five runs byte-identical); its planted
-unbiased control went red as planted, and the live limits match the record (36 registers, 384 shared bytes).
+At `c398e2e9b` the same job on TOP's GB10 (sm_121) passed `tf_ink2_topk` gates 1-4 with the fixed rule: a picked
+slot goes to NaN and a row with fewer non-NaN candidates than picks takes -1 at weight 0 (8 shapes exact, five runs
+byte-identical); its planted unbiased control and the re-pick control (the slot back at -inf) went red as planted,
+and the kernel's records are current on all five SMs (36 registers, 384 shared bytes at sm_121). The job still
+exits 1: its limits audit finds `tf_ink2_mix`'s nvcc 13.0 record stale on sm_80/86/89/120 (76, 76, 76, 76 against
+64, 62, 62, 72 compiled), a kernel and record untouched by this card. `zig build test test-golden` passes at
+`5e32deeaa`.
 
 ## Files
 
