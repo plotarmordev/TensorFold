@@ -15,11 +15,18 @@ measured 1,072 on the same Mac. With its 5.55 GB a plain token and 10.41 GB for 
 
 `TF_INKLING2_METAL_DIR=$HOME/models/Inkling-2-Mini zig build test-inkling2-metal-float64` at 713d0d7ff passes on the
 official checkpoint: 0 of 32 greedy tokens differ from the float64 host reference, and the planted control without
-cross-pass messages disagrees (6 of 6 tests, 11 min, the device part under the model lock).
+cross-pass messages disagrees (6 of 6 tests, 11 min, the device part under the model lock). It passed again at
+b47560fee on 25 Nov (6 of 6, 11 min), the same engine source.
 
 ## Speed
 
-Not measured yet. The window closed during the first control run (main, plain, one stream), which decoded at
-0.8 tok/s; that run is void and no figure here is compared with #4618's published 123 / 281 tok/s. `bench.sh` holds
-the run: control (main) / candidate / control, each plain and with `--drafter`, at 1 and 4 streams, each under
-`timeout 600` and the model lock.
+Not measured yet, and no figure here is compared with #4618's published 123 / 281 tok/s. Two windows each reached
+only the first control run (main, plain, one stream, `--parallel 4`):
+
+- 24 Nov: the window closed during it; it decoded at 0.8 tok/s.
+- 25 Nov 04:26 HKT, 1-minute load 10.3 at its start: 16 tokens at 0.9 tok/s, then 256 in 296 s, and `timeout 600` ended
+  it mid-bench. The GPU showed 93% busy just after.
+
+Main decoding about 140 times below #4618's own figure means the Mac was not measuring the engine, so both runs are
+void. `bench.sh` holds the run: control (main) / candidate / control, each plain and with `--drafter`, at 1 and 4
+streams, each under `timeout 600` and the model lock taken without waiting.

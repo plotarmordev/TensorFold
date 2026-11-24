@@ -1,7 +1,7 @@
 #!/bin/bash
-# bench.sh LABEL BINARY [--drafter DIR]: one server session, bench_concurrent at 1 and 4 streams, greedy.
-# Inside the Desk's Mac GPU window only, one run at a time:
-#   timeout 600 lockf -k /tmp/tensorfold-model.lock docs/recipes/inkling-2-mini-metal/bench.sh c1plain BIN
+# bench.sh LABEL BINARY [serve flags]: one server session, bench_concurrent at 1 and 4 streams, greedy.
+# Inside the Desk's Mac GPU window only, one run at a time (-t 0: a held lock means wait and retry, not queue):
+#   timeout 600 lockf -t 0 -k /tmp/tensorfold-model.lock docs/recipes/inkling-2-mini-metal/bench.sh c1plain BIN --parallel 4
 # Order: blit.swift (ceiling), then control (main) / candidate / control, each plain and with
 # `--drafter "$HOME/models/Inkling-2-Mini"` (the checkpoint's own mtp.safetensors).
 set -euo pipefail
