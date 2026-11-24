@@ -76,8 +76,17 @@ so these are presumed to be the same stale non-H3 records as the five-SM audit, 
 
 Job `limits` (`top-08c281336b68`, at `6d6faf83f`) measured in 12 s and ended with `FAIL kernel-contract-suites limits:
 239 limit problems`. The door returns only a log's last 200 lines, all of them `PASS`, so this log does not name the
-239 records. Its jobs now print every non-PASS line and count the PASS lines (`89d5f14c6`). The `limits` rerun at that
-sha is queued. Not yet run: `g1` to `g5`, `back` and `after`, about 10 min of TOP each plus the queue.
+239 records. Its jobs now print every non-PASS line and count the PASS lines (`89d5f14c6`). Not yet run at that sha:
+`limits` (rerun), `g1` to `g5`, `back` and `after`, about 10 min of TOP each plus the queue. `g1`'s `swarm gpu-run`
+holds a ticket in the queue behind the card 204 check and four earlier runs.
+
+On this Mac, `zig build test test-golden` at this head ends `991/998 steps succeeded (5 failed); 1909/1943 tests
+passed, 4 failed`. The base `2f5e1ca37` on the same Mac ends `989/998 steps succeeded (7 failed); 17444/17596 tests
+passed, 6 failed`. The head's four failing tests are all red on the base too: `vision.test.the release's
+vision_config parses to the defaults` and its Metal variant (expected `UnsupportedVision`, found `ZeroHeads`),
+`net.test` (`expected AddressUnresolved, found AddressInUse`, a port taken on this machine) and
+`persistence_identity_test` (a canonical-prefix hash). The `run sh` step's `_memcpy` linkage check is also red on the
+base. None of these is in a file this branch changes (`zig/tests/cuda` contract sources and this receipt).
 
 ## CI on #3733
 
