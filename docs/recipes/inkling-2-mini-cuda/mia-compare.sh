@@ -4,8 +4,9 @@
 #
 # Both arms serve the same checkpoint with the same client, prompts and greedy settings, serially. Mia's arm is
 # TensorFold dc2ca8a1 with patches 0001-0017 from MiaAI-Lab/Inkling-2-Mini-DGX-Spark-TensorFold@6061fa89, built with
-# the Dockerfile's flags (no network here, so no image: the tree is staged). Our arm is this checkout (c99eb630d),
-# built with docs/recipes/inkling-2-mini-cuda/setup.sh's flags.
+# the Dockerfile's flags but native FP decode off, as ours is: it needs nvcc 13.2+ and the job image has 13.0 (no
+# network here, so no image: the tree is staged). Our arm is this checkout (c99eb630d), built with
+# docs/recipes/inkling-2-mini-cuda/setup.sh's flags.
 #
 # The job has no network: the Desk stages, under /assets/drama3-pilot,
 #   mia-inkling/      Mia's repository at 6061fa89 (patches/, scripts/config.sh, README.md; .git not needed)
@@ -45,7 +46,7 @@ mtp=$(sha256sum "$model/mtp.safetensors" | cut -d' ' -f1)
     fail "$model's mtp.safetensors is $mtp, not 7c3b6513"
 echo "checkpoint $model: shard $shard, MTP $mtp"
 
-# Mia's arm: her tree, her 17 patches in order, the Dockerfile's build flags.
+# Mia's arm: her tree, her 17 patches in order, the Dockerfile's build flags without -Dnative-fp-decode.
 rm -rf /work/mia-c4
 mkdir -p /work/mia-c4
 cp -a "$tree/." /work/mia-c4/
@@ -54,8 +55,7 @@ for p in "$mia"/patches/*.patch; do
     git -C /work/mia-c4 apply --check "$p"
     git -C /work/mia-c4 apply "$p"
 done
-( cd /work/mia-c4 && zig build fatbins native -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=fast \
-    -Dnative-fp-decode=true --prefix /work/mia )
+( cd /work/mia-c4 && zig build fatbins native -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=fast --prefix /work/mia )
 # Our arm: this checkout (c99eb630d), our recipe's build flags.
 zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/ours
 echo "built Mia's dc2ca8a1+patches and ours at $(git rev-parse HEAD 2>/dev/null || echo unknown)"

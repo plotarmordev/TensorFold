@@ -159,7 +159,8 @@ agreement prompts (five short, one ~4k) compared by token sha and text sha.
 - Staged by the Desk (the job has no network, so no Docker image): `mia-inkling/` (her repository at `6061fa89`),
   `tf-dc2ca8a1/` (TensorFold's tree), `Inkling-2-Mini/` (revision `7a67ae23`), and the toolchain archives
   `../minimax-h3-cuda/toolchain-stage.sh` stages. The patches are applied to the staged tree and built with the
-  Dockerfile's flags.
+  Dockerfile's flags except `-Dnative-fp-decode=true`: its FP4/FP8 tiles need nvcc 13.2+ and the Spark job image has
+  13.0.88 (her image is `26.07-py3`), so her arm decodes those tiles as ours does and that lever stays unmeasured.
 - Duration: two builds (about 9 min each, as our receipt's 525 s build was) and two measurement phases; our 128k prefill
   is unmeasured and, at the receipt's 199 tok/s prompt rate, about 11 min at 512-row prompt passes, so the prefill phase
   defaults to a 1,800 s bound (`PREFILL_S`; decode 900 s, agreement 600 s), above the one-GPU-slot 600 s rule, and
