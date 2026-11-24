@@ -352,6 +352,7 @@ pub const metal = joins.metal_before ++ [_]M{
     .{ .name = "h3 pooled branch h3_coarse", .threads = 32, .tg_memory = 0, .m1 = 1024, .m2 = 1024 },
     .{ .name = "h3 AdaLN tables h3_modulation", .threads = 256, .tg_memory = 0, .m1 = 1024, .m2 = 1024 },
     .{ .name = "h3 routed attention h3_attention", .threads = 256, .tg_memory = 25856, .offline = false },
+    .{ .name = "h3 pooled far field h3_far_pool", .threads = 64, .tg_memory = 0, .m1 = 1024, .m2 = 1024 },
     .{ .name = "h3 gemm whole custom_kernel_tf_gemm_nax_bf16_n_t_t_t_n_64_128_256_2_4_bfloat16_t_bfloat16_t_int32_t_bfloat16_t", .threads = 256, .tg_memory = 0, .reserved = 256 },
     .{ .name = "h3 gemm ragged custom_kernel_tf_gemm_nax_bf16_n_t_n_t_n_64_128_256_2_4_bfloat16_t_bfloat16_t_int32_t_bfloat16_t", .threads = 256, .tg_memory = 0, .reserved = 256 },
     .{ .name = "h3 product 32x64 h3_gemm_32x64", .threads = 128, .tg_memory = 0, .reserved = 128 },

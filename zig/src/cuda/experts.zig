@@ -8,6 +8,7 @@ const grouped = @import("grouped.zig");
 const driver = @import("driver.zig");
 const ggml = @import("ggml.zig");
 const mx = @import("experts_mx.zig");
+const prompt_layout = @import("experts_prompt_layout.zig");
 
 const Driver = driver.Driver;
 const Module = module.Module;
@@ -352,6 +353,7 @@ pub const Nvfp4Experts = struct {
     fns: [7]Function, // by Epi, then relu^2 up, then experts_waves.zig's
     resident: [7]usize, // blocks the grid may hold: per SM times SMs
     prompt_fns: [3]Function, // relu^2 up, SwiGLU gate-up, bf16 sums down
+    pair_fns: [2]Function, // paired prompt SwiGLU gate-up and bf16 down, 128 pairs an item
     fact_fns: [2]Function, // the decode form's sums on prompt tiles: SwiGLU gate-up, fp32 down
     softcap: mx.Softcap = .{}, // Inkling's soft-capped SwiGLU gate-up, decode and prompt (experts_mx.zig)
     warps: usize = 4,
@@ -366,6 +368,7 @@ pub const Nvfp4Experts = struct {
         pub const up_relu2 = "_ZN16tf_nvfp4_experts19nvfp4_expert_kernelILi1ELi1ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi";
         pub const prompt = [3][:0]const u8{ "tf_nvfp4_prompt_relu2", "tf_nvfp4_prompt_swiglu", "tf_nvfp4_prompt_down" };
         pub const fact = [2][:0]const u8{ "tf_nvfp4_fact_swiglu", "tf_nvfp4_fact_down_f32" };
+        pub const pair_prompt = [2][:0]const u8{ "tf_nvfp4_pair_prompt_swiglu", "tf_nvfp4_pair_prompt_down" };
     };
 
     /// The fact entries' warps a CTA (32-column blocks): SwiGLU gate-up, fp32 down; their parts, 2 and 1.
@@ -373,12 +376,10 @@ pub const Nvfp4Experts = struct {
 
     /// The prompt entries' warps (32-column blocks) a CTA: relu^2 up, SwiGLU gate-up, down (GB10's fastest tiles).
     pub const prompt_wn = [3]usize{ 8, 4, 8 };
+    pub const pair_prompt_wn = [2]usize{ 4, 8 };
 
-    /// Prompt4<M, 4, 1, WN>'s dynamic shared bytes: stages of 64 rows' 64 inputs, then WN x 2 blocks of `parts`.
     pub fn promptSmem(parts: usize, wn: usize) u32 {
-        const stage: u32 = @intCast((64 * 8 + wn * 2 * parts * 36) * 16);
-        const stages: u32 = if (stage * 4 <= 49152) 4 else if (stage * 3 <= 49152) 3 else 2;
-        return stages * stage;
+        return prompt_layout.promptSmem(parts, wn);
     }
 
     pub fn decodeWarps(value: ?[]const u8) !usize {
@@ -399,7 +400,7 @@ pub const Nvfp4Experts = struct {
         if (!kernels.available) return error.BuiltWithoutKernels;
         var mod = try Module.load(d, kernels.nvfp4_experts);
         errdefer mod.unload();
-        var e: Nvfp4Experts = .{ .mod = mod, .fns = undefined, .resident = undefined, .prompt_fns = undefined, .fact_fns = undefined, .warps = warps };
+        var e: Nvfp4Experts = .{ .mod = mod, .fns = undefined, .resident = undefined, .prompt_fns = undefined, .pair_fns = undefined, .fact_fns = undefined, .warps = warps };
         for ([_][:0]const u8{ symbols.gate_up, symbols.down_f32, symbols.down_bf16, symbols.up_relu2 } ++ @import("experts_waves.zig").symbols, 0..) |name, i| {
             var narrow: [256]u8 = undefined;
             const selected = if (warps == 1) blk: {
@@ -414,11 +415,15 @@ pub const Nvfp4Experts = struct {
         }
         for (symbols.prompt, &e.prompt_fns, [3]usize{ 1, 2, 1 }, prompt_wn) |name, *f, parts, wn| {
             f.* = try mod.function(name);
-            try f.allowDynamicShared(promptSmem(parts, wn));
+            try f.allowDynamicShared(prompt_layout.promptSmem(parts, wn));
+        }
+        for (symbols.pair_prompt, &e.pair_fns, [2]usize{ 2, 1 }, pair_prompt_wn) |name, *f, parts, wn| {
+            f.* = try mod.function(name);
+            try f.allowDynamicShared(prompt_layout.pairPromptSmem(parts, wn));
         }
         for (symbols.fact, &e.fact_fns, [2]usize{ 2, 1 }, fact_wn) |name, *f, parts, wn| {
             f.* = try mod.function(name);
-            try f.allowDynamicShared(promptSmem(parts, wn));
+            try f.allowDynamicShared(prompt_layout.promptSmem(parts, wn));
         }
         e.softcap = try mx.Softcap.resolve(mod, sms);
         return e;
@@ -473,7 +478,7 @@ pub const Nvfp4Experts = struct {
         a.add(if (gate) l.limit else @as(f32, 0.0));
         a.add(skip);
         const fi: usize = if (!gate) 2 else if (l.relu2) 0 else 1;
-        const cfg: launch_.Config = .{ .grid = .{ .x = @intCast(items * ((nb + prompt_wn[fi] - 1) / prompt_wn[fi])), .y = 1, .z = 1 }, .block = .{ .x = @intCast(prompt_wn[fi] * 32), .y = 1, .z = 1 }, .shared = promptSmem(parts, prompt_wn[fi]) };
+        const cfg: launch_.Config = .{ .grid = .{ .x = @intCast(items * ((nb + prompt_wn[fi] - 1) / prompt_wn[fi])), .y = 1, .z = 1 }, .block = .{ .x = @intCast(prompt_wn[fi] * 32), .y = 1, .z = 1 }, .shared = prompt_layout.promptSmem(parts, prompt_wn[fi]) };
         try launch_.launch(e.prompt_fns[fi], cfg, s, &a);
     }
 
@@ -527,6 +532,7 @@ pub const Nvfp4Experts = struct {
         };
     }
 };
+
 
 test {
     _ = @import("experts_host_test.zig"); // Grouped's refusals before any launch
