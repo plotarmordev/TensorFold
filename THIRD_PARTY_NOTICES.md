@@ -579,8 +579,8 @@ extracted headers, with the same revision annotation. No revision was derived fr
 `release_chat_template.jinja` and `release_tokenizer_config.json` in the same folder are byte-identical copies of that
 revision's `chat_template.jinja` and `tokenizer_config.json`, under the same license.
 
-The Mini loop host/reference implementations in `zig/src/families/inkling2/loop.zig`, `loop_model.zig`, `loop_engine.zig`,
-`loop_math_cuda.zig`, the CUDA and Metal loop kernels and the stored-expert implementations in `modelopt.zig` and
+The Mini loop host/reference implementations in `zig/src/families/inkling2/loop.zig`, the CUDA and Metal loop kernels
+and the stored-expert implementations in `modelopt.zig` and
 `zig/kernels/cuda/inkling2/modelopt.cu` are independent TensorFold implementations of the supplied math-only Mini
 specification. Its primary reference is huggingface/transformers PR #51050 at head `6173a2f6`: the Mini configuration and
 forward pass in `models/inkling2_loop/modular_inkling2_loop.py` and `modeling_inkling2_loop.py`, with the temporary
