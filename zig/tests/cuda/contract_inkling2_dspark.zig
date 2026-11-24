@@ -146,7 +146,8 @@ pub const Swiglu = struct {
     }
 };
 
-/// One row of fp32 logits capped in place (30 tanh(x / 30)), then the first id of the capped maximum.
+/// Rows of fp32 logits, one launch each as the head's seven steps: each capped in place (30 tanh(x / 30)), then the
+/// first id of its capped maximum. Outputs: the capped rows, then the picks.
 pub const Pick = struct {
     kern: *const dspark.Kernels,
     /// Control: one id short of the vocabulary.
@@ -156,7 +157,7 @@ pub const Pick = struct {
     ptr: [2]u64 = @splat(0),
 
     pub fn spec(self: *const Pick) c.Spec {
-        const served = &[_]c.Shape{ .{ .rows = 1, .n = vocab, .k = 1 }, .{ .rows = 1, .n = 1000, .k = 1 } };
+        const served = &[_]c.Shape{ .{ .rows = 1, .n = vocab, .k = 1 }, .{ .rows = 7, .n = vocab, .k = 1 }, .{ .rows = 1, .n = 1000, .k = 1 } };
         const name = if (self.short) "control: inkling2 dspark tf_ink2_dsp_pick one id short" else "inkling2 dspark tf_ink2_dsp_pick (capped fp32 logits, first id of the maximum)";
         return .{ .name = name, .accum = .none, .depth = ref.noSums, .out = .raw, .in_place = true, .nan = .{ .stated = "NaN stays NaN and is never picked; +-Inf caps to +-30" }, .served = if (self.short) served[0..1] else served };
     }
@@ -167,37 +168,42 @@ pub const Pick = struct {
         a.free(self.x);
         self.x = &.{};
     }
-    /// Values on 1/8 steps of [-64, 64): ties everywhere, and the unique maximum at the last id, where a short scan misses;
-    /// nonfinite: NaN, -Inf and +Inf at ids 0-2.
+    /// Values on 1/8 steps of [-64, 64): ties everywhere, and each row's unique maximum at its last id, where a short
+    /// scan misses; nonfinite: NaN, -Inf and +Inf at row 0's ids 0-2.
     pub fn prepare(self: *Pick, a: std.mem.Allocator, rig: *rig_.Rig, shape: c.Shape, fill: g.Fill, rng: std.Random) !bool {
-        if (shape.rows != 1 or shape.n < 4 or shape.n > vocab) return false;
+        if (shape.rows == 0 or shape.n < 4 or shape.n > vocab) return false;
         self.free(a);
         self.shape = shape;
-        self.x = try a.alloc(f32, shape.n);
+        self.x = try a.alloc(f32, shape.rows * shape.n);
         for (self.x) |*v| v.* = ref.int(rng, -512, 511) / 8;
-        self.x[shape.n - 1] = 100;
+        for (0..shape.rows) |r| self.x[r * shape.n + shape.n - 1] = 100;
         if (fill == .nonfinite) self.x[0..3].* = .{ ref.nan, -ref.inf, ref.inf };
-        self.ptr = .{ try rig.output(shape.n * 4), try rig.output(4) };
+        self.ptr = .{ try rig.output(self.x.len * 4), try rig.output(shape.rows * 4) };
         return true;
     }
     pub fn run(self: *Pick, rig: *rig_.Rig) !void {
         try ref.restore(rig, self.ptr[0], std.mem.sliceAsBytes(self.x));
-        try self.kern.launchPick(rig.s, self.ptr[0], self.shape.n - @intFromBool(self.short), cap, self.ptr[1]);
+        const n = self.shape.n;
+        for (0..self.shape.rows) |r| try self.kern.launchPick(rig.s, self.ptr[0] + r * n * 4, n - @intFromBool(self.short), cap, self.ptr[1] + r * 4);
     }
     pub fn count(self: *const Pick) usize {
-        return 4 * (self.shape.n + 1);
+        return 4 * self.shape.rows * (self.shape.n + 1);
     }
-    /// The capped logits within tanhf's error of float64's (NaN for NaN), and the pick the first maximum of the device's.
+    /// The capped logits within tanhf's error of float64's (NaN for NaN), and each pick its row's first device maximum.
     pub fn check(self: *const Pick, _: std.mem.Allocator, got: []const u8, msg: []u8) !?[]const u8 {
-        var best: usize = 0;
-        for (self.x, 0..) |x, i| {
-            const want = cap * std.math.tanh(@as(f64, x) / cap);
-            const v = ref.readF32(got, i);
-            if (std.math.isNan(want) != std.math.isNan(v) or @abs(v - want) > 1e-5 * cap) return try std.fmt.bufPrint(msg, "id {d}: capped {e} where {e} is due", .{ i, v, want });
-            if (v > ref.readF32(got, best) or std.math.isNan(ref.readF32(got, best))) best = i;
+        const n = self.shape.n;
+        for (0..self.shape.rows) |r| {
+            var best: usize = 0;
+            for (self.x[r * n ..][0..n], 0..) |x, i| {
+                const want = cap * std.math.tanh(@as(f64, x) / cap);
+                const v = ref.readF32(got, r * n + i);
+                if (std.math.isNan(want) != std.math.isNan(v) or @abs(v - want) > 1e-5 * cap) return try std.fmt.bufPrint(msg, "row {d} id {d}: capped {e} where {e} is due", .{ r, i, v, want });
+                const top = ref.readF32(got, r * n + best);
+                if (v > top or std.math.isNan(top)) best = i;
+            }
+            const pick = ref.readI32(got, self.x.len + r);
+            if (pick != @as(i32, @intCast(best))) return try std.fmt.bufPrint(msg, "row {d}: picked {d} where {d} is due", .{ r, pick, best });
         }
-        const pick = ref.readI32(got, self.shape.n);
-        if (pick != @as(i32, @intCast(best))) return try std.fmt.bufPrint(msg, "picked {d} where {d} is due", .{ pick, best });
         return null;
     }
 };

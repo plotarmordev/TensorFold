@@ -229,7 +229,25 @@ pub const Context = struct {
             c.v[i].free();
         }
     }
+
+    /// The span after committing n rows at `start`, checked before any device work: a gap restarts the span there; a
+    /// rejected span leaves the context as it was.
+    fn admit(c: *const Context, start: u64, n: usize) !u64 {
+        if (start < c.end) return error.DraftContextGap;
+        const from = if (start > c.end) start else c.from;
+        if (start + n - from > c.rings[1]) return error.DSparkContextFull;
+        return from;
+    }
 };
+
+test "a rejected absorb leaves the context's span whole" {
+    const c: Context = .{ .k = undefined, .v = undefined, .rings = .{ local_ring, 64, local_ring }, .newest = undefined, .from = 10, .end = 20 };
+    try std.testing.expectError(error.DSparkContextFull, c.admit(100, 65));
+    try std.testing.expectEqual(@as(u64, 10), c.from);
+    try std.testing.expectEqual(@as(u64, 100), try c.admit(100, 64));
+    try std.testing.expectEqual(@as(u64, 10), try c.admit(20, 54));
+    try std.testing.expectError(error.DraftContextGap, c.admit(19, 1));
+}
 
 /// The target pieces the head reads: its embedding, embed norm and unembedding, and its lane GEMM.
 pub const Target = struct { w: *const wts.Weights, lane: *const cuda.qmmf.Lane };
@@ -303,9 +321,7 @@ pub const Head = struct {
 
     /// Committed rows at positions start.. (taps bf16 [n][4][H] on the device) into the context's rings.
     pub fn absorb(h: *const Head, s: cuda.Stream, c: *Context, tap_rows: u64, start: u64, n: usize) !void {
-        if (start < c.end) return error.DraftContextGap;
-        if (start > c.end) c.from = start;
-        if (start + n - c.from > c.rings[1]) return error.DSparkContextFull;
+        c.from = try c.admit(start, n);
         var at: usize = 0;
         while (at < n) : (at += absorb_rows) {
             const m: u32 = @intCast(@min(absorb_rows, n - at));
