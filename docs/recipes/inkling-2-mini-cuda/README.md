@@ -64,6 +64,9 @@ but no Python or WSL, so the 1/4-stream client is the script's own, not `bench_c
    and decode per stream come from the server's own `done` lines, with the ready time, the WDDM pool's peak
    (`nvidia-smi -lms 500` in its own process) and the server's peak working set.
 
+Steps 2-4 share the builds' 9-minute deadline: each `tf-cuda-test` call, the 240 s server-load wait and each request
+is bounded by the step's remaining time, and a killed call prints its log's tail like a build step's.
+
 What differs from the GB10 and is not copied from it:
 
 - `nvidia-smi` there also lists an NVIDIA NPU, so the script finds the N1X by name and queries only its index;

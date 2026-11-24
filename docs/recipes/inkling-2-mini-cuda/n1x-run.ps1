@@ -59,15 +59,35 @@ if ($targets.ContainsKey($Step)) {
     exit $zig.ExitCode
 }
 
+# check, control and serve share the same 9-minute deadline the build steps enforce, so a stalled check, reference
+# or request cannot run past the step's stated 10-minute bound
+$clock = [Diagnostics.Stopwatch]::StartNew()
+function Left() { [Math]::Max(1, 540000 - [int]$clock.ElapsedMilliseconds) }
+# One tf-cuda-test call under the deadline, its output and error logged like a build step's. -FailOk hands the exit
+# code back in $script:last instead of stopping, for the control that must exit non-zero.
+function Timed([string[]]$argv, [string]$log, [switch]$FailOk) {
+    Write-Output "> $test $argv"
+    $p = Start-Process -FilePath $test -PassThru -NoNewWindow -RedirectStandardOutput "$out\$log.out" `
+        -RedirectStandardError "$out\$log.err" `
+        -ArgumentList @(($argv | ForEach-Object { if ($_ -match ' ') { "`"$_`"" } else { $_ } }))
+    $null = $p.Handle # as with the build steps, the handle must be taken for the exit code
+    $done = $p.WaitForExit((Left))
+    if (-not $done) { & taskkill /T /F /PID $p.Id | Out-Null; $p.WaitForExit() }
+    Get-Content "$out\$log.out", "$out\$log.err" -Tail 30 -ErrorAction SilentlyContinue
+    $script:last = if ($done) { $p.ExitCode } else { 124 }
+    Write-Output "EXIT=$script:last$(if (-not $done) { ' (timeout: the step deadline passed)' })"
+    if ($script:last -and -not $FailOk) { exit $script:last }
+}
+
 $text = 'The three laws of thermodynamics, explained for a curious student:'
 if ($Step -eq 'check') {
     # 188's GB10 checks as they are: the served kernels, #4387's serving checks, the float64 reference
-    Run $test @('info')
-    Run $test @('kernel-contract', 'inkling2 loop')
+    Timed @('info') 'info'
+    Timed @('kernel-contract', 'inkling2 loop') 'contract'
     $r = New-Object System.Random 4387
     (1..4200 | ForEach-Object { $r.Next(1000, 199000) }) -join ' ' | Set-Content -Encoding ascii "$out\ids.txt"
-    Run $test @('inkling2-serving', $Model, "$out\ids.txt")
-    Run $test @('inkling2-mini-ref', $Model, '32', $text)
+    Timed @('inkling2-serving', $Model, "$out\ids.txt") 'serving'
+    Timed @('inkling2-mini-ref', $Model, '32', $text) 'ref'
     exit 0
 }
 
@@ -75,12 +95,10 @@ if ($Step -eq 'check') {
 # Alone, any non-zero exit (a bad path, no GPU) would pass it, so it also needs the plant's own differing tokens.
 if ($Step -eq 'control') {
     $env:INKLING2_REF_PLANT = '1'
-    $ref = Start-Process -FilePath $test -Wait -PassThru -NoNewWindow -RedirectStandardError "$out\control.log" `
-        -ArgumentList @('inkling2-mini-ref', "`"$Model`"", '32', "`"$text`"")
-    Get-Content "$out\control.log"
-    Write-Output "planted control EXIT=$($ref.ExitCode) (must be non-zero)"
-    $planted = Select-String -Path "$out\control.log" -Pattern '\(PLANTED: no messages\): [1-9]\d* of 32 greedy tokens differ'
-    if (-not $ref.ExitCode -or -not $planted) { exit 1 }
+    Timed @('inkling2-mini-ref', $Model, '32', $text) 'control' -FailOk
+    Write-Output "planted control EXIT=$script:last (must be non-zero)"
+    $planted = Select-String -Path "$out\control.err" -Pattern '\(PLANTED: no messages\): [1-9]\d* of 32 greedy tokens differ'
+    if (-not $script:last -or -not $planted) { exit 1 }
     exit 0
 }
 
@@ -92,24 +110,24 @@ $proc = Start-Process -FilePath $server -PassThru -NoNewWindow -RedirectStandard
     -RedirectStandardError "$out\server.err" -ArgumentList @('serve', "`"$Model`"", '--backend', 'cuda',
     '--host', '127.0.0.1', '--port', $port, '--name', 'inkling-2-mini', '--parallel', '4', '--context', '8192',
     '--no-update-check')
-$loaded = [Diagnostics.Stopwatch]::StartNew()
 try {
     while ($true) {
         try { Invoke-RestMethod "http://127.0.0.1:$port/v1/models" -TimeoutSec 5 | Out-Null; break } catch {}
-        if ($proc.HasExited -or $loaded.Elapsed.TotalSeconds -gt 240) { throw 'server did not answer /v1/models' }
+        if ($proc.HasExited -or $clock.Elapsed.TotalSeconds -gt 240) { throw 'server did not answer /v1/models' }
         Start-Sleep 1
     }
-    Write-Output ("RESULT n1x server ready in {0:N1} s" -f $loaded.Elapsed.TotalSeconds)
+    Write-Output ("RESULT n1x server ready in {0:N1} s" -f $clock.Elapsed.TotalSeconds)
     Pool 'server loaded'
     # nvidia-smi samples the pool every 500 ms in its own process for the whole run; its largest sample is the peak
     $smi = Start-Process -FilePath nvidia-smi -PassThru -NoNewWindow -RedirectStandardOutput "$out\pool.csv" `
         -ArgumentList @('-i', $gpu, '--query-gpu=memory.used', '--format=csv,noheader,nounits', '-lms', '500')
     Add-Type -AssemblyName System.Net.Http
+    # a request gets the step's remaining budget (run 6 used under 40 s of it), not a free 4 minutes
     $http = New-Object System.Net.Http.HttpClient
-    $http.Timeout = [TimeSpan]::FromMinutes(4)
     $body = '{"model":"inkling-2-mini","prompt":"Write a short Python function that computes the Fibonacci ' +
         'sequence and explain it.","max_tokens":256,"temperature":0,"ignore_eos":true}'
     foreach ($n in 1, 4) {
+        $http.Timeout = [TimeSpan]::FromMilliseconds((Left))
         $before = @(Select-String -Path "$out\server.log" -Pattern '\] done ').Count
         $calls = foreach ($i in 1..$n) {
             $http.PostAsync("http://127.0.0.1:$port/v1/completions",
