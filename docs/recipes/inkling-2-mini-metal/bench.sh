@@ -14,7 +14,8 @@ label=$1; bin=$2; shift 2
 wt=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 out=${OUT:-$wt/.scratch/ink2-bench}
 mkdir -p "$out"
-[ -e /Users/Shared/agent-work/mac-gpu-window ] || { echo "no Mac GPU window" >&2; exit 3; }
+window=/Users/Shared/agent-work/mac-gpu-window
+[ -e "$window" ] || { echo "no Mac GPU window" >&2; exit 3; }
 load_max=${LOAD_MAX:-10}
 while :; do
     load=$(sysctl -n vm.loadavg | awk '{print $2}')
@@ -22,6 +23,8 @@ while :; do
     echo "load $load >= $load_max; waiting a minute" >&2
     sleep 60
 done
+# The wait can outlive the window: re-check it before the server starts.
+[ -e "$window" ] || { echo "Mac GPU window closed during the load wait" >&2; exit 3; }
 "$bin" serve "$HOME/models/Inkling-2-Mini" --port 18261 --context 65536 "$@" >"$out/$label.server.log" 2>&1 &
 pid=$!
 trap 'kill -INT $pid 2>/dev/null; wait $pid 2>/dev/null' EXIT

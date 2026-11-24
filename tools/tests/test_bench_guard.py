@@ -16,10 +16,14 @@ def report(cells):
     return tmp.name
 
 
-def cell(streams=1, tps=60.0, failed=0, unmeasured=0):
-    return {"prompt": "mixed", "streams": streams, "aggregate_tps": tps,
-            "failed": failed, "unmeasured": unmeasured}
-
+def cell(streams=1, tps=60.0, failed=0, unmeasured=0, alone=None, serial=None):
+    out = {"prompt": "mixed", "streams": streams, "aggregate_tps": tps,
+           "failed": failed, "unmeasured": unmeasured}
+    if alone is not None:
+        out["alone"] = alone
+    if serial is not None:
+        out["serial"] = serial
+    return out
 
 class GuardTests(unittest.TestCase):
     def test_clean_cells_pass(self):
@@ -33,6 +37,21 @@ class GuardTests(unittest.TestCase):
     def test_positive_rate_with_unmeasured_requests_fails(self):
         with self.assertRaises(SystemExit):
             guard.check(report([cell(4, 200.0, unmeasured=2)]), floor=0.3)
+    def test_unequal_concurrent_outputs_fail(self):
+        # The reviewer ran this shape: 12 unequal concurrent outputs passed the rate-only guard.
+        alone = {"equal": 0, "unequal": 12, "failed": 0}
+        with self.assertRaises(SystemExit):
+            guard.check(report([cell(4, 180.0, alone=alone)]), floor=0.3)
+
+    def test_failed_serial_comparison_fails(self):
+        serial = {"equal": 0, "unequal": 0, "failed": 1}
+        with self.assertRaises(SystemExit):
+            guard.check(report([cell(1, 61.0, serial=serial)]), floor=0.3)
+
+    def test_equal_comparisons_pass(self):
+        alone = {"equal": 12, "unequal": 0, "failed": 0}
+        serial = {"equal": 4, "unequal": 0, "failed": 0}
+        guard.check(report([cell(4, 180.0, alone=alone, serial=serial)]), floor=0.3)
 
     def test_below_floor_fails(self):
         with self.assertRaises(SystemExit):

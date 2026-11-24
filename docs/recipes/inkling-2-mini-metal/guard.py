@@ -34,6 +34,12 @@ def check(path, floor, partner_path=None):
         if cell.get("failed") or cell.get("unmeasured"):
             sys.exit(f"GUARD {path}: cell {key} has {cell.get('failed', 0)} failed and "
                      f"{cell.get('unmeasured', 0)} unmeasured requests")
+        # A run whose concurrent, alone or serial outputs disagree was not measuring the engine.
+        for check_name in ("alone", "serial"):
+            verdict = cell.get(check_name)
+            if verdict and (verdict.get("unequal") or verdict.get("failed")):
+                sys.exit(f"GUARD {path}: cell {key} {check_name} comparisons: "
+                         f"{verdict.get('unequal', 0)} unequal, {verdict.get('failed', 0)} failed")
         rate = cell.get("aggregate_tps")
         if rate is None or rate < floor:
             sys.exit(f"GUARD {path}: cell {key} at {rate} tok/s, below floor {floor}")

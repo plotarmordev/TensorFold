@@ -149,7 +149,9 @@ pub const Drafter = struct {
     }
 
     pub fn restoreSnap(d: *Drafter, stream: *Stream, snap: ?*const state.Snap, at_pos: usize) !void {
-        const lane = d.contexts.getPtr(stream) orelse return;
+        // The drafter opens its lane after the target's prefill, so a resumed stream has no lane yet; a silent
+        // return would leave the restored target an empty draft lane, the gap only surfacing at the next absorb.
+        const lane = d.contexts.getPtr(stream) orelse return error.DraftStreamUnknown;
         const s = snap orelse return error.DSparkSnapshotMissing;
         const expected_end = s.end + @as(u64, if (s.tail_off != null) 1 else 0);
         if (expected_end != at_pos) return error.DSparkSnapshotGeometry;

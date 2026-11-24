@@ -419,6 +419,9 @@ pub fn run(m: *const Model, s: *state.Scratch, cache: *state.Cache, ids: []const
 pub fn runShared(m: *const Model, s: *state.Scratch, segments: []const Segment, ids: []const u32, options: Options) !void {
     const rows = ids.len;
     if (rows == 0 or rows > s.rows or segments.len == 0 or segments.len > state.max_segments or (!options.all and segments.len != 1)) return error.Inkling2RowsExceeded;
+    var wide: usize = 0; // a scratch's stage holds one stream's rows: two wide segments would overwrite each other
+    for (segments) |seg| wide += @intFromBool(seg.rows > state.window_rows);
+    std.debug.assert(wide <= 1);
     var total: usize = 0;
     var base: usize = 0;
     for (segments, 0..) |seg, si| {

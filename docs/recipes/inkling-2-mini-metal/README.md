@@ -15,8 +15,10 @@ measured 1,072 on the same Mac. With its 5.55 GB a plain token and 10.41 GB for 
 
 `TF_INKLING2_METAL_DIR=$HOME/models/Inkling-2-Mini zig build test-inkling2-metal-float64` at 713d0d7ff passes on the
 official checkpoint: 0 of 32 greedy tokens differ from the float64 host reference, and the planted control without
-cross-pass messages disagrees (6 of 6 tests, 11 min, the device part under the model lock). It passed again at
-b47560fee on 25 Nov (6 of 6, 11 min), the same engine source.
+cross-pass messages disagrees. That step filters to the one `float64 reference` test; the "6 of 6" count is its
+sibling run, the whole host suite `zig build test-inkling2-metal-host` with both `TF_INKLING2_METAL_DIR` and the
+fixture dir set: 91 passed, 1 skipped, covering the fresh/resumed prompt, the DSpark solo and chain holds and the
+verify-window rollback the acceptance names. It passed again at b47560fee on 25 Nov, the same engine source.
 
 ## Speed
 
