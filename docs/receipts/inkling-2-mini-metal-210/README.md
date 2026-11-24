@@ -1,8 +1,9 @@
 # Inkling 2 Mini on Metal, M5 Ultra: card 210's receipt
 
 Apple M5 Ultra, 256 GB, macOS 27.0; the official checkpoint (`Inkling-2-Mini`, its own `mtp.safetensors` as the
-DSpark drafter); `tensorfold-native` from `zig build native -Doptimize=ReleaseFast` at 930686a0, `--context 65536`.
-Every run held `/tmp/tensorfold-model.lock` inside the Desk's Mac GPU window, one at a time, nothing else on the GPU.
+DSpark drafter); `tensorfold-native` from `zig build native -Doptimize=ReleaseFast`, `--context 65536`: the speed
+table at 63aacbfc (code as at d29431d5f), the 45K prefill at 930686a0. Every run held `/tmp/tensorfold-model.lock`
+inside the Desk's Mac GPU window, one at a time.
 
 ## Ceiling
 
@@ -23,25 +24,27 @@ step is bound by the 48 visits' launch chain, not by bandwidth, and a DSpark rou
 
 ## Speed
 
-`bench.sh` runs `tools/bench_concurrent.py --levels 1,4 --tokens 256 --temperatures 0 --alone --serial`: medians of
-three reps, the default code and chat prompts, greedy. Control, candidate, control:
+`bench.sh` runs `tools/bench_concurrent.py --levels 1,4 --reps 6 --tokens 256 --temperatures 0 --alone --serial`:
+medians of six reps, the default code and chat prompts, greedy. Control, candidate, control (24 Nov, 08:23-08:46):
 
 | tok/s (code / chat) | plain, first | DSpark | plain, again | best open number |
 |---|---|---|---|---|
-| 1 stream | 61.0 / 62.0 | **120.7 / 97.8** | 62.2 / 62.3 | #4618: 123 (DSpark) |
-| 4 streams, total | 220.8 / 219.2 | **279.6 / 226.2** | 219.6 / 216.2 | #4618: 281 (DSpark) |
+| 1 stream | 62.3 / 63.3 | **122.5 / 91.9** | 61.5 / 62.2 | #4618: 123 (DSpark) |
+| 4 streams, total | 223.3 / 224.8 | **279.6 / 228.0** | 219.8 / 221.0 | #4618: 281 (DSpark) |
 
-- 0 failed requests in every cell; every concurrent reply equal to its run alone (12 of 12 at 4 streams, 3 of 3
-  alone) and the drafted replies equal to the plain ones (`serial`).
-- DSpark on code: 3.33 tokens a round at one stream (28.2 ms a round against 16.2 ms a plain step), 2.81 at four
-  (39.0 ms against 17.4 ms). The two plain controls agree within 2%.
-- Against the bar: not beaten. One stream with DSpark is 2% under #4618's 123 and four streams 0.5% under its 281;
-  the plain controls moved 2% between them, so this is a tie at best. Strata v0.2.19's 108.9-114.5 on M5 Max is
-  passed at one stream on code (another chip: a deployment comparison, not a chip one). The gap is the hold, not
-  acceptance: a round costs 1.74 plain steps at one stream and 2.24 at four, for 3.33 and 2.81 tokens.
-- A rerun at six reps (`bench.sh` now asks for six) at `d29431d5f` is void: its two plain controls disagree by 29% at
-  four streams on code (210.5 then 150.5 tok/s, p95 round gaps of 56-97 ms against 19 ms), so the GPU was not idle.
-  The table stays the three-rep run, whose controls agree within 2%.
+- 0 failed requests in every cell; every concurrent reply equal to its run alone (24 of 24 at 4 streams, 6 of 6
+  alone) and the drafted replies equal to the plain ones (`serial`). The two plain controls agree within 1.7%, p95
+  round gaps 16.3-18.0 ms in both.
+- DSpark on code: 3.30 tokens a round at one stream (27.1 ms a round against 15.9 ms a plain step), 2.81 at four
+  (39.0 ms against 17.2 ms).
+- Against the bar: #4465's 97 and 184-223 are passed on code; #4618's 123 / 281 are not beaten (0.4% and 0.5% under,
+  inside the controls' 1.7% drift, a tie at best). Strata v0.2.19's 108.9-114.5 on M5 Max is passed at one stream
+  on code (another chip: a deployment comparison, not a chip one). On chat, DSpark accepts 2.29 tokens a round and
+  one stream gives 91.9. The gap is the hold, not acceptance: a round costs 1.70 plain steps at one stream and 2.26
+  at four.
+- Void and left out: the second control twice ran beside another card's `zig build test` (Metal kernel tests,
+  outside the lock): p50 gaps held at 16-19 ms but p95 rose to 55-84 ms and the totals fell 10-42%. It was rerun
+  once no test process was left. On code, the earlier three-rep table (120.7 / 279.6) agrees with this one within 1.5%.
 
 ## Prefill at 45K
 
@@ -82,6 +85,6 @@ unbiased control went red as planted, and the live limits match the record (36 r
 
 ## Files
 
-`cells.jsonl`: each cell of the three bench runs (bench_concurrent's medians, its `alone` and `serial` counts; the
-full outputs carry token hashes and stay in the run's `OUT`), `prefill45k.txt`; `bench.sh`, `prefill.sh` and
-`prefill.py` reproduce them (`MODEL` names the checkpoint, `OUT` the scratch folder).
+`cells.jsonl`: each cell of the three six-rep bench runs (bench_concurrent's medians, its `alone` and `serial`
+counts; the full outputs carry token hashes and stay in the run's `OUT`), `prefill45k.txt`; `bench.sh`, `prefill.sh`
+and `prefill.py` reproduce them (`MODEL` names the checkpoint, `OUT` the scratch folder).
