@@ -305,18 +305,40 @@ to drafting in her TensorFold build ([INFERENCE]: her server's flags are not pub
 our server with DSpark (card 236's branch) and sparkDash's Node collectors staged for the job; that is follow-up 4
 below, with sparkDash's prefill sweep (4k–128k), which TensorFold has no GB10 receipt for.
 
+### Inco's Splash: a 4-bit GGUF and a block-diffusion drafter
+
+[Splash 1.7.2](https://github.com/incoai/splash/blob/main/docs/release-notes/1.7.2.md) (Apache-2.0, a Metal engine,
+2026-11-24) is Inco's "200+ tok/s on an M5 Max" (its release lists 213 on a 32-core M5 Max, pre-release build; 113 and
+149 on 16- and 20-core M5 Pros). Its two levers:
+
+- **Weights:** the default is Unsloth's `UD-Q4_K_M` (16.61 GB, card 232's GGUF), not the release's bf16 trunk; the
+  release's BF16 attention and head load as Q8_0, which its notes measure within a mean KL of 0.0024 and the same top
+  token at 98.7% of 1,933 teacher-forced positions. This is card 252's lever, and that number is its first quality
+  evidence.
+- **Drafter:** [`incoai/Inkling-2-Mini-DFlash2`](https://huggingface.co/incoai/Inkling-2-Mini-DFlash2), a 0.49B
+  block-diffusion draft (5 layers, an 8-row block, top-16 candidates a row and a low-rank pairwise selector that traces
+  one path) reading the target's rows at applications 5, 23 and 41. Its notes give 6.30 accepted tokens a cycle
+  (greedy, 512-token answers, UD-Q4_K_M) and its card 4.8–5.0 for code and 3.9 for chat when sampled on an H200, where
+  MTP/DSpark gives 2.95–3.66.
+
+Its decode work matches TensorFold's and Unsloth's fused glue (one call for a layer's three mixer gates, a block mix
+per query, one relative-attention pass a layer, the FFN convolution in the MoE combine). No Mac GPU window was open
+for this card, so Splash is unmeasured on our M5 Ultra (DSpark there: 122.5 code / 91.9 chat, plain ≈62); card 255
+measures it and DFlash2's acceptance against DSpark's.
+
 ### Levers, marked
 
 | Lever | Source | In TensorFold (Mini, 188) | Expected GB10 gain, 1 stream | Card |
 |---|---|---|---|---|
 | Fused glue: conv chain, clip, SiTU, depth mix, rel bias in attention | Unsloth #386, #401, #402, #411, #413, #414 | in | taken | — |
-| Controller gate fusion and dependent launches (PDL off for Mini: `qmmf.zig` `pdl` false) | Unsloth #412 | missing | 2–3 ms of 30.4: +7–11% ([INFERENCE], no per-kernel GB10 profile) | follow-up 3 |
+| Controller gate fusion and dependent launches (PDL off for Mini: `qmmf.zig` `pdl` false) | Unsloth #412 | missing | 2–3 ms of 30.4: +7–11% ([INFERENCE], no per-kernel GB10 profile) | 253 |
 | Small-batch kernel choice, q8_1 reuse, flat concat | Unsloth #415, #416, #418 | n/a | — (TensorFold leads 1.37× at 4 streams) | — |
 | MoE cache dedupe, 4-row MoE matvec | Unsloth #417, #421 | n/a on GB10 | — | — |
 | W=4 beam-tree DSpark | Strata 1; Unsloth #405 | missing on CUDA (chain drafter on 236's branch) | unmeasured; Mia's 45.8 at the same bytes suggests ≈1.4× | 236, then 209's follow-up 2 |
+| Block-diffusion drafter (DFlash2) | Splash | missing | unmeasured on our hardware; sampled on an H200, 4.8–5.0 (code) and 3.9 (chat) tokens a cycle against MTP/DSpark's 2.95–3.66 ([INFERENCE]: a larger gain than DSpark's) | 255 |
 | Zero-logits device-to-host | Strata 2 | in | taken | — |
 | fp4 tensor-core MoE at M ≥ 24 | Strata 3 | missing | none at 1 stream; c=64 unmeasured | 209's follow-up 3 |
-| Smaller trunk bytes (SQ packs) | Strata 4 | missing: bf16 trunk and head are 3.72 of 5.55 GB a token | MXFP8 rows −1.86 GB: ≈44 tok/s (+34%); NVFP4 ≈52 (+58%); quality-gated | follow-up 1 |
+| Smaller trunk bytes (SQ packs) | Strata 4 | missing: bf16 trunk and head are 3.72 of 5.55 GB a token | MXFP8 rows −1.86 GB: ≈44 tok/s (+34%); NVFP4 ≈52 (+58%); quality-gated | 252 |
 | CUDA graphs | Strata 5 | in | taken | — |
 | 64-slot batching | Strata 6 | in | taken | — |
 | FP8 KV | Strata 7 | missing | none at short context; twice the resident streams | 209's follow-up 3 |
@@ -327,18 +349,21 @@ card 188's and 232's branches, not on `main`: this card's branch has no Mini eng
 bringing 188 over is 21,000 lines outside this card. Its expected +34% is the largest above, ahead of drafting,
 which cards 236 and 246 already carry.
 
-### Follow-up cards from 251
+### Follow-up cards from 251 (252–254 start after 188 merges; 255 needs a Mac GPU window)
 
-1. **MXFP8 trunk and head for Mini on CUDA, then NVFP4.** Pack the bf16 `qx`/`all`/`wq`…`wo` rows and the unembedding
+1. **Card 252: MXFP8 trunk and head for Mini on CUDA, then NVFP4.** Pack the bf16 `qx`/`all`/`wq`…`wo` rows and the unembedding
    at load into `qmmf`'s `mxfp8` mode (decode kernels exist for it), behind a switch; one GB10 A/B against 32.9 tok/s
    with a top-1/KL gate on the float64 reference. Gain: ≈+34% (MXFP8), ≈+58% (NVFP4).
-2. **Lossless alternative to 1:** a 12-bit coded bf16 GEMV and a certified greedy head screen
+2. **Lossless alternative to 252, if its quality gate fails:** a 12-bit coded bf16 GEMV and a certified greedy head screen
    ([dsgb10](https://github.com/blaesus/dsgb10), MIT). Gain: ≈+15–20%, exact.
-3. **Controller-gate fusion and PDL for Mini.** Merge the loop gate's three kernels and the router-plan launches,
+3. **Card 253: controller-gate fusion and PDL for Mini.** Merge the loop gate's three kernels and the router-plan launches,
    set `pdl` on Mini's lanes; a GB10 per-kernel profile first. Gain: +7–11% ([INFERENCE]).
-4. **sparkDash on our GB10, decode and prefill.** Stage sparkDash `86f972e2`'s collectors and Node, run Net's
+4. **Card 254: sparkDash on our GB10, decode and prefill.** Stage sparkDash `86f972e2`'s collectors and Node, run Net's
    settings (prose, 256 tokens, temperature 0.7, top_k 20, thinking on, 1/2/4 streams; prefill 4k–128k) against our
    server with and without DSpark, beside Mia's 45.8 / 69.9 / 102.9 and 2,877…1,919.
+5. **Card 255: Splash and DFlash2 on our M5 Ultra.** Serve Splash 1.7.2 with `UD-Q4_K_M` and its DFlash2 draft in a
+   Mac GPU window (after the owner agrees to the install), beside DSpark's 122.5 / 91.9, and compare accepted tokens a
+   cycle. Gain: unmeasured; DFlash2's published acceptance is 1.3–1.6× DSpark's.
 
 ## Windows on ARM: Inkling builds exist; none is Strata's or tuned for the N1X
 
