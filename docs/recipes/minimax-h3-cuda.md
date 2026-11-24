@@ -698,7 +698,8 @@ column scale, and values within the bound at six served shapes including `qkvc`'
 last column tiles (16 × 392 × 128 and 300 × 1,352 × 256). `cuda h3 int8 tma swiglu` runs fc1's served path
 (`h3_swiglu_rows` then `h3_swiglu_int8_tma`) and must match the plain product followed by `h3_swiglu` byte for
 byte at four served shapes, a partial feature tile (300 × 776 × 256) and `fc1`'s real shape among them. Both
-sweep N in steps of 8. `check-204.sh` shows main's whole-tile grid failing each partial-tile shape on its own.
+sweep N in steps of 8. `check-204.sh` passes them on the card; `check-204-main.sh` and `check-204-1352.sh` show
+main's whole-tile grid failing each partial-tile shape on its own, one cold build a job.
 
 The picture A/B is `bench-146-ab.sh` at `1a354cc9`, after card 145 merged (job `top-0c0de4c93177`, 21 November,
 exit 0, `H3_PROFILE=1`). Main is re-measured in the same job by reverse-applying `bench-146-base.patch`. Each
