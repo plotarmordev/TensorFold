@@ -368,6 +368,8 @@ It passes Unsloth's build at 4 streams (139.8 and 121.9 code, 117.1 chat) but no
 1 of 32 greedy tokens differs from the float64 bf16 reference (position 24, where the reference's margin is 0.11);
 bf16 gives 0 of 32, and llama.cpp's UD-Q4_K_M agrees at 31 of 32 teacher-forced picks (232). One prompt, so this
 does not show the error is harmless; the switch stays opt-in until card 252's KL gate passes.
+A second job on the same code (`top-5e3d39db7aed` at `376d52d0f`, same settings) repeats it: bf16 32.9 / 33.0 solo and
+117.2 / 121.0 at 4 streams, MXFP8 41.7 / 41.2 and 145.4 / 149.7, and again 1 of 32 tokens differs.
 
 ### Follow-up cards from 251 (252–254 and 258 start after 188 merges; 255 needs a Mac GPU window)
 
