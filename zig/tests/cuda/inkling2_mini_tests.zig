@@ -84,14 +84,39 @@ fn ms(a: i96, b: i96) f64 {
     return @as(f64, @floatFromInt(b - a)) / 1e6;
 }
 
-/// Greedy tokens of `slot` from its prompt's logits, one decode row at a time.
-fn decode(r: *Rig, slot: usize, first: []const f32, p0: usize, out: []u32) !void {
+/// Greedy tokens of `slot` from its prompt's logits, one decode row at a time; `rows` (when given) keeps each
+/// token's logits, `first` included.
+fn decode(r: *Rig, slot: usize, first: []const f32, p0: usize, out: []u32, rows: ?[]f32) !void {
+    const v = r.vocab();
+    if (rows) |k| @memcpy(k[0..v], first);
     out[0] = argmax(first);
     for (1..out.len) |i| {
         const row = try r.step(&.{.{ .slot = slot, .p0 = p0 + i - 1, .tokens = out[i - 1 .. i] }});
         defer r.gpu.gpa.free(row);
+        if (rows) |k| @memcpy(k[i * v ..][0..v], row);
         out[i] = argmax(row);
     }
+}
+
+/// KL(reference || engine) in nats of one position's soft-capped logits.
+fn kl(ref: []const f64, got: []const f32) f64 {
+    var rmax: f64 = -std.math.inf(f64);
+    var gmax: f64 = -std.math.inf(f64);
+    for (ref, got) |a, b| {
+        rmax = @max(rmax, a);
+        gmax = @max(gmax, b);
+    }
+    var rs: f64 = 0;
+    var gs: f64 = 0;
+    for (ref, got) |a, b| {
+        rs += @exp(a - rmax);
+        gs += @exp(@as(f64, b) - gmax);
+    }
+    const rl = rmax + @log(rs);
+    const gl = gmax + @log(gs);
+    var sum: f64 = 0;
+    for (ref, got) |a, b| sum += @exp(a - rl) * ((a - rl) - (@as(f64, b) - gl));
+    return sum;
 }
 
 /// tf-cuda-test inkling2-mini DIR N TEXT: greedy, resumed == fresh, concurrent == solo, decode speed at 1 and 4.
@@ -114,7 +139,7 @@ pub fn run(gpu: Gpu, model: []const u8, count_text: []const u8, text: []const u8
     const t1 = check.now(gpu.io);
     const plain = try gpa.alloc(u32, count);
     defer gpa.free(plain);
-    try decode(&rig, 0, first, n0, plain);
+    try decode(&rig, 0, first, n0, plain, null);
     const t2 = check.now(gpu.io);
     const said = try tok.decode(gpa, plain, false);
     defer gpa.free(said);
@@ -131,7 +156,7 @@ pub fn run(gpu: Gpu, model: []const u8, count_text: []const u8, text: []const u8
         const same = std.mem.eql(u8, std.mem.sliceAsBytes(again), std.mem.sliceAsBytes(first));
         const resumed = try gpa.alloc(u32, @min(count, 32));
         defer gpa.free(resumed);
-        try decode(&rig, 1, again, n0, resumed);
+        try decode(&rig, 1, again, n0, resumed, null);
         const tokens_same = std.mem.eql(u32, resumed, plain[0..resumed.len]);
         if (!same or !tokens_same) bad += 1;
         std.debug.print("{s} inkling2 mini prompt in chunks of {d}: last-row logits {s}, {d} greedy tokens {s}\n", .{ if (same and tokens_same) "PASS" else "FAIL", chunk, if (same) "bit-equal" else "differ", resumed.len, if (tokens_same) "equal" else "differ" });
@@ -234,7 +259,9 @@ fn concurrent(rig: *Rig, ids: []const u32, plain: []const u32) !void {
 }
 
 /// tf-cuda-test inkling2-mini-ref DIR N TEXT: N greedy tokens on the GPU, then the float64 reference teacher-forced
-/// over the prompt and them: each generated token against the reference's pick, every difference with its margin.
+/// over the prompt and them: each generated token against the reference's pick (top-1 agreement), every difference
+/// with its margin, and the mean KL of the N positions' distributions. A bf16 trunk must agree everywhere; a
+/// quantised one (TF_INKLING2_TRUNK) passes at mean KL <= `trunk_kl` and at most one pick differing.
 pub fn reference(gpu: Gpu, model: []const u8, count_text: []const u8, text: []const u8) !void {
     const gpa = gpu.gpa;
     const count = try std.fmt.parseInt(usize, count_text, 10);
@@ -250,12 +277,17 @@ pub fn reference(gpu: Gpu, model: []const u8, count_text: []const u8, text: []co
     const all = try gpa.alloc(u32, ids.len + count);
     defer gpa.free(all);
     @memcpy(all[0..ids.len], ids);
-    try decode(&rig, 0, first, ids.len, all[ids.len..]);
+    const v = rig.vocab();
+    const rows = try gpa.alloc(f32, count * v);
+    defer gpa.free(rows);
+    try decode(&rig, 0, first, ids.len, all[ids.len..], rows);
     var ck = try core.checkpoint.Checkpoint.openModel(gpa, gpu.io, model);
     defer ck.close();
     // INKLING2_REF_PLANT=1: the reference drops the cross-pass messages; the check must go red
-    const plant = if (std.c.getenv("INKLING2_REF_PLANT")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false;
-    var r: ink.mini_ref.Ref = .{ .gpa = gpa, .c = rig.w.config, .p = rig.w.plan, .ck = &ck, .plant = plant, .round_caps = roundCaps() };
+    const plant = if (std.c.getenv("INKLING2_REF_PLANT")) |p| std.mem.eql(u8, std.mem.span(p), "1") else false;
+    const full = try gpa.alloc(f64, count * v);
+    defer gpa.free(full);
+    var r: ink.mini_ref.Ref = .{ .gpa = gpa, .c = rig.w.config, .p = rig.w.plan, .ck = &ck, .plant = plant, .round_caps = roundCaps(), .full = .{ .from = ids.len - 1, .rows = full } };
     const picks = try gpa.alloc(ink.mini_ref.Pick, all.len);
     defer gpa.free(picks);
     const t0 = check.now(gpu.io);
@@ -263,6 +295,9 @@ pub fn reference(gpu: Gpu, model: []const u8, count_text: []const u8, text: []co
     std.debug.print("INFO inkling2 mini reference: {d} positions in {d:.1} s\n", .{ all.len - 1, ms(t0, check.now(gpu.io)) / 1e3 });
     var differ: usize = 0;
     var smallest: f64 = std.math.inf(f64);
+    var kl_sum: f64 = 0;
+    for (0..count) |j| kl_sum += kl(full[j * v ..][0..v], rows[j * v ..][0..v]);
+    const mean_kl = kl_sum / @as(f64, @floatFromInt(count));
     for (ids.len - 1..all.len - 1) |i| {
         const want = picks[i];
         smallest = @min(smallest, want.margin);
@@ -273,7 +308,12 @@ pub fn reference(gpu: Gpu, model: []const u8, count_text: []const u8, text: []co
     }
     const said = try tok.decode(gpa, all[ids.len..], false);
     defer gpa.free(said);
-    std.debug.print("RESULT inkling2 mini vs float64 reference{s}: {d} of {d} greedy tokens differ, smallest reference margin {d:.4}: \"{s}\"\n", .{ if (plant) " (PLANTED: no messages)" else "", differ, count, smallest, said });
+    const trunk = @tagName(rig.w.trunk);
+    std.debug.print("RESULT inkling2 mini {s} trunk vs float64 reference{s}: top-1 {d} of {d}, mean KL {e:.3} nats, smallest reference margin {d:.4}: \"{s}\"\n", .{ trunk, if (plant) " (PLANTED: no messages)" else "", count - differ, count, mean_kl, smallest, said });
     if (plant) return check.expect(differ > 0, "inkling2 mini planted control: the reference without messages still agrees", .{});
-    try check.expect(differ == 0, "inkling2 mini greedy == reference: {d} of {d} tokens differ", .{ differ, count });
+    if (rig.w.trunk == .bf16) return check.expect(differ == 0, "inkling2 mini greedy == reference: {d} of {d} tokens differ", .{ differ, count });
+    try check.expect(differ <= 1 and mean_kl <= trunk_kl, "inkling2 mini {s} trunk gate: top-1 {d} of {d}, mean KL {e:.3} (at most 1 differing, KL <= {d})", .{ trunk, count - differ, count, mean_kl, trunk_kl });
 }
+
+/// A quantised trunk's mean-KL limit against the float64 reference, in nats.
+const trunk_kl = 0.01;

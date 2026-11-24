@@ -2,6 +2,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const fp8 = @import("fp8.zig");
+const e4m3FromF32 = @import("../exlr8_codec.zig").e4m3FromF32;
 
 const Tensor = types.Tensor;
 
@@ -53,7 +54,7 @@ const Lanes = @Vector(group, f64);
 const Index = @Vector(group, u8);
 
 /// The global of a matrix whose largest magnitude is `amax`: its largest block scale lands on e4m3's 448.
-fn globalScale(amax: f64) f32 {
+pub fn globalScale(amax: f64) f32 {
     return if (amax == 0) 1 else @floatCast(amax / (6.0 * 448.0));
 }
 
@@ -84,13 +85,13 @@ fn loss(aw: Lanes, s: f64, g: f64) f64 {
 /// One block's e4m3 scale code, its 16 nibbles (sign bit 3) and the squared error of that choice.
 const Block = struct { scale: u8, nibbles: [group]u8, loss: f64 };
 
-/// Of all 126 e4m3 scale codes the least squared error (ties: smaller code); an all-zero block takes scale 0.
-fn encodeBlock(w: *const [group]f64, g: f32) Block {
+/// Of e4m3 scale codes lo..hi the least squared error (ties: smaller code); an all-zero block takes scale 0.
+fn encodeBlock(w: *const [group]f64, g: f32, lo: u8, hi: u8) Block {
     var aw: Lanes = undefined;
     inline for (0..group) |i| aw[i] = @abs(w[i]);
     if (@reduce(.Max, aw) == 0) return .{ .scale = 0, .nibbles = @splat(0), .loss = 0 };
-    var best: Block = .{ .scale = 1, .nibbles = undefined, .loss = std.math.inf(f64) };
-    for (scale_values, 1..) |s, code| {
+    var best: Block = .{ .scale = lo, .nibbles = undefined, .loss = std.math.inf(f64) };
+    for (scale_values[lo - 1 .. hi], lo..) |s, code| {
         const e = loss(aw, s, g);
         if (e < best.loss) best = .{ .scale = @intCast(code), .nibbles = undefined, .loss = e };
     }
@@ -125,12 +126,34 @@ pub fn encode(w: []const f64, n: usize, k: usize, codes: []u8, scales: []u8) Sum
     }
     out.global = globalScale(out.amax);
     for (0..n * k / group) |b| {
-        const q = encodeBlock(w[b * group ..][0..group], out.global);
+        const q = encodeBlock(w[b * group ..][0..group], out.global, 1, scale_values.len);
         scales[b] = q.scale;
         for (0..group / 2) |j| codes[b * group / 2 + j] = q.nibbles[2 * j] | q.nibbles[2 * j + 1] << 4;
         out.err += q.loss;
     }
     return out;
+}
+
+/// One row [k] under the matrix's `g` into codes [k / 2] and scales [k / 16], as `encode` lays them out: each block's
+/// scale searched over codes amax / (6 g) - 3 .. + 8 instead of all 126 (load-time speed; the best code sat within
+/// -2 .. +7 of it on 20,000 Gaussian, Laplace and heavy-tailed blocks each); returns Σ squared error.
+pub fn encodeRow(row: []const f32, g: f32, codes: []u8, scales: []u8) f64 {
+    std.debug.assert(row.len % group == 0 and codes.len == row.len / 2 and scales.len == row.len / group);
+    var err: f64 = 0;
+    for (scales, 0..) |*s, b| {
+        var w: [group]f64 = undefined;
+        var amax: f64 = 0;
+        for (&w, row[b * group ..][0..group]) |*x, v| {
+            x.* = v;
+            amax = @max(amax, @abs(x.*));
+        }
+        const near = std.math.clamp(e4m3FromF32(@floatCast(amax / (6 * @as(f64, g)))), 1, @as(u8, scale_values.len));
+        const q = encodeBlock(&w, g, @max(near, 4) - 3, @min(near + 8, scale_values.len));
+        s.* = q.scale;
+        for (0..group / 2) |j| codes[b * group / 2 + j] = q.nibbles[2 * j] | q.nibbles[2 * j + 1] << 4;
+        err += q.loss;
+    }
+    return err;
 }
 
 /// ModelOpt NVFP4 round trip of `w` [N,K]: global amax/(6*448), e4m3 scale per 16 inputs, e2m1 ties to even.
@@ -157,6 +180,29 @@ fn nearestE2m1(m: f64) f64 {
         if (d < bd or (d == bd and i % 2 == 0)) best = @intCast(i);
     }
     return e2m1(best);
+}
+
+test "a row's windowed scale search finds the full search's codes on a heavy-tailed matrix" {
+    var prng = std.Random.DefaultPrng.init(252);
+    const r = prng.random();
+    const n = 8;
+    const k = 256;
+    var w32: [n * k]f32 = undefined;
+    var w: [n * k]f64 = undefined;
+    for (&w32, &w) |*a, *b| {
+        a.* = @floatCast(r.floatNorm(f64) * std.math.exp(2 * r.floatNorm(f64)));
+        b.* = a.*;
+    }
+    var codes: [n * k / 2]u8 = undefined;
+    var scales: [n * k / group]u8 = undefined;
+    const full = encode(&w, n, k, &codes, &scales);
+    var row_codes: [n * k / 2]u8 = undefined;
+    var row_scales: [n * k / group]u8 = undefined;
+    var err: f64 = 0;
+    for (0..n) |i| err += encodeRow(w32[i * k ..][0..k], full.global, row_codes[i * k / 2 ..][0 .. k / 2], row_scales[i * k / group ..][0 .. k / group]);
+    try std.testing.expectEqualSlices(u8, &scales, &row_scales);
+    try std.testing.expectEqualSlices(u8, &codes, &row_codes);
+    try std.testing.expectApproxEqRel(full.err, err, 1e-12); // per-row subtotals: another summation order
 }
 
 test "an NVFP4 stack against hand-decoded values" {
@@ -265,7 +311,7 @@ test "the block search picks what an independent scalar search of all 126 scales
         // matrix amax: the block's own (scale at most 448), up to 1000x above, or 1e5x above (subnormal scales win)
         const ratio: f64 = if (trial % 5 == 1) 1e5 + rnd.float(f64) * 1e5 else if (trial % 3 == 0) 1 else 1 + rnd.float(f64) * 999;
         const g = globalScale(amax * ratio);
-        const got = encodeBlock(&w, g);
+        const got = encodeBlock(&w, g, 1, scale_values.len);
         const want = brute(&w, g);
         try std.testing.expectEqual(want.scale, got.scale);
         try std.testing.expectEqualSlices(u8, &want.nibbles, &got.nibbles);
@@ -279,10 +325,10 @@ test "e2m1 ties go to the even index and saturate at six; zeros keep a positive 
     try std.testing.expectEqual(want, @as([group]u8, index(x, 1, 1)));
     var w: [group]f64 = @splat(1);
     w[3] = -1e-6; // rounds to zero: a positive zero code, not -0
-    const q = encodeBlock(&w, globalScale(1));
+    const q = encodeBlock(&w, globalScale(1), 1, scale_values.len);
     try std.testing.expectEqual(@as(u8, 7), q.nibbles[0]);
     try std.testing.expectEqual(@as(u8, 0), q.nibbles[3]);
-    const none = encodeBlock(&@as([group]f64, @splat(-0.0)), globalScale(1));
+    const none = encodeBlock(&@as([group]f64, @splat(-0.0)), globalScale(1), 1, scale_values.len);
     try std.testing.expectEqual(@as(u8, 0), none.scale);
     try std.testing.expectEqualSlices(u8, &@as([group]u8, @splat(0)), &none.nibbles);
 }

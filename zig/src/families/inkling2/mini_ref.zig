@@ -137,6 +137,9 @@ pub const Ref = struct {
     ck: *Checkpoint,
     round_caps: bool = false, // gate and up rounded to bf16 before the soft caps (the experts' round_caps A/B)
     plant: bool = false, // a planted control: the cross-pass messages dropped (the check must then go red)
+    full: ?Full = null, // every vocab logit (soft-capped) of positions from `from` on, for KL against an engine
+
+    pub const Full = struct { from: usize, rows: []f64 };
 
     fn get(r: *Ref, comptime fmt: []const u8, args: anytype) !Tensor {
         var buf: [128]u8 = undefined;
@@ -234,8 +237,10 @@ pub const Ref = struct {
             mixOne(h, src[0 .. nb + 1], oq.bytes, 0, xf);
             normInto(xf, norm, t.eps);
             var best: Pick = .{ .id = 0, .margin = 0, .top = 0 };
+            const kept = if (r.full) |f| if (i >= f.from) f.rows[(i - f.from) * t.unpadded_vocab ..][0..t.unpadded_vocab] else null else null;
             for (0..t.unpadded_vocab) |vid| {
                 const l = t.logit_cap * std.math.tanh(dotBf(unembed.bytes, vid, h, xf) / t.logit_cap);
+                if (kept) |row| row[vid] = l;
                 if (l <= best.logits[4]) continue;
                 var at: usize = 4;
                 while (at > 0 and l > best.logits[at - 1]) : (at -= 1) {
