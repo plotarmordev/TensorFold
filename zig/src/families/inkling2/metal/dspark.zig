@@ -10,6 +10,7 @@ const glue = @import("glue.zig");
 const k = @import("dspark_kernels.zig");
 const weight_loader = @import("dspark_weights.zig");
 const state = @import("dspark_state.zig");
+const st = @import("state.zig");
 
 const dr = lanes.drafter;
 const Stream = lanes.Stream;
@@ -53,6 +54,20 @@ pub const Drafter = struct {
     /// A draft's share of a full hold, timed by `measure`.
     step_ms: f64 = 0,
     contexts: std.AutoHashMapUnmanaged(*Stream, state.Lane) = .empty,
+    /// The previous verify's keep and the following absorb and hold share a submission.
+    pending: std.ArrayListUnmanaged(dr.Absorb) = .empty,
+    keeps: [st.batch_rows]*st.Cache = undefined,
+    keep_streams: [st.batch_rows]*Stream = undefined,
+    accepted: [st.batch_rows]usize = undefined,
+    keep_len: usize = 0,
+    holds: [k.cohort_streams]PendHold = undefined,
+    depths: [k.cohort_streams]u32 = undefined,
+    slots: [k.cohort_streams]u32 = undefined,
+    hold_order: k.Order = undefined,
+    held_len: usize = 0,
+
+    /// A greedy hold's inputs, encoded after its keeps and absorbs.
+    const PendHold = struct { stream: *Stream, pending: u32, position: u64, depth: u32 };
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, device: mtl.Device, target: *const Model, drafter_dir: []const u8) !*Drafter {
         _ = io; // Native factory convention; Checkpoint.addFile uses platform file calls.
@@ -90,6 +105,7 @@ pub const Drafter = struct {
         var it = d.contexts.valueIterator();
         while (it.next()) |lane| lane.deinit();
         d.contexts.deinit(d.gpa);
+        d.pending.deinit(d.gpa);
         if (d.scores) |scores| scores.deinit();
         if (d.units) |*u| u.deinit();
         d.cohort_state.deinit();
@@ -174,6 +190,7 @@ pub const Drafter = struct {
     }
 
     pub fn resetLane(d: *Drafter, stream: *Stream) void {
+        d.dropPending(stream);
         if (d.contexts.getPtr(stream)) |lane| {
             lane.from = 0;
             lane.end = 0;
@@ -208,6 +225,7 @@ pub const Drafter = struct {
 
     fn releaseFn(ptr: *anyopaque, stream: *Stream) void {
         const d = cast(ptr);
+        d.dropPending(stream);
         if (d.contexts.fetchRemove(stream)) |entry| {
             var lane = entry.value;
             lane.deinit();
@@ -216,6 +234,7 @@ pub const Drafter = struct {
 
     fn heldFn(ptr: *anyopaque, streams: []const *Stream, out: []const []u32) anyerror!void {
         const d = cast(ptr);
+        try d.flushPending();
         for (streams, out) |stream, tokens| {
             const lane = d.contexts.getPtr(stream) orelse return error.DraftStreamUnknown;
             if (tokens.len > lane.held_len) return error.DraftHeldFewer;
@@ -236,12 +255,10 @@ pub const Drafter = struct {
 
     fn absorbFn(ptr: *anyopaque, items: []const dr.Absorb) anyerror!void {
         const d = cast(ptr);
-        const pool = mtl.objc.Pool.push();
-        defer pool.pop();
         if (items.len == 0) return;
-        const cb = d.target.queue.commandBuffer();
-        const e = cb.compute(.serial);
+        if (d.pending.items.len > 0 or d.held_len > 0) try d.flushPending();
         const row_bytes = 4 * state.hidden * 2;
+        var prompt = false;
         for (items) |item| {
             const lane = d.contexts.getPtr(item.stream) orelse return error.DraftStreamUnknown;
             const features = item.features;
@@ -252,20 +269,122 @@ pub const Drafter = struct {
             if (item.start > lane.end) lane.from = item.start;
             const end = item.start + features.rows;
             if (end > 1048576) return error.DraftContextGap;
-            const source = mtl.Buffer{ .id = @ptrFromInt(features.buffer) };
-            var position = item.start;
-            while (position < end) {
-                const rows: usize = @intCast(@min(state.absorb_rows, end - position));
-                const offset = features.offset + @as(usize, @intCast(position - item.start)) * row_bytes;
-                d.absorbRows(e, lane, at(source, offset), position, rows);
-                position += rows;
-            }
             lane.end = end;
             lane.held_len = 0;
+            prompt = prompt or item.prompt;
         }
+        // A prompt's rows are absorbed before the round drafting from them; a round's live rows ride its keep.
+        if (!prompt) return d.pending.appendSlice(d.gpa, items);
+        const pool = mtl.objc.Pool.push();
+        defer pool.pop();
+        const cb = d.target.queue.commandBuffer();
+        const e = cb.compute(.serial);
+        for (items) |item| d.encodeAbsorb(e, item);
         e.end();
         cb.commit();
         try failed(cb, "absorb");
+    }
+
+    fn encodeAbsorb(d: *Drafter, e: mtl.ComputeEncoder, item: dr.Absorb) void {
+        const lane = d.contexts.getPtr(item.stream).?;
+        const source = mtl.Buffer{ .id = @ptrFromInt(item.features.buffer) };
+        const row_bytes = 4 * state.hidden * 2;
+        const end = item.start + item.features.rows;
+        var position = item.start;
+        while (position < end) {
+            const rows: usize = @intCast(@min(state.absorb_rows, end - position));
+            const offset = item.features.offset + @as(usize, @intCast(position - item.start)) * row_bytes;
+            d.absorbRows(e, lane, at(source, offset), position, rows);
+            position += rows;
+        }
+    }
+
+    fn flushPending(d: *Drafter) !void {
+        if (d.keep_len == 0 and d.pending.items.len == 0 and d.held_len == 0) return;
+        const pool = mtl.objc.Pool.push();
+        defer pool.pop();
+        const cb = d.target.queue.commandBuffer();
+        if (d.keep_len > 0) {
+            const b = cb.blit();
+            st.encodeKeep(b, d.keeps[0..d.keep_len], d.accepted[0..d.keep_len]);
+            b.end();
+        }
+        if (d.pending.items.len > 0 or d.held_len > 0) {
+            const e = cb.compute(.serial);
+            for (d.pending.items) |item| d.encodeAbsorb(e, item);
+            if (d.held_len > 0) d.encodeHolds(e);
+            e.end();
+        }
+        cb.commit();
+        try failed(cb, "draft");
+        d.keep_len = 0;
+        d.pending.clearRetainingCapacity();
+        try d.finishHolds();
+    }
+
+    /// Keep bookkeeping is visible to the draft's features; the GPU copies precede its absorb and hold.
+    pub fn stageKeep(d: *Drafter, streams: []const *Stream, caches: []const *st.Cache, accepted: []const usize) !void {
+        try d.flushPending();
+        @memcpy(d.keeps[0..caches.len], caches);
+        @memcpy(d.keep_streams[0..streams.len], streams);
+        @memcpy(d.accepted[0..accepted.len], accepted);
+        d.keep_len = caches.len;
+        st.settleKeep(caches, accepted);
+    }
+
+    /// Prompt forwards reuse the verify's tap buffer, so they finish its absorb first.
+    pub fn beforeForward(d: *Drafter) !void {
+        try d.flushPending();
+    }
+
+    /// The drafts a stashed hold wrote, read back once its submission has run.
+    fn finishHolds(d: *Drafter) !void {
+        const tokens = d.chain_tokens.slice(u32, k.cohort_streams * 8);
+        for (d.holds[0..d.held_len], d.depths[0..d.held_len], d.slots[0..d.held_len]) |item, depth, at_slot| {
+            const lane = d.contexts.getPtr(item.stream) orelse continue;
+            for (0..depth) |step| {
+                const token = tokens[at_slot * 8 + step + 1];
+                if (token >= state.vocabulary) return error.DraftNonfinite;
+                lane.held[step] = token;
+            }
+            lane.held_len = depth;
+        }
+        d.held_len = 0;
+    }
+
+    /// A stream leaving the rounds takes its stashed work with it.
+    fn dropPending(d: *Drafter, stream: *Stream) void {
+        var kept: usize = 0;
+        for (d.pending.items) |item| {
+            if (item.stream == stream) continue;
+            d.pending.items[kept] = item;
+            kept += 1;
+        }
+        d.pending.shrinkRetainingCapacity(kept);
+        var n: usize = 0;
+        for (d.holds[0..d.held_len], 0..) |item, i| {
+            if (item.stream == stream) continue;
+            d.holds[n] = item;
+            d.depths[n] = d.depths[i];
+            n += 1;
+        }
+        d.held_len = n;
+        if (n == 0) return;
+        d.hold_order = k.Order.sort(d.depths[0..n]);
+        for (d.hold_order.slots[0..n], 0..) |item, s| d.slots[item] = @intCast(s);
+    }
+
+    /// The target frees a stream's cache: its staged keep goes first, whether or not the stream drafted.
+    pub fn dropKeep(d: *Drafter, stream: *Stream) void {
+        var keep: usize = 0;
+        for (d.keep_streams[0..d.keep_len], d.keeps[0..d.keep_len], d.accepted[0..d.keep_len]) |s, cache, accepted| {
+            if (s == stream) continue;
+            d.keep_streams[keep] = s;
+            d.keeps[keep] = cache;
+            d.accepted[keep] = accepted;
+            keep += 1;
+        }
+        d.keep_len = keep;
     }
 
     fn encodeBlock(d: *Drafter, e: mtl.ComputeEncoder, s: *const state.Scratch, lane: *const state.Lane, pending: u32, anchor: u64, depth: u32) void {
@@ -350,7 +469,7 @@ pub const Drafter = struct {
     }
 
     /// Every stream's block in the cohort's launches, then its kappa and the drafts' packed unembed rows.
-    fn encodeCohort(d: *Drafter, e: mtl.ComputeEncoder, items: []const dr.Hold, order: *const k.Order) void {
+    fn encodeCohort(d: *Drafter, e: mtl.ComputeEncoder, items: []const PendHold, order: *const k.Order) void {
         const c = &d.cohort_state;
         const p = &d.pipelines;
         const streams: u32 = @intCast(order.active[0]);
@@ -393,7 +512,7 @@ pub const Drafter = struct {
             const lane = d.contexts.getPtr(items[item].stream).?;
             const y = at(c.x, (s * state.block + 1) * state.hidden * 2);
             const out = at(c.kappa, s * (state.block - 1) * 3 * state.rank * 4);
-            k.kappa(p, e, y, at(lane.newest, 0), r(d.weights.weights.rnn), r(d.weights.weights.rnn_bias), out, @min(items[item].depth, hold_depth));
+            k.kappa(p, e, y, at(lane.newest, 0), r(d.weights.weights.rnn), r(d.weights.weights.rnn_bias), out, items[item].depth);
         }
         var first: usize = 0;
         while (first < order.rows) {
@@ -405,39 +524,32 @@ pub const Drafter = struct {
         }
     }
 
-    /// Share block and unembed launches before stepping across all greedy streams; a lone stream keeps the chain the
-    /// depth rule measured, which skips the cohort's packing launches.
-    fn holdCohort(d: *Drafter, items: []const dr.Hold) !void {
-        var depths: [k.cohort_streams]u32 = undefined;
-        for (items, 0..) |item, i| depths[i] = @min(item.depth, hold_depth);
-        const order = k.Order.sort(depths[0..items.len]);
-        const tokens = d.chain_tokens.slice(u32, k.cohort_streams * 8);
-        const pool = mtl.objc.Pool.push();
-        defer pool.pop();
-        const cb = d.target.queue.commandBuffer();
-        const e = cb.compute(.serial);
+    /// Share block and unembed launches across greedy streams. A lone stream skips the cohort's packing launches;
+    /// both forms read the absorbed rows after the staged keep's blits in their shared submission.
+    fn stashHolds(d: *Drafter, items: []const dr.Hold) !void {
+        if (d.held_len > 0) try d.flushPending();
+        d.held_len = items.len;
+        for (items, 0..) |item, i| {
+            const depth: u32 = @min(item.depth, hold_depth);
+            d.depths[i] = depth;
+            d.holds[i] = .{ .stream = item.stream, .pending = item.pending, .position = item.position, .depth = depth };
+        }
+        d.hold_order = k.Order.sort(d.depths[0..items.len]);
+        for (d.hold_order.slots[0..items.len], 0..) |item, s| d.slots[item] = @intCast(s);
+    }
+
+    fn encodeHolds(d: *Drafter, e: mtl.ComputeEncoder) void {
+        const items = d.holds[0..d.held_len];
         if (items.len == 1) {
             @memset(d.scratch.state.slice(u16, state.rank), 0);
-            tokens[0] = items[0].pending;
+            d.chain_tokens.slice(u32, 8)[0] = items[0].pending;
             const lane = d.contexts.getPtr(items[0].stream).?;
-            d.encodeChain(e, &d.scratch, lane, .{ .buf = d.chain_tokens, .off = 0 }, items[0].pending, items[0].position - 1, depths[0]);
-        } else d.encodeSteps(e, items, &order);
-        e.end();
-        cb.commit();
-        try failed(cb, "cohort hold");
-        for (order.slots[0..items.len], 0..) |item, s| {
-            const lane = d.contexts.getPtr(items[item].stream).?;
-            for (0..depths[item]) |step| {
-                const token = tokens[s * 8 + step + 1];
-                if (token >= state.vocabulary) return error.DraftNonfinite;
-                lane.held[step] = token;
-            }
-            lane.held_len = depths[item];
-        }
+            d.encodeChain(e, &d.scratch, lane, .{ .buf = d.chain_tokens, .off = 0 }, items[0].pending, items[0].position - 1, items[0].depth);
+        } else d.encodeSteps(e, items, &d.hold_order);
     }
 
     /// The cohort's shared block and unembed launches, then one step, logits and pick launch set per recurrent depth.
-    fn encodeSteps(d: *Drafter, e: mtl.ComputeEncoder, items: []const dr.Hold, order: *const k.Order) void {
+    fn encodeSteps(d: *Drafter, e: mtl.ComputeEncoder, items: []const PendHold, order: *const k.Order) void {
         d.encodeCohort(e, items, order);
         const c = &d.cohort_state;
         const held = Ref{ .buf = d.chain_tokens, .off = 0 };
@@ -465,7 +577,8 @@ pub const Drafter = struct {
             deepest = @max(deepest, @min(item.depth, 7));
             greedy = greedy and item.sampling == null;
         }
-        if (greedy) return d.holdCohort(items);
+        if (greedy) return d.stashHolds(items);
+        try d.flushPending();
         for (items, 0..) |_, i| @memset((try d.slot(i)).state.slice(u16, state.rank), 0);
         const previous = try d.gpa.alloc(u32, items.len);
         defer d.gpa.free(previous);
