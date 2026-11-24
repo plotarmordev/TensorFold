@@ -297,7 +297,7 @@ moved from 139.8 to 121.9 between two runs of the same build, so one run does no
 off, so which pins carry the 4-stream gain is not measured here. Against TensorFold's rows, Unsloth's build leads
 solo (45.3 vs 32.9 chat, on ≈3.3 GB of weights a token against our 5.55 GB) and on 4-stream code (121.9–139.8 vs
 118.7); TensorFold still leads 4-stream chat (120.1 vs 117.1). Solo, llama.cpp reads fewer weight bytes a token than
-our bf16 trunk does, so the pack-size lever (card 252) would recover most of that lead for TensorFold.
+our bf16 trunk does; this card's MXFP8 trunk (below) takes TensorFold to 41.7 solo and 144.8–149.7 at 4 streams.
 
 ### Mia's 45.8 tok/s: Derisked is not a faster model
 
@@ -346,22 +346,34 @@ measures it and DFlash2's acceptance against DSpark's.
 | Block-diffusion drafter (DFlash2) | Splash | missing | unmeasured on our hardware; sampled on an H200, 4.8–5.0 (code) and 3.9 (chat) tokens a cycle against MTP/DSpark's 2.95–3.66 ([INFERENCE]: a larger gain than DSpark's) | 255 |
 | Zero-logits device-to-host | Strata 2 | in | taken | — |
 | fp4 tensor-core MoE at M ≥ 24 | Strata 3 | missing | none at 1 stream; c=64 unmeasured | 209's follow-up 3 |
-| Smaller trunk bytes (SQ packs) | Strata 4 | missing: bf16 trunk and head are 3.72 of 5.55 GB a token | MXFP8 rows −1.86 GB: ≈44 tok/s (+34%); NVFP4 ≈52 (+58%); quality-gated | 252 |
+| Smaller trunk bytes (SQ packs) | Strata 4 | **built here (card 251), opt-in:** `TF_INKLING2_TRUNK=mxfp8`; bf16 stays the default | measured: 32.9 → **41.7** tok/s (+27%) at 1 stream, 117.2–121.0 → **144.8–149.7** (+24%) at 4; NVFP4 ≈52 (+58%) unbuilt | 252 (NVFP4 and the quality gate) |
 | CUDA graphs | Strata 5 | in | taken | — |
 | 64-slot batching | Strata 6 | in | taken | — |
 | FP8 KV | Strata 7 | missing | none at short context; twice the resident streams | 209's follow-up 3 |
 
-**The biggest missing lever is trunk bytes, and it is not built in this card.** TensorFold's Mini engine, the code
-it changes (`mini_weights.zig`'s bf16 `Lane` rows on `qmmf.zig`, which already has `mxfp8` and `fp4` modes), is on
-card 188's and 232's branches, not on `main`: this card's branch has no Mini engine to change or measure, and
-bringing 188 over is 21,000 lines outside this card. Its expected +34% is the largest above, ahead of drafting,
-which cards 236 and 246 already carry.
+**The biggest missing lever, trunk bytes, is built in this card.** Card 188's Mini engine is merged into this branch
+(`4051c7372`); `TF_INKLING2_TRUNK=mxfp8` rounds the bf16 attention projections (the fused `qx`/`all` rows, `wq`…`wo`)
+and the unembedding to MXFP8 at load in `mini_weights.zig` (e4m3 codes, a UE8M0 scale per 32 inputs chosen so no code
+saturates) and runs them on `qmmf.zig`'s existing `mxfp8` lane kernels. One job, one build, both arms
+([`recipes/inkling-2-mini-cuda/trunk-ab.sh`](recipes/inkling-2-mini-cuda/trunk-ab.sh), job `top-751b5c791bc7` at
+`77d6f94bd`, 188's settings: 4 slots of 8,192, greedy, 256 tokens, 3 reps, medians):
+
+| Decode tok/s, code / chat | 1 stream | 4 streams total |
+|---|---|---|
+| bf16 trunk (default) | 32.9 / 32.7 | 117.2 / 121.0 |
+| MXFP8 trunk | **41.7 / 41.7** | **144.8 / 149.7** |
+
+That is +27% solo, short of the +34% estimated from bytes (24.0 ms a token against 30.4), and +24% at 4 streams.
+It passes Unsloth's build at 4 streams (139.8 and 121.9 code, 117.1 chat) but not solo (45.3). Quality: with MXFP8,
+1 of 32 greedy tokens differs from the float64 bf16 reference (position 24, where the reference's margin is 0.11);
+bf16 gives 0 of 32, and llama.cpp's UD-Q4_K_M agrees at 31 of 32 teacher-forced picks (232). One prompt, so this
+does not show the error is harmless; the switch stays opt-in until card 252's KL gate passes.
 
 ### Follow-up cards from 251 (252–254 and 258 start after 188 merges; 255 needs a Mac GPU window)
 
-1. **Card 252: MXFP8 trunk and head for Mini on CUDA, then NVFP4.** Pack the bf16 `qx`/`all`/`wq`…`wo` rows and the unembedding
-   at load into `qmmf`'s `mxfp8` mode (decode kernels exist for it), behind a switch; one GB10 A/B against 32.9 tok/s
-   with a top-1/KL gate on the float64 reference. Gain: ≈+34% (MXFP8), ≈+58% (NVFP4).
+1. **Card 252: NVFP4 trunk and head for Mini on CUDA, and the quality gate for both.** MXFP8 is built here (41.7 tok/s,
+   1 of 32 tokens differ); add `qmmf`'s `fp4` mode for the same rows, then a top-1/KL gate on the float64 reference over
+   many prompts decides whether either becomes the default. Gain: ≈+58% for NVFP4 over bf16 (estimate), +27% measured for MXFP8.
 2. **Lossless alternative to 252, if its quality gate fails:** a 12-bit coded bf16 GEMV and a certified greedy head screen
    ([dsgb10](https://github.com/blaesus/dsgb10), MIT). Gain: ≈+15–20%, exact.
 3. **Card 253: controller-gate fusion and PDL for Mini.** Merge the loop gate's three kernels and the router-plan launches,

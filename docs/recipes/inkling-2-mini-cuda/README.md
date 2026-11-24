@@ -73,6 +73,19 @@ streams TensorFold's total is 37% higher. TensorFold's memory is a sample after 
 when re-tokenized, but its teacher-forced token picks agree at 31 of 32 positions (different at position 5);
 TensorFold's token picks agree at all 32 positions.
 
+## MXFP8 trunk (opt-in): `TF_INKLING2_TRUNK=mxfp8`
+
+The attention projections and unembedding are rounded from bf16 to MXFP8 at load (one UE8M0 scale per 32 inputs).
+`trunk-ab.sh` builds once and serves both trunks at 1 and 4 streams at the receipt's settings, then checks MXFP8's 32
+greedy tokens against the float64 bf16 reference. Job `top-751b5c791bc7` at `77d6f94bd`:
+
+| Decode tok/s, code / chat | 1 stream | 4 streams total |
+|---|---|---|
+| bf16 (default) | 32.9 / 32.7 | 117.2 / 121.0 |
+| MXFP8 | 41.7 / 41.7 | 144.8 / 149.7 |
+
+With MXFP8, 1 of 32 greedy tokens differs from the reference (position 24, reference margin 0.11). bf16 matches all 32.
+
 ## RTX Spark (N1X): what differs and what must change
 
 I see the same chip and memory model as the GB10: sm_121 and one unified pool, so the `-Dsm=121` kernel images are
