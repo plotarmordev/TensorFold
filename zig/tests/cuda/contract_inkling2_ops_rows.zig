@@ -1,4 +1,5 @@
-//! Inkling 2's row kernels under the contract: tf_ink2_embed, tf_ink2_rowdot (tf_ink2_rowdot_tiles its twin), softcap.
+//! Inkling 2's row kernels under the contract: tf_ink2_embed, tf_ink2_rowdot (tf_ink2_rowdot_tiles and tf_ink2_rowdot3
+//! its twins), softcap.
 const std = @import("std");
 const cuda = @import("cuda");
 const core = @import("core");
@@ -234,6 +235,116 @@ pub const Rowdot = struct {
             var v = s.sum(terms, dotDepth(self.shape), scratch);
             if (self.dot != .taps) v = ref.sigmoid(v);
             out[r * self.shape.n + j] = if (self.dot == .sink) v.bf() else v;
+        };
+    }
+};
+
+/// Rows x gate width x hidden; rel is a gate width over 8 and the sinks one over 128 (Mini: 384, 3,072 and 24).
+pub fn dot3Spec(short: bool) c.Spec {
+    const served = &[_]c.Shape{ .{ .rows = 1, .n = 3072, .k = 2304 }, .{ .rows = 16, .n = 3072, .k = 2304 }, .{ .rows = 4, .n = 1024, .k = 2304 }, .{ .rows = 64, .n = 3072, .k = 2304 } };
+    var s: c.Spec = .{ .name = "inkling2 ops tf_ink2_rowdot3 (an attention input's rel, gate and sinks in one launch)", .accum = .f32, .depth = dotDepth, .out = .bf16, .served = served, .replaces = "three tf_ink2_rowdot (bf16 out)" };
+    s.tiles = .{ .{}, .{ .size = 8 }, .{} };
+    if (short) {
+        s.name = "control: inkling2 ops tf_ink2_rowdot3 against sinks one 32-column step short";
+        s.served = served[0..2];
+    }
+    return s;
+}
+
+/// ops.rowdot3 over one input, its rel, gate and sink outputs back to back in bf16: bit-equal to three tf_ink2_rowdot.
+pub const Rowdot3 = struct {
+    kern: *const ops.Kernels,
+    short: bool = false,
+    shape: c.Shape = undefined,
+    x: []u16 = &.{},
+    w: [3][]u16 = .{ &.{}, &.{}, &.{} },
+    dev: [4]u64 = @splat(0),
+    out: u64 = 0,
+    base: u64 = 0,
+
+    pub const sums = {};
+
+    pub fn spec(self: *const Rowdot3) c.Spec {
+        return dot3Spec(self.short);
+    }
+
+    pub fn control(self: *const Rowdot3) ?g.Gate {
+        return if (self.short) .shapes else null;
+    }
+
+    pub fn free(self: *Rowdot3, a: std.mem.Allocator) void {
+        a.free(self.x);
+        for (&self.w) |*w| a.free(w.*);
+        self.x = &.{};
+        self.w = .{ &.{}, &.{}, &.{} };
+    }
+
+    fn widths(self: *const Rowdot3) [3]usize {
+        return .{ self.shape.n / 8, self.shape.n, self.shape.n / 128 };
+    }
+
+    /// Values in [-1, 1); stress: integers in [8, 16], each row's second half its first's mirror one step on.
+    pub fn prepare(self: *Rowdot3, a: std.mem.Allocator, rig: *rig_.Rig, shape: c.Shape, fill: g.Fill, rng: std.Random) !bool {
+        if (shape.rows == 0 or shape.n % 128 != 0 or shape.k % 128 != 0) return false;
+        self.free(a);
+        self.shape = shape;
+        const K = shape.k;
+        self.x = try ref.bfs(a, rng, shape.rows * K, -1, 1);
+        for (&self.w, self.widths()) |*w, j| w.* = try ref.bfs(a, rng, j * K, -1, 1);
+        if (fill == .stress) {
+            const h = K / 2;
+            for ([_][]u16{ self.x, self.w[0], self.w[1], self.w[2] }, 0..) |m, mi| for (0..m.len / K) |r| {
+                const row = m[r * K ..][0..K];
+                for (0..h) |i| {
+                    const v = ref.int(rng, 8, 16);
+                    row[i] = c.toBf16(v);
+                    row[h + (i + 1) % h] = c.toBf16(if (mi == 0) v else -v);
+                }
+            };
+        }
+        if (fill == .nonfinite) ref.plant(u16, self.x, shape.rows, K, ref.asBf);
+        self.dev = .{ try ref.input(rig, self.x), try ref.input(rig, self.w[0]), try ref.input(rig, self.w[1]), try ref.input(rig, self.w[2]) };
+        self.out = try rig.output(self.count() * 2);
+        self.base = try rig.scratch(self.count() * 2);
+        return true;
+    }
+
+    pub fn run(self: *Rowdot3, rig: *rig_.Rig) !void {
+        const rows = self.shape.rows;
+        const j = self.widths();
+        try ops.rowdot3(self.kern, rig.s, self.dev[0], self.dev[1], self.dev[2], self.dev[3], self.out, self.out + rows * j[0] * 2, self.out + rows * (j[0] + j[1]) * 2, rows, j[0], j[1], j[2], self.shape.k);
+    }
+
+    /// The three tf_ink2_rowdot launches ops.rowdot makes for bf16 outputs; the control's sinks stop 32 columns early.
+    pub fn replaced(self: *Rowdot3, rig: *rig_.Rig) ![]const u8 {
+        var out = self.base;
+        for (self.widths(), self.dev[1..], 0..) |j, w, i| {
+            const k = if (self.short and i == 2) self.shape.k - 32 else self.shape.k;
+            var a: cuda.Args = .{};
+            for ([_]u64{ self.dev[0], w, out }) |v| a.add(v);
+            for ([_]usize{ j, k, 1, 0 }) |v| a.add(@as(i32, @intCast(v)));
+            try cuda.launch.launch(self.kern.rowdot, .{ .grid = .{ .x = @intCast(self.shape.rows), .y = @intCast((j + 7) / 8) }, .block = .{ .x = 256 } }, rig.s, &a);
+            out += self.shape.rows * j * 2;
+        }
+        return rig.bytes(self.base, self.count() * 2);
+    }
+
+    pub fn count(self: *const Rowdot3) usize {
+        const j = self.widths();
+        return self.shape.rows * (j[0] + j[1] + j[2]);
+    }
+
+    pub fn solve(self: *const Rowdot3, a: std.mem.Allocator, s: Sums, out: []Iv) !void {
+        const K = self.shape.k;
+        const terms = try a.alloc(Iv, K);
+        defer a.free(terms);
+        const scratch = try a.alloc(f64, K);
+        defer a.free(scratch);
+        var at: usize = 0;
+        for (self.widths(), self.w) |n, w| for (0..self.shape.rows) |r| for (0..n) |j| {
+            for (terms, self.x[r * K ..][0..K], w[j * K ..][0..K]) |*t, xv, wv| t.* = Iv.of(ref.bf(xv) * ref.bf(wv));
+            out[at] = s.sum(terms, dotDepth(self.shape), scratch).bf();
+            at += 1;
         };
     }
 };

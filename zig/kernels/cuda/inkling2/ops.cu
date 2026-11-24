@@ -267,6 +267,34 @@ extern "C" __global__ void __launch_bounds__(256) tf_ink2_rowdot(const uint16_t*
         static_cast<float*>(out)[row * J + j] = s;
 }
 
+// tf_ink2_rowdot's bf16 outputs for three weights over the same rows in one launch: W0's J0 outputs, then W1's J1,
+// then W2's J2, a warp an output (the same sum, bit for bit).
+extern "C" __global__ void __launch_bounds__(256) tf_ink2_rowdot3(const uint16_t* __restrict__ x, const uint16_t* __restrict__ W0,
+                                                                 const uint16_t* __restrict__ W1, const uint16_t* __restrict__ W2,
+                                                                 uint16_t* __restrict__ out0, uint16_t* __restrict__ out1,
+                                                                 uint16_t* __restrict__ out2, int J0, int J1, int J2, int C) {
+    const int lane = threadIdx.x & 31;
+    int j = blockIdx.y * 8 + (threadIdx.x >> 5), J = J0; // a warp shares j, so it leaves or sums whole
+    const uint16_t* W = W0;
+    uint16_t* out = out0;
+    if (j >= J0) {
+        j -= J0;
+        W = W1, out = out1, J = J1;
+        if (j >= J1) {
+            j -= J1;
+            if (j >= J2) return;
+            W = W2, out = out2, J = J2;
+        }
+    }
+    const size_t row = blockIdx.x;
+    const uint16_t* xr = x + row * C;
+    const uint16_t* wr = W + static_cast<size_t>(j) * C;
+    float s = 0.0f;
+    for (int c = lane; c < C; c += 32) s += bf(xr[c]) * bf(wr[c]);
+    s = warpSum(s);
+    if (lane == 0) out[row * J + j] = tobf(s);
+}
+
 // Router picks per row: top-K of score + bias (ties to the lower id), weights score / sum(scores) * scale (fp32).
 extern "C" __global__ void __launch_bounds__(512) tf_ink2_topk(const float* __restrict__ scores, const float* __restrict__ bias,
                                                               int* __restrict__ pick, float* __restrict__ wts, int E, int K,

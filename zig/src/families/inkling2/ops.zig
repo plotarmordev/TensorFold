@@ -67,6 +67,7 @@ pub const Kernels = struct {
     mix: cuda.Function,
     mix_rows: cuda.Function,
     rowdot: cuda.Function,
+    rowdot3: cuda.Function,
     topk: cuda.Function,
     gateup: cuda.Function,
     conv: cuda.Function,
@@ -92,6 +93,7 @@ pub const Kernels = struct {
             .mix = try mod.function("tf_ink2_mix"),
             .mix_rows = try mod.function("tf_ink2_mix_rows"),
             .rowdot = try mod.function("tf_ink2_rowdot"),
+            .rowdot3 = try mod.function("tf_ink2_rowdot3"),
             .topk = try mod.function("tf_ink2_topk"),
             .gateup = try mod.function("tf_ink2_gateup"),
             .conv = try mod.function("tf_ink2_conv"),
@@ -146,6 +148,15 @@ pub fn rowdot(k: *const Kernels, s: cuda.Stream, x: u64, w: u64, out: u64, rows:
     }
     for ([_]i32{ int(j), int(c), @intFromBool(out_bf16), @intFromBool(sigmoid) }) |v| a.add(v);
     try go(k.rowdot, s, .{ .x = @intCast(rows), .y = @intCast((j + 7) / 8) }, 256, &a);
+}
+
+/// rowdot's bf16 outputs for an attention input's rel, gate and sink weights over the same `x` rows, in one launch:
+/// rel [rows, rel_width], gate [rows, gate_width], sink [rows, sink_width], each bit for bit rowdot(.., true, false).
+pub fn rowdot3(k: *const Kernels, s: cuda.Stream, x: u64, wr: u64, wg: u64, ws: u64, rel: u64, gate: u64, sink: u64, rows: usize, rel_width: usize, gate_width: usize, sink_width: usize, c: usize) !void {
+    var a: cuda.Args = .{};
+    for ([_]u64{ x, wr, wg, ws, rel, gate, sink }) |v| a.add(v);
+    for ([_]i32{ int(rel_width), int(gate_width), int(sink_width), int(c) }) |v| a.add(v);
+    try go(k.rowdot3, s, .{ .x = @intCast(rows), .y = @intCast((rel_width + gate_width + sink_width + 7) / 8) }, 256, &a);
 }
 
 /// The router's picks and weights from fp32 sigmoid scores [rows, experts] and the selection bias.

@@ -12,7 +12,7 @@ const pick = @import("contract_inkling2_ops_pick.zig");
 
 const G = ref.Gated;
 const K = ref.Checked;
-const groups = .{ "embeds", "mixes", "dots", "topks", "gateups", "convs", "rewinds", "caps", "tails", "top1s", "races", "tobfs", "words" };
+const groups = .{ "embeds", "mixes", "dots", "dot3s", "topks", "gateups", "convs", "rewinds", "caps", "tails", "top1s", "races", "tobfs", "words" };
 
 pub const Set = struct {
     k: ref.Kernels = undefined,
@@ -20,6 +20,7 @@ pub const Set = struct {
     mixes: [7]G(mix.Mix) = undefined,
     embeds: [2]G(rows.Embed) = undefined,
     dots: [6]G(rows.Rowdot) = undefined,
+    dot3s: [2]G(rows.Rowdot3) = undefined,
     caps: [2]G(rows.Softcap) = undefined,
     topks: [2]K(route.Topk) = undefined,
     gateups: [2]G(route.Gateup) = undefined,
@@ -42,6 +43,7 @@ pub const Set = struct {
         for (&set.embeds, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .shifted = i == 1 } };
         const dots = [_]rows.Dot{ .router, .sink, .taps, .router, .taps, .router };
         for (&set.dots, dots, 0..) |*x, d, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .dot = d, .tiles = i == 3 or i == 4, .short = i == 5 } };
+        for (&set.dot3s, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .short = i == 1 } };
         for (&set.caps, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .wrong = i == 1 } };
         for (&set.topks, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .unbiased = i == 1 } };
         for (&set.gateups, 0..) |*x, i| x.* = .{ .rig = rig, .k = .{ .kern = k, .swapped = i == 1 } };
