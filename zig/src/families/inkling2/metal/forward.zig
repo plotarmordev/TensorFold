@@ -403,10 +403,14 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     if (v.cache_slot == 5) copyBf16(m, e, at(s.p, 0), at(s.prelude, 0), rows * state.hidden);
 }
 
+/// A cache with a window open keeps its histories: `state.commit` takes them from the rows the window keeps.
 fn commitFullHistories(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, segments: []const Segment) void {
-    for (segments) |seg| for (0..state.visit_slots) |slot| for (0..state.conv_states) |cs| {
-        copyBf16(m, e, staged(s, seg.cache, seg.rows, slot, cs, seg.rows), seg.cache.history(slot, cs), 3 * state.convWidth(cs));
-    };
+    for (segments) |seg| {
+        if (seg.cache.pending != null) continue;
+        for (0..state.visit_slots) |slot| for (0..state.conv_states) |cs| {
+            copyBf16(m, e, staged(s, seg.cache, seg.rows, slot, cs, seg.rows), seg.cache.history(slot, cs), 3 * state.convWidth(cs));
+        };
+    }
 }
 
 pub fn run(m: *const Model, s: *state.Scratch, cache: *state.Cache, ids: []const u32, options: Options) !void {

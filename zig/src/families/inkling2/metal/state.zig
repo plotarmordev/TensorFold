@@ -53,7 +53,7 @@ pub fn kvBytes(capacity: usize) usize {
 }
 
 pub fn cacheBytes(capacity: usize) usize {
-    return kvBytes(capacity) + conv_bytes + taps_bytes + conv_bytes + vocabulary * 4;
+    return kvBytes(capacity) + conv_bytes + taps_bytes + vocabulary * 4;
 }
 
 pub fn convWidth(state: usize) usize {
@@ -92,7 +92,6 @@ pub const Cache = struct {
     kv: mtl.Buffer,
     conv: mtl.Buffer,
     taps: mtl.Buffer,
-    backup: mtl.Buffer,
     logits: mtl.Buffer,
     tap: Tap = .{},
     /// A stepped prompt chunk's rows, good until the next forward.
@@ -113,7 +112,6 @@ pub const Cache = struct {
             .kv = undefined,
             .conv = undefined,
             .taps = undefined,
-            .backup = undefined,
             .logits = undefined,
             .key_at = undefined,
             .value_at = undefined,
@@ -139,8 +137,6 @@ pub const Cache = struct {
         errdefer out.conv.deinit();
         out.taps = try device.buffer(taps_bytes, mtl.ResourceOptions.private);
         errdefer out.taps.deinit();
-        out.backup = try device.buffer(conv_bytes, mtl.ResourceOptions.private);
-        errdefer out.backup.deinit();
         out.logits = try device.buffer(vocabulary * 4, mtl.ResourceOptions.shared);
         errdefer out.logits.deinit();
         const queue = try device.queue();
@@ -161,7 +157,7 @@ pub const Cache = struct {
     }
 
     pub fn setResident(c: *Cache, hook: ?mtl.ResidencySet.Follow) void {
-        const buffers = [_]mtl.Buffer{ c.kv, c.conv, c.taps, c.backup, c.logits };
+        const buffers = [_]mtl.Buffer{ c.kv, c.conv, c.taps, c.logits };
         if (c.follow) |f| {
             for (buffers) |b| f.leave(f.ctx, b);
             if (c.last_tap) |b| f.leave(f.ctx, b);
@@ -200,46 +196,14 @@ pub const Cache = struct {
         return layer;
     }
 
-    /// Save all four pre-window three-tap histories before KV/conv speculation.
-    pub fn begin(c: *Cache, queue: mtl.Queue, rows: usize) !void {
+    /// Open a window of `rows`: its forward stages their taps and leaves the histories for `commit`.
+    pub fn begin(c: *Cache, rows: usize) !void {
         if (c.pending != null or rows == 0 or rows > window_rows or c.len + rows > c.capacity) return error.Inkling2CacheTransaction;
-        try copyGpu(queue, c.conv, 0, c.backup, 0, conv_bytes, "begin");
         c.pending = rows;
     }
 
-    /// Commit accepted rows: staged taps select the new state; rejected KV positions are overwritten on replay.
-    pub fn commit(c: *Cache, queue: mtl.Queue, accepted: usize) !void {
-        const rows = c.pending orelse return error.Inkling2NoTransaction;
-        if (accepted > rows) return error.Inkling2CacheTransaction;
-        if (accepted < rows) {
-            const pool = mtl.objc.Pool.push();
-            defer pool.pop();
-            const cb = queue.commandBuffer();
-            const e = cb.blit();
-            e.copy(c.backup, 0, c.conv, 0, conv_bytes);
-            for (0..visit_slots) |slot| for (0..conv_states) |state| {
-                const bytes = 3 * convWidth(state) * 2;
-                e.copy(c.taps, convByteOffset(slot, state, accepted, stage_rows), c.conv, convByteOffset(slot, state, 0, 3), bytes);
-            };
-            e.end();
-            cb.commit();
-            cb.wait();
-            if (cb.failure()) |msg| {
-                std.log.err("inkling2_loop cache commit: {s}", .{msg});
-                return error.GpuFailed;
-            }
-        }
-        const start = c.len;
-        c.len += accepted;
-        if (c.tap.buf != null and c.tap.start == start) {
-            c.tap.rows = accepted;
-        } else c.tap = .{};
-        c.pending = null;
-    }
-
-    pub fn rollback(c: *Cache, queue: mtl.Queue) !void {
-        _ = c.pending orelse return error.Inkling2NoTransaction;
-        try copyGpu(queue, c.backup, 0, c.conv, 0, conv_bytes, "rollback");
+    /// Drop an open window: its forward wrote no history, and its KV positions are overwritten on replay.
+    pub fn rollback(c: *Cache) void {
         c.pending = null;
         c.tap = .{};
     }
@@ -248,7 +212,6 @@ pub const Cache = struct {
         c.setResident(null);
         c.logits.deinit();
         if (c.last_tap) |b| b.deinit();
-        c.backup.deinit();
         c.taps.deinit();
         c.conv.deinit();
         c.kv.deinit();
@@ -256,18 +219,36 @@ pub const Cache = struct {
     }
 };
 
-fn copyGpu(queue: mtl.Queue, from: mtl.Buffer, from_off: usize, to: mtl.Buffer, to_off: usize, bytes: usize, comptime what: []const u8) !void {
-    const pool = mtl.objc.Pool.push();
-    defer pool.pop();
-    const cb = queue.commandBuffer();
-    const e = cb.blit();
-    e.copy(from, from_off, to, to_off, bytes);
-    e.end();
-    cb.commit();
-    cb.wait();
-    if (cb.failure()) |msg| {
-        std.log.err("inkling2_loop cache {s}: {s}", .{ what, msg });
-        return error.GpuFailed;
+/// Keep the first `accepted` rows of each cache's open window, all in one command buffer: the three staged taps
+/// that end at a window's last kept row are its new histories. Rejected KV positions are overwritten on replay.
+pub fn commit(queue: mtl.Queue, caches: []const *Cache, accepted: []const usize) !void {
+    for (caches, accepted) |c, kept| {
+        const rows = c.pending orelse return error.Inkling2NoTransaction;
+        if (kept > rows) return error.Inkling2CacheTransaction;
+    }
+    {
+        const pool = mtl.objc.Pool.push();
+        defer pool.pop();
+        const cb = queue.commandBuffer();
+        const e = cb.blit();
+        for (caches, accepted) |c, kept| for (0..visit_slots) |slot| for (0..conv_states) |state| {
+            e.copy(c.taps, convByteOffset(slot, state, kept, stage_rows), c.conv, convByteOffset(slot, state, 0, 3), 3 * convWidth(state) * 2);
+        };
+        e.end();
+        cb.commit();
+        cb.wait();
+        if (cb.failure()) |msg| {
+            std.log.err("inkling2_loop cache commit: {s}", .{msg});
+            return error.GpuFailed;
+        }
+    }
+    for (caches, accepted) |c, kept| {
+        const start = c.len;
+        c.len += kept;
+        if (c.tap.buf != null and c.tap.start == start) {
+            c.tap.rows = kept;
+        } else c.tap = .{};
+        c.pending = null;
     }
 }
 

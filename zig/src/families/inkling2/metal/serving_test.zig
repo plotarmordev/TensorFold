@@ -248,6 +248,82 @@ fn transactions(dir: []const u8, drafter_dir: []const u8, ids: []const u32, want
     try std.testing.expectEqualSlices(u8, &want.continuation_tap, &(try featureRow(target_b, &s, ids.len + 15)));
 }
 
+/// A stream's next-row logits as the cache holds them, for a bitwise comparison.
+fn nextLogits(target: *backend.Metal, s: *lanes.Stream) []const u8 {
+    return target.caches.get(s).?.logits.slice(u8, st.vocabulary * 4);
+}
+
+/// A shared copy of a cache's convolution histories.
+fn histories(model: *const Model, cache: *const st.Cache) !mtl.Buffer {
+    const out = try model.device.buffer(st.conv_bytes, mtl.ResourceOptions.shared);
+    errdefer out.deinit();
+    const pool = mtl.objc.Pool.push();
+    defer pool.pop();
+    const cb = model.queue.commandBuffer();
+    const e = cb.blit();
+    e.copy(cache.conv, 0, out, 0, st.conv_bytes);
+    e.end();
+    cb.commit();
+    cb.wait();
+    if (cb.failure() != null) return error.GpuFailed;
+    return out;
+}
+
+test "Mini Metal: an open verify window leaves the histories untouched, and one that fails rolls back to a cache the next decode cannot tell apart" {
+    const dir = try checkpoint();
+    const ids = prompt(64, 9);
+    const model = try Model.load(gpa, io, dir);
+    defer model.deinit();
+    const target = try backend.Metal.init(gpa, model, .{ .capacity = context, .streams = 3, .budget = 3 * st.cacheBytes(context) });
+    defer target.deinit();
+    const b = target.backend();
+    var streams: [3]lanes.Stream = undefined;
+    for (&streams, [_][]const u8{ "clean", "failed", "stale" }) |*s, id| {
+        s.* = try lanes.Stream.init(gpa, .{ .id = id, .prompt = &ids, .max_new = made, .drafts = true });
+        try b.prefill(s);
+    }
+    defer for (&streams) |*s| {
+        b.release(s);
+        s.deinit(gpa);
+    };
+    const clean, const failed, const stale = .{ &streams[0], &streams[1], &streams[2] };
+    const first = try b.read(try b.first(clean, ids.len));
+    const wrong = (first + 1) % model.config.text.unpadded_vocab;
+    const drafts = [_]u32{ wrong, wrong, wrong };
+    const positions = [_]u64{ ids.len + 1, ids.len + 2, ids.len + 3, ids.len + 4 };
+    var sampled: [4]u32 = undefined;
+    var echo: [3]u32 = undefined;
+    var out = [_]lanes.backend.Verified{.{ .sampled = &sampled, .drafts = &echo }};
+
+    // An open window has run its forward but staged its taps aside: the histories are those before it.
+    const failed_cache = target.caches.get(failed).?;
+    const before = try histories(model, failed_cache);
+    defer before.deinit();
+    try b.verify(&.{.{ .stream = failed, .pending = wrong, .held = 0, .tokens = &drafts, .parents = null, .positions = &positions, .masks = &.{} }}, &out);
+    const open = try histories(model, failed_cache);
+    defer open.deinit();
+    try std.testing.expectEqualSlices(u8, before.slice(u8, st.conv_bytes), open.slice(u8, st.conv_bytes));
+    failed_cache.rollback();
+
+    // Every row's mask is empty: the draw fails after the forward has staged the window's taps on the GPU.
+    const masks = try gpa.alloc(u32, positions.len * ((model.config.text.vocab + 31) / 32));
+    defer gpa.free(masks);
+    @memset(masks, 0);
+    const window = [_]lanes.backend.Window{.{ .stream = failed, .pending = wrong, .held = 0, .tokens = &drafts, .parents = null, .positions = &positions, .masks = masks }};
+    try std.testing.expectError(error.InklingEmptyTokenMask, b.verify(&window, &out));
+
+    // The planted control: a forward outside any window writes its histories, and only the length is wound back.
+    const stale_cache = target.caches.get(stale).?;
+    _ = try b.queue(stale, .{ .value = wrong }, ids.len + 1);
+    stale_cache.len -= 1;
+
+    _ = try b.queue(clean, .{ .value = first }, ids.len + 1);
+    _ = try b.queue(failed, .{ .value = first }, ids.len + 1);
+    _ = try b.queue(stale, .{ .value = first }, ids.len + 1);
+    try std.testing.expectEqualSlices(u8, nextLogits(target, clean), nextLogits(target, failed));
+    try std.testing.expect(!std.mem.eql(u8, nextLogits(target, clean), nextLogits(target, stale)));
+}
+
 test "Mini Metal serving, fresh and restored, matches one serial stream on the backend token for token" {
     const dir = try checkpoint();
     const ids = prompt(history, 1);
