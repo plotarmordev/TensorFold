@@ -12,8 +12,9 @@ pub const dense = @import("dense.zig");
 /// BF16 as stored, an unquantized checkpoint's: the family opts in (`bf16.detect`), so `read_order` never offers it.
 pub const bf16 = @import("bf16.zig");
 pub const experts = @import("experts.zig");
-/// FP8 and NVFP4 values and fp64 references; host only (no Format: their kernels' layouts are each backend's).
+/// FP8, MXFP8 and NVFP4 values and fp64 references; host only (no Format: their kernels' layouts are each backend's).
 pub const fp8 = @import("fp8.zig");
+pub const mxfp8 = @import("mxfp8.zig");
 pub const nvfp4 = @import("nvfp4.zig");
 /// AutoGPTQ v1 weights (4-bit symmetric groups of 128) and their fp64 reference; host only, as `fp8`.
 pub const gptq = @import("gptq.zig");
@@ -234,6 +235,7 @@ test {
     _ = bf16;
     _ = experts;
     _ = fp8;
+    _ = mxfp8;
     _ = nvfp4;
     _ = widen;
 }
