@@ -37,28 +37,20 @@ bench() { # bench CELL PACK STREAMS [FLAG...]: one --bench run, its [bench] line
     tail -1 "$out/$cell.txt"
 }
 median() { sed 's/.*decode=\([0-9.]*\) tps.*/\1/' "$out/$1.txt" | sort -n | sed -n 2p; }
-summary() { # summary REPORT: one [http] line a cell; fails on a failed or unmeasured request, naming why
+summary() { # summary REPORT: one [http] line a cell; fails on a failed request or a cell without a client-clock rate
     python3 - "$1" <<'EOF'
 import json, sys
 report = json.load(open(sys.argv[1]))
 for cell in report["cells"]:
-    prompt = [r["prompt_tokens"] for rep in cell["reps"] for r in rep["requests"] if r.get("prompt_tokens")] or [0]
-    print("[http] %s, %d streams: %.1f tok/s total, %.1f a stream (medians of 3); end to end %s tok/s (usage tokens "
-          "over the makespan, prefill included); prompt %d-%d tokens, %d output tokens asked, thinking %s, failed %d, "
-          "unmeasured %d, timing_valid %s" % (
-              report["label"], cell["streams"], cell["aggregate_tps"], cell["per_stream_tps"],
-              "%.1f" % cell["end_to_end_tps"] if cell["end_to_end_tps"] else "-", min(prompt), max(prompt),
-              report["tokens"], "/".join(cell["thinking_modes"]), cell["failed"], cell["unmeasured"],
-              cell["timing_valid"]))
-    if cell["failed"] or cell["unmeasured"]:
-        # decode is timed only over 4+ text pieces with first < last (tools/bench_concurrent.py): show what came
-        rep = cell["reps"][0]
-        for evidence, times in zip(rep["evidence"], rep["client_intervals"]):
-            offsets = times["chunk_offsets_s"] or []
-            print("[http]   request: %s, finish %s, %s usage tokens, %d text pieces at %s s of %s s" % (
-                evidence["completion"], evidence["finish_reasons"], evidence["tokens"], len(offsets),
-                [round(t, 2) for t in offsets[:3] + offsets[-1:]],
-                times["elapsed_s"] and round(times["elapsed_s"], 2)))
+    asked = [r for rep in cell["reps"] for r in rep["evidence"]]
+    prompt = [r["prompt_tokens"] or 0 for r in asked]
+    tokens = [r["tokens"] or 0 for r in asked]
+    print("[http] %s, %d streams: %s tok/s total end to end (usage tokens over the makespan, prefill included, "
+          "median of 3); prompt %d-%d tokens, %d-%d of %d output tokens, completions %s, failed %d" % (
+              report["label"], cell["streams"], "%.1f" % cell["end_to_end_tps"] if cell["timing_valid"] else "-",
+              min(prompt), max(prompt), min(tokens), max(tokens), report["tokens"], cell["completions"],
+              cell["failed"]))
+    if cell["failed"] or not cell["timing_valid"]:
         sys.exit(1)
 EOF
 }
@@ -159,7 +151,12 @@ cat <<'EOF'
   --reps 3 (the tool's medians), one 16-token warm-up request a cell. Two cells a level, from the chat prompts of
   tools/bench_prompts.json (its raw-completion prompts need /v1/completions, a route Strata's server does not
   have): "same" sends the first on every stream, "different" sends request i prompt i % their count. Their text
-  and names follow; each [http] line gives its cell's prompt tokens and thinking mode.
+  and names follow; each [http] line gives its cell's prompt tokens, output tokens and completion classes.
+  rate: end to end on the client's clock, every stream's usage tokens over the time from the first request sent to
+  the last reply done, prefill included. Strata's server renders Inkling's thinking off (serve/inkling_dialect.py),
+  yet the model opens <|content_thinking|> anyway and the server drops that span (InklingDialect._emit_typed), so
+  a 128-token reply can stream no text ("no_output") and there are no token arrivals to time decode by. The tokens
+  are still generated and counted in usage, so the end-to-end rate stands; a stream decode rate does not.
 EOF
 
 python3 - "$out" <<'EOF'
