@@ -1,0 +1,114 @@
+diff --git a/zig/src/families/inkling2/loop_engine.zig b/zig/src/families/inkling2/loop_engine.zig
+index 18a21dd50..a89df08c7 100644
+--- a/zig/src/families/inkling2/loop_engine.zig
++++ b/zig/src/families/inkling2/loop_engine.zig
+@@ -12,6 +12,7 @@ const snapshot = @import("loop_snapshot.zig");
+ 
+ pub const prompt_rows: usize = 2048;
+ pub const window_rows: usize = 16;
++const tiles_cap = 128; // a layer's tiles at most: 2048 rows of 4 heads a key head, 64 pairs a tile
+ 
+ pub const Kernels = struct {
+     glue: ops.Kernels,
+@@ -120,6 +121,7 @@ pub const Model = struct {
+     recorded: ?usize = null, // the slot whose window `backup` and `hist` hold
+     s: Scratch = undefined,
+     buffers: std.ArrayList(cuda.DeviceBuffer) = .empty,
++    graphs: [max_slots]?cuda.graph.Exec = @splat(null), // each slot's one-token decode
+ 
+     pub fn slotBase(m: *const Model) u64 {
+         return m.slots[m.slot].cache.ptr;
+@@ -240,7 +242,7 @@ pub const Model = struct {
+             .pos = try m.alloc(rows * 4),
+             .seg_of = try m.alloc(rows * 4),
+             .segs = try m.alloc(@sizeOf(attention.Seg)),
+-            .tiles = try m.alloc(128 * @sizeOf(attention.Tile)),
++            .tiles = try m.alloc(2 * tiles_cap * @sizeOf(attention.Tile)),
+             .partial_a = try m.alloc(rows * h * 2),
+             .partial_b = try m.alloc(rows * h * 2),
+             .prelude = try m.alloc(rows * h * 2),
+@@ -289,6 +291,7 @@ pub const Model = struct {
+     }
+ 
+     pub fn deinit(m: *Model) void {
++        for (&m.graphs) |*g| if (g.*) |*exec| exec.deinit();
+         m.deinitBuffers();
+         for (m.slots[0..m.n_slots]) |*slot| for ([2]*cuda.DeviceBuffer{ &slot.sites, &slot.cache }) |b| b.free();
+         m.* = undefined;
+@@ -338,10 +341,10 @@ pub const Model = struct {
+     }
+ 
+     /// One prompt chunk or one decode window. `record` retains every convolution input for exact prefix rollback.
++    /// A one-token decode replays the slot's CUDA graph of `body`; the inputs it reads are staged beforehand.
+     pub fn forward(m: *Model, k: *const Kernels, s: cuda.Stream, tokens: []const u32, p0: usize, head0: usize, heads: usize, record: bool) !void {
+         const c = m.w.c.text;
+         const rows = tokens.len;
+-        const h: usize = c.hidden;
+         if (rows == 0 or rows > prompt_rows or p0 + rows > m.context or (!record and heads > window_rows) or head0 + heads > rows)
+             return error.BadLoopRows;
+         if (record and rows > window_rows) return error.WindowTooWide;
+@@ -357,9 +360,42 @@ pub const Model = struct {
+         try m.upload(s, m.s.seg_of, std.mem.sliceAsBytes(seg_of[0..rows]));
+         const seg: attention.Seg = .{ .row0 = 0, .n = @intCast(rows), .p0 = @intCast(p0), .off = 0 };
+         try m.upload(s, m.s.segs, std.mem.asBytes(&seg));
++        // Local then global layers' tiles; a call's tiles depend only on its rows and the layer's head group.
++        var n_tiles: [2]usize = undefined;
++        for ([2]config.Heads{ c.local, c.global }, 0..) |hd, i| {
++            var tiles: [tiles_cap]attention.Tile = undefined;
++            n_tiles[i] = try attention.tiles(&.{seg}, hd.q / hd.kv, &tiles);
++            try m.upload(s, m.tileList(i), std.mem.sliceAsBytes(tiles[0..n_tiles[i]]));
++        }
+         m.recorded = if (record) m.slot else null;
+         if (record) try m.copy(s, m.s.backup, m.slotBase() + m.layout.at(0).conv_offset, m.layout.bytes - m.layout.at(0).conv_offset);
++        if (rows != 1 or heads != 1 or record) return m.body(k, s, rows, p0, head0, heads, record, n_tiles);
++        const exec = &m.graphs[m.slot];
++        if (exec.* == null) exec.* = try m.capture(k, s, p0, n_tiles);
++        try exec.*.?.launchOn(s);
++    }
++
++    /// One-token decode's body as a graph: the slot's cache addresses are fixed, the rest is staged scratch.
++    fn capture(m: *Model, k: *const Kernels, s: cuda.Stream, p0: usize, n_tiles: [2]usize) !cuda.graph.Exec {
++        try cuda.graph.beginCapture(s, .thread_local);
++        m.body(k, s, 1, p0, 0, 1, false, n_tiles) catch |err| {
++            var g = cuda.graph.endCapture(s) catch return err;
++            g.deinit();
++            return err;
++        };
++        var g = try cuda.graph.endCapture(s);
++        defer g.deinit();
++        return g.instantiate();
++    }
++
++    fn tileList(m: *const Model, global: usize) u64 {
++        return m.s.tiles + global * tiles_cap * @sizeOf(attention.Tile);
++    }
+ 
++    /// The forward's kernels over staged ids, positions, segments and tiles: no host copies, so a graph can hold it.
++    fn body(m: *Model, k: *const Kernels, s: cuda.Stream, rows: usize, p0: usize, head0: usize, heads: usize, record: bool, n_tiles: [2]usize) !void {
++        const c = m.w.c.text;
++        const h: usize = c.hidden;
+         try ops.embed(&k.glue, s, m.s.ids, rows, m.w.embed, m.w.embed_norm, m.s.partial_a, h, c.eps);
+         var partial = m.s.partial_a;
+         var next = m.s.partial_b;
+@@ -430,9 +466,7 @@ pub const Model = struct {
+                     .mode = 0,
+                 }, 1);
+             }
+-            var tiles: [128]attention.Tile = undefined;
+-            const n_tiles = try attention.tiles(&.{seg}, layer.heads.q / layer.heads.kv, &tiles);
+-            try m.upload(s, m.s.tiles, std.mem.sliceAsBytes(tiles[0..n_tiles]));
++            const global = @intFromBool(layer.kind == .global);
+             const stride = attention.slotsFor(geometry, m.context);
+             const part_capacity = prompt_rows * layer.heads.q * stride;
+             const r: attention.Rows = .{
+@@ -442,8 +476,8 @@ pub const Model = struct {
+                 .pos = m.s.pos,
+                 .seg_of = m.s.seg_of,
+                 .segs = m.s.segs,
+-                .tiles = m.s.tiles,
+-                .n_tiles = @intCast(n_tiles),
++                .tiles = m.tileList(global),
++                .n_tiles = @intCast(n_tiles[global]),
+                 .last_pos = @intCast(p0 + rows - 1),
+             };
+             const prep: attention.Prep = .{ .qk_clip = c.qk_clip, .rel_clip = c.rel_clip, .floor = @floatFromInt(c.log_floor), .alpha = c.log_alpha, .eps = c.eps };
