@@ -5,7 +5,8 @@ Card 257 compares [Mia's AI Lab's recipe](https://github.com/MiaAI-Lab/Inkling-2
 laptop (Windows 11 ARM64, N1X, `sm_121`). Mia's recipe runs only inside its Linux container on a DGX Spark and
 was not run: this page is a feature and matched-harness comparison beside her published figures, not an A/B on
 one machine, and every cross-hardware row is labelled non-comparable. The earlier Strata read is
-[../inkling-2-mini-strata-study.md](../inkling-2-mini-strata-study.md).
+[../../inkling-2-mini-strata-study.md](../../inkling-2-mini-strata-study.md) and the SGLang/vLLM/llama.cpp read is
+[engine-comparison.md](engine-comparison.md).
 
 ## The two builds
 
@@ -28,8 +29,8 @@ her recipe's reference; our side is measured by the two harnesses below.
 | CUDA DSpark drafter (`DRAFTS=1`, patch 0002) | refused by name: `--drafter` exits `NoDraftHead` (C5 pending) |
 | fp8 KV cache (`KV_DTYPE=fp8`, patch 0003) | bf16 KV per slot |
 | FP8 attention projections (`TF_INKLING2_ATTN_FP8`, patch 0012) | bf16 attention; experts serve as stored (modelopt-nvfp4) |
-| Blackwell FP4/MXFP8 prefill tensor cores (`TF_INKLING2_PREFILL_TC`, patch 0015) | the shared widened-code expert path |
-| Wide verify CUDA graphs, 4,096-row prompts (patches 0014, 0009) | per-shape graphs, one batched forward a round |
+| Blackwell FP4/MXFP8 prefill tensor cores (`TF_INKLING2_PREFILL_TC`, patch 0015) | grouped prompt experts on the stored NVFP4/MXFP8 weights |
+| Wide verify CUDA graphs, 4,096-row prompts (patches 0014, 0009) | per-shape graphs, one batched forward a round; 512 prompt rows, 64 round rows |
 | Native `inkling2_vision` tower (patch 0016) | refused by name: image parts exit `Inkling2MiniImages` (C6 pending) |
 | Structured output and `tool_choice` on Mini (patch 0013) | serves; `tfgrammar.dll` beside the exe as on other families |
 | `CONTEXT=262144`, `PARALLEL=8`, admission refusal | `--parallel`/`--context` fit admission computes from the pool; the harness serves 8 at 8,192 |
