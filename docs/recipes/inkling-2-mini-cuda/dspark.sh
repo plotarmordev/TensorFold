@@ -9,10 +9,12 @@ set -eu
 . docs/recipes/inkling-2-mini-cuda/toolchain.sh
 t0=$(date +%s)
 zig build install -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast --prefix /work/sm121
-# The head's per-SM compiled usage for its launch records, at the image's flags.
+# The head's per-SM compiled usage for its launch records, at the image's flags: one line a kernel, so the log's tail
+# keeps all five SMs.
 for sm in 80 86 89 120 121; do
   /usr/local/cuda/bin/nvcc -cubin -o /dev/null --resource-usage -arch=sm_$sm -O3 --fmad=false --ftz=false --prec-div=true \
-    --prec-sqrt=true -std=c++20 -Izig/kernels/cuda zig/kernels/cuda/inkling2/dspark.cu 2>&1 | sed -n "s/^ptxas info *: \(Used\|Function properties\|Compiling entry\)/sm_$sm &/p"
+    --prec-sqrt=true -std=c++20 -Izig/kernels/cuda zig/kernels/cuda/inkling2/dspark.cu 2>&1 |
+    awk -v sm=$sm "/Compiling entry/ { split(\$0, q, \"'\"); k = q[2] } /: Used/ { sub(/.*: Used /, \"\"); print \"usage sm_\" sm, k, \$0 }"
 done
 t1=$(date +%s)
 echo "build: $((t1 - t0)) s"
