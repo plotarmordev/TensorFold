@@ -3,7 +3,7 @@ import json, os, struct, sys, numpy as np
 
 ROWS = 256
 CK = os.environ.get("TF_NEMOTRON_DIR", os.path.expanduser("~/models/nemotron-3.5-lightning-mlx4"))
-FIX = os.environ.get("TF_FIXTURES_DIR", "tensorfold-fixtures")
+FIX = os.environ.get("TF_FIXTURES_DIR", os.path.expanduser("~/tensorfold-fixtures"))
 os.makedirs(FIX, exist_ok=True)
 NAME = "backbone.layers.0.mixer.out_proj"  # 2688 x 4096
 wm = json.load(open(CK + "/model.safetensors.index.json"))["weight_map"]

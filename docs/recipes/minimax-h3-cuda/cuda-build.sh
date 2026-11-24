@@ -10,7 +10,8 @@
 # H3_BUILD=sm121 stops once the three picture tools are in tensorfold-cuda-SHA: no release SMs, tf-cuda-test or
 # audit, which put bench-script.sh past the Desk's 20 minutes.
 # H3_BUILD=limits builds the five SMs' images and kernel-contract-limits alone, no CLI or tf-cuda-test: the audit
-# as its own job, never inside a timed bench.
+# as its own job, never inside a timed bench. LIMITS_IMAGES names the images it audits (unset: H3's and the
+# controls; empty: every image).
 # H3_BUILD=contract builds tf-cuda-test for sm_121 alone and runs gates 1-4 on the kernels H3_CONTRACT's
 # words name (`kernel-contract WORD...`, "h3 int8" unset): contract-job.sh asks for the decoder suite.
 # Later TOP jobs read either folder from the pilot folder once the Desk returns it there:
@@ -45,7 +46,8 @@ if [ "${H3_BUILD:-}" = limits ]; then
         --prefix /work/release
     cp -r /work/release/bin/tf-cuda-limits /work/release/fatbin "$cuda"
     status=0
-    "$cuda/tf-cuda-limits" "$cuda/fatbin" h3 h3_image_decoder h3_image_prompt h3_image_modulation contract_controls \
+    # shellcheck disable=SC2086 # the image names are words
+    "$cuda/tf-cuda-limits" "$cuda/fatbin" ${LIMITS_IMAGES-h3 h3_image_decoder h3_image_prompt h3_image_modulation contract_controls} \
         >"$out/limits.log" 2>&1 || status=$?
     tail -n 3 "$out/limits.log"
     echo "kernel-contract-limits exit $status"

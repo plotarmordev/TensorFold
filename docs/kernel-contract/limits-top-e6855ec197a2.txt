@@ -1,0 +1,63 @@
+started top-e6855ec197a2
+RED  limits sm_121 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_121: 166 registers x 1024 threads need 172032, a block has 65536
+RECORD control: heavy at 1,024 threads: .usage = .{ .{ .regs = 168, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, .{ .regs = 166, .static = 0, .bound = 0 }, }
+PASS kernel-contract-limits: every audited launch fits sm_80, sm_86, sm_89, sm_120 and sm_121, every control red
+kernel-contract-limits exit 0
+INFO limits fatbins: images built by nvcc 13.0, checked against nvcc 13.0's records
+RED  limits sm_80 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_80: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_86 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_86: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_89 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_89: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_120 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_120: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_121 control: past its bounds: 10 registers, 0 static shared bytes, bound 256 (record current): control: past its bounds on sm_121: launched at 512 threads past its __launch_bounds__ 256
+RED  limits sm_80 control: heavy at 1,024 threads: 168 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_80: 168 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_86 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_86: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_89 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_89: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_120 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_120: 166 registers x 1024 threads need 172032, a block has 65536
+RED  limits sm_121 control: heavy at 1,024 threads: 166 registers, 0 static shared bytes, bound 0 (record current): control: heavy at 1,024 threads on sm_121: 166 registers x 1024 threads need 172032, a block has 65536
+PASS limits sm_80 router tf_nemo_router_tiles: 181 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_86 router tf_nemo_router_tiles: 184 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_89 router tf_nemo_router_tiles: 184 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_120 router tf_nemo_router_tiles: 177 registers, 0 static shared bytes, bound 256 (record current)
+PASS limits sm_121 router tf_nemo_router_tiles: 177 registers, 0 static shared bytes, bound 256 (record current)
+PTXAS _ZN7tf_qmmf11qmmf_kernelILi4ELi16ELi64ELi1ELi4ELi4ELb1ELb0ELb1EEEvPK13__nv_bfloat16PKhS5_fPvPfiiiiiii: sm_121=55r/0s sm_120=55r/0s sm_80=78r/0s sm_89=78r/0s sm_86=78r/0s
+PTXAS d3_cfg_mix: sm_121=12r/0s sm_89=10r/0s sm_120=12r/0s sm_86=10r/0s sm_80=10r/0s
+PTXAS d3_router_compact: sm_121=26r/592s sm_89=19r/592s sm_120=26r/592s sm_86=19r/592s sm_80=19r/592s
+PTXAS dfl_topk: sm_121=48r/3072s sm_86=44r/3072s sm_120=48r/3072s sm_89=44r/3072s sm_80=44r/3072s
+PTXAS dfl_walk: sm_121=38r/196s sm_86=40r/196s sm_120=38r/196s sm_89=40r/196s sm_80=32r/196s
+PTXAS fn_hcn_down2: sm_121=161r/0s sm_80=162r/0s sm_120=161r/0s sm_86=162r/0s sm_89=162r/0s
+PTXAS fn_hcn_down3: sm_121=190r/0s sm_80=191r/0s sm_120=190r/0s sm_86=191r/0s sm_89=191r/0s
+PTXAS fn_hcn_up3: sm_121=128r/0s sm_80=126r/0s sm_120=128r/0s sm_86=126r/0s sm_89=126r/0s
+PTXAS fn_row_topk: sm_121=34r/9228s sm_89=59r/9228s sm_120=34r/9228s sm_80=32r/9228s sm_86=59r/9228s
+PTXAS muse_argmax: sm_121=40r/2048s sm_120=40r/2048s sm_86=37r/2048s sm_80=31r/2048s sm_89=37r/2048s
+PTXAS muse_expert_sum: sm_121=28r/132s sm_120=28r/132s sm_86=28r/132s sm_80=28r/132s sm_89=28r/132s
+PTXAS muse_linear2_k2_w4: sm_121=245r/16s sm_120=245r/16s sm_80=248r/16s sm_89=248r/16s sm_86=248r/16s
+PTXAS muse_linear2_k2_w8: sm_121=251r/16s sm_120=251r/16s sm_80=225r/16s sm_89=224r/16s sm_86=224r/16s
+PTXAS muse_linear2_k3_w8: sm_121=252r/16s sm_120=252r/16s sm_80=234r/16s sm_89=234r/16s sm_86=234r/16s
+PTXAS muse_linear2_k4_w4: sm_121=245r/16s sm_120=245r/16s sm_80=248r/16s sm_89=248r/16s sm_86=248r/16s
+PTXAS muse_linear2_k4_w8: sm_121=251r/16s sm_120=251r/16s sm_80=225r/16s sm_89=224r/16s sm_86=224r/16s
+PTXAS muse_linear2_k5_w4: sm_121=253r/16s sm_120=253r/16s sm_80=229r/16s sm_89=229r/16s sm_86=229r/16s
+PTXAS muse_linear2_k5_w8: sm_121=255r/16s sm_120=255r/16s sm_80=238r/16s sm_89=238r/16s sm_86=238r/16s
+PTXAS muse_linear2_k6_w4: sm_121=255r/16s sm_120=255r/16s sm_80=229r/16s sm_89=229r/16s sm_86=229r/16s
+PTXAS muse_linear2_k6_w8: sm_121=255r/16s sm_120=255r/16s sm_80=235r/16s sm_89=235r/16s sm_86=235r/16s
+PTXAS muse_linear2_k8_w4: sm_121=245r/16s sm_120=245r/16s sm_80=236r/16s sm_89=236r/16s sm_86=236r/16s
+PTXAS muse_linear_multi_k2: sm_121=128r/16s sm_120=128r/16s sm_80=166r/16s sm_89=167r/16s sm_86=167r/16s
+PTXAS muse_linear_multi_k3: sm_121=153r/16s sm_120=153r/16s sm_80=164r/16s sm_89=165r/16s sm_86=165r/16s
+PTXAS muse_linear_multi_k4: sm_121=128r/16s sm_120=128r/16s sm_80=166r/16s sm_89=167r/16s sm_86=167r/16s
+PTXAS muse_linear_multi_k5: sm_121=154r/16s sm_120=154r/16s sm_80=167r/16s sm_89=167r/16s sm_86=167r/16s
+PTXAS muse_linear_multi_k6: sm_121=154r/16s sm_120=154r/16s sm_80=164r/16s sm_89=165r/16s sm_86=165r/16s
+PTXAS muse_linear_multi_k8: sm_121=141r/16s sm_120=141r/16s sm_80=167r/16s sm_89=167r/16s sm_86=167r/16s
+PTXAS muse_rms: sm_121=19r/132s sm_120=19r/132s sm_86=19r/132s sm_80=19r/132s sm_89=19r/132s
+PTXAS muse_rot_multi: sm_121=24r/0s sm_120=24r/0s sm_80=24r/0s sm_89=24r/0s sm_86=24r/0s
+PTXAS muse_softcap: sm_121=30r/0s sm_120=30r/0s sm_86=28r/0s sm_80=28r/0s sm_89=28r/0s
+PTXAS tf_exl3_prompt_down: sm_121=126r/43264s sm_80=126r/43264s sm_86=126r/43264s sm_89=126r/43264s sm_120=126r/43264s
+PTXAS tf_exl3_prompt_down_k6: sm_121=127r/40192s sm_80=125r/40192s sm_86=125r/40192s sm_89=125r/40192s sm_120=127r/40192s
+PTXAS tf_exl3_prompt_gu: sm_121=124r/43264s sm_80=126r/43264s sm_86=128r/43264s sm_89=128r/43264s sm_120=124r/43264s
+PTXAS tf_exl3_prompt_gu_k6: sm_121=127r/40192s sm_80=127r/40192s sm_86=126r/40192s sm_89=126r/40192s sm_120=127r/40192s
+PTXAS tf_glm_dsel_merge: sm_120=64r/34064s sm_121=64r/34064s sm_89=64r/34064s sm_80=57r/34064s sm_86=64r/34064s
+PTXAS tf_nemo_attn64: sm_121=68r/43264s sm_80=52r/43264s sm_86=53r/43264s sm_89=53r/43264s sm_120=68r/43264s
+PTXAS tf_nemo_preds: sm_121=29r/0s sm_80=26r/0s sm_86=26r/0s sm_89=26r/0s sm_120=27r/0s
+PTXAS tf_nemo_router_tiles: sm_121=177r/0s sm_80=181r/0s sm_86=184r/0s sm_89=184r/0s sm_120=177r/0s
+PTXAS tf_q35_gdn_slots_1: sm_121=72r/4096s sm_80=80r/4096s sm_120=72r/4096s sm_89=80r/4096s sm_86=80r/4096s
+PTXAS tf_q35_gdn_slots_2: sm_121=72r/8192s sm_80=80r/8192s sm_120=72r/8192s sm_89=80r/8192s sm_86=80r/8192s
+PTXAS tf_q35_gdn_slots_4: sm_121=84r/16384s sm_80=80r/16384s sm_120=84r/16384s sm_89=90r/16384s sm_86=90r/16384s
+PTXAS tf_qmm_prefill_many: sm_121=130r/0s sm_120=130r/0s sm_89=173r/0s sm_86=173r/0s sm_80=173r/0s

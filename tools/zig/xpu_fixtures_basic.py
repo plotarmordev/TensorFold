@@ -2,7 +2,7 @@
 import json, os, struct, numpy as np
 
 CK = os.environ.get("TF_NEMOTRON_DIR", os.path.expanduser("~/models/nemotron-3.5-lightning-mlx4"))
-FIX = os.environ.get("TF_FIXTURES_DIR", "tensorfold-fixtures")
+FIX = os.environ.get("TF_FIXTURES_DIR", os.path.expanduser("~/tensorfold-fixtures"))
 os.makedirs(FIX, exist_ok=True)
 wm = json.load(open(CK + "/model.safetensors.index.json"))["weight_map"]
 
