@@ -1,1 +1,4 @@
-- Inkling 2 Mini on the M5 Ultra: `docs/recipes/inkling-2-mini-metal/engines.sh` measures TensorFold, llama.cpp and Strata v0.2.19 one at a time at 1, 4 and 64 streams. TensorFold was fastest at every stream count against llama.cpp b12655 IQ4_NL (485.5 vs 394.8 tok/s at 64 streams with the same prompt). The client could not time Strata's streams, and SQ-10 was not reached before the GPU window closed.
+# Inkling 2 Mini on the M5 Ultra: TensorFold, llama.cpp and Strata at 1, 4 and 64 streams
+- `docs/recipes/inkling-2-mini-metal/engines.sh` measures each engine on its own. TensorFold was fastest at every
+  stream count against llama.cpp b12655 IQ4_NL (485.5 vs 394.8 tok/s at 64 streams with the same prompt). The client
+  could not time Strata's streams, and SQ-10 was not reached before the GPU window closed.
