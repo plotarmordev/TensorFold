@@ -308,12 +308,25 @@ tf_idol_dec_attention`, four shards) exits 0: 28 kernels pass, the planted contr
 The laptop's rerun 11 at `a29b38dcd` (Desk request `6203c38d`) qualifies Windows: the clean build and all eight
 `tf-cuda-test` suites pass, and `kernel-contract -Dsm=121` reaches its SUMMARY with 844 of 844 kernels passing gates
 1-4, 500 of 500 controls red as planted and 11 known findings. It exits 1 only on 1013 limit problems, mostly
-"(recorded 0, 0)": there are no records for Windows nvcc 13.5 sm_121 images (item 7). The two contract corrections
-since (`6b692d6ee`, `41b7b7004`) touch neither the build nor the suites; their laptop re-check at `75d7bdcd7` is
-queued.
+"(recorded 0, 0)": there are no records for Windows nvcc 13.5 sm_121 images (item 7).
 
-This card neither downloads nor serves a model on the laptop. Its one CUDA serve there is card 243's Inkling 2 Mini
-receipt (`docs/recipes/inkling-2-mini-cuda/README.md` on `feat/243-inkling-2-mini-runs-on-net-s-rtx-spark-l`): run 2 at
+The short re-check at `75d7bdcd7` (warm folder, the two contract corrections since, `6b692d6ee` and `41b7b7004`):
+
+- `zig build kernel-contract -Dsm=121 -Dcontract-only=tf_idol_dec_attention` exits 1 on its one limit line.
+  Gates 1-4 pass: non-finite classes match, five repeats byte-identical, 11 shapes at worst 0.400 of the bound,
+  sums exact at k 8192, "COUNT 1 of 1 pass". Gate 5: "256 threads, 128 registers, 0 + 36864 shared (recorded 120,
+  0)", an nvcc 13.5 image checked against nvcc 13.3's record (item 7).
+- `tf-cuda-test kernel-contract 0/4 h3d` and `2/ h3d` each stop at once with "FAIL kernel-contract: BadShard",
+  exit 1, as intended.
+- `zig build test --summary all` exits 1: 795 of 806 steps, 11254 of 11535 tests pass (279 skipped, 2 failed). The
+  two failures were path bugs on Windows, fixed since: `tf-drama-quant`'s DST-inside-SRC guard compared case and
+  `/` only, and `h3_image_files`' scratch test listed a folder opened without iteration (`AccessDenied`). The
+  failed steps are the H3 host tests, not ported to Windows: POSIX `clock_gettime`, `mmap`/`munmap` and
+  `file.handle` as an fd (`h3/checkpoint.zig`, `h3/cuda_load_threads.zig`, `tests/h3_image_prompt_cuda.zig`).
+
+Serving is outside this card's acceptance (Lead, 24 Nov): it neither downloads nor serves a model on the laptop.
+The laptop's serving receipt is card 243's, cited here as 243's: Inkling 2 Mini
+(`docs/recipes/inkling-2-mini-cuda/README.md` on `feat/243-inkling-2-mini-runs-on-net-s-rtx-spark-l`), run 2 at
 `2a37918af`, a clean clone, `n1x-run.ps1 -Step build`, `-Step check` and `-Step serve` all exit 0; 32 of 32 greedy
 tokens equal the float64 reference; 256-token greedy replies decode at 32.2 tok/s on one stream and 117.0 in total on
 four, first token 0.104 s.
@@ -348,6 +361,9 @@ needs:
    Two parts of the 1013 need no laptop: the offline audit, which a full run adds on any OS, counts 203 problems
    over the 1755 records at this branch's head, and 172 of the 1748 launches live on sm_121 have no recorded
    registers for an nvcc 13.5 image (99 for 13.3, 7 for 13.0), which gate 5 counts as it did `d3_cfg_mix` on TOP.
+   Others are real Windows differences: the same source compiled by nvcc 13.5 with cl.exe gives other figures than
+   its record, such as `tf_idol_dec_attention`'s 128 registers where nvcc 13.3 recorded 120 (`75d7bdcd7`). Gate 5
+   reports them; this card changes no record.
 8. Three of 844 kernels failed gates 1-4 at `2d0a39ce3`. `d3_cfg_mix` refused gate 1's five-row shape;
    that fixture now accepts more rows as more logits. At `03e9b18df`, the laptop's next full run reported two
    remaining gate failures: `tf_me_conv` left its signed interval at gate 4 because fp32 `expf(-s)` overflows
