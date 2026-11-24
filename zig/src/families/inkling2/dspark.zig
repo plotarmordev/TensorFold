@@ -230,23 +230,27 @@ pub const Context = struct {
         }
     }
 
+    const Span = struct { from: u64, end: u64 };
+
     /// The span after committing n rows at `start`, checked before any device work: a gap restarts the span there; a
     /// rejected span leaves the context as it was.
-    fn admit(c: *const Context, start: u64, n: usize) !u64 {
+    fn admit(c: *const Context, start: u64, n: usize) !Span {
         if (start < c.end) return error.DraftContextGap;
         const from = if (start > c.end) start else c.from;
         if (start + n - from > c.rings[1]) return error.DSparkContextFull;
-        return from;
+        return .{ .from = from, .end = start + n };
     }
 };
 
-test "a rejected absorb leaves the context's span whole" {
-    const c: Context = .{ .k = undefined, .v = undefined, .rings = .{ local_ring, 64, local_ring }, .newest = undefined, .from = 10, .end = 20 };
+test "a rejected absorb leaves the context's span whole and the next one lands" {
+    var c: Context = .{ .k = undefined, .v = undefined, .rings = .{ local_ring, 64, local_ring }, .newest = undefined, .from = 10, .end = 20 };
     try std.testing.expectError(error.DSparkContextFull, c.admit(100, 65));
-    try std.testing.expectEqual(@as(u64, 10), c.from);
-    try std.testing.expectEqual(@as(u64, 100), try c.admit(100, 64));
-    try std.testing.expectEqual(@as(u64, 10), try c.admit(20, 54));
     try std.testing.expectError(error.DraftContextGap, c.admit(19, 1));
+    try std.testing.expectEqual(Context.Span{ .from = 10, .end = 74 }, try c.admit(20, 54));
+    const s = try c.admit(100, 64);
+    try std.testing.expectEqual(Context.Span{ .from = 100, .end = 164 }, s);
+    c.from, c.end = .{ s.from, s.end };
+    try std.testing.expectError(error.DraftContextGap, c.admit(163, 1));
 }
 
 /// The target pieces the head reads: its embedding, embed norm and unembedding, and its lane GEMM.
@@ -321,7 +325,7 @@ pub const Head = struct {
 
     /// Committed rows at positions start.. (taps bf16 [n][4][H] on the device) into the context's rings.
     pub fn absorb(h: *const Head, s: cuda.Stream, c: *Context, tap_rows: u64, start: u64, n: usize) !void {
-        c.from = try c.admit(start, n);
+        const span = try c.admit(start, n);
         var at: usize = 0;
         while (at < n) : (at += absorb_rows) {
             const m: u32 = @intCast(@min(absorb_rows, n - at));
@@ -340,13 +344,13 @@ pub const Head = struct {
                 try go(h.k.ctx, s, .{ .x = m, .y = 8 }, 32, &a);
             }
         }
-        c.end = start + n;
+        c.from, c.end = .{ span.from, span.end };
     }
 
     /// Seven greedy drafts after the pending token (picks[0] on the device, at position c.end): queued on `s` with no
     /// host step between them; picks[1..8] and the logits hold the drafts and their soft-capped logits.
     pub fn draft(h: *const Head, s: cuda.Stream, c: *const Context) !void {
-        if (c.end == c.from) return error.DSparkNoContext;
+        if (c.end <= c.from) return error.DSparkNoContext;
         const tw = h.t.w;
         var a: cuda.Args = .{};
         for ([_]u64{ h.picks, tw.embed, tw.embed_norm }) |p| a.add(p);
