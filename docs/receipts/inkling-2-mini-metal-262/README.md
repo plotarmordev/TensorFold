@@ -18,9 +18,9 @@ verify path (`backend.zig` `runShared`, `prompt=false`, tensor units), per layer
 | wo, attention partial, residual | 3 | 3 |
 | MLP gates (gated visits), norm | 1 / 4 | 1 / 4 |
 | router (scores, top-8) | 2 | 2 |
-| routed experts (group, gu, down, combine) and MLP partial | 5 | 5 |
-| **a visit, ungated / gated** | **19 / 25** | **18 / 24** |
-| **a forward** (24 ungated + 24 gated visits, 2 resets, embed and tail) | **1,067** | **1,019** |
+| routed experts (group, gu, down, combine) and MLP partial | 5 | **4** (≤32 rows, tensor units); 5 otherwise |
+| **a visit, ungated / gated** | **19 / 25** | **17 / 23** (≤32 rows); 18 / 24 otherwise |
+| **a forward** (24 ungated + 24 gated visits, 2 resets, embed and tail) | **1,067** | **971** (≤32 rows); 1,019 otherwise |
 
 The 248 profile's estimate of about 16 stages a visit (770 a token) left out the attention inputs, the gate chains,
 the router's inner barrier and the two partials. At 10.9 ms of non-weight time over 1,067 stages, a stage costs
@@ -34,10 +34,16 @@ it or to fuse kernels.
 `attention.prep` now launches a part of the heads (`PrepArgs.unit0`): the query heads run alongside the
 convolutions, and the key and value heads, which read the convolutions, run alongside the relative table. This
 gives convolution + query prep → key/value prep + relative table → partials → merge, one barrier fewer a visit and
-48 fewer a forward (−4.5%). Every head still runs the same instructions on the same inputs, so the outputs are the
-same bits. Only the grouping of launches between barriers changes.
+48 fewer a forward from attention (−4.5%). Every head still runs the same instructions on the same inputs, so the
+outputs are the same bits. Only the grouping of launches between barriers changes.
 
-Predicted (D): 48 × 10 µs ≈ 0.49 ms of a 27.3 ms round, about +1.8% tok/s at one stream.
+At up to 32 rows, the gate-up tensor-unit kernel builds each expert's ordered route list in threadgroup memory,
+and its first tile writes the same list to the existing device buffer for the down kernel. This replaces the separate
+group launch and its barrier on each visit. Larger forwards retain the old group pass. The kernel's dot, activation
+and down inputs are unchanged; contract coverage compares its outputs against the float64 reference.
+
+Predicted (D): 96 × 10 µs ≈ 0.98 ms of a 27.3 ms round, about +3.7% tok/s at one stream before the cost of
+repeated route-list scans across gate-up tiles. This prediction is below the 5% window threshold, not a speed claim.
 
 ## Exactness and speed
 
