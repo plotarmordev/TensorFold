@@ -107,8 +107,12 @@ out, model = sys.argv[1:]
 agg = {}
 for level in (1, 2, 4, 8):
     cells = json.load(open(f"{out}/streams-{level}.json"))["cells"]
-    if any(c.get("failed") for c in cells):
-        raise SystemExit(f"{level} streams: a request failed")
+    if any(c.get("failed") or c.get("unmeasured") for c in cells):
+        raise SystemExit(f"{level} streams: a request failed or was unmeasured")
+    for c in cells:
+        alone = c.get("alone") or {}
+        if alone.get("unequal") or alone.get("failed") or alone.get("equal") != level * 3 or alone.get("vacuous"):
+            raise SystemExit(f"{level} streams {c['prompt']}: greedy alone agreement failed or was vacuous: {alone}")
     agg[level] = max(c["aggregate_tps"] for c in cells)
     for c in cells:
         r = c["request"]

@@ -160,7 +160,7 @@ try {
                 (New-Object System.Net.Http.StringContent $body, ([Text.Encoding]::UTF8), 'application/json'))
         }
         foreach ($c in $calls) { if (-not $c.Result.IsSuccessStatusCode) { throw "$n streams: $($c.Result.StatusCode)" } }
-        $replies[$n] = foreach ($c in $calls) { ($c.Result.Content.ReadAsStringAsync().Result | ConvertFrom-Json).choices[0].text }
+        $replies[$n] = @(foreach ($c in $calls) { ($c.Result.Content.ReadAsStringAsync().Result | ConvertFrom-Json).choices[0].text })
         $done = @(Select-String -Path "$out\server.log" -Pattern '\] done ' | Select-Object -Skip $before)
         if ($done.Count -ne $n) { throw "$n streams: want $n done lines, got $($done.Count)" }
         $total = 0
@@ -172,8 +172,9 @@ try {
         Write-Output ("RESULT n1x {0} stream(s) total decode {1:N1} tok/s" -f $n, $total)
     }
     $agree = @{}
-    foreach ($n in 2, 4, 8) { $agree[$n] = @($replies[$n] | Where-Object { $_ -eq $replies[1][0] }).Count }
-    Write-Output ("RESULT n1x output agreement vs the solo reply: 2 streams {0}/2, 4 streams {1}/4, 8 streams {2}/8 identical" -f $agree[2], $agree[4], $agree[8])
+    foreach ($n in 2, 4, 8) { $agree[$n] = @($replies[$n] | Where-Object { $_ -ceq $replies[1][0] }).Count }
+    Write-Output ("RESULT n1x greedy output agreement vs the solo reply: 2 streams {0}/2, 4 streams {1}/4, 8 streams {2}/8 identical" -f $agree[2], $agree[4], $agree[8])
+    foreach ($n in 2, 4, 8) { if ($agree[$n] -ne $n) { throw "$n streams: $($agree[$n])/$n greedy replies agree with solo" } }
     $smi.Kill(); $smi.WaitForExit()
     $peak = (Get-Content "$out\pool.csv" | ForEach-Object { [int]$_ } | Measure-Object -Maximum).Maximum
     if (-not $peak) { throw "no samples in $out\pool.csv" }
