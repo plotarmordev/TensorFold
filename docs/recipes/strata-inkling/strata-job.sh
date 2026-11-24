@@ -5,6 +5,7 @@
 # and likewise strata-sq20-4.sh, strata-sq20-64.sh, strata-sq10-1.sh, strata-sq10-4.sh, strata-sq10-64.sh; they set
 # STRATA_PACK (sq20 or sq10) and STRATA_STREAMS (1, 4 or 64). Unset, this script runs every pack and level.
 # strata-http-sq20.sh and strata-http-sq10.sh set STRATA_OWN=0: one pack's HTTP bench at every level, no own bench.
+# strata-own.sh sets STRATA_HTTP=0: both packs' own bench at every level in one job, no HTTP bench.
 # Each pack, under the engine's own `--bench` and, behind Strata's server, under our HTTP bench
 # (tools/bench_concurrent.py), medians of 3. The receipt counts only if SQ-10 at 64 lands within 10% of the
 # 805.8 tok/s of Strata's pack card; the sq10-64 job's [gate] line says which.
@@ -59,7 +60,7 @@ stop() { # the running Strata server, if any: on every exit, so a failed cell ne
     [ -z "${pid:-}" ] || { kill "$pid" 2>/dev/null; wait "$pid" || :; }
     pid=
 }
-measure() { # every pack and level asked for, own bench (unless STRATA_OWN=0) then HTTP bench
+measure() { # every pack and level asked for, own bench (unless STRATA_OWN=0) then HTTP bench (unless STRATA_HTTP=0)
     trap stop EXIT
     trap 'exit 1' TERM INT
     for name in $packs; do
@@ -78,6 +79,7 @@ measure() { # every pack and level asked for, own bench (unless STRATA_OWN=0) th
         printf "[gate] SQ-10 at 64 streams, own bench: %.1f tok/s, %.0f%% of the published %.1f: %s\n", got,
             100 * ratio, want, verdict
     }'
+    [ "${STRATA_HTTP:-1}" = 1 ] || return 0
     for name in $packs; do
         eval "pack=\$$name"
         for streams in $levels; do
