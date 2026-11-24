@@ -49,22 +49,22 @@ its dependent chain of kernels does, so the hold lever cuts launches and waits, 
 
 A second Desk window for this card alone, idle GPU, load 3-20; candidate `f8b9b3c0a` (the lever plus its rollback
 test), control `781eeab52`, both built before the first bench, one lock over the six sessions. The two controls agree
-within 0.3% in every cell but plain chat at four streams.
+within 0.3% in every cell but plain chat.
 
 | tok/s (code / chat) | control | candidate | control |
 |---|---|---|---|
 | DSpark, 1 stream | 126.6 / 93.0 | 124.3 / 95.3 | 126.8 / 92.9 |
 | DSpark, 4 streams | 282.1 / 229.3 | **288.0 / 237.3** | 281.4 / 228.9 |
 | DSpark 4-stream round, code | 38.8 ms | 37.9 ms | 38.6 ms |
-| plain, 1 stream | 61.6 / 61.0 | 60.1 / 59.8 | 61.5 / 56.3 |
-| plain, 4 streams | 210.2 / 223.0 | 221.5 / 221.0 | 210.0 / 126.4* |
+| plain, 1 stream | 61.6 / 61.0* | 60.1 / 59.8 | 61.5 / 56.3* |
+| plain, 4 streams | 210.2 / 223.0* | 221.5 / 221.0 | 210.0 / 126.4* |
 
-\* reps 110.4/192.6/126.4: disturbed, not used.
+\* plain chat: the controls are 8% apart at one stream and 43% at four (reps 110.4/192.6/126.4), so both pairs are
+disturbed and plain chat is not compared.
 
 - The lever repeats at four streams: code 2.1-2.3% and chat 3.5-3.7% over both controls, a round 0.7-0.9 ms shorter.
 - At one stream it gains nothing: code 124.3 (reps 127.4, 116.2, 124.3) against 126.6-126.8, chat 95.3 against 93.
-- Plain is at parity, which the lever's path predicts (it only touches a verify window): code 60.1 against 61.5-61.6
-  at one stream and 221.5 against 210.0-210.2 at four, chat 59.8 and 221.0 against the clean control's 61.0 and 223.0.
+- Plain code reads 60.1 against 61.5-61.6 at one stream and 221.5 against 210.0-210.2 at four.
 - #4618 reports 123 at one stream and 281 at four; it was not run on this Mac, so these medians are not a claim to
   beat it. At this window's low load the controls already read 126.6-126.8 at one stream.
 - A second candidate pass at 11:09-11:14 ran as load rose to 50 (DSpark four-stream code reps 282.4, 252.5, 238.6;
@@ -79,21 +79,20 @@ within 0.3% in every cell but plain chat at four streams.
 
 ## Engines at 1 and 64 streams
 
-oMLX's own 4-bit MTP build `Inkling-2-Mini-oQ4e-mtp`, the fastest measured competitor (Strata and llama.cpp were not
-measured on this Mac, and the oMLX cells come from earlier sessions than TensorFold's), from card 235's
-`engines.sh`; TensorFold from `engines.sh` here, DSpark on 64 lanes. Card 235's script started TensorFold on its
-default 8 lanes, so at 64 streams 56 requests queued (168 of 192 waited 10-55 s) and read 141.4 / 154.8; that is fixed
-here, and no request queued. All runs were under other cards' CPU load (35-77). oMLX streams each code reply in one
-chunk after 13 s, so its code cells are unmeasured in every run, card 235's too; the comparison is on chat.
+oMLX's own 4-bit MTP build `Inkling-2-Mini-oQ4e-mtp` is the only competitor measured on this Mac (Strata and
+llama.cpp were not). Card 235's `engines.sh` ran both engines in one session, TensorFold on its default 8 lanes, under
+other cards' CPU load (35-77). oMLX streams each code reply in one chunk after 13 s, so its code cells are unmeasured;
+the comparison is on chat.
 
-| chat, tok/s total | TensorFold, 64 lanes (03:47-03:53) | oMLX (02:25 / 03:00) |
+| chat, tok/s total, paired medians | TensorFold, 8 lanes | oMLX |
 |---|---|---|
-| 1 stream | **90.2** (89.5-91.5) | 38.4 / 24.8 |
-| 64 streams | **306.6** (229.4-311.2) | 225.6 / 203.3 |
+| 1 stream | **49.0** | 38.4 |
+| 64 streams | 141.4 | **225.6** |
 
-- TensorFold leads at both against oMLX's 4-bit build, across sessions: 2.3× at one stream, 1.36-1.51× at 64.
-- TensorFold's code cells in the same session: 115.4 at one stream (96.5-117.7), 239.8 at four (194.3-273.5, load
-  60-77, under the clean 282.7-285.7 above), 399.1 at 64 (309.3-456.4).
+- oMLX leads at 64 streams: on 8 lanes, 56 of TensorFold's 64 requests queued (168 of 192 waited 10-55 s). A second
+  paired session read 48.0 against 24.8 and 154.8 against 203.3.
+- Unpaired, no oMLX in its session: `engines.sh` here, DSpark on 64 lanes with no request queued, read chat 90.2 at
+  one stream and 306.6 at 64, code 115.4 and 399.1.
 - 0 failed requests in every cell of both engines.
 
 ## Files
