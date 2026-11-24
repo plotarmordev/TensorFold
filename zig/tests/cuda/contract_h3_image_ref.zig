@@ -96,7 +96,7 @@ pub fn embed(in: In, s: Sum, want: []f64, mag: []f64) void {
         if (t < cells) {
             for (out, om, 0..) |*o, *m, j| {
                 for (&terms, 0..) |*v, k| v.* = in.b[j * 24 + k] * in.a[(tile * cells + t) * 24 + k];
-                o.* = bf(s.of(&terms) + in.d[j]);
+                o.* = s.of(&terms) + in.d[j];
                 m.* = magOf(&terms);
             }
         } else if (t < cells + 4) {
@@ -120,7 +120,7 @@ pub fn rmsNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
         for (&terms, xr) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(&terms) / 1024.0 + in.eps);
         for (0..1024) |i| {
-            want[r * 1024 + i] = bf(xr[i] * inv * in.b[i]);
+            want[r * 1024 + i] = xr[i] * inv * in.b[i];
             mag[r * 1024 + i] = xr[i] * xr[i];
         }
     }
@@ -137,7 +137,7 @@ pub fn layerNorm(in: In, s: Sum, want: []f64, mag: []f64) void {
         for (&terms, xr) |*t, v| t.* = (v - mean) * (v - mean);
         const rstd = 1.0 / @sqrt(s.of(&terms) / 1024.0 + in.eps);
         for (0..1024) |i| {
-            want[r * 1024 + i] = bf((xr[i] - mean) * rstd * in.b[i] + in.d[i]);
+            want[r * 1024 + i] = (xr[i] - mean) * rstd * in.b[i] + in.d[i];
             mag[r * 1024 + i] = @abs(xr[i] - mean) * @abs(xr[i] - mean);
         }
     }
@@ -230,7 +230,7 @@ pub fn attention(in: In, s: Sum, want: []f64, mag: []f64) void {
         const at = ((tile * T + query) * 16 + head) * 64;
         for (0..64) |ch| {
             for (vt[0..T], 0..) |*t, key| t.* = sc[key] * in.d[base + key * 64 + ch];
-            want[at + ch] = bf(s.of(vt[0..T]) / total);
+            want[at + ch] = s.of(vt[0..T]) / total;
             mag[at + ch] = magOf(vt[0..T]);
         }
     };
@@ -256,7 +256,7 @@ pub fn norm(in: In, s: Sum, want: []f64, mag: []f64) void {
         for (terms[0..width], xr) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(terms[0..width]) / @as(f64, @floatFromInt(width)) + in.eps);
         for (0..width) |i| {
-            want[r * width + i] = if (in.mode == 0) bf(in.b[i] * bf(xr[i] * inv)) else bf(xr[i] * inv * in.b[i]);
+            want[r * width + i] = xr[i] * inv * in.b[i];
             mag[r * width + i] = xr[i] * xr[i];
         }
     }
@@ -289,16 +289,18 @@ pub fn pheads(in: In, s: Sum, want: []f64, mag: []f64, fused: bool) void {
         for (&terms, src) |*t, v| t.* = v * v;
         const inv = 1.0 / @sqrt(s.of(&terms) / @as(f64, @floatFromInt(D)) + in.eps);
         var v: [128]f64 = undefined;
-        for (&v, src, w) |*o, xv, wv| o.* = if (in.mode == 0) bf(wv * bf(xv * inv)) else bf(xv * inv * wv);
+        for (&v, src, w) |*o, xv, wv| o.* = xv * inv * wv;
         var o = v;
+        var m: [128]f64 = terms;
         if (in.rotary) for (0..D) |ch| {
             const table_at = r * 64 + ch % 64;
             const other = if (ch < 64) -v[ch + 64] else v[ch - 64];
-            o[ch] = bf(bf(v[ch] * in.f[table_at]) + bf(other * in.g[table_at]));
+            o[ch] = v[ch] * in.f[table_at] + other * in.g[table_at];
+            m[ch] = @abs(v[ch] * in.f[table_at]) + @abs(other * in.g[table_at]);
         };
         for (0..D) |i| {
             want[at + i] = o[i];
-            mag[at + i] = terms[i];
+            mag[at + i] = m[i];
         }
     };
 }
@@ -354,6 +356,12 @@ pub fn add(in: In, want: []f64, mag: []f64) void {
         o.* = bf(x + bf(y));
         m.* = 0;
     }
+}
+
+/// The scattered and spliced rows' destinations: idx.len distinct rows of an x buffer of `rows`, spread
+/// evenly. A gate may raise the scattered count (gate 1's 5 of 8), so every one stays below `rows`.
+pub fn spread(idx: []u32, rows: usize) void {
+    for (idx, 0..) |*v, i| v.* = @intCast(i * rows / idx.len);
 }
 
 /// h3p_scatter_add: x rows idx[i] = bf16(x + y[i]); a x [rows*n] in place, b y [k*n], ints idx [k].
@@ -443,4 +451,32 @@ pub fn mproject(in: In, s: Sum, want: []f64, mag: []f64) void {
         want[r * in.n + o] = bf(s.of(&lanes) + in.d[o]);
         mag[r * in.n + o] = magOf(row[0..in.k]);
     };
+}
+
+test "scatter_add and splice keep their rows inside x at gate 1's raised count" {
+    // gate 1 raises served[0]'s 4 scattered rows to 5 while x keeps 8: 2i placed row 4 at 8, past x
+    const a = std.testing.allocator;
+    const x_rows = 8;
+    const n = 4;
+    var idx: [5]u32 = undefined;
+    spread(&idx, x_rows);
+    for (idx, 0..) |v, i| {
+        try std.testing.expect(v < x_rows);
+        if (i > 0) try std.testing.expect(v > idx[i - 1]);
+    }
+    const x = try a.alloc(f64, x_rows * n);
+    defer a.free(x);
+    @memset(x, 1);
+    const y = try a.alloc(f64, idx.len * n);
+    defer a.free(y);
+    @memset(y, 2);
+    const want = try a.alloc(f64, x_rows * n);
+    defer a.free(want);
+    const mag = try a.alloc(f64, x_rows * n);
+    defer a.free(mag);
+    const in: In = .{ .a = x, .b = y, .ints = &idx, .rows = x_rows, .n = n, .k = idx.len };
+    scatterAdd(in, want, mag);
+    for (idx) |v| try std.testing.expectEqual(3, want[v * n]);
+    splice(in, want, mag);
+    for (idx) |v| try std.testing.expectEqual(2, want[v * n]);
 }

@@ -377,9 +377,9 @@ test "info prices a Qwen3.8-27B start from serve's charge: context, streams and 
     const past = try price27(a, io, dir, 4096, .{ .context = 300000 });
     try std.testing.expectEqual(@as(u8, 1), past.code);
     try std.testing.expect(has(past.text, "--context 300000 is outside this Qwen checkpoint's 1 to 262,144 tokens"));
-    // a shape the engine refuses (16 query heads over 2 KV heads) keeps the floor
+    // a shape the engine refuses (20 query heads over 2 KV heads) keeps the floor
     try tmp.dir.writeFile(io, .{ .sub_path = "config.json", .data =
-        \\{"model_type":"qwen3_5","hidden_size":5120,"intermediate_size":17408,"num_hidden_layers":64,"vocab_size":248320,"num_attention_heads":16,"num_key_value_heads":2,"head_dim":256,"linear_num_key_heads":16,"linear_num_value_heads":48,"linear_key_head_dim":128,"linear_value_head_dim":128,"linear_conv_kernel_dim":4,"rms_norm_eps":0.000001,"partial_rotary_factor":0.25,"rope_theta":10000000,"full_attention_interval":4,"max_position_embeddings":262144,"eos_token_id":248046}
+        \\{"model_type":"qwen3_5","hidden_size":5120,"intermediate_size":17408,"num_hidden_layers":64,"vocab_size":248320,"num_attention_heads":20,"num_key_value_heads":2,"head_dim":256,"linear_num_key_heads":16,"linear_num_value_heads":48,"linear_key_head_dim":128,"linear_value_head_dim":128,"linear_conv_kernel_dim":4,"rms_norm_eps":0.000001,"partial_rotary_factor":0.25,"rope_theta":10000000,"full_attention_interval":4,"max_position_embeddings":262144,"eos_token_id":248046}
     });
     const refused = try price27(a, io, dir, 4096, .{});
     try std.testing.expectEqual(@as(u8, 0), refused.code);
