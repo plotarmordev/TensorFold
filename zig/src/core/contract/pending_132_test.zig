@@ -78,7 +78,7 @@ test "compiler receipts: 13.0 additions cannot replace a different later measure
     try std.testing.expectEqual(@as(u32, 40), later[4].regs);
     var absent = row;
     absent.launch.name = "a launch with only a 13.0 receipt";
-    try std.testing.expectEqualDeep(old, registry.usageFor(absent, .{ .major = 13, .minor = 1 }));
+    try std.testing.expectEqualDeep(row.usage, registry.usageFor(absent, .{ .major = 13, .minor = 1 }));
     for ([_]limits.Nvcc{ .{ .major = 13, .minor = 2 }, .{ .major = 13, .minor = 3 }, .{ .major = 14, .minor = 0 } }) |version|
         try std.testing.expectEqualDeep(registry.none, registry.usageFor(absent, version));
 }
