@@ -1,10 +1,9 @@
 // blit.swift: the receipt's bandwidth ceiling input. A device-to-device blit of 4 GiB, best of 12 reps,
-// GB/s counted as bytes read plus bytes written. Runs on any Mac: swift blit.swift [MiB] [reps].
+// GB/s counted as bytes read plus bytes written. Runs on any Mac: swift blit.swift.
 import Metal
 import Foundation
 
-let mib = CommandLine.arguments.count > 1 ? Int(CommandLine.arguments[1])! : 4096
-let reps = CommandLine.arguments.count > 2 ? Int(CommandLine.arguments[2])! : 12
+let reps = 12, mib = 4096
 let dev = MTLCreateSystemDefaultDevice()!
 let q = dev.makeCommandQueue()!
 let n = mib * 1024 * 1024

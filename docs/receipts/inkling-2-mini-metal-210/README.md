@@ -8,12 +8,12 @@ inside the Desk's Mac GPU window, one at a time.
 ## Ceiling
 
 A device-to-device blit of 4 GiB on this M5 Ultra moves **1,072 GB/s** (read plus write, best of 12; `blit.swift`
-repeats the measurement and `blit.txt` holds its output: a re-run came out at 1,035, 3.5% under it). Bytes a plain
-step reads, from the checkpoint's safetensors headers, over the 48 visits (layers 6-17 three times): 2,787 MB of
-dense layer weights, 1,839 MB of routed experts (8 of 128 a visit), 926 MB of the bf16 unembedding: 5.55 GB a token.
-At four streams a step reads the dense weights and the head once and 22.8% of each visit's experts (1 - (120/128)^4):
-10.41 GB for four tokens. DSpark adds the drafter's 636 MB a round and divides the target's bytes by the accepted
-length. KV at 256 tokens is under 0.1% and left out.
+repeats the measurement, `blit.txt` its output: two re-runs came out at 1,035 and 1,081, 3.5% under and 0.8%
+over it). Bytes a plain step reads, from the checkpoint's safetensors headers, over the 48 visits (layers 6-17
+three times): 2,787 MB of dense layer weights, 1,839 MB of routed experts (8 of 128 a visit), 926 MB of the bf16
+unembedding: 5.55 GB a token. At four streams a step reads the dense weights and the head once and 22.8% of each
+visit's experts (1 - (120/128)^4): 10.41 GB for four tokens. DSpark adds the drafter's 636 MB a round and
+divides the target's bytes by the accepted length. KV at 256 tokens is under 0.1% and left out.
 
 | ceiling, tok/s | plain | DSpark (code, measured accepted length) |
 |---|---|---|
