@@ -71,7 +71,10 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
         if (prebuilt) |dir| {
             image.* = b.graph.cwdRelativePath(b.pathJoin(&.{ dir, b.fmt("{s}.fatbin", .{k.name}) }));
         } else if (nvcc) |tool| {
-            image.* = fatbin(b, tool, version.?, catalog.nativeFp(b.allocator, k, opts.native_fp_decode), sms);
+            var built = k;
+            if (opts.inkling2_kv_loads and std.mem.eql(u8, k.name, "inkling2_attn"))
+                built.flags = std.mem.concat(b.allocator, []const u8, &.{ k.flags, &.{"-DTF_INK2_KV_LOADS=1"} }) catch @panic("OOM");
+            image.* = fatbin(b, tool, version.?, catalog.nativeFp(b.allocator, built, opts.native_fp_decode), sms);
         }
         if (image.*) |file| fatbin_step.dependOn(&b.addInstallFile(file, b.fmt("fatbin/{s}.fatbin", .{k.name})).step);
     }

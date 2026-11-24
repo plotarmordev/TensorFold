@@ -2,26 +2,25 @@
 # Inkling 2 Mini's K/V pages by TMA bulk copies on TOP's GB10:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/kv-pages.sh (1K; kv-pages-8k.sh: 8K)
 # The whole job runs under `timeout 600`, so setup.sh only unpacks the toolchain (its build and gates are other
-# receipts'). The candidate and a control built from the same tree with TF_INK2_KV_LOADS=1, through an nvcc wrapper
-# (the per-thread loads the bulk copies replace) dump the attention contract's outputs at every served form: 1 row
-# and multi-row verify, keys to 1M wrapping the sliding (2,048) and global (4,096) rings, page tails (1,030,
-# 16,390, 20,000, 300,000 keys). Both builds' bytes must match. Then fresh servers control, candidate, control at
-# 64 streams, one context a job, greedy, 128 tokens, 3 reps, each stream its own prompt of about 860 or 8,000
-# tokens. Achieved K/V is derived from the cache layout and the
-# measured decode rate, not a counter. Setup, builds and the byte comparison log "setup: N s"; the arms log
-# "measure: N s" and stop the job on any failed request.
+# receipts'). The candidate and a control built from the same tree and cache with -Dinkling2-kv-loads=true (the
+# per-thread loads the bulk copies replace; only that kernel image and the executables rebuild) dump the attention
+# contract's outputs at every served form: 1 row and multi-row verify, keys to 1M wrapping the sliding (2,048) and
+# global (4,096) rings, page tails (1,030, 16,390, 20,000, 300,000 keys). Both builds' bytes must match. Then fresh
+# servers control, candidate, control at 64 streams, one context a job, greedy, 128 tokens, 3 reps, each stream its
+# own prompt of about 860 or 8,000 tokens. Achieved K/V is derived from the cache layout and the measured decode rate,
+# not a counter. Setup, builds and the byte comparison log "setup: N s"; the arms log "measure: N s" and stop the
+# job on any failed request.
 set -eu
 [ -n "${KV_PAGES_BOUNDED:-}" ] || KV_PAGES_BOUNDED=1 exec timeout -k 5 600 sh "$0"
 control=/work/control
 start=$(date +%s)
 INKLING_ENV_ONLY=1 . docs/recipes/inkling-2-mini-cuda/setup.sh
 build() {
-    zig build install native -Dsm=121 -Dnvcc="$2" -Doptimize=ReleaseFast -Dcuda-test-dump=true --prefix "$1"
+    zig build install native -Dsm=121 -Dnvcc=/usr/local/cuda/bin/nvcc -Doptimize=ReleaseFast -Dcuda-test-dump=true \
+        --prefix "$@"
 }
-build /work/sm121 /usr/local/cuda/bin/nvcc
-printf '#!/bin/sh\nexec /usr/local/cuda/bin/nvcc -DTF_INK2_KV_LOADS=1 "$@"\n' >/work/nvcc-kv-loads
-chmod +x /work/nvcc-kv-loads
-build "$control" /work/nvcc-kv-loads
+build /work/sm121
+build "$control" -Dinkling2-kv-loads=true
 cmp "$control/native/bin/tensorfold-native" /work/sm121/native/bin/tensorfold-native >/dev/null && {
     echo "the control build repeated the candidate's binary" >&2; exit 1;
 }
