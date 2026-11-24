@@ -41,6 +41,29 @@ Bandwidth limit: a decoded token reads about 5.55 GB of weights (core layers 3 p
 whole unembedding), so 273 GB/s caps one stream near 49 tok/s; 32.9 tok/s is 67% of it. #4387's own engine, removed
 here, gave 5.7 tok/s at one stream and 9.4 at four on the same GB10 (job `top-0759755a0515`).
 
+## Against llama.cpp: Unsloth's UD-Q4_K_M GGUF on the same GB10
+
+`compare.sh` builds llama.cpp b12611's CUDA `llama-server` from the Desk's staged sources, checks the GGUF's sha256
+(`78fcedcf…34ae`) and serves it at the receipt's settings (4 slots of 8,192 positions, all layers on the GPU,
+greedy, 256 tokens, 3 reps, medians). Job `top-b77911768550` at `b65744605`; TensorFold's column is the receipt above.
+
+| | TensorFold (bf16 safetensors) | llama.cpp (UD-Q4_K_M) |
+|---|---|---|
+| Weights on disk | 20,161,820,584 bytes (18.78 GiB) | 16,610,544,608 bytes (15.47 GiB) |
+| Decode, 1 stream (code / chat) | 32.9 / 32.8 tok/s | 38.8 / 39.1 tok/s |
+| Decode total, 4 streams (code / chat) | 118.7 / 120.1 tok/s | 85.9 / 87.6 tok/s |
+| 4 streams over 1 | 3.65x | 2.24x |
+| First token, 1 stream (code / chat) | 0.076 s / 0.036 s | 0.067 s / 0.130 s |
+| Prompt, 4 streams (code) | 82.3 tok/s | 43.0 tok/s |
+| Memory, server loaded | 20.0 GiB GPU (`nvidia-smi`) | 18.1 GiB GPU (`nvidia-smi`); peak 20.57 GiB: 18.18 GPU + 2.38 resident |
+| Greedy vs the float64 reference, 32 tokens | 32 of 32 | 32 of 32 free-running; 31 of 32 teacher-forced (differs at 5) |
+
+llama.cpp's one-stream prompt speed is blank: `bench_concurrent.py` recorded none for it at that level. llama.cpp
+decodes one stream 18% faster from 18% fewer weight bytes; at 4 streams TensorFold's total is 37% higher.
+TensorFold's memory is a sample after loading, not `peak-memory.py`'s process peak. Quality: both engines reproduce
+the float64 reference's 32 greedy tokens; teacher-forced on the reference's prefix, the GGUF picks another token once
+(position 5), where TensorFold picks none.
+
 ## RTX Spark (N1X): what differs and what must change
 
 I see the same chip and memory model as the GB10: sm_121 and one unified pool, so the `-Dsm=121` kernel images are
