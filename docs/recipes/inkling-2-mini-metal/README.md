@@ -77,9 +77,10 @@ There were three runs:
   setup. Job logs: `logs/run2/`, including Strata's own `done:` lines (`strata-sq20/server-done.log`).
 - **Run 3, `engines.sh` at `5ab2ec63`, `strata-sq10 strata-sq20`, 04:27 to 04:45.** Strata SQ-10 took 24 s to set
   up and 198 s to measure; SQ-20 took 39 s and 189 s. Both ran with `--kv fp16` set. Before that, a run at `0c61f20e`
-  measured SQ-10 at `--kv auto`, then hung for 40 minutes stopping its server, so SQ-20 never started. Its figures are
-  within 7% of run 3's. `5ab2ec63` bounds the stop at 30 s. Job logs: `logs/run3/`, including each engine's own log.
-  That log reports `KV=75776.0 MiB` for both packs under `auto` and `fp16`, so `auto` resolved to fp16 here.
+  measured SQ-10 at `--kv auto`, then hung for 40 minutes stopping its server, so SQ-20 never started. Its figures
+  are within 6% of run 3's. `5ab2ec63` bounds the stop at 30 s. Job logs: `logs/run3/`, including each engine's own
+  log. SQ-10's engine reported `KV=75776.0 MiB` both under `auto` (`strata-sq10/engine-kv-auto.log`) and under
+  `fp16`, so `auto` resolved to fp16 there.
 
 TensorFold's engine is the feat/210 head (`d29431d5f`); the commits after it change only this folder. Its quant is
 `inkling2`: NVFP4 1×16 and MXFP8 32×32 groups, the rest bf16. Run 1 printed the quant as blank because the script
@@ -106,8 +107,9 @@ bench's usual figure. Strata's columns are from run 3, which replaces SQ-20's ru
 No request failed.
 
 Strata SQ-20 varied between windows. At 64 streams, run 2 measured 382.5 and 346.1 and run 3 measured 763.6 and 590.5,
-with the same pack and the same resolved KV. TensorFold and llama.cpp ran only in the first window. So the 64-stream
-verdict compares runs from different windows, not one session, and no run here explains the 2× swing.
+with the same pack (run 2 at `--kv auto`, run 3 at `--kv fp16`). TensorFold and llama.cpp ran only in the first
+window, so the 64-stream verdict compares runs from different windows, not one session. No run here explains the 2×
+swing.
 
 Every TensorFold and llama.cpp reply ran the full 256 tokens. Strata ignores `ignore_eos`, so in run 3, 82 of SQ-20's
 207 diverse replies and 72 of SQ-10's ended before 256 tokens (`finished` in the bench logs). Its end-to-end rate
