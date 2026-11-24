@@ -17,6 +17,7 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
+sys.dont_write_bytecode = True  # its sibling imports would otherwise leave tools/zig/__pycache__ in the checkout
 from outside_checkout import shared_cache
 
 ROOT = Path(__file__).resolve().parents[2]
