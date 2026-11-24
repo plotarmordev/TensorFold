@@ -44,14 +44,18 @@ mkdir -p "$out"
 python3 -c 'import random; r = random.Random(4387); print(" ".join(str(r.randrange(1000, 199000)) for _ in range(4200)))' >"$out/ids.txt"
 "$bin/tf-cuda-test" inkling2-serving "$model" "$out/ids.txt"
 text="The three laws of thermodynamics, explained for a curious student:"
-# the float64 reference must exit 0
+# the float64 reference runs on one host core, so its one planted control runs beside it: one after the other left
+# the 600 s window in the 4-stream bench (job top-3546b0a66f9b). The reference must exit 0, the control non-zero.
+INKLING2_REF_PLANT=1 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text" >"$out/control.log" 2>&1 &
+planted=$!
+trap 'kill $planted 2>/dev/null || :' EXIT
 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text"
-# the planted control must go red with its own differing tokens: a load or CUDA failure also exits non-zero
-if INKLING2_REF_PLANT=1 "$bin/tf-cuda-test" inkling2-mini-ref "$model" 32 "$text" 2>"$out/control.log"; then
+if wait $planted; then
     echo "planted control stayed green" >&2
     exit 1
 fi
 cat "$out/control.log" >&2
+# a load or CUDA failure also exits non-zero, so the control must show its own differing tokens
 grep -Eq '\(PLANTED: no messages\): [1-9][0-9]* of 32 greedy tokens differ' "$out/control.log" ||
     { echo "planted control failed before comparing tokens" >&2; exit 1; }
 mem() { echo "$1: host $(awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {printf "used %d MiB, available %d MiB", (t - a) / 1024, a / 1024}' /proc/meminfo); GPU $(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | tr '\n' ' ')"; }

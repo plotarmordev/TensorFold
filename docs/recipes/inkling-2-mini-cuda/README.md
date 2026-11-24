@@ -44,6 +44,10 @@ here, gave 5.7 tok/s at one stream and 9.4 at four on the same GB10 (job `top-07
 Job `top-9defa53c0bfc` at `2a37918af` reran it with the planted control's new exit: the control's 6 of 32 differing
 tokens exit non-zero and the script goes on, ending 0 with 33.8 tok/s at one stream and 121.4 at four (3.59x).
 
+Job `top-3546b0a66f9b` at `abc67b2d` ran the planted control after the reference instead of beside it: 0 and 6 of 32
+differed as before (154.9 s and 150.8 s), 32.9 tok/s at one stream, then the 600 s window closed in the 4-stream
+bench. The script runs its one planted control beside the reference.
+
 ## RTX Spark (N1X): native Windows ARM64 on Net's laptop
 
 `n1x-run.ps1` runs the same checkpoint (`C:\models\Inkling-2-Mini-ed40e7da62`) on the laptop through its Codync bot
