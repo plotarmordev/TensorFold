@@ -33,20 +33,20 @@ print(json.load(open(sys.argv[1]))["quantization"])' "$model/hf_quant_config.jso
 }
 
 serve_llama() {
-    local llama gguf build
+    local llama gguf=$stage/gguf/Inkling-2-Mini-IQ4_NL.gguf build
     llama=$(find "$stage/llama.cpp" -name llama-server -type f 2>/dev/null | head -1)
-    gguf=$(find "$stage" -maxdepth 1 -name 'Inkling-2-Mini-*.gguf' | head -1)
-    [ -n "$llama" ] && [ -n "$gguf" ] || fail "missing staged input: $stage/llama.cpp/**/llama-server or $stage/Inkling-2-Mini-*.gguf"
+    [ -n "$llama" ] || fail "missing staged input: $stage/llama.cpp/**/llama-server"
+    check cbdf3fa9dc50a4124977980f37da4f1fa764b0cfe800d275cd43d26ce2a81af4 "$gguf"
     build=$("$llama" --version 2>&1 | sed -nE 's/^version: ([0-9]+) .*/\1/p; s/^version: .*build ([0-9]+).*/\1/p')
     [ "${build:-0}" -ge 12406 ] || fail "llama.cpp build ${build:-unknown} predates b12406 (Inkling 2): $llama"
-    echo "[settings] llama.cpp b$build: $gguf, $(stat -f %z "$gguf") bytes, sha256 $(shasum -a 256 "$gguf" | cut -d' ' -f1)"
+    echo "[settings] llama.cpp b$build: $gguf, $(stat -f %z "$gguf") bytes, sha256 cbdf3fa9dc50a4124977980f37da4f1fa764b0cfe800d275cd43d26ce2a81af4"
     echo "[settings] flags: -ngl 99 -fa on -ctk f16 -ctv f16 -c 262144 -np 64 --jinja (4,096 tokens a slot, no drafter)"
     "$llama" -m "$gguf" -ngl 99 -fa on -ctk f16 -ctv f16 -c 262144 -np 64 --jinja --alias Inkling-2-Mini \
         --host 127.0.0.1 --port "$port" >"$log/server.log" 2>&1 &
 }
 
 serve_strata() { # serve_strata PACK-NAME: Strata's own server over its engine, as its setup writes the run config
-    local strata=$stage/strata/strata-inkling control=$stage/strata/control pack=$stage/Inkling-2-Mini-$1.strata
+    local strata=$stage/strata/strata-inkling control=$stage/strata/control pack=$stage/strata/Inkling-2-Mini-$1.strata
     local tokenizer=$log/export/tokenizer.hf.json
     check 9bd678185e41526eb3796220c3dc7723bb2d13b60e585241ee4f05e7c492f27b "$strata"
     case $1 in # the packs' digests as Strata v0.2.19 pins them

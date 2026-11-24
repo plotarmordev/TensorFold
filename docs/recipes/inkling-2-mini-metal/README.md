@@ -13,12 +13,12 @@ Everything goes in `STAGE`, which defaults to `/Users/agents/projects/capri/desk
 
 | Path in `STAGE` | Source | Size | sha256 |
 |---|---|---|---|
-| `llama.cpp/` | `llama-bNNNNN-bin-macos-arm64.tar.gz` from ggml-org/llama.cpp, unpacked; needs build b12406 or later (Inkling 2 arrived in #32217); b12651 is current | | its release digest |
-| `Inkling-2-Mini-IQ4_NL.gguf` | [ggml-org/Inkling-2-Mini-GGUF](https://huggingface.co/ggml-org/Inkling-2-Mini-GGUF) | 17,627,940,768 B | `cbdf3fa9dc50a4124977980f37da4f1fa764b0cfe800d275cd43d26ce2a81af4` |
+| `llama.cpp/` | `llama-bNNNNN-bin-macos-arm64.tar.gz` from ggml-org/llama.cpp, unpacked; needs build b12406 or later (Inkling 2 arrived in #32217); staged: b12655 (commit `969d73331`, tarball `03278e8e…2ae0`) | | its release digest |
+| `gguf/Inkling-2-Mini-IQ4_NL.gguf` | [ggml-org/Inkling-2-Mini-GGUF](https://huggingface.co/ggml-org/Inkling-2-Mini-GGUF) | 17,627,940,768 B | `cbdf3fa9dc50a4124977980f37da4f1fa764b0cfe800d275cd43d26ce2a81af4` |
 | `strata/strata-inkling` | `strata-inkling-0.1.65-macos-arm64-metal.tar.gz`, Strata v0.2.19 (tarball `fa29cf5d…f3f`) | | `9bd678185e41526eb3796220c3dc7723bb2d13b60e585241ee4f05e7c492f27b` |
 | `strata/control/` | `strata-control-0.1.65-macos-arm64.tar.gz`, Strata v0.2.19 | | tarball `c5ad7e815929ea2076cfc66510ac142727d15de3b17f5256bc15aff1a74eddbc` |
 | `strata/tokenizer.json` | the pack repo's tokenizer, used when a pack embeds none | | `7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6` |
-| `Inkling-2-Mini-SQ-20.strata`, `-SQ-10.strata` | [strata-engine/Inkling-2-Mini-Strata](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) @ `04996a1e` | 19,346,685,952 / 10,471,526,400 B | `0bbfd523…7e1b97` / `ac4d452a…065934` |
+| `strata/Inkling-2-Mini-SQ-20.strata`, `-SQ-10.strata` | [strata-engine/Inkling-2-Mini-Strata](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) @ `04996a1e` | 19,346,685,952 / 10,471,526,400 B | `0bbfd523…7e1b97` / `ac4d452a…065934` |
 
 Strata v0.2.19 ships a Metal engine. `strata-inkling 0.1.65` reports `"backend": "metal"` and `macos-arm64` in its
 `BUILD.json`. The Linux GB10 copy staged for card 242 does not run on this Mac.
@@ -56,9 +56,6 @@ run ends with one `RESULT` line for each engine, level and cell, and one `FASTES
 
 ## Receipt
 
-None yet. Card 250 has no Mac GPU window and its setup has not been staged:
-
-- The Desk's `tf250-engines/setup.txt` says llama.cpp ≥ b12406 is not built, and there is no Inkling 2 GGUF on the Mac.
-- The disk is under its free-space floor.
-
-Nothing here claims an engine is faster until `engines.sh` has run in a window.
+None yet. The Desk staged every input above on 25 Nov 01:1x (`tf250-engines/setup.txt`: "TF 250 SETUP DONE", digests
+checked). The run still waits for a Mac GPU window of its own. Nothing here claims an engine is faster until
+`engines.sh` has run in one.
