@@ -242,9 +242,8 @@ pub fn tmaFunction(mod: cuda.Module, name: [:0]const u8) !cuda.Function {
 }
 
 /// What a GemmTma registration launches: the plain product, fc1's SwiGLU epilogue on interleaved
-/// rows, or the control - the plain product at a width cuBLASLt took (n % 4) but the TMA grid,
-/// whole 128-column tiles only, leaves partly unwritten.
-pub const Mode = enum { plain, swiglu, heads, control };
+/// rows, or the fused q/k/v heads epilogue.
+pub const Mode = enum { plain, swiglu, heads };
 
 /// One output a product element: bf16(acc * xs[row] * ws[col]), the int32 sums exact; SwiGLU's
 /// is h3_swiglu's on the plain product's [gate | up] halves, bit for bit.
@@ -254,11 +253,14 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
             .{ .rows = 16, .n = 128, .k = 128 }, // one tile, one stage
             .{ .rows = 300, .n = 128, .k = 256 }, // a partial M tile and two K blocks
             .{ .rows = 64, .n = 384, .k = 384 }, // three N tiles past a partial M tile
+            .{ .rows = 16, .n = 392, .k = 128 }, // an 8-column edge tile
+            .{ .rows = 300, .n = 1352, .k = 256 }, // a 72-column edge tile past partial M and two K blocks
             .{ .rows = 16, .n = 21504, .k = 5376 }, // qkvc's real fan-out and depth
         },
         .swiglu => &.{
             .{ .rows = 16, .n = 256, .k = 128 }, // one feature tile
             .{ .rows = 300, .n = 512, .k = 256 }, // a partial M tile, two tiles and K blocks
+            .{ .rows = 300, .n = 776, .k = 256 }, // an 8-row (4-feature) edge tile past partial M and two K blocks
             .{ .rows = 256, .n = 2 * mlp, .k = hidden }, // fc1's real fan-out
         },
         .heads => &.{
@@ -267,14 +269,12 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
             .{ .rows = 64, .n = 768, .k = 384 },
             .{ .rows = 16, .n = 21504, .k = 5376 },
         },
-        .control => &.{.{ .rows = 16, .n = 392, .k = 128 }}, // n % 8 keeps the epilogue's 16-byte stores aligned
     };
     return .{
         .name = switch (mode) {
             .plain => "cuda h3 int8 tma product h3_gemm_int8_tma",
             .swiglu => "cuda h3 int8 tma swiglu h3_swiglu_rows + h3_swiglu_int8_tma",
             .heads => "cuda h3 int8 tma heads h3_heads_int8_tma",
-            .control => "control: h3_gemm_int8_tma at a width off whole 128-column tiles",
         },
         .accum = .none, // int32 sums, exact: no fp accumulator for gate 4 to stress
         .depth = none,
@@ -282,11 +282,11 @@ pub fn gemmTmaSpec(mode: Mode) c.Spec {
         .mids = if (mode == .heads) 5 else 0, // dequantization, norm, cosine, sine and their two products
         .out = .bf16,
         .nan = .{ .stated = "a nonfinite row or column scale reaches every output it multiplies, as h3_dequantize's did" },
+        // n % 8: a lane's eight output columns are one 16-byte store (SwiGLU's four features, one 8-byte store)
         .tiles = switch (mode) {
-            .plain => .{ .{}, .{ .size = 128, .step = 128, .min = 128 }, .{ .size = 128, .step = 128, .min = 128 } },
-            .swiglu => .{ .{}, .{ .size = 256, .step = 256, .min = 256 }, .{ .size = 128, .step = 128, .min = 128 } },
+            .plain => .{ .{}, .{ .size = 128, .step = 8, .min = 8 }, .{ .size = 128, .step = 128, .min = 128 } },
+            .swiglu => .{ .{}, .{ .size = 256, .step = 8, .min = 8 }, .{ .size = 128, .step = 128, .min = 128 } },
             .heads => .{ .{}, .{}, .{} },
-            .control => .{ .{}, .{}, .{} },
         },
         .served = served,
         .replaces = switch (mode) {
@@ -328,7 +328,7 @@ pub const GemmTma = struct {
     pub fn kernel(t: *GemmTma) g.Kernel {
         var spec = gemmTmaSpec(t.mode);
         if (t.planted) spec.name = "control: h3_heads_int8_tma with one output word flipped";
-        return .{ .spec = spec, .ctx = t, .vt = if (t.mode == .heads) &vt_heads else &vt, .control = if (t.mode == .control) .shapes else if (t.planted) .nonfinite else null };
+        return .{ .spec = spec, .ctx = t, .vt = if (t.mode == .heads) &vt_heads else &vt, .control = if (t.planted) .nonfinite else null };
     }
 
     const vt = g.hooks(GemmTma);
@@ -367,10 +367,8 @@ pub const GemmTma = struct {
 
     pub fn prepare(t: *GemmTma, shape: c.Shape, fill: g.Fill, seed: u64) !bool {
         const width: usize = switch (t.mode) {
-            .plain => 128,
-            .swiglu => 256,
-            .heads => 384,
-            .control => 8,
+            .heads => 384, // whole 128-column q, k and v heads
+            else => 8, // a lane's eight columns are one 16-byte store
         };
         if (shape.k % 128 != 0 or shape.n % width != 0 or shape.k == 0 or shape.n == 0 or shape.rows == 0) return false;
         t.rig.reset();
@@ -441,7 +439,7 @@ pub const GemmTma = struct {
         for ([_]u64{ t.dev[1], ws, out }) |p| args.add(p);
         for ([_]usize{ t.shape.rows, t.shape.n, t.shape.k }) |v| args.add(@as(c_int, @intCast(v)));
         const sm: usize = @intCast(try t.rig.gpu.ctx.attribute(.multiprocessor_count));
-        const tiles = (t.shape.rows + 255) / 256 * (t.shape.n / 128);
+        const tiles = (t.shape.rows + 255) / 256 * ((t.shape.n + 127) / 128);
         try cuda.launch.launch(try tmaFunction(t.mod, name), .{ .grid = .{ .x = @intCast(@min(sm, tiles)) }, .block = .{ .x = 256 }, .shared = tma_shared_bytes }, t.rig.s, &args);
     }
 

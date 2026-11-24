@@ -672,10 +672,12 @@ SM walking the output tiles in bands of eight tile rows (mmh3's `group_m` defaul
 `mma.sync.m16n8k32.s8` into int32, its 256×128 tile, and an epilogue that applies the row and column scales in
 registers and writes bf16 from the tile. Not copied: the cp.async fallback, the low-rank adapter, the bias, the
 column-maxima tracking, none of which an H3 picture projection uses, and the 128×256 tile, which lost on every
-shape below. The grid has no edge tile, so `cuda_int8.zig` refuses a projection whose N is not a multiple of 128
-(cuBLASLt took any N divisible by 4). ConvRot (`convrot.cuh`) stays `h3_quantize`'s 128-wide rotation. The
-epilogue rounds as the replaced kernels did, so `qkvc` writes bf16 rows straight to plain `h3_heads` and `fc1`'s
-epilogue writes `silu(gate) * up` (`h3_swiglu_rows` interleaves its gate and up weight rows). `h3_dequantize`,
+shape below. The last 128-column tile may be partial (card 204: its lanes past N clamp their scale loads and skip
+the store), so `cuda_int8.zig` takes any N divisible by 8, a lane's one 16-byte store (cuBLASLt took any N
+divisible by 4).
+ConvRot (`convrot.cuh`) stays `h3_quantize`'s 128-wide rotation. The epilogue rounds as the replaced kernels did,
+so `qkvc` writes bf16 rows straight to plain `h3_heads` and `fc1`'s epilogue writes `silu(gate) * up`
+(`h3_swiglu_rows` interleaves its gate and up weight rows). `h3_dequantize`,
 `h3_heads_i8` and `h3_swiglu_int8` are deleted, and so are card 145's int8-only admission rules for `h3_heads_i8`.
 
 Stop rule (`bench-146-contract.sh` at `643ce1ba`, job `top-22c3ccdf2c2a`, 21 November, `tf-cuda-test
@@ -693,10 +695,18 @@ on earlier heads, lost on every shape and is gone.
 
 The kernel-contract entries live in `contract_h3_int8.zig`. `cuda h3 int8 tma product h3_gemm_int8_tma`
 compares every output against the float64 formula, covering classes at the planted NaN row scale and infinite
-column scale, and values within the bound at four served shapes including `qkvc`'s real fan-out. `cuda h3 int8
-tma swiglu` runs fc1's served path (`h3_swiglu_rows` then `h3_swiglu_int8_tma`) and must match the plain product
-followed by `h3_swiglu` byte for byte, up to `fc1`'s real shape. The planted control launches the plain product at
-N = 392, a width cuBLASLt accepted, and must fail gate 3 on the columns the whole-tile grid leaves unwritten.
+column scale, and values within the bound at six served shapes including `qkvc`'s real fan-out and two partial
+last column tiles (16 × 392 × 128 and 300 × 1,352 × 256). `cuda h3 int8 tma swiglu` runs fc1's served path
+(`h3_swiglu_rows` then `h3_swiglu_int8_tma`) and must match the plain product followed by `h3_swiglu` byte for
+byte at four served shapes, a partial feature tile (300 × 776 × 256) and `fc1`'s real shape among them. Gate 3
+also samples N in steps of 8 around each tile edge. `check-204.sh` passes them on the card; `check-204-main.sh`
+and `check-204-1352.sh` show main's whole-tile grid failing each partial-tile shape on its own, one cold build a
+job.
+
+Card 204's picture gate ran at `add4bf341`, whose kernels and host code are this head's (job `top-a4be033f62db`,
+23 November, exit 0, `H3_PROFILE` off): the pilot prompt and `prompts/harbour` at 2048², card against main's
+product (`bench-204-base.patch` reverse-applied) in one job. `gate.py` against main measured latent cosine 1.0000,
+PSNR inf dB and mean difference 0.00 on both (PASS), and both latents and PNGs were byte-identical to main's.
 
 The picture A/B is `bench-146-ab.sh` at `1a354cc9`, after card 145 merged (job `top-0c0de4c93177`, 21 November,
 exit 0, `H3_PROFILE=1`). Main is re-measured in the same job by reverse-applying `bench-146-base.patch`. Each

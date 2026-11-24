@@ -66,10 +66,13 @@ pub const cuda = [_]CudaRecord{
     .{ .launch = .{ .name = "fp8_experts prompt down f32", .symbol = "_ZN14tf_fp8_experts24fp8_expert_prompt_kernelILi1ELi0ELi4ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi", .image = "fp8_experts", .threads = 128 }, .usage = .{ .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 } } },
     .{ .launch = .{ .name = "fp8_experts prompt down bf16", .symbol = "_ZN14tf_fp8_experts24fp8_expert_prompt_kernelILi1ELi3ELi4ELi4EEEvPK13__nv_bfloat16iiPK5uint4PKfiiPKiSA_SA_Pvifi", .image = "fp8_experts", .threads = 128 }, .usage = .{ .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 197, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 }, .{ .regs = 221, .static = 32768, .bound = 128 } } },
 };
-/// Drama 3's compact-checkpoint router, unmeasured: the GB10 check runs its contract and prints its RECORD.
+
+/// Launches still owed nvcc receipts; qualification refuses each SM until its receipt lands.
 pub const cuda_pending = [_]CudaRecord{
+    // Drama 3's compact-checkpoint router, unmeasured: the GB10 check runs its contract and prints its RECORD.
     .{ .launch = .{ .name = "drama3 d3_router_compact", .symbol = "d3_router_compact", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
-    .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = @import("registry.zig").none },
+    // GB10 (sm_121, nvcc 13.0) by docs/recipes/drama3-cuda/cfg-mix-gb10.sh; no __launch_bounds__, so 1024 fit.
+    .{ .launch = .{ .name = "drama3 d3_cfg_mix", .symbol = "d3_cfg_mix", .image = "drama3", .threads = 256 }, .usage = .{ .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 0, .static = 0, .bound = 0 }, .{ .regs = 12, .static = 0, .bound = 0 } }, .later_pending = true },
 };
 
 /// The picture's TMA products (h3_int8_tma.cuh): sm_120's and sm_121's usage from the five-SM limits job
@@ -78,7 +81,7 @@ pub const cuda_pending = [_]CudaRecord{
 pub const cuda_tma_pending = [_]CudaRecord{
     .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(222) },
     .{ .launch = .{ .name = "h3 h3_heads_int8_tma", .symbol = "h3_heads_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(255) },
-    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(219) },
+    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(225) },
     .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = sm12x(22) },
 };
 

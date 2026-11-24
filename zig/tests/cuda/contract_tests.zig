@@ -301,9 +301,11 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     for (&shifts) |*shift| try kernels.append(a, shift.kernel());
     var mtp = try cuda.Module.load(gpu.d, kk.flashnext_mtp);
     defer mtp.unload();
-    var best = best_k.Best{ .rig = .{ .gpu = gpu, .s = s }, .f = try mtp.function("fn_row_best") };
-    defer best.deinit();
-    try kernels.append(a, best.kernel());
+    const best_split = [2]cuda.Function{ try mtp.function("fn_row_best_max"), try mtp.function("fn_row_best_sum") };
+    var bests: [3]best_k.Best = undefined;
+    for (std.enums.values(best_k.Kind), &bests) |kind, *b| b.* = .{ .rig = .{ .gpu = gpu, .s = s }, .f = try mtp.function("fn_row_best"), .kind = kind, .split = best_split };
+    defer for (&bests) |*b| b.deinit();
+    for (&bests) |*b| try kernels.append(a, b.kernel());
     var selections: [2]qsa_k.Select = undefined;
     for ([_]bool{ false, true }, &selections) |padded, *selection|
         selection.* = .{ .rig = .{ .gpu = gpu, .s = s }, .f = try batch.function("fn_qsa_select"), .padded = padded };
@@ -330,12 +332,12 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     defer h3_fp4.deinit();
     try kernels.append(a, h3_fp4.kernel());
     // the TMA products' encoder needs sm_90+; contract them on GB10 only: the plain product, fc1's
-    // SwiGLU epilogue against the plain product then h3_swiglu, the fused heads, the control at a width off whole
-    // tiles, and the fused heads with one output word flipped
-    var h3_tma: [5]h3_int8_k.GemmTma = undefined;
+    // SwiGLU epilogue against the plain product then h3_swiglu, the fused heads, and the fused heads
+    // with one output word flipped
+    var h3_tma: [4]h3_int8_k.GemmTma = undefined;
     const h3_tma_live = cap == 121;
-    if (h3_tma_live) for (&h3_tma, [_]h3_int8_k.Mode{ .plain, .swiglu, .heads, .control, .heads }, 0..) |*t, mode, i| {
-        t.* = .{ .rig = .{ .gpu = gpu, .s = s }, .mode = mode, .mod = h3_mod, .planted = i == 4, .enc = try h3_int8_k.encoder(gpu.d), .arena = std.heap.ArenaAllocator.init(a) };
+    if (h3_tma_live) for (&h3_tma, [_]h3_int8_k.Mode{ .plain, .swiglu, .heads, .heads }, 0..) |*t, mode, i| {
+        t.* = .{ .rig = .{ .gpu = gpu, .s = s }, .mode = mode, .mod = h3_mod, .planted = i == 3, .enc = try h3_int8_k.encoder(gpu.d), .arena = std.heap.ArenaAllocator.init(a) };
     };
     defer if (h3_tma_live) for (&h3_tma) |*t| t.deinit();
     if (h3_tma_live) for (&h3_tma) |*t| try kernels.append(a, t.kernel());
@@ -591,6 +593,8 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     defer f32w_control.deinit();
     try kernels.append(a, f32w_control.kernel());
     const glm_fns = try glm.glue.Kernels.load(glm_glue);
+    const glm_wide = try @import("contract_glm_wide_expert.zig").Suite.create(gpu, s, &kernels);
+    defer glm_wide.destroy();
     var glm_lat = glm_pages_k.LatWrite{ .rig = .{ .gpu = gpu, .s = s }, .f = glm_fns.lat_write };
     defer glm_lat.deinit();
     try kernels.append(a, glm_lat.kernel());

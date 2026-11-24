@@ -367,10 +367,12 @@ __device__ __forceinline__ void h3_head_store(const uint32_t (&words)[4][4], con
 // the tiles; the warp that releases a ring stage last issues the TMA copies that refill it, so no
 // producer warp costs every warp its registers. The tensor maps bind by reference so their
 // addresses stay in parameter space — a by-value copy would land in local space, which
-// cp.async.bulk.tensor refuses.
+// cp.async.bulk.tensor refuses. N is a multiple of 8 (a lane's eight columns are one store); the
+// last column tile may be partial: TMA zero-fills its weight rows past n and its lanes past n skip
+// the store.
 // GROUPED takes a scale per 128 of K on both operands instead (group-major: xs[g * m + row],
 // ws[g * n + column]): each K block's exact int32 sums fold into fp32 at its two scales, and the
-// fp32 rows are written unrounded.
+// fp32 rows are written unrounded. Its epilogue has no edge tile: N a multiple of BLOCK_N.
 // HEADS is the qkv product whose N holds q, then k, then v in 128-column heads: each head tile's
 // warp gathers its row's head by shuffles and applies h3_heads' norm and rotary in registers, so
 // the separate heads pass is gone.
@@ -387,7 +389,7 @@ __device__ __forceinline__ void
 
     TileGrid grid;
     grid.tiles_m = (m + Config::block_m - 1) / Config::block_m;
-    grid.tiles_n = n / Config::block_n;
+    grid.tiles_n = (n + Config::block_n - 1) / Config::block_n;
     grid.tiles = grid.tiles_m * grid.tiles_n;
     grid.k_blocks = k / tma_block_k;
 
@@ -472,7 +474,8 @@ __device__ __forceinline__ void
         if constexpr (!HEADS) {
             #pragma unroll
             for (int quad = 0; quad < Config::n_tiles / 4; quad++) {
-                const int column = tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8;
+                // An edge tile's lanes past n read the last scales (their sums are TMA's zero fill), never stored.
+                const int column = min(tile_n * Config::block_n + warp_column + quad * 32 + quad_lane * 8, n - 8);
                 #pragma unroll
                 for (int slot = 0; slot < 4; slot++) {
                     const float2 column_scale = *reinterpret_cast<const float2 *>(weight_scales + column + ((slot + quad_lane) & 3) * 2);
@@ -535,7 +538,7 @@ __device__ __forceinline__ void
                             for (int j = 0; j < 4; j++) ordered[quad][j] = words[j];
                         }
                     }
-                    if (row < m) {
+                    if (row < m && (HEADS || column < n)) {
                         if constexpr (SWIGLU) {
                             // The lane's eight columns hold the (gate, up) pairs of features
                             // column / 2 to column / 2 + 3 (the weights' rows interleave pairwise).
