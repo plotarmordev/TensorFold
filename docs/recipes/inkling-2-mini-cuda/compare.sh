@@ -3,7 +3,7 @@
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/inkling-2-mini-cuda/compare.sh
 # Prints the bytes of the weights each engine loads, builds llama-server, then measures it under peak-memory.py with
 # the measured part capped at 10 minutes. TensorFold's side is run-script.sh's own job (its float64 reference alone
-# takes over 4 minutes), under the same peak-memory.py.
+# takes over 4 minutes); the README sets the two side by side.
 set -eu
 here=docs/recipes/inkling-2-mini-cuda
 pilot=/assets/drama3-pilot
