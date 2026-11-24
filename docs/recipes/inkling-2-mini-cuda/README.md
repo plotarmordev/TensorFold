@@ -69,6 +69,10 @@ What differs from the GB10 and is not copied from it:
 Run 1 at `b2ddc3de` (clean tree): build exit 0; check passed as in run 2; serve was ready in 55.3 s, then the NPU row
 above stopped the script before any tok/s.
 
+Run 3 at `a86ccbd1` (request `39062c42`, clean tree): `-Step fatbins` exited 1 in 20 s with `no such step:
+fatbins-Dsm=121`, as PowerShell unrolled the one-element target list to a string that `+` then appended to; the
+script now keeps it an array.
+
 ### Receipt: run 2 at `2a37918af`, one capped run
 
 Desk request `bb869e9b` on `codync@rtx-spark`, clean clone (`git status --porcelain` empty before and after the build),

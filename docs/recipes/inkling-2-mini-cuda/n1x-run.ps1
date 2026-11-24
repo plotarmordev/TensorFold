@@ -37,7 +37,8 @@ $server = 'zig-out\native\bin\tensorfold-native.exe'
 # A cold build ran 15 min in one piece (run 2), so it is two steps: nvcc's 147 kernel images, then the Zig products over
 # them from the cache. Each stops at 9 min; a step cut off resumes from the cache when it runs again.
 if ($Step -in 'fatbins', 'build') {
-    $targets = if ($Step -eq 'fatbins') { @('fatbins') } else { @('install', 'native') }
+    # @() keeps 'fatbins' an array: an if's one-element result unrolls to a string, and + would then append to it
+    $targets = @(if ($Step -eq 'fatbins') { 'fatbins' } else { 'install', 'native' })
     $argv = $targets + @('-Dsm=121', "`"-Dnvcc=$env:CUDA_PATH\bin\nvcc.exe`"", '-Doptimize=ReleaseFast')
     Write-Output "> zig build $argv"
     $clock = [Diagnostics.Stopwatch]::StartNew()
