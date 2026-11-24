@@ -1,4 +1,5 @@
-"""The guidance check's verdict and voice requirement, without a server or GPU."""
+"""The guidance check's verdict, voice requirement and pinned revision, without a server or GPU."""
+import argparse
 import copy
 import json
 from pathlib import Path
@@ -9,7 +10,8 @@ import drama_guidance_check as check
 
 
 def replies(names):
-    return {name: {"sha256": name, "bytes": 4, "first_audio_s": 0.1, "total_s": 0.2} for name in names}
+    return {name: {"sha256": name.removeprefix("solo-"), "bytes": 4, "first_audio_s": 0.1, "total_s": 0.2}
+            for name in names}
 
 
 def matching():
@@ -26,8 +28,15 @@ class VerdictTests(unittest.TestCase):
 
     def test_paired_that_differs_from_separate_fails(self):
         runs = matching()
-        runs[64]["paired"]["replies"]["lane-b"]["sha256"] = "other"
-        self.assertEqual(check.verdict(runs), ["rows=64 lane-b: paired PCM differs from separate"])
+        runs[64]["paired"]["replies"]["t1-g3"]["sha256"] = "other"
+        self.assertEqual(check.verdict(runs), ["rows=64 t1-g3: paired PCM differs from separate"])
+
+    def test_a_concurrent_lane_that_differs_from_its_solo_run_fails(self):
+        runs = matching()
+        runs[1]["separate"]["replies"]["lane-a"]["sha256"] = "other"
+        runs[1]["paired"]["replies"]["lane-a"]["sha256"] = "other"
+        self.assertEqual(check.verdict(runs), ["rows=1 lane-a: separate concurrent PCM differs from its solo run",
+                                               "rows=1 lane-a: paired concurrent PCM differs from its solo run"])
 
     def test_gamma_one_that_differs_from_plain_fails(self):
         runs = matching()
@@ -72,6 +81,16 @@ class VoiceTests(unittest.TestCase):
             for voice in ("default", "Default", "bare", "missing"):
                 with self.assertRaises(SystemExit, msg=voice):
                     check.require_reference(voices, voice)
+
+
+class RevisionTests(unittest.TestCase):
+    def test_only_a_full_commit_sha_pins_a_checkpoint(self):
+        commit = "b2b5ee998034b2975720906c815e7fb0e9f007bd"
+        repo = "fishaudio/drama-3"
+        self.assertEqual(check.revision(f"{repo}@{commit}"), {"repo": repo, "commit": commit})
+        for value in (f"{repo}@main", f"{repo}@{commit[:8]}", f"{repo}@{commit.upper()}", commit, f"@{commit}"):
+            with self.assertRaises(argparse.ArgumentTypeError, msg=value):
+                check.revision(value)
 
 
 if __name__ == "__main__":
