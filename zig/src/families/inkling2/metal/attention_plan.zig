@@ -26,12 +26,15 @@ pub const PrepArgs = extern struct {
     floor_pos: f32,
     alpha: f32,
     eps: f32,
+    unit0: u32 = 0,
 };
+/// A prep launch's heads: the query and relative heads read the projections, the key and value heads the convolutions.
+pub const PrepPart = enum { queries, keys_values };
 pub const AttnArgs = extern struct { heads: u32, kv_heads: u32, ring: u32, window: u32, chunk: u32, c0: u32, chunks: u32, scale: f32 };
 pub const MergeArgs = extern struct { heads: u32, window: u32, chunk: u32, c0: u32, chunks: u32, subs: u32 = 1 };
 pub const PromptArgs = extern struct { heads: u32, kv_heads: u32, ring: u32, chunk: u32, c0: u32, chunks: u32, scale: f32, window: u32 = 0 };
 comptime {
-    if (@sizeOf(Seg) != 24 or @sizeOf(PrepArgs) != 36 or @sizeOf(AttnArgs) != 32) @compileError("Inkling attention ABI drift");
+    if (@sizeOf(Seg) != 24 or @sizeOf(PrepArgs) != 40 or @sizeOf(AttnArgs) != 32) @compileError("Inkling attention ABI drift");
     if (@sizeOf(MergeArgs) != 24 or @sizeOf(PromptArgs) != 32) @compileError("Inkling prompt ABI drift");
 }
 

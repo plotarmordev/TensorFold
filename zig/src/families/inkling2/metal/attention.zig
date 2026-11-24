@@ -52,13 +52,18 @@ fn bind(e: mtl.ComputeEncoder, refs: []const Ref, first: usize) void {
 }
 
 /// raw holds independent q/k/v rows followed by q-side relative rows; gated sliding visits never infer K or V from Q.
-pub fn prep(k: *const Kernels, e: mtl.ComputeEncoder, r: planning.Rows, l: planning.Layer, c: planning.Prep, meta: RowMeta, raw: [4]Ref, scales: [2]Ref, q: Ref, rel: Ref, kv: Cache) void {
+/// `part` picks the heads: the query and relative heads, or the key and value heads that store into the cache.
+pub fn prep(k: *const Kernels, e: mtl.ComputeEncoder, r: planning.Rows, l: planning.Layer, c: planning.Prep, meta: RowMeta, raw: [4]Ref, scales: [2]Ref, q: Ref, rel: Ref, kv: Cache, part: planning.PrepPart) void {
     e.setPipeline(k.prep);
     bind(e, &raw, 0);
     bind(e, &scales, 4);
     bind(e, &.{ meta.pos, meta.seg_of, meta.segs, q, rel, kv.k, kv.v }, 6);
-    e.setValue(planning.PrepArgs{ .heads = r.heads, .kv_heads = r.kv_heads, .ring = l.ring, .global = @intFromBool(l.tau), .qk_clip = c.qk_clip, .rel_clip = c.rel_clip, .floor_pos = c.floor, .alpha = c.alpha, .eps = c.eps }, 13);
-    e.dispatchGroups(mtl.Size.of(r.rows, r.heads + 2 * r.kv_heads, 1), mtl.Size.of(32, 1, 1));
+    const unit0: u32, const units: u32 = switch (part) {
+        .queries => .{ 0, r.heads },
+        .keys_values => .{ r.heads, 2 * r.kv_heads },
+    };
+    e.setValue(planning.PrepArgs{ .heads = r.heads, .kv_heads = r.kv_heads, .ring = l.ring, .global = @intFromBool(l.tau), .qk_clip = c.qk_clip, .rel_clip = c.rel_clip, .floor_pos = c.floor, .alpha = c.alpha, .eps = c.eps, .unit0 = unit0 }, 13);
+    e.dispatchGroups(mtl.Size.of(r.rows, units, 1), mtl.Size.of(32, 1, 1));
 }
 
 pub fn relTable(k: *const Kernels, e: mtl.ComputeEncoder, r: planning.Rows, rel: Ref, proj: Ref, tab: Ref) void {

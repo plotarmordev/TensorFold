@@ -221,6 +221,8 @@ const Attend = struct {
 };
 
 /// Every stream's attention a step at a time: a step's launches run side by side, and a barrier ends each step.
+/// The query heads' prep reads only projections, so it runs beside the convolutions; the relative table runs beside
+/// the key and value heads' prep, which reads the convolutions.
 fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const layer_plan.Visit, segments: []const Segment, prompt: bool) !void {
     const w = &m.weights.layers[v.layer];
     const prep = ap.Prep{ .qk_clip = m.config.text.qk_clip, .rel_clip = m.config.text.rel_clip, .floor = @floatFromInt(m.config.text.log_floor), .alpha = m.config.text.log_alpha, .eps = m.config.text.eps };
@@ -244,13 +246,12 @@ fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: 
     const all = items[0..segments.len];
     for (all) |it| for ([_]bool{ true, false }) |key| stageConvInput(m, e, s, it.cache, v, it.base, key, it.rows);
     for (all) |it| for ([_]bool{ true, false }) |key| convInputForAttention(m, e, s, it.cache, v, it.base, it.rows, key);
+    for (all) |it| prepRows(m, e, s, &w.attn, prep, it, .queries);
     e.barrier();
     for (all) |it| {
-        const b = it.base;
-        attention.prep(&m.attention, e, it.rr, it.layer, prep, it.meta, .{ a(at(s.q_raw, b * state.query_width * 2)), a(at(s.k_conv, b * state.kv_width * 2)), a(at(s.v_conv, b * state.kv_width * 2)), a(at(s.rel_raw, b * state.rel_width * 2)) }, .{ a(r(w.attn.q_scale)), a(r(w.attn.rel_scale)) }, a(at(s.q_prep, b * state.query_width * 2)), a(at(s.rel_prep, b * state.rel_width * 2)), it.kv);
+        prepRows(m, e, s, &w.attn, prep, it, .keys_values);
+        attention.relTable(&m.attention, e, it.rr, a(at(s.rel_prep, it.base * state.rel_width * 2)), a(r(w.attn.rel_projection)), a(at(s.rel_tab, it.base * 24 * ap.extent * 2)));
     }
-    e.barrier();
-    for (all) |it| attention.relTable(&m.attention, e, it.rr, a(at(s.rel_prep, it.base * state.rel_width * 2)), a(r(w.attn.rel_projection)), a(at(s.rel_tab, it.base * 24 * ap.extent * 2)));
     e.barrier();
     for (all) |it| {
         const b = it.base;
@@ -262,6 +263,11 @@ fn attendSegments(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: 
         try attention.merge(&m.attention, e, it.rr, it.layer, state.max_attention_stride, 0, it.meta, a(at(s.part_o, b * 24 * state.max_attention_stride * ap.head_dim * 4)), a(at(s.part_ml, b * 24 * state.max_attention_stride * 8)), a(at(s.sink, b * 24 * 2)), a(at(s.gate, b * state.query_width * 2)), a(at(s.att, b * state.query_width * 2)));
     }
     e.barrier();
+}
+
+fn prepRows(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, w: *const model_file.AttentionWeights, prep: ap.Prep, it: Attend, part: ap.PrepPart) void {
+    const b = it.base;
+    attention.prep(&m.attention, e, it.rr, it.layer, prep, it.meta, .{ a(at(s.q_raw, b * state.query_width * 2)), a(at(s.k_conv, b * state.kv_width * 2)), a(at(s.v_conv, b * state.kv_width * 2)), a(at(s.rel_raw, b * state.rel_width * 2)) }, .{ a(r(w.q_scale)), a(r(w.rel_scale)) }, a(at(s.q_prep, b * state.query_width * 2)), a(at(s.rel_prep, b * state.rel_width * 2)), it.kv, part);
 }
 
 const ConvInput = struct { raw: Ref, projected: Ref, normalized: Ref, taps: Ref, old: Ref, state: usize };

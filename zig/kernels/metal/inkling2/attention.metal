@@ -13,6 +13,7 @@ struct InkSeg {
 struct InkPrepArgs {
   uint heads, kv_heads, ring, global;
   float qk_clip, rel_clip, floor_pos, alpha, eps;
+  uint unit0;
 };
 struct InkAttnArgs {
   uint heads, kv_heads, ring, window, chunk, c0, chunks;
@@ -31,6 +32,7 @@ inline float ink_clip_factor(float ss, float threshold) {
 }
 
 // One 32-thread group handles a row and head; independent q/k/v and relative rows keep their first BF16 rounding.
+// A launch covers the units from unit0: the query heads, or the key and value heads.
 [[max_total_threads_per_threadgroup(32)]]
 kernel void tf_ink2_prep(const device bfloat* q_raw [[buffer(0)]], const device bfloat* k_raw [[buffer(1)]],
     const device bfloat* v_raw [[buffer(2)]], const device bfloat* rel_raw [[buffer(3)]],
@@ -40,7 +42,7 @@ kernel void tf_ink2_prep(const device bfloat* q_raw [[buffer(0)]], const device 
     device bfloat* rel_out [[buffer(10)]], device bfloat* kc [[buffer(11)]], device bfloat* vc [[buffer(12)]],
     constant InkPrepArgs& a [[buffer(13)]], uint2 tg [[threadgroup_position_in_grid]],
     uint lane [[thread_index_in_threadgroup]]) {
-  const uint row = tg.x, unit = tg.y, pos = uint(rpos[row]);
+  const uint row = tg.x, unit = a.unit0 + tg.y, pos = uint(rpos[row]);
   const float tau = a.global ? 1.0f + a.alpha * precise::log(max(float(pos + 1) / a.floor_pos, 1.0f)) : 1.0f;
   float x[4];
   if (unit < a.heads) {
