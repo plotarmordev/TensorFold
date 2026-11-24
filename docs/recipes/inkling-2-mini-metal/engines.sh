@@ -15,6 +15,7 @@ stage=${STAGE:-/Users/agents/projects/capri/desk/jobs/tf250-engines}
 out=${OUT:-/tmp/ink2-engines}
 python=/opt/homebrew/bin/python3.13
 port=18250
+window=/Users/Shared/agent-work/mac-gpu-window
 command -v timeout >/dev/null || timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; } # macOS ships no timeout
 
 fail() { echo "$*" >&2; exit 1; }
@@ -61,12 +62,23 @@ serve_strata() { # serve_strata PACK-NAME: Strata's own server over its engine, 
         --template "$log/export/chat_template.jinja" --out "$log/tokenizer"
     cat >"$log/config.json" <<EOF
 {"exe": "$strata", "args": ["--native", "$pack", "--max-context", "32768"], "cwd": "$log", "arch": "inkling2_loop",
- "tokenizer": "$log/tokenizer", "model_name": "Inkling-2-Mini", "drafting": "dspark", "parallel": 64}
+ "tokenizer": "$log/tokenizer", "model_name": "Inkling-2-Mini", "drafting": "dspark", "parallel": 64, "log": "$log/engine.log"}
 EOF
     echo "[settings] strata-inkling 0.1.65 (Strata v0.2.19, macos-arm64-metal): $pack"
-    echo "[settings] flags: $(tr -d '\n' <"$log/config.json"); KV dtype --kv auto (the server log's kv_dtype follows)"
+    echo "[settings] flags: $(tr -d '\n' <"$log/config.json"); KV dtype --kv auto (the engine log's kv_dtype follows)"
     STRATA_DEBUG=1 PYTHONPATH=$control:$control/tools "$control/python/bin/python3" "$control/serve/server.py" \
         --engine strata --config "$log/config.json" --port "$port" --no-api-key >"$log/server.log" 2>&1 &
+}
+
+quiet() { # quiet: wait for a 1-minute load under 10 (the Desk's speed-cell rule); fail once the window closes
+    local load
+    while :; do
+        [ -e "$window" ] || fail "the Mac GPU window closed"
+        load=$(sysctl -n vm.loadavg | awk '{print $2}')
+        awk -v l="$load" 'BEGIN { exit !(l < 10) }' && return
+        echo "[quiet] 1-minute load $load, rechecking in 60 s"
+        sleep 60
+    done
 }
 
 run() { # run ENGINE: setup, then 1, 4 and 64 streams on both cells
@@ -94,13 +106,14 @@ run() { # run ENGINE: setup, then 1, 4 and 64 streams on both cells
     started=$(date +%s)
     for streams in 1 4 64; do
         for cell in same diverse; do
+            quiet
             timeout 600 "$python" "$wt/tools/bench_concurrent.py" "http://127.0.0.1:$port" Inkling-2-Mini \
                 --levels "$streams" --tokens 256 --reps 3 --temperatures 0 --prompts "$out/prompts/$cell.json" \
                 --label "$engine $cell" --output "$log/$streams-$cell.json" >"$log/$streams-$cell.log" 2>&1 ||
                 { tail -20 "$log/$streams-$cell.log"; fail "$engine $streams streams $cell: bench failed or passed 600 s"; }
         done
     done
-    grep -ho 'kv_dtype=[a-z0-9]*' "$log/server.log" | sort -u || :
+    grep -ho 'kv_dtype=[a-z0-9_]*' "$log/server.log" "$log/engine.log" 2>/dev/null | sort -u || :
     echo "[$engine] measure: $(($(date +%s) - started)) s"
 }
 
@@ -108,7 +121,7 @@ if [ "${1-}" = run ]; then
     run "$2"
     exit
 fi
-[ -e /Users/Shared/agent-work/mac-gpu-window ] || { echo "no Mac GPU window" >&2; exit 3; }
+[ -e "$window" ] || { echo "no Mac GPU window" >&2; exit 3; }
 engines=("$@")
 [ $# -gt 0 ] || engines=(tensorfold llama.cpp strata-sq20 strata-sq10)
 mkdir -p "$out/prompts"
