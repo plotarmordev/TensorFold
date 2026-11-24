@@ -20,6 +20,7 @@ pub const all = join: {
 test "HIP record counts stay pinned in their owning files" {
     const hip = @import("hip_records.zig");
     const counts = .{
+        @import("hip_records_apply_rows.zig").records.len,
         @import("hip_records_columns.zig").records.len,
         @import("hip_records_dense_text.zig").records.len,
         @import("hip_records_draft.zig").records.len,
@@ -37,6 +38,7 @@ test "HIP record counts stay pinned in their owning files" {
         @import("hip_records_relu2_widths.zig").records.len,
         @import("hip_records_router.zig").records.len,
         @import("hip_records_score.zig").records.len,
+        @import("hip_records_score_rows.zig").records.len,
         @import("hip_records_skew.zig").records.len,
         @import("hip_records_sparse.zig").records.len,
         @import("hip_records_stream_plain.zig").records.len,
