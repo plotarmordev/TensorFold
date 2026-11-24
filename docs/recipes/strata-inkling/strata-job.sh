@@ -1,5 +1,5 @@
 #!/bin/sh
-# Strata's own Inkling 2 Mini engine on TOP's GB10, set up as Strata publishes it, for card 242's receipt. One GPU
+# Strata's own Inkling 2 Mini engine on TOP's GB10, set up as Strata publishes it, for card 247's receipt. One GPU
 # job a pack and level, as the Desk queues them (job start passes no env or args):
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/strata-inkling/strata-sq20-1.sh
 # and likewise strata-sq20-4.sh, strata-sq20-64.sh, strata-sq10-1.sh, strata-sq10-4.sh, strata-sq10-64.sh; they set
@@ -12,7 +12,8 @@
 # The Desk stages v0.2.19's engine, Control and tokenizer in strata-inkling-0219/; the SQ-20 and SQ-10 packs
 # already live in strata-inkling-sq20/ and strata-inkling-pack/. The job has no network. The engine needs glibc 2.38
 # and GLIBCXX 3.4.32, supplied by the staged Arm GNU 14.3 toolchain.
-# Setup runs first and logs "build: N s"; only the measurement runs under `timeout 600` and logs "measure: N s".
+# Setup runs first and logs "build: N s"; each cell's measurement is one `timeout 600` phase ("measure HALF PACK
+# STREAMS: N s"), so a one-job both-benches run stays inside the slot bound. STRATA_CELL=own|http runs one half.
 set -eu
 here=$(dirname "$0")
 pilot=/assets/drama3-pilot
@@ -39,6 +40,9 @@ bench() { # bench CELL PACK STREAMS [FLAG...]: one --bench run, its [bench] line
     tail -1 "$out/$cell.txt"
 }
 median() { sed 's/.*decode=\([0-9.]*\) tps.*/\1/' "$out/$1.txt" | sort -n | sed -n 2p; }
+# STRATA_CELL (own or http) limits a level wrapper to one half: a shared out/ keeps the other half's cells.
+own() { [ -z "${STRATA_CELL:-}" ] || [ "$STRATA_CELL" = own ]; }
+http() { [ -z "${STRATA_CELL:-}" ] || [ "$STRATA_CELL" = http ]; }
 summary() { # summary REPORT: one [http] line a cell; fails on a failed request or a cell without a client-clock rate
     python3 - "$1" <<'EOF'
 import json, sys
@@ -63,23 +67,26 @@ stop() { # the running Strata server, if any: on every exit, so a failed cell ne
 measure() { # every pack and level asked for, own bench (unless STRATA_OWN=0) then HTTP bench (unless STRATA_HTTP=0)
     trap stop EXIT
     trap 'exit 1' TERM INT
+    gate=
     for name in $packs; do
         eval "pack=\$$name"
         for streams in $levels; do
-            [ "${STRATA_OWN:-1}" = 1 ] || continue
+            own && [ "${STRATA_OWN:-1}" = 1 ] || continue
             : >"$out/$name-$streams.txt"
             for rep in 1 2 3; do bench "$name-$streams" "$pack" "$streams"; done
             echo "[own] $name at $streams streams: median $(median "$name-$streams") tok/s total"
+            [ "$name-$streams" != sq10-64 ] || gate=1
         done
     done
-    # The pack card does not disclose engine version, flags, context or prompt content; the gate is empirical.
-    [ ! -f "$out/sq10-64.txt" ] || awk -v got="$(median sq10-64)" -v want="$published" 'BEGIN {
+    # The pack card does not disclose engine version, flags, context or prompt content; the gate is empirical and
+    # prints only for a sq10-64 cell this job measured: never a stale file shared out/ left from an earlier run.
+    [ -z "$gate" ] || awk -v got="$(median sq10-64)" -v want="$published" 'BEGIN {
         ratio = got / want
         verdict = (ratio >= 0.9 && ratio <= 1.1) ? "counted" : "not counted, nothing in this receipt is a bar"
         printf "[gate] SQ-10 at 64 streams, own bench: %.1f tok/s, %.0f%% of the published %.1f: %s\n", got,
             100 * ratio, want, verdict
     }'
-    [ "${STRATA_HTTP:-1}" = 1 ] || return 0
+    http && [ "${STRATA_HTTP:-1}" = 1 ] || return 0
     for name in $packs; do
         eval "pack=\$$name"
         for streams in $levels; do
@@ -190,8 +197,20 @@ for name in $packs; do
         --template "$out/export-$name/chat_template.jinja" --out "$out/tokenizer-$name"
 done
 echo "build: $(($(date +%s) - started)) s"
-started=$(date +%s)
+# One measurement a timed phase, so every phase fits the slot's 600 s bound while the job's env still selects the
+# cells (the wrappers' STRATA_PACK/STRATA_STREAMS/STRATA_CELL and the halves STRATA_OWN/STRATA_HTTP switch off).
+halves=
+own && [ "${STRATA_OWN:-1}" = 1 ] && halves=own
+http && [ "${STRATA_HTTP:-1}" = 1 ] && halves="$halves http"
 status=0
-STRATA_MEASURE=1 timeout -k 5 600 sh "$0" || status=$?
-echo "measure: $(($(date +%s) - started)) s"
+for half in $halves; do
+    for name in $packs; do
+        for streams in $levels; do
+            started=$(date +%s)
+            STRATA_MEASURE=1 STRATA_CELL=$half STRATA_PACK=$name STRATA_STREAMS=$streams \
+                timeout -k 5 600 sh "$0" || { status=$?; break 2; }
+            echo "measure $half $name $streams: $(($(date +%s) - started)) s"
+        done
+    done
+done
 exit "$status"
