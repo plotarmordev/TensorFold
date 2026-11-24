@@ -203,11 +203,12 @@ def draft_count(run: dict, key: str) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
-def depth_counts(run: dict) -> tuple[list[int], list[int]] | None:
-    """A run's per-depth drafted and kept rows, None when the server reported none."""
+def depth_counts(run: dict) -> list[list[int]] | None:
+    """A run's per-depth drafted and kept rows, None unless the server reported both as nonnegative integers."""
     spec = run.get("speculative") or {}
-    pair = tuple(spec.get(k) for k in DEPTH_KEYS)
-    return pair if all(type(v) is list for v in pair) else None
+    pair = [spec.get(k) for k in DEPTH_KEYS]
+    ok = all(type(v) is list and all(type(n) is int and n >= 0 for n in v) for v in pair)
+    return pair if ok else None
 
 
 def sum_depths(rows) -> list[int]:
