@@ -13,6 +13,7 @@
 # and GLIBCXX 3.4.32, supplied by the staged Arm GNU 14.3 toolchain.
 # Setup runs first and logs "build: N s"; only the measurement runs under `timeout 600` and logs "measure: N s".
 set -eu
+here=$(dirname "$0")
 pilot=/assets/drama3-pilot
 out=/work/out/strata-inkling
 gcc=arm-gnu-toolchain-14.3.rel1-aarch64-aarch64-none-linux-gnu
@@ -98,9 +99,8 @@ EOF
                 summary "$out/http-$name-$streams-$cell.json" ||
                     { grep '^\[strata\]' "$out/server-$name-$streams.log" | tail -12; exit 1; }
             done
-            # the engine's INFO line, which the server keeps only in /metrics
-            kv=$(python3 -c 'import json, urllib.request as u
-print(json.load(u.urlopen("http://127.0.0.1:8242/metrics"))["engine"]["kv_dtype"])')
+            # the engine's INFO line, which the server keeps only in /metrics; a missing dtype fails the job
+            kv=$(python3 "$here/metrics-kv.py" http://127.0.0.1:8242/metrics)
             echo "[kv] $name at $streams streams, HTTP: kv_dtype=$kv"
             stop
         done

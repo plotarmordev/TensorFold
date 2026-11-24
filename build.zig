@@ -176,6 +176,9 @@ pub fn build(b: *std.Build) void {
     }) });
     const identity_run = b.addRunArtifact(identity_cases);
     b.step("test-cost-identity", "Streamed window-cost identity matches legacy bytes with bounded memory").dependOn(&identity_run.step);
+    const strata_kv = b.addSystemCommand(&.{ "python3", "docs/recipes/strata-inkling/metrics-kv-test.py" });
+    strata_kv.setCwd(b.path("."));
+    b.step("test-strata-kv", "Strata's /metrics KV-dtype collection fails when the field is absent").dependOn(&strata_kv.step);
     test_step.dependOn(&identity_run.step);
     merge_build.targets(b, target, optimize); // tensorfold merge's tests and tf-merge-check, host only on every OS
     const voice_tool = b.createModule(.{ .root_source_file = b.path("zig/src/server/drama_voice_tool.zig"), .target = target, .optimize = optimize });
