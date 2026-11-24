@@ -172,13 +172,13 @@ fn serve(native_opened: api.Opened, id: api.Id, request: *const api.Request) !Re
     return reply;
 }
 
-fn opened(dir: []const u8, drafter: ?[]const u8, cache_gib: ?f64) !api.Opened {
+fn opened(dir: []const u8, drafter: ?[]const u8, cache_gib: ?f64, stream_count: u32) !api.Opened {
     var why: []const u8 = "";
     const result = try native.open(gpa, gpa, io, .{
         .dir = dir,
         .model_type = "inkling2_loop",
         .context = context,
-        .lanes = 1,
+        .lanes = stream_count,
         .drafts = drafter != null,
         .drafter = drafter,
         .prompt_cache_gib = cache_gib,
@@ -259,7 +259,7 @@ test "Mini Metal serving, fresh and restored, matches one serial stream on the b
     for (refs.first.tap) |byte| tap_nonzero = tap_nonzero or byte != 0;
     try std.testing.expect(tap_nonzero);
 
-    const opened_once = try opened(dir, null, 1);
+    const opened_once = try opened(dir, null, 1, 1);
     defer opened_once.close(opened_once.ctx);
     try std.testing.expectEqual(@as(?f64, 0.5), opened_once.engine.info().decode_share);
     const keepalive = opened_once.engine.keepaliveTarget() orelse return error.MissingMiniKeepalive;
@@ -287,7 +287,7 @@ test "Mini Metal opt-in DSpark drafting preserves target tokens and rolls back e
     const refs = try withReference(dir, &ids, &turn);
     try transactions(dir, drafter, &ids, &refs.first);
 
-    const opened_once = try opened(dir, drafter, 1);
+    const opened_once = try opened(dir, drafter, 1, 1);
     defer opened_once.close(opened_once.ctx);
     var plain = try serve(opened_once, 10, &.{ .prompt = &ids, .max_tokens = made, .drafts = false, .logprobs = 3, .history_len = ids.len });
     defer plain.deinit();
@@ -306,6 +306,148 @@ test "Mini Metal opt-in DSpark drafting preserves target tokens and rolls back e
     defer restored.deinit();
     try std.testing.expectEqual(@as(?u32, ids.len), restored.cached);
     try expectTokens(&refs.second.?, &restored);
+}
+
+const AbsorbSink = struct {
+    d: lanes.drafter.Drafter,
+
+    fn take(ptr: *anyopaque, s: *lanes.Stream, f: lanes.backend.Features, start: u64) !void {
+        const self: *AbsorbSink = @ptrCast(@alignCast(ptr));
+        const ids = s.prompt();
+        const last = ids.len - 1;
+        if (start >= last) return;
+        var rows = f;
+        rows.rows = @intCast(@min(f.rows, last - start));
+        try self.d.absorb(&.{.{ .stream = s, .features = rows, .start = start, .follow = ids[@intCast(start + 1)..][0..rows.rows] }});
+    }
+};
+
+fn prepareHold(b: lanes.backend.Backend, d: lanes.drafter.Drafter, s: *lanes.Stream) !u32 {
+    try d.open(s);
+    errdefer d.release(s);
+    var sink: AbsorbSink = .{ .d = d };
+    try b.vtable.prefill_features.?(b.ptr, s, d.taps(), .{ .ptr = &sink, .take = AbsorbSink.take });
+    errdefer b.release(s);
+    const ids = s.prompt();
+    const pending = try b.read(try b.first(s, ids.len));
+    const last = try b.features(s, d.taps(), ids.len - 1, 1);
+    const follow = [1]u32{pending};
+    try d.absorb(&.{.{ .stream = s, .features = last, .start = ids.len - 1, .follow = &follow }});
+    return pending;
+}
+
+fn holdAlone(b: lanes.backend.Backend, d: lanes.drafter.Drafter, ids: []const u32, depth: u32, out: []u32) !void {
+    var s = try lanes.Stream.init(gpa, .{ .id = "solo-hold", .prompt = ids, .max_new = made, .drafts = true });
+    defer s.deinit(gpa);
+    const pending = try prepareHold(b, d, &s);
+    defer b.release(&s);
+    defer d.release(&s);
+    try d.hold(&.{.{ .stream = &s, .pending = pending, .position = ids.len + 1, .depth = depth }});
+    try d.held(&.{&s}, &.{out});
+}
+
+test "Mini Metal DSpark sixteen-stream chain preserves solo holds at unequal depths" {
+    const dir = try checkpoint();
+    const drafter_dir = @import("sys").getenv("TF_INKLING2_DSPARK_DIR") orelse return error.SkipZigTest;
+    const depths = [_]u32{ 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 3, 6 };
+    var ids: [16][history]u32 = undefined;
+    for (&ids, 0..) |*p, i| p.* = prompt(history, @intCast(40 + i));
+
+    const model = try Model.load(gpa, io, dir);
+    defer model.deinit();
+    const target = try backend.Metal.init(gpa, model, .{ .capacity = context, .streams = 16, .budget = 16 * st.cacheBytes(context) });
+    defer target.deinit();
+    const draft_head = try dspark.Drafter.init(gpa, io, model.device, model, drafter_dir);
+    defer draft_head.deinit();
+    try draft_head.setContext(context);
+    const b = target.backend();
+    const d = draft_head.drafter();
+    try b.vtable.prepare_features.?(b.ptr, d.taps());
+    var want: [16][7]u32 = undefined;
+    for (0..16) |i| try holdAlone(b, d, &ids[i], depths[i], want[i][0..depths[i]]);
+
+    var streams: [16]lanes.Stream = undefined;
+    var initialized: usize = 0;
+    defer for (streams[0..initialized]) |*s| s.deinit(gpa);
+    for (&streams, 0..) |*s, i| {
+        s.* = try lanes.Stream.init(gpa, .{ .id = "chain-hold", .prompt = &ids[i], .max_new = made, .drafts = true });
+        initialized += 1;
+    }
+    var prepared: usize = 0;
+    defer for (streams[0..prepared]) |*s| b.release(s);
+    defer for (streams[0..prepared]) |*s| d.release(s);
+    var holds: [16]lanes.drafter.Hold = undefined;
+    for (&streams, 0..) |*s, i| {
+        const pending = try prepareHold(b, d, s);
+        prepared += 1;
+        holds[i] = .{ .stream = s, .pending = pending, .position = history + 1, .depth = depths[i] };
+    }
+    var got: [16][7]u32 = undefined;
+    var ptrs: [16]*lanes.Stream = undefined;
+    var outs: [16][]u32 = undefined;
+    for (0..16) |i| {
+        ptrs[i] = &streams[i];
+        outs[i] = got[i][0..depths[i]];
+    }
+    try d.hold(holds[0..4]);
+    try d.held(ptrs[0..4], outs[0..4]);
+    for (0..4) |i| try std.testing.expectEqualSlices(u32, want[i][0..depths[i]], outs[i]);
+    try d.hold(&holds);
+    try d.held(&ptrs, &outs);
+    for (0..16) |i| try std.testing.expectEqualSlices(u32, want[i][0..depths[i]], outs[i]);
+}
+
+test "Mini Metal DSpark four prompts equal solos through a leave and join" {
+    const dir = try checkpoint();
+    const drafter = @import("sys").getenv("TF_INKLING2_DSPARK_DIR") orelse return error.SkipZigTest;
+    const opened_wide = try opened(dir, drafter, 0, 4);
+    defer opened_wide.close(opened_wide.ctx);
+    var ids: [4][history]u32 = undefined;
+    var requests: [4]api.Request = undefined;
+    for (0..4) |i| {
+        ids[i] = prompt(history, @intCast(70 + i));
+        // Null sampling is the native request's temperature-zero, greedy representation.
+        requests[i] = .{ .prompt = &ids[i], .max_tokens = made, .sampling = null, .drafts = true };
+    }
+    var solo: [4]Reply = .{ .{}, .{}, .{}, .{} };
+    defer for (&solo) |*r| r.deinit();
+    for (0..4) |i| solo[i] = try serve(opened_wide, 200 + i, &requests[i]);
+
+    var batched: [4]Reply = .{ .{}, .{}, .{}, .{} };
+    defer for (&batched) |*r| r.deinit();
+    var drafted: u64 = 0;
+    var accepted: u64 = 0;
+    for (0..4) |i| try opened_wide.engine.submit(210 + i, &requests[i], .{ .ctx = &batched[i], .event = Reply.event });
+    for (0..4) |i| try std.testing.expectEqual(api.Reason.length, try batched[i].wait());
+    for (0..4) |i| {
+        try std.testing.expectEqual(@as(usize, made), batched[i].tokens.items.len);
+        try std.testing.expectEqualSlices(u32, solo[i].tokens.items, batched[i].tokens.items);
+        drafted += batched[i].drafted;
+        accepted += batched[i].accepted;
+    }
+    for (0..4) |i| {
+        var previous = batched[i];
+        batched[i] = .{};
+        previous.deinit();
+    }
+    const lengths = [_]u32{ 6, 12, made, made };
+    for (0..3) |i| {
+        requests[i].max_tokens = lengths[i];
+        try opened_wide.engine.submit(220 + i, &requests[i], .{ .ctx = &batched[i], .event = Reply.event });
+    }
+    try std.testing.expectEqual(api.Reason.length, try batched[0].wait());
+    try std.testing.expectEqual(@as(usize, 6), batched[0].tokens.items.len);
+    try opened_wide.engine.submit(223, &requests[3], .{ .ctx = &batched[3], .event = Reply.event });
+    try std.testing.expectEqual(api.Reason.length, try batched[1].wait());
+    for (2..4) |i| try std.testing.expectEqual(api.Reason.length, try batched[i].wait());
+    for (0..4) |i| {
+        try std.testing.expectEqual(@as(usize, lengths[i]), batched[i].tokens.items.len);
+        try std.testing.expectEqualSlices(u32, solo[i].tokens.items[0..lengths[i]], batched[i].tokens.items);
+        drafted += batched[i].drafted;
+        accepted += batched[i].accepted;
+    }
+    try std.testing.expect(drafted > 0);
+    try std.testing.expect(accepted > 0);
 }
 
 test "Mini Metal fills a prompt a chunk a call to the whole pass's first row and features" {

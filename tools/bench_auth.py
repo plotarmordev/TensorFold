@@ -35,7 +35,7 @@ def redact(value, key: str | None):
         return value
     if isinstance(value, str):
         return value.replace(key, "[REDACTED]")
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [redact(item, key) for item in value]
     if isinstance(value, dict):
         return {redact(name, key): redact(item, key) for name, item in value.items()}

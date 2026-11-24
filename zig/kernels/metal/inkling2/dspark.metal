@@ -18,9 +18,16 @@ struct DsparkTokenArgs { uint token; };
 struct DsparkResidualArgs { uint init; };
 struct DsparkCountArgs { uint count; };
 struct DsparkBaseArgs { uint rows, vocab; };
+struct DsparkCohortArgs { uint streams; uint row; };
+struct DsparkPackArgs { uint active[7]; uint first, count; };
+constant constexpr uint DSP_TILE = 28;
 
-kernel void tf_ink2_dspark_init_rows(const device bfloat* anchor [[buffer(0)]], const device bfloat* mask [[buffer(1)]], device bfloat* rows [[buffer(2)]], uint row [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]]) {
-  for (uint d = t; d < DSP_H; d += 256) {
+// Threadgroup (row, stream): row zero copies the stream's normalized anchor, the other seven the raw mask embedding.
+kernel void tf_ink2_dspark_init_rows(const device bfloat* anchors [[buffer(0)]], const device bfloat* mask [[buffer(1)]], device bfloat* blocks [[buffer(2)]], uint2 tg [[threadgroup_position_in_grid]], uint2 t [[thread_position_in_threadgroup]]) {
+  const uint row = tg.x;
+  const device bfloat* anchor = anchors + size_t(tg.y) * DSP_H;
+  device bfloat* rows = blocks + size_t(tg.y) * 8 * DSP_H;
+  for (uint d = t.x; d < DSP_H; d += 256) {
     const device bfloat* src = row == 0 ? anchor : mask;
     rows[row * DSP_H + d] = src[d];
   }
@@ -61,37 +68,48 @@ static inline float dspark_rope_angle(uint d, uint position) {
   return float(position) * frequency;
 }
 
-kernel void tf_ink2_dspark_block_qkv(const device bfloat* q_raw [[buffer(0)]], const device bfloat* k_raw [[buffer(1)]], const device bfloat* v_raw [[buffer(2)]], const device bfloat* q_weight [[buffer(3)]], const device bfloat* k_weight [[buffer(4)]], device bfloat* q [[buffer(5)]], device bfloat* k [[buffer(6)]], device bfloat* v [[buffer(7)]], constant DsparkPositionArgs& a [[buffer(8)]], uint group [[threadgroup_position_in_grid]], uint d [[thread_position_in_threadgroup]]) {
-  const uint row = group / 40, work = group % 40;
-  threadgroup float scale;
+// One block row at `position`: work 0..31 a query, then a key head; 32..39 a value head's unchanged 128 threads.
+static inline void dspark_block_qkv(const device bfloat* q_raw, const device bfloat* k_raw, const device bfloat* v_raw, const device bfloat* q_weight, const device bfloat* k_weight, device bfloat* q, device bfloat* k, device bfloat* v, threadgroup float* scale, uint position, uint work, uint d) {
   if (work < 32 && d == 0) {
     float sum = 0.0f;
     if (work < 24) {
       const uint h = work;
-      for (uint i = 0; i < DSP_HEAD; ++i) { const float x = float(q_raw[row * DSP_Q + h * DSP_HEAD + i]); sum += x * x; }
+      for (uint i = 0; i < DSP_HEAD; ++i) { const float x = float(q_raw[h * DSP_HEAD + i]); sum += x * x; }
     } else {
       const uint h = work - 24;
-      for (uint i = 0; i < DSP_HEAD; ++i) { const float x = float(k_raw[row * DSP_KV + h * DSP_HEAD + i]); sum += x * x; }
+      for (uint i = 0; i < DSP_HEAD; ++i) { const float x = float(k_raw[h * DSP_HEAD + i]); sum += x * x; }
     }
-    scale = rsqrt(sum / float(DSP_HEAD) + DSP_EPS);
+    scale[0] = rsqrt(sum / float(DSP_HEAD) + DSP_EPS);
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
   if (work >= 32) {
     const uint h = work - 32;
-    v[row * DSP_KV + h * DSP_HEAD + d] = v_raw[row * DSP_KV + h * DSP_HEAD + d];
+    v[h * DSP_HEAD + d] = v_raw[h * DSP_HEAD + d];
     return;
   }
   const bool query = work < 24;
   const uint h = query ? work : work - 24;
-  const uint at = row * (query ? DSP_Q : DSP_KV) + h * DSP_HEAD + d;
-  const float x = float(bfloat(float(query ? q_raw[at] : k_raw[at]) * scale * float(query ? q_weight[d] : k_weight[d])));
+  const uint at = h * DSP_HEAD + d;
+  const float x = float(bfloat(float(query ? q_raw[at] : k_raw[at]) * scale[0] * float(query ? q_weight[d] : k_weight[d])));
   const uint partner = d < 64 ? d + 64 : d - 64;
-  const uint other_at = row * (query ? DSP_Q : DSP_KV) + h * DSP_HEAD + partner;
-  const float other = float(bfloat(float(query ? q_raw[other_at] : k_raw[other_at]) * scale * float(query ? q_weight[partner] : k_weight[partner])));
-  const float angle = dspark_rope_angle(d, a.base + row);
+  const float other = float(bfloat(float(query ? q_raw[h * DSP_HEAD + partner] : k_raw[h * DSP_HEAD + partner]) * scale[0] * float(query ? q_weight[partner] : k_weight[partner])));
+  const float angle = dspark_rope_angle(d, position);
   const float cs = cos(angle), sn = sin(angle);
   const float rotated = d < 64 ? x * cs - other * sn : other * sn + x * cs;
   if (query) q[at] = bfloat(rotated); else k[at] = bfloat(rotated);
+}
+
+kernel void tf_ink2_dspark_block_qkv(const device bfloat* q_raw [[buffer(0)]], const device bfloat* k_raw [[buffer(1)]], const device bfloat* v_raw [[buffer(2)]], const device bfloat* q_weight [[buffer(3)]], const device bfloat* k_weight [[buffer(4)]], device bfloat* q [[buffer(5)]], device bfloat* k [[buffer(6)]], device bfloat* v [[buffer(7)]], constant DsparkPositionArgs& a [[buffer(8)]], uint group [[threadgroup_position_in_grid]], uint d [[thread_position_in_threadgroup]]) {
+  threadgroup float scale;
+  const uint row = group / 40, work = group % 40;
+  dspark_block_qkv(q_raw + size_t(row) * DSP_Q, k_raw + size_t(row) * DSP_KV, v_raw + size_t(row) * DSP_KV, q_weight, k_weight, q + size_t(row) * DSP_Q, k + size_t(row) * DSP_KV, v + size_t(row) * DSP_KV, &scale, a.base + row, work, d);
+}
+
+// The cohort's: threadgroup (work, row) over blocks of eight rows, each block at its own entry of `anchors`.
+kernel void tf_ink2_dspark_cohort_qkv(const device bfloat* q_raw [[buffer(0)]], const device bfloat* k_raw [[buffer(1)]], const device bfloat* v_raw [[buffer(2)]], const device bfloat* q_weight [[buffer(3)]], const device bfloat* k_weight [[buffer(4)]], device bfloat* q [[buffer(5)]], device bfloat* k [[buffer(6)]], device bfloat* v [[buffer(7)]], const device uint* anchors [[buffer(8)]], uint2 tg [[threadgroup_position_in_grid]], uint2 d [[thread_position_in_threadgroup]]) {
+  threadgroup float scale;
+  const uint work = tg.x, row = tg.y;
+  dspark_block_qkv(q_raw + size_t(row) * DSP_Q, k_raw + size_t(row) * DSP_KV, v_raw + size_t(row) * DSP_KV, q_weight, k_weight, q + size_t(row) * DSP_Q, k + size_t(row) * DSP_KV, v + size_t(row) * DSP_KV, &scale, anchors[row / 8] + row % 8, work, d.x);
 }
 
 kernel void tf_ink2_dspark_context_kv(const device bfloat* k_raw [[buffer(0)]], const device bfloat* v_raw [[buffer(1)]], const device bfloat* weight [[buffer(2)]], device bfloat* keys [[buffer(3)]], device bfloat* values [[buffer(4)]], constant DsparkContextArgs& a [[buffer(5)]], uint group [[threadgroup_position_in_grid]], uint d [[thread_position_in_threadgroup]]) {
@@ -239,11 +257,14 @@ kernel void tf_ink2_dspark_chain_step(const device bfloat* state [[buffer(0)]], 
   dspark_recurrent_step(state, kappa, rnn_weight, markov, z, next_state, lambda, held[a.token], i);
 }
 
-// held[a.token + 1] = the first greatest of the 200,058 logits; a NaN is never chosen unless logit 0 is one.
-[[max_total_threads_per_threadgroup(1024)]]
-kernel void tf_ink2_dspark_chain_pick(const device bfloat* logits [[buffer(0)]], device uint* held [[buffer(1)]], constant DsparkTokenArgs& a [[buffer(2)]], uint t [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
-  threadgroup float values[32];
-  threadgroup uint places[32];
+// A depth's recurrent step, a threadgroup a stream: stream s takes kappa row 7s + a.row after the token held[8s + a.row].
+[[max_total_threads_per_threadgroup(256)]]
+kernel void tf_ink2_dspark_cohort_step(const device bfloat* state [[buffer(0)]], const device float* kappa [[buffer(1)]], const device bfloat* rnn_weight [[buffer(2)]], const device bfloat* markov [[buffer(3)]], device bfloat* z [[buffer(4)]], device bfloat* next_state [[buffer(5)]], device bfloat* lambda [[buffer(6)]], constant DsparkCohortArgs& a [[buffer(7)]], const device uint* held [[buffer(8)]], uint s [[threadgroup_position_in_grid]], uint i [[thread_position_in_threadgroup]]) {
+  dspark_recurrent_step(state + s * DSP_RANK, kappa + (s * 7 + a.row) * DSP_RNN, rnn_weight, markov, z + s * 3 * DSP_RANK, next_state + s * DSP_RANK, lambda + s * DSP_RANK, held[s * 8 + a.row], i);
+}
+
+// The first greatest of one row of 200,058 logits for a 1,024-thread group: the lower id of equals, a NaN never.
+static inline uint dspark_first_greatest(const device bfloat* logits, uint t, uint lane, uint sg, threadgroup float* values, threadgroup uint* places) {
   float best = -INFINITY;
   uint at = 0xffffffffu;
   for (uint i = t; i < 200058u; i += 1024u) {
@@ -258,27 +279,52 @@ kernel void tf_ink2_dspark_chain_pick(const device bfloat* logits [[buffer(0)]],
   }
   if (lane == 0) { values[sg] = best; places[sg] = at; }
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  if (t != 0) return;
+  if (t != 0) return 0xffffffffu;
   for (uint g = 0; g < 32; ++g)
     if (values[g] > best || (values[g] == best && places[g] < at)) { best = values[g]; at = places[g]; }
-  held[a.token + 1] = isnan(float(logits[0])) ? 0u : at;
+  return at;
 }
 
-// A simdgroup an id: eight columns a lane a step, every row sharing the read of unembed[id]; rounded once to BF16.
+// held[a.token + 1] = the first greatest of the 200,058 logits; a NaN is never chosen unless logit 0 is one.
+[[max_total_threads_per_threadgroup(1024)]]
+kernel void tf_ink2_dspark_chain_pick(const device bfloat* logits [[buffer(0)]], device uint* held [[buffer(1)]], constant DsparkTokenArgs& a [[buffer(2)]], uint t [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+  threadgroup float values[32];
+  threadgroup uint places[32];
+  const uint at = dspark_first_greatest(logits, t, lane, sg, values, places);
+  if (t == 0) held[a.token + 1] = isnan(float(logits[0])) ? 0u : at;
+}
+
+// A depth's picks, a threadgroup a stream: held[8s + a.row + 1] is the first greatest of logits row s.
+[[max_total_threads_per_threadgroup(1024)]]
+kernel void tf_ink2_dspark_cohort_pick(const device bfloat* logits [[buffer(0)]], device uint* held [[buffer(1)]], constant DsparkCohortArgs& a [[buffer(2)]], uint s [[threadgroup_position_in_grid]], uint t [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+  threadgroup float values[32];
+  threadgroup uint places[32];
+  const device bfloat* row = logits + size_t(s) * 200058u;
+  const uint at = dspark_first_greatest(row, t, lane, sg, values, places);
+  if (t == 0) held[s * 8 + a.row + 1] = isnan(float(row[0])) ? 0u : at;
+}
+
+// A simdgroup an id: eight columns a lane a row; the rows share the read of unembed[id] and round once to BF16.
 [[max_total_threads_per_threadgroup(256)]]
 kernel void tf_ink2_dspark_base(const device bfloat* unembed [[buffer(0)]], const device bfloat* y [[buffer(1)]], device bfloat* out [[buffer(2)]], constant DsparkBaseArgs& a [[buffer(3)]],
     uint tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
   const uint id = tg * 8 + sg;
   if (id >= a.vocab) return;
   const device bfloat* w = unembed + size_t(id) * DSP_H;
-  float acc[7] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  float acc[DSP_TILE];
+  #pragma unroll
+  for (uint row = 0; row < DSP_TILE; ++row) acc[row] = 0.0f;
   for (uint i = 8 * lane; i < DSP_H; i += 256) {
     const float4 w0 = float4(*(const device bfloat4*)(w + i)), w1 = float4(*(const device bfloat4*)(w + i + 4));
-    for (uint row = 0; row < a.rows; ++row) {
-      const device bfloat* x = y + size_t(row) * DSP_H + i;
-      acc[row] += dot(w0, float4(*(const device bfloat4*)x)) + dot(w1, float4(*(const device bfloat4*)(x + 4)));
+    #pragma unroll
+    for (uint row = 0; row < DSP_TILE; ++row) {
+      if (row < a.rows) {
+        const device bfloat* x = y + size_t(row) * DSP_H + i;
+        acc[row] += dot(w0, float4(*(const device bfloat4*)x)) + dot(w1, float4(*(const device bfloat4*)(x + 4)));
+      }
     }
   }
+  #pragma unroll
   for (uint row = 0; row < a.rows; ++row) {
     const float sum = simd_sum(acc[row]);
     if (lane == 0) out[size_t(row) * a.vocab + id] = bfloat(sum);
@@ -292,4 +338,47 @@ kernel void tf_ink2_dspark_logits(const device bfloat* base [[buffer(0)]], const
   const bfloat bias = bfloat(float(beta[i]) + dot);
   const bfloat logit = bfloat(float(base[i]) + float(bias));
   out[i] = bfloat(30.0f * tanh(float(logit) / 30.0f));
+}
+
+// A vocabulary id's logits for `streams` rows: phi's row is read once, each row keeping its own serial 256-sum.
+template <uint N>
+inline void dspark_cohort_logits(const device bfloat* base, const device bfloat* phi, const device bfloat* beta, const device bfloat* lambda, device bfloat* out, uint streams, uint i) {
+  float dot[N];
+  #pragma unroll
+  for (uint s = 0; s < N; ++s) dot[s] = 0.0f;
+  for (uint d = 0; d < DSP_RANK; ++d) {
+    const float p = float(phi[size_t(i) * DSP_RANK + d]);
+    #pragma unroll
+    for (uint s = 0; s < N; ++s) {
+      if (s < streams) dot[s] += p * float(lambda[size_t(s) * DSP_RANK + d]);
+    }
+  }
+  #pragma unroll
+  for (uint s = 0; s < N; ++s) {
+    if (s < streams) {
+      const bfloat bias = bfloat(float(beta[i]) + dot[s]);
+      const bfloat logit = bfloat(float(base[size_t(s) * 200058u + i]) + float(bias));
+      out[size_t(s) * 200058u + i] = bfloat(30.0f * tanh(float(logit) / 30.0f));
+    }
+  }
+}
+
+// A depth's final logits for streams 0 .. a.streams: base rows a.row .., lambda row s, out row s.
+kernel void tf_ink2_dspark_cohort_logits(const device bfloat* base [[buffer(0)]], const device bfloat* phi [[buffer(1)]], const device bfloat* beta [[buffer(2)]], const device bfloat* lambda [[buffer(3)]], device bfloat* out [[buffer(4)]], constant DsparkCohortArgs& a [[buffer(5)]], uint i [[thread_position_in_grid]]) {
+  if (i >= 200058u) return;
+  const device bfloat* rows = base + size_t(a.row) * 200058u;
+  if (a.streams <= 4) dspark_cohort_logits<4>(rows, phi, beta, lambda, out, a.streams, i);
+  else if (a.streams <= 8) dspark_cohort_logits<8>(rows, phi, beta, lambda, out, a.streams, i);
+  else dspark_cohort_logits<16>(rows, phi, beta, lambda, out, a.streams, i);
+}
+
+// The packed unembed rows a.first .. a.first + a.count: draft row tg.y + 1 of the first active[tg.y] streams, a row a stream.
+kernel void tf_ink2_dspark_cohort_pack(const device bfloat* x [[buffer(0)]], device bfloat* out [[buffer(1)]], constant DsparkPackArgs& a [[buffer(2)]], uint2 tg [[threadgroup_position_in_grid]], uint2 t [[thread_position_in_threadgroup]]) {
+  if (tg.x >= a.active[tg.y]) return;
+  uint row = tg.x;
+  for (uint j = 0; j < tg.y; ++j) row += a.active[j];
+  if (row < a.first || row - a.first >= a.count) return;
+  const device bfloat4* src = (const device bfloat4*)(x + size_t(tg.x * 8 + tg.y + 1) * DSP_H);
+  device bfloat4* dst = (device bfloat4*)(out + size_t(row - a.first) * DSP_H);
+  for (uint d = t.x; d < DSP_H / 4; d += 256) dst[d] = src[d];
 }

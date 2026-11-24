@@ -14,6 +14,7 @@ pub const Suites = struct {
     runtime: @import("metal_inkling2_runtime.zig").Suite,
     dspark: @import("metal_inkling2_dspark.zig").Suite,
     chain: @import("metal_inkling2_dspark_chain.zig").Suite,
+    cohort: @import("metal_inkling2_dspark_cohort.zig").Suite,
     dspark_units: @import("metal_inkling2_dspark_units.zig").Suite,
 
     /// Built where it will live: each kernel's context points at a probe inside these suites.
@@ -29,6 +30,7 @@ pub const Suites = struct {
             .runtime = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
             .dspark = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
             .chain = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
+            .cohort = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
             .dspark_units = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
         };
         errdefer s.deinit();
@@ -42,6 +44,7 @@ pub const Suites = struct {
         try s.runtime.collect(only);
         try s.dspark.collect(only);
         try s.chain.collect(only);
+        try s.cohort.collect(only);
         try s.dspark_units.collect(only);
     }
 
@@ -56,6 +59,7 @@ pub const Suites = struct {
         s.runtime.deinit();
         s.dspark.deinit();
         s.chain.deinit();
+        s.cohort.deinit();
         s.dspark_units.deinit();
     }
 };
