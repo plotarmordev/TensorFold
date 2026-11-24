@@ -251,21 +251,33 @@ index 06c1131d2..698f9dcf0 100644
  using PromptTile = GemmConfig<64, 64, 4>;
  
 diff --git a/zig/src/core/contract/registry_media.zig b/zig/src/core/contract/registry_media.zig
-index dcb13d7ce..6892581e7 100644
+index 6ba9b54d4..9f0d632d2 100644
 --- a/zig/src/core/contract/registry_media.zig
 +++ b/zig/src/core/contract/registry_media.zig
-@@ -75,8 +75,9 @@ pub const cuda_pending = [_]CudaRecord{
- /// The picture's TMA products (h3_int8_tma.cuh): sm_121's usage from GB10's live check; sm_120's
- /// pending the five-SM limits job.
- pub const cuda_tma_pending = [_]CudaRecord{
--    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(222) },
--    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(219) },
-+    .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(224) },
-+    .{ .launch = .{ .name = "h3 h3_heads_int8_tma", .symbol = "h3_heads_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(255) },
-+    .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(225) },
-     .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = @import("registry.zig").none },
+@@ -73,9 +73,11 @@ pub const cuda_pending = [_]CudaRecord{
  };
  
+ /// The picture's TMA products (h3_int8_tma.cuh): sm_120's and sm_121's usage from the five-SM limits job
+-/// (card 199's TOP check); sm_80 to sm_89 sit below their min_sm.
++/// (card 199's TOP check) but h3_heads_int8_tma's sm_121 alone from card 178's GB10 check;
++/// sm_80 to sm_89 sit below their min_sm.
+ pub const cuda_tma_pending = [_]CudaRecord{
+     .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(222) },
++    .{ .launch = .{ .name = "h3 h3_heads_int8_tma", .symbol = "h3_heads_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(255) },
+     .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(219) },
+     .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = sm12x(22) },
+ };
+@@ -86,3 +88,10 @@ fn sm12x(regs: u32) [5]@import("limits.zig").Usage {
+     for (u[3..]) |*v| v.* = .{ .regs = regs, .static = 0, .bound = 256 };
+     return u;
+ }
++
++/// A usage row measured on sm_121 alone; the other targets stay missing receipts.
++fn sm121(regs: u32) [5]@import("limits.zig").Usage {
++    var u = @import("registry.zig").none;
++    u[4] = .{ .regs = regs, .static = 0, .bound = 256 };
++    return u;
++}
 diff --git a/zig/src/families/h3/cuda.zig b/zig/src/families/h3/cuda.zig
 index 0e1fa22e9..d47b26a04 100644
 --- a/zig/src/families/h3/cuda.zig
@@ -721,7 +733,7 @@ index ee7c72293..9eca2ffb6 100644
          const n = t.shape.n;
          const cols = t.outColumns();
 diff --git a/zig/tests/cuda/contract_tests.zig b/zig/tests/cuda/contract_tests.zig
-index 87eb83ac6..1cd07134e 100644
+index 60a712232..b720928c3 100644
 --- a/zig/tests/cuda/contract_tests.zig
 +++ b/zig/tests/cuda/contract_tests.zig
 @@ -330,11 +330,12 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {

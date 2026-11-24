@@ -407,9 +407,10 @@ pub const GemmTma = struct {
         } else if (t.mode == .heads) {
             t.dev[5] = try t.rig.scratch(shape.rows * shape.n * 2); // plain product's qkvc rows
             t.dev[12] = try t.rig.scratch(t.headBytes()); // baseline's tile-order q, k and v
-            for ([_]usize{ 6, 7 }) |which| {
+            for ([_]usize{ 6, 7 }, 0..) |which, which_qk| {
+                // Distinct q/k weights: an nq/nk swap in the kernel must change the outputs.
                 const nw = try a.alloc(u16, 128);
-                for (nw, 0..) |*v, i| v.* = c.toBf16(0.5 + @as(f32, @floatFromInt(i % 17)) / 16);
+                for (nw, 0..) |*v, i| v.* = c.toBf16(0.5 + @as(f32, @floatFromInt((i + which_qk * 5) % 17)) / 16);
                 t.dev[which] = try t.rig.input(std.mem.sliceAsBytes(nw));
             }
             for ([_]usize{ 8, 9 }, 0..) |which, table| {
