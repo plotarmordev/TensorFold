@@ -48,6 +48,10 @@ Job `top-3546b0a66f9b` at `abc67b2d` ran the planted control after the reference
 differed as before (154.9 s and 150.8 s), 32.9 tok/s at one stream, then the 600 s window closed in the 4-stream
 bench. The script runs its one planted control beside the reference.
 
+Job `top-fb115525caf7` at `1964849d` reran it that way: exit 0, 0 and 6 of 32 differed, 32.9 tok/s at one stream and
+118.6 at four (3.60x), first token 0.075 s / 0.188 s (code), host used 12.1 GiB before the server and 32.1 GiB after
+both levels, the server holding 20.0 GiB of GPU memory.
+
 ## RTX Spark (N1X): native Windows ARM64 on Net's laptop
 
 `n1x-run.ps1` runs the same checkpoint (`C:\models\Inkling-2-Mini-ed40e7da62`) on the laptop through its Codync bot
@@ -109,6 +113,18 @@ rewritten each build, so no step resumed. Images are now keyed by nvcc's own byt
 kernel-contract-fatbins` with a stand-in nvcc makes 0 of its 180 calls), the runner's 37 nvcc-only images are their
 own step, and each build step logs zig's output. Serve passed again: ready in 55.2 s, 32.2 tok/s at one stream (first
 token 0.098 s), 115.4 total at four, pool peak 23,119 MiB; check and control did not run without `tf-cuda-test`.
+
+### Receipt: run 8 at `1964849d`, after the parent merge
+
+Desk run on `codync@rtx-spark` (request `75bc4034`, 25 Nov), warm folder `workspace\tf243-run8` cloned from
+`workspace\tf243-a86c`, clean checkout of this head, the same machine as run 6 (driver 621.01, power plan Balanced,
+3,003 MHz). The four builds each exited 0 inside 9 minutes (nothing was rerun); `check` exited 0: kernel contract
+5/5 with both controls red, every `inkling2-serving` check PASS, `inkling2-mini-ref` 0 of 32 tokens differed from
+the float64 reference; `control` exited 0 with the plant's 6 of 32 differing. `serve` exited 1 after the 1-stream
+measurement: it set `HttpClient.Timeout` per level, which .NET forbids once the client has sent a request, and the
+throw stopped the 4-stream level. The script now passes a `CancellationTokenSource` bound to the step deadline; a
+serve re-run is queued. Run 6's table below stays until it lands, with its first-token and decode figures already
+measured on this hardware.
 
 ### Receipt: run 6 at `2c9228a8`, one capped run
 

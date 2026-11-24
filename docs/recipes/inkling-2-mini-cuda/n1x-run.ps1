@@ -122,16 +122,17 @@ try {
     $smi = Start-Process -FilePath nvidia-smi -PassThru -NoNewWindow -RedirectStandardOutput "$out\pool.csv" `
         -ArgumentList @('-i', $gpu, '--query-gpu=memory.used', '--format=csv,noheader,nounits', '-lms', '500')
     Add-Type -AssemblyName System.Net.Http
-    # a request gets the step's remaining budget (run 6 used under 40 s of it), not a free 4 minutes
+    # each level's requests die at the step's deadline via the token: run 8 died on HttpClient.Timeout, which .NET
+    # freezes once the first request has been sent
     $http = New-Object System.Net.Http.HttpClient
     $body = '{"model":"inkling-2-mini","prompt":"Write a short Python function that computes the Fibonacci ' +
         'sequence and explain it.","max_tokens":256,"temperature":0,"ignore_eos":true}'
     foreach ($n in 1, 4) {
-        $http.Timeout = [TimeSpan]::FromMilliseconds((Left))
+        $cts = New-Object System.Threading.CancellationTokenSource (Left)
         $before = @(Select-String -Path "$out\server.log" -Pattern '\] done ').Count
         $calls = foreach ($i in 1..$n) {
             $http.PostAsync("http://127.0.0.1:$port/v1/completions",
-                (New-Object System.Net.Http.StringContent $body, ([Text.Encoding]::UTF8), 'application/json'))
+                (New-Object System.Net.Http.StringContent $body, ([Text.Encoding]::UTF8), 'application/json'), $cts.Token)
         }
         foreach ($c in $calls) { if (-not $c.Result.IsSuccessStatusCode) { throw "$n streams: $($c.Result.StatusCode)" } }
         $done = @(Select-String -Path "$out\server.log" -Pattern '\] done ' | Select-Object -Skip $before)
