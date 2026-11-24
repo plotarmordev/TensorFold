@@ -1,0 +1,4 @@
+[strata] 2026-11-25 04:36:47 engine started: /Users/agents/projects/capri/desk/jobs/tf250-engines/strata/strata-inkling --serve --native /Users/agents/projects/capri/desk/jobs/tf250-engines/strata/Inkling-2-Mini-SQ-10.strata --max-context 32768 --kv fp16 --parallel 64 --draft dspark
+mtl: GPU keep-alive every 250 ms for 120 s after the last command buffer (#6078; STRATA_METAL_KEEPALIVE_MS=0 turns it off)
+[ink_metal] loaded /Users/agents/projects/capri/desk/jobs/tf250-engines/strata/Inkling-2-Mini-SQ-10.strata (build=SQ-10, minor=1, 9.75 GiB, trunk=646, dspark=54, experts=3072, vram_order=3072) in 0.02s (workSet=222.7 GiB, maxBuf=167.0 GiB)
+[ink_metal] runner ready: slots=64 ctx=32768 batch=512 dspark=1 vision=0 mpp=1(trunk=1,hot=0) | KV=75776.0 MiB SC=234.0 MiB TotalAlloc=109.98 GiB
