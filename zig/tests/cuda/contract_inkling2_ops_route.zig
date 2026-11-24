@@ -16,13 +16,13 @@ const experts = 384;
 const top = 8;
 const route_scale: f32 = 8;
 
-const topk_rule = "the 8 largest score + bias, the lower id on ties, a NaN never picked, a pick's value then -inf; " ++
+const topk_rule = "the 8 largest score + bias, the lower id on ties, a NaN never picked, a pick's slot then NaN; " ++
     "a row out of non-NaN candidates picks -1 at weight 0; weights score / (sum of the picks' scores + 1e-20) x 8 in fp32";
 
 /// Rows x experts x picks: every row of a call, a block each.
-pub fn topkSpec(unbiased: bool) c.Spec {
+pub fn topkSpec(unbiased: bool, repick: bool) c.Spec {
     const served = &[_]c.Shape{ .{ .rows = 16, .n = experts, .k = top }, .{ .rows = 1, .n = experts, .k = top }, .{ .rows = 128, .n = experts, .k = top }, .{ .rows = 2048, .n = experts, .k = top }, .{ .rows = 16, .n = 128, .k = top }, .{ .rows = 1, .n = 128, .k = top }, .{ .rows = 128, .n = 128, .k = top }, .{ .rows = 2048, .n = 128, .k = top } };
-    const name = if (unbiased) "control: inkling2 ops tf_ink2_topk without the selection bias" else "inkling2 ops tf_ink2_topk (sigmoid scores, bias, route scale 8)";
+    const name = if (repick) "control: inkling2 ops tf_ink2_topk replayed with a pick's slot back at -inf" else if (unbiased) "control: inkling2 ops tf_ink2_topk without the selection bias" else "inkling2 ops tf_ink2_topk (sigmoid scores, bias, route scale 8)";
     return .{ .name = name, .accum = .none, .depth = ref.noSums, .out = .raw, .nan = .{ .stated = topk_rule }, .served = if (unbiased) served[0..2] else served };
 }
 
@@ -30,6 +30,7 @@ pub fn topkSpec(unbiased: bool) c.Spec {
 pub const Topk = struct {
     kern: *const ops.Kernels,
     unbiased: bool = false,
+    repick: bool = false, // the control: its replay puts a pick's slot back at -inf, the rule before the fix
     shape: c.Shape = undefined,
     scores: []f32 = &.{},
     bias: []f32 = &.{},
@@ -37,11 +38,11 @@ pub const Topk = struct {
     out: [2]u64 = @splat(0),
 
     pub fn spec(self: *const Topk) c.Spec {
-        return topkSpec(self.unbiased);
+        return topkSpec(self.unbiased, self.repick);
     }
 
     pub fn control(self: *const Topk) ?g.Gate {
-        return if (self.unbiased) .shapes else null;
+        return if (self.repick) .nonfinite else if (self.unbiased) .shapes else null;
     }
 
     pub fn free(self: *Topk, a: std.mem.Allocator) void {
@@ -67,7 +68,8 @@ pub const Topk = struct {
             for (0..E / 2) |e| self.scores[2 * E + 2 * e] = -ref.inf;
             for ([_]usize{ 3, 40 }) |e| self.scores[3 * E + e] = ref.inf;
             self.scores[3 * E + 41] = -ref.inf;
-            for (self.scores[4 * E ..][3..E]) |*v| v.* = ref.nan; // three candidates for eight picks
+            for (self.scores[4 * E ..][3..E]) |*v| v.* = ref.nan; // three candidates for eight picks: the rest -1
+            if (shape.rows > 5) @memset(self.scores[5 * E ..][0..E], ref.nan); // no candidates at all
         }
         const zero = try a.alloc(f32, E);
         defer a.free(zero);
@@ -106,7 +108,7 @@ pub const Topk = struct {
                 };
                 ids[k] = id;
                 if (id == std.math.maxInt(usize)) continue;
-                sel[id] = -std.math.inf(f32);
+                sel[id] = if (self.repick) -std.math.inf(f32) else ref.nan; // taken: NaN beats nothing, so the tie rule never hands a slot twice
                 t += sc[id];
             }
             for (0..K) |k| {
