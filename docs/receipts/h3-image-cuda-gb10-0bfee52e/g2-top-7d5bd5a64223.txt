@@ -1,0 +1,201 @@
+started top-7d5bd5a64223
+== measure: exit 1 (124: stopped at 600 s) in 507 s, 2006 PASS lines
+N/A  cuda affine4 MLP128 replacement bits: cluster path needs sm_90 or newer, this GPU is sm_121
+N/A  cuda affine4 MLP128 FP64: cluster path needs sm_90 or newer, this GPU is sm_121
+FAIL shapes control: P rounded to bf16 under the P32 range: at 512x16x0: row 1 head 0 out[12] = 2.3925781e-2 (0x3cc4) outside float64's 2.4166970251906575e-2 +- 1.1232545626434535e-4
+CONTROL control: P rounded to bf16 under the P32 range: red at shapes, as planted
+FAIL nonfinite cuda glm tf_glm_index_scores, pools of 1 and 64 roped query dims: 1000 of 8192 outputs differ in class; first at 0: finite where float64 gives nan
+KNOWN nonfinite cuda glm tf_glm_index_scores, pools of 1 and 64 roped query dims: relu is fmaxf(x, 0), as Triton's tl.maximum: a NaN dot scores 0 where float64 keeps the NaN
+FAIL shapes control: GLM index write leaves full GLM-5.3's keys unroped: at 8x128x128 output 0 is -3.437500e-1 where float64 gives 9.220699e-1: 350.79 of its bound
+CONTROL control: GLM index write leaves full GLM-5.3's keys unroped: red at shapes, as planted
+FAIL shapes control: GLM paged latent write uses a swapped table: at 8x512x1 output 0 is 0.000000e0 where float64 gives 1.382813e0: 256.00 of its bound
+CONTROL control: GLM paged latent write uses a swapped table: red at shapes, as planted
+FAIL shapes control: GLM chunks32 dense uses a swapped table: at 64x16384x512 output 0 is 5.828857e-3 where float64 gives 2.468204e-2: 8.65 of its bound
+CONTROL control: GLM chunks32 dense uses a swapped table: red at shapes, as planted
+N/A  sums cuda glm tf_glm_kvh_rows: visible rows in order through pages out of order: declares none sums
+FAIL shapes control: GLM kv host copy drops its last row: at 64x2051x1: from host pages slot 1592: not the bytes of row 16
+CONTROL control: GLM kv host copy drops its last row: red at shapes, as planted
+FAIL shapes control: GLM kv host keep drops its last row: at 1x2051x1: cache slot 1138: not the bytes of row 1138
+CONTROL control: GLM kv host keep drops its last row: red at shapes, as planted
+FAIL shapes control: mla tf_mla_gate gates each head by the next head's column: at 1x32x128 output 0 is 9.570313e-2 where float64 gives 1.597394e-1: 51.21 of its bound
+CONTROL control: mla tf_mla_gate gates each head by the next head's column: red at shapes, as planted
+FAIL shapes control: mla tf_mla_expand_v_128 reads each head's wv from the next head: at 1x32x512 output 0 is 1.109375e0 where float64 gives 9.096877e-1: 55.71 of its bound
+CONTROL control: mla tf_mla_expand_v_128 reads each head's wv from the next head: red at shapes, as planted
+FAIL shapes control: mla tf_mla_chunks_split_r16 reads a rank's page z as chunk z: at 8x16384x1024 output 0 is -1.391602e-2 where float64 gives -1.647722e-2: 1.15 of its bound
+CONTROL control: mla tf_mla_chunks_split_r16 reads a rank's page z as chunk z: red at shapes, as planted
+FAIL repeat cuda Qwen4 GDN silu weights3 state repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda Qwen4 GDN silu weights3 state repeat: red at repeat, as planted
+FAIL nonfinite cuda Qwen4 GDN silu weights11 state nan: 32768 of 163840 outputs differ in class; first at 131072: finite where float64 gives nan
+CONTROL cuda Qwen4 GDN silu weights11 state nan: red at nonfinite, as planted
+FAIL repeat cuda Qwen4 GDN silu weights15 readout repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda Qwen4 GDN silu weights15 readout repeat: red at repeat, as planted
+FAIL repeat cuda Qwen4 GDN sigmoid weights7 readout repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda Qwen4 GDN sigmoid weights7 readout repeat: red at repeat, as planted
+FAIL sums cuda Qwen4 GDN sigmoid weights11 readout sums: infx over its exact-sum bound at k 48: not fp32 sums (fp16 would miss infx, bf16 0x)
+CONTROL cuda Qwen4 GDN sigmoid weights11 readout sums: red at sums, as planted
+FAIL repeat cuda Qwen4 PLE gated repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda Qwen4 PLE gated repeat: red at repeat, as planted
+FAIL shapes cuda Qwen4 PLE normed tail: at 1x256x2 output 0 is -nan where float64 gives 5.468750e-1: nan of its bound
+CONTROL cuda Qwen4 PLE normed tail: red at shapes, as planted
+FAIL sums cuda Qwen4 PLE output sums: infx over its exact-sum bound at k 4: not fp32 sums (fp16 would miss infx, bf16 infx)
+CONTROL cuda Qwen4 PLE output sums: red at sums, as planted
+N/A  sums cuda Qwen4 native HC act production: declares none sums
+FAIL nonfinite cuda weight-only bf16 g64 bf16 nan: 12 of 35 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda weight-only bf16 g64 bf16 nan: red at nonfinite, as planted
+FAIL repeat cuda weight-only fp8 g64 bf16 repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda weight-only fp8 g64 bf16 repeat: red at repeat, as planted
+FAIL shapes cuda weight-only nvfp4 g64 bf16 tail: at 3x7x128 output 0 is 6.781250e0 where float64 gives -1.218750e0: 1658.71 of its bound
+CONTROL cuda weight-only nvfp4 g64 bf16 tail: red at shapes, as planted
+FAIL sums cuda weight-only mlx4 g32 bf16 sums: 67109120.0x over its exact-sum bound at k 20480: not fp32 sums (fp16 would miss infx, bf16 256x)
+CONTROL cuda weight-only mlx4 g32 bf16 sums: red at sums, as planted
+FAIL nonfinite cuda weight-only mlx4 g64 bf16 nan: 13 of 35 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda weight-only mlx4 g64 bf16 nan: red at nonfinite, as planted
+FAIL repeat cuda weight-only mlx4 g64 f16 repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda weight-only mlx4 g64 f16 repeat: red at repeat, as planted
+FAIL shapes cuda weight-only mlx4 g64 f32 tail: at 3x7x128 output 0 is 2.250000e0 where float64 gives 1.253906e0: 202.26 of its bound
+CONTROL cuda weight-only mlx4 g64 f32 tail: red at shapes, as planted
+FAIL sums cuda weight-only mlx4 g128 bf16 sums: 256.0x over its exact-sum bound at k 20480: not fp32 sums (fp16 would miss infx, bf16 256x)
+CONTROL cuda weight-only mlx4 g128 bf16 sums: red at sums, as planted
+FAIL nonfinite cuda weight-only mlx8 g32 bf16 nan: 14 of 35 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda weight-only mlx8 g32 bf16 nan: red at nonfinite, as planted
+FAIL repeat cuda weight-only mlx8 g32 f16 repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda weight-only mlx8 g32 f16 repeat: red at repeat, as planted
+FAIL shapes cuda weight-only mlx8 g32 f32 tail: at 3x7x128 output 0 is -2.425000e1 where float64 gives 2.057773e2: 286.01 of its bound
+CONTROL cuda weight-only mlx8 g32 f32 tail: red at shapes, as planted
+FAIL sums cuda weight-only mlx8 g64 bf16 sums: 256.0x over its exact-sum bound at k 20480: not fp32 sums (fp16 would miss infx, bf16 256x)
+CONTROL cuda weight-only mlx8 g64 bf16 sums: red at sums, as planted
+FAIL nonfinite cuda weight-only mlx8 g128 bf16 nan: 14 of 35 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda weight-only mlx8 g128 bf16 nan: red at nonfinite, as planted
+FAIL repeat cuda weight-only mlx8 g128 f16 repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda weight-only mlx8 g128 f16 repeat: red at repeat, as planted
+FAIL shapes cuda weight-only mlx8 g128 f32 tail: at 3x7x128 output 0 is 3.187500e1 where float64 gives 1.128281e2: 183.53 of its bound
+CONTROL cuda weight-only mlx8 g128 f32 tail: red at shapes, as planted
+N/A  sums cuda HC activation streams2 injecttrue production: declares none sums
+FAIL repeat cuda HC activation streams3 injectfalse repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda HC activation streams3 injectfalse repeat: red at repeat, as planted
+N/A  sums cuda HC activation streams4 injectfalse production: declares none sums
+FAIL repeat cuda HC activation streams4 injecttrue repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda HC activation streams4 injecttrue repeat: red at repeat, as planted
+N/A  sums cuda HC activation streams5 injecttrue production: declares none sums
+FAIL repeat cuda HC activation streams6 injectfalse repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda HC activation streams6 injectfalse repeat: red at repeat, as planted
+N/A  sums cuda HC activation streams7 injectfalse production: declares none sums
+FAIL repeat cuda HC activation streams7 injecttrue repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda HC activation streams7 injecttrue repeat: red at repeat, as planted
+N/A  sums cuda HC activation streams8 injecttrue production: declares none sums
+FAIL repeat cuda HC pointwise branch native streams2 pairedfalse repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda HC pointwise branch native streams2 pairedfalse repeat: red at repeat, as planted
+N/A  sums cuda HC pointwise branch native streams4 pairedfalse production: declares none sums
+FAIL repeat cuda HC pointwise branch hf streams4 pairedfalse repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda HC pointwise branch hf streams4 pairedfalse repeat: red at repeat, as planted
+N/A  sums cuda HC pointwise branch hf streams8 pairedfalse production: declares none sums
+FAIL repeat cuda HC pointwise output_gate native streams1 pairedfalse repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda HC pointwise output_gate native streams1 pairedfalse repeat: red at repeat, as planted
+N/A  sums cuda HC pointwise output_gate native streams1 pairedtrue production: declares none sums
+FAIL repeat cuda HC pointwise output_gate hf streams1 pairedtrue repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda HC pointwise output_gate hf streams1 pairedtrue repeat: red at repeat, as planted
+FAIL shapes control: MiniMax prep rotates its rows one position late: output leaves its signed pointwise interval
+CONTROL control: MiniMax prep rotates its rows one position late: red at shapes, as planted
+N/A  sums cuda minimax tf_mm3_pick_merge: declares none sums
+FAIL shapes control: inkling2 attn tf_ink2_rel_table reading rel_logits_proj one column late: at 16x24576x16 output 0 is -2.937500e0 where float64 gives -1.369500e0: 292.57 of its bound
+CONTROL control: inkling2 attn tf_ink2_rel_table reading rel_logits_proj one column late: red at shapes, as planted
+FAIL shapes control: inkling2 ops tf_ink2_mix_rows MLP told one completed block fewer: output leaves its signed pointwise interval
+CONTROL control: inkling2 ops tf_ink2_mix_rows MLP told one completed block fewer: red at shapes, as planted
+FAIL shapes control: inkling2 ops tf_ink2_rowdot router one 32-column step short: output leaves its signed pointwise interval
+CONTROL control: inkling2 ops tf_ink2_rowdot router one 32-column step short: red at shapes, as planted
+FAIL shapes control: inkling2 ops tf_ink2_conv k/v static taps, every stream on slot 0's state: output leaves its signed pointwise interval
+CONTROL control: inkling2 ops tf_ink2_conv k/v static taps, every stream on slot 0's state: red at shapes, as planted
+N/A  sums inkling2 ops tf_ink2_tobf (bf16 rows, padding ids -inf): declares none sums
+FAIL shapes control: moss image tf_moss_situ drops bf16(sigmoid(g)): output leaves its signed pointwise interval
+CONTROL control: moss image tf_moss_situ drops bf16(sigmoid(g)): red at shapes, as planted
+FAIL shapes control: moss image decoder tf_md_unpack drops its mean: at 64x64x128 output 0 is 3.370858e0 where float64 gives 3.748433e0: 889788.40 of its bound
+CONTROL control: moss image decoder tf_md_unpack drops its mean: red at shapes, as planted
+FAIL shapes control: moss image decoder tf_md_group_part sums squares uncentred: at 1456x384x2 output 0 is 6.047168e1 where float64 gives 3.043480e3: 5344.88 of its bound
+CONTROL control: moss image decoder tf_md_group_part sums squares uncentred: red at shapes, as planted
+FAIL shapes control: moss image encoder tf_me_gate keeps its sigmoid in fp32: output leaves its signed pointwise interval
+CONTROL control: moss image encoder tf_me_gate keeps its sigmoid in fp32: red at shapes, as planted
+FAIL shapes control: moss image encoder tf_me_gated_norm drops its weight: output leaves its signed pointwise interval
+CONTROL control: moss image encoder tf_me_gated_norm drops its weight: red at shapes, as planted
+FAIL shapes control: moss image encoder tf_me_gdn drops its decay: output leaves its signed pointwise interval
+CONTROL control: moss image encoder tf_me_gdn drops its decay: red at shapes, as planted
+FAIL shapes control: nemo audio tf_nemo_qk drops bf16(a cos): output leaves its signed pointwise interval
+CONTROL control: nemo audio tf_nemo_qk drops bf16(a cos): red at shapes, as planted
+N/A  sums cuda nemo audio tf_nemo_relu: declares none sums
+N/A  sums cuda vit tf_vit_conv_cols (Qwen3-ASR's 3x3 stride-2 conv taps): declares none sums
+FAIL shapes control: fn_ep_picks one expert off: at 11x512x1: pick 2 (256) mapped to 256, not 0
+CONTROL control: fn_ep_picks one expert off: red at shapes, as planted
+N/A  sums cuda GB10 grouped affine-4 decode/verify: declares none sums
+N/A  sums cuda GB10 grouped affine-4 decode/verify: declares none sums
+N/A  sums cuda GB10 grouped affine-4 decode/verify: declares none sums
+N/A  sums cuda flashnext lanes' DeltaNet keep copies fn_gdn_lanes_keep: declares none sums
+N/A  sums cuda flashnext fn_hc_writeback_norm_slices (K slices written back, then normalize): declares none sums
+FAIL shapes control: fn_hcn_up3 gating its up rows before their bf16 rounding: at 768x2560x1 its bytes differ from the qmmf lane's bf16 up, then fn_hc_dense_mix over fn_hc_normalize's rows's from byte 2
+CONTROL control: fn_hcn_up3 gating its up rows before their bf16 rounding: red at shapes, as planted
+FAIL shapes control: exl3 5-bit mid-M kernels at another K split posing as linear_body: at 128x1024x5120 its bytes differ from tf_exl3_linear (linear_body)'s from byte 12932
+CONTROL control: exl3 5-bit mid-M kernels at another K split posing as linear_body: red at shapes, as planted
+N/A  sums cuda muse muse_linear_multi_k4 (q, k, v, gate in one launch): declares none sums
+N/A  sums cuda muse muse_rope_tables (fp64 then fp32): declares none sums
+N/A  sums cuda muse dfl_silu_mul (fp16 interm): declares none sums
+FAIL sums control sums: joint schema layer norm summed in bf16: 4335376.4x over its exact-sum bound at k 4096: not fp32 sums (fp16 would miss 4527166x, bf16 8924x)
+CONTROL control sums: joint schema layer norm summed in bf16: red at sums, as planted
+FAIL shapes control shapes: joint schema lex sums read row-major layout: at 1024x24x4096 output 4096 is -3.426730e0 where float64 gives -3.903292e0: inf of its bound
+CONTROL control shapes: joint schema lex sums read row-major layout: red at shapes, as planted
+FAIL shapes control shapes: joint schema round truncates: at 16384x1024x1 output 3 is 1.382813e0 where float64 gives 1.389372e0: 1.21 of its bound
+CONTROL control shapes: joint schema round truncates: red at shapes, as planted
+FAIL shapes control shapes: joint schema broadcast repeats first column: at 64x4096x1 output 1 is 2.109375e0 where float64 gives -1.929688e0: 43981495924531300000000000000000000000000.00 of its bound
+CONTROL control shapes: joint schema broadcast repeats first column: red at shapes, as planted
+FAIL shapes control shapes: joint schema logits reuse first option scalars: at 40x1024x4096 output 1 is 1.177788e-4 where float64 gives 9.937484e0: 15.78 of its bound
+CONTROL control shapes: joint schema logits reuse first option scalars: red at shapes, as planted
+N/A  sums cuda idol tf_idol_bias, fp16(acc + b): declares none sums
+FAIL shapes control: idol decoder embed adds fp16(pe): output leaves its signed pointwise interval
+CONTROL control: idol decoder embed adds fp16(pe): red at shapes, as planted
+FAIL shapes control: idol decoder to_kv rounds ctx w to fp16 before the bias: output leaves its signed pointwise interval
+CONTROL control: idol decoder to_kv rounds ctx w to fp16 before the bias: red at shapes, as planted
+FAIL shapes cuda idol decoder tf_idol_dec_attention, rows<64, 8>, P to fp16: at 16x1000x65 output 23808 is 1.296997e-2 where float64 gives 1.289849e-2: 1.07 of its bound
+INFO limits live: images built by nvcc 13.0, checked against nvcc 13.0's records
+FAIL limits live qmm_prefill many bit-exact BF16 launch fusion: 256 threads launched, the driver allows 256; 130 registers, 0 + 62976 shared bytes (recorded 128, 0)
+FAIL limits live flashnext_hcn fn_hcn_down2: 224 threads launched, the driver allows 224; 161 registers, 0 + 13312 shared bytes (recorded 152, 0)
+FAIL limits live flashnext_hcn fn_hcn_down3: 224 threads launched, the driver allows 224; 190 registers, 0 + 19968 shared bytes (recorded 189, 0)
+FAIL limits live flashnext_hcn fn_hcn_up3: 256 threads launched, the driver allows 256; 128 registers, 0 + 43776 shared bytes (recorded 127, 0)
+FAIL limits live nemo_audio tf_nemo_attn64: 256 threads launched, the driver allows 256; 68 registers, 43264 + 0 shared bytes (recorded 69, 43264)
+FAIL limits live muse_glue muse_rms: 1024 threads launched, the driver allows 1024; 19 registers, 132 + 0 shared bytes (recorded 21, 132)
+FAIL limits live muse_glue muse_expert_sum: 1024 threads launched, the driver allows 1024; 28 registers, 132 + 0 shared bytes (recorded 29, 132)
+FAIL limits live muse_glue muse_softcap: 256 threads launched, the driver allows 1024; 30 registers, 0 + 0 shared bytes (recorded 29, 0)
+FAIL limits live muse_glue muse_argmax: 256 threads launched, the driver allows 1024; 40 registers, 2048 + 0 shared bytes (recorded 35, 2048)
+FAIL limits live muse_linear muse_linear_multi_k2: 128 threads launched, the driver allows 128; 128 registers, 16 + 16384 shared bytes (recorded 143, 16)
+FAIL limits live muse_linear muse_linear2_k2_w4: 128 threads launched, the driver allows 128; 245 registers, 16 + 16384 shared bytes (recorded 241, 16)
+FAIL limits live muse_linear muse_linear2_k2_w8: 256 threads launched, the driver allows 256; 251 registers, 16 + 32768 shared bytes (recorded 245, 16)
+FAIL limits live muse_linear muse_linear_multi_k3: 128 threads launched, the driver allows 128; 153 registers, 16 + 16384 shared bytes (recorded 159, 16)
+FAIL limits live muse_linear muse_linear2_k3_w8: 256 threads launched, the driver allows 256; 252 registers, 16 + 32768 shared bytes (recorded 255, 16)
+FAIL limits live muse_linear muse_linear_multi_k4: 128 threads launched, the driver allows 128; 128 registers, 16 + 16384 shared bytes (recorded 143, 16)
+FAIL limits live muse_linear muse_linear2_k4_w4: 128 threads launched, the driver allows 128; 245 registers, 16 + 16384 shared bytes (recorded 241, 16)
+FAIL limits live muse_linear muse_linear2_k4_w8: 256 threads launched, the driver allows 256; 251 registers, 16 + 32768 shared bytes (recorded 245, 16)
+FAIL limits live muse_linear muse_linear_multi_k5: 128 threads launched, the driver allows 128; 154 registers, 16 + 16384 shared bytes (recorded 160, 16)
+FAIL limits live muse_linear muse_linear2_k5_w4: 128 threads launched, the driver allows 128; 253 registers, 16 + 16384 shared bytes (recorded 251, 16)
+FAIL limits live muse_linear muse_linear2_k5_w8: 256 threads launched, the driver allows 256; 255 registers, 16 + 32768 shared bytes (recorded 251, 16)
+FAIL limits live muse_linear muse_linear_multi_k6: 128 threads launched, the driver allows 128; 154 registers, 16 + 16384 shared bytes (recorded 160, 16)
+FAIL limits live muse_linear muse_linear2_k6_w4: 128 threads launched, the driver allows 128; 255 registers, 16 + 16384 shared bytes (recorded 250, 16)
+FAIL limits live muse_linear muse_linear2_k6_w8: 256 threads launched, the driver allows 256; 255 registers, 16 + 32768 shared bytes (recorded 250, 16)
+FAIL limits live muse_linear muse_linear_multi_k8: 128 threads launched, the driver allows 128; 141 registers, 16 + 16384 shared bytes (recorded 143, 16)
+FAIL limits live muse_linear muse_linear2_k8_w4: 128 threads launched, the driver allows 128; 245 registers, 16 + 16384 shared bytes (recorded 243, 16)
+FAIL limits live muse_linear muse_rot_multi: 128 threads launched, the driver allows 128; 24 registers, 0 + 0 shared bytes (recorded 23, 0)
+FAIL limits live muse_dflash2 dfl_topk: 256 threads launched, the driver allows 256; 48 registers, 3072 + 0 shared bytes (recorded 20, 3072)
+FAIL limits live muse_dflash2 dfl_walk: 512 threads launched, the driver allows 512; 38 registers, 196 + 0 shared bytes (recorded 40, 196)
+FAIL limits live flashnext_mtp fn_row_topk: 1024 threads launched, the driver allows 1024; 34 registers, 9228 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_experts tf_exl3_prompt_gu: 256 threads launched, the driver allows 256; 124 registers, 43264 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_experts tf_exl3_prompt_down: 256 threads launched, the driver allows 256; 126 registers, 43264 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_experts tf_exl3_prompt_gu_k6: 256 threads launched, the driver allows 256; 127 registers, 40192 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_experts tf_exl3_prompt_down_k6: 256 threads launched, the driver allows 256; 127 registers, 40192 + 0 shared bytes (recorded 0, 0)
+FAIL limits live drama3 d3_router_compact: 256 threads launched, the driver allows 1024; 26 registers, 592 + 0 shared bytes (recorded 0, 0)
+FAIL limits live exl3_grouped tf_ctl_exl3_grouped_old_0: 128 threads launched, the driver allows 512; 127 registers, 32896 + 0 shared bytes (recorded 127, 32832)
+FAIL limits live exl3_grouped tf_ctl_exl3_grouped_old_1: 128 threads launched, the driver allows 512; 128 registers, 32896 + 0 shared bytes (recorded 128, 32832)
+FAIL limits live exl3_grouped tf_ctl_exl3_grouped_old_2: 128 threads launched, the driver allows 512; 128 registers, 32896 + 0 shared bytes (recorded 128, 32832)
+FAIL limits live GLM BF16 tf_ctl_glm_old_rmsnorm_512: 128 threads launched, the driver allows 128; 22 registers, 128 + 0 shared bytes (recorded 22, 16)
+FAIL limits live GLM BF16 tf_ctl_glm_old_rmsnorm_1536: 128 threads launched, the driver allows 128; 40 registers, 128 + 0 shared bytes (recorded 40, 16)
+FAIL limits live GLM BF16 tf_ctl_glm_old_rmsnorm_4096: 256 threads launched, the driver allows 256; 39 registers, 128 + 0 shared bytes (recorded 39, 32)
+FAIL limits live GLM BF16 tf_ctl_glm_old_hc_finish: 256 threads launched, the driver allows 256; 79 registers, 128 + 0 shared bytes (recorded 79, 48)
+RED  limits live control: past its bounds: 512 threads launched, the driver allows 256; 10 registers, 0 + 0 shared bytes (recorded 10, 0)
+RED  limits live control: heavy at 1,024 threads: 1024 threads launched, the driver allows 384; 166 registers, 0 + 0 shared bytes (recorded 166, 0)
+(filtered) SUMMARY 84 kernels: 83 pass gates 1-4, 1 fail, 1 known findings; 62 controls: 62 red as planted, 0 missed; 41 limit problems; gates 495748 ms, limits 10839 ms
+FAIL kernel-contract: 1 gate failures, 0 controls missed, 41 limit problems
+FAIL kernel-contract: TestFailed
