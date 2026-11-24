@@ -51,4 +51,4 @@ The bench's 0 failed requests in all 36 runs hold; `zig build test test-golden` 
 ## Files
 
 `run.sh`: the window sequence; `bench.sh`: one three-rep session from a given tree; `submission.swift`: one
-submission's commit-and-wait cost.
+submission's commit-and-wait cost; `profile.md`: where a one-stream round's 27 ms goes and the next lever.
