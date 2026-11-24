@@ -286,7 +286,7 @@ Unsloth's tree from source with card 232's flags plus `-fa on`, and serves 232's
 |---|---|---|---|
 | TensorFold (bf16 checkpoint, 188's engine) | 32.9 / 32.8 | 118.7 / 120.1 | job `top-b77911768550` (232) |
 | llama.cpp b12611, UD-Q4_K_M | 38.8 / 39.1 | 85.9 / 87.6 | job `top-b77911768550` (232) |
-| llama.cpp b12651, UD-Q4_K_M | pending | pending | `job.sh`: `inkling-llamacpp-251/` not staged yet (job `top-28403507400a`) |
+| llama.cpp b12651, UD-Q4_K_M | pending | pending | `job.sh`: `inkling-llamacpp-251/` not staged yet (jobs `top-28403507400a`, `top-87b11998bb03`) |
 | Unsloth b12651-mix-c7059d6, UD-Q4_K_M | pending | pending | as above |
 | *RTX PRO 6000, Unsloth's docs (UD-Q4_K_XL, tg1024)* | *125.24 (Unsloth) / 81.35 (mainline b12649)* | — | Unsloth |
 
