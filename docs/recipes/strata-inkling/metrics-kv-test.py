@@ -46,8 +46,9 @@ class MetricsKvTests(unittest.TestCase):
             result = kv_dtype(payload)
             self.assertNotEqual(result.returncode, 0, payload)
 
-    def test_fails_when_dtype_not_a_string(self):
-        for payload in ({"engine": {"kv_dtype": None}}, {"engine": {"kv_dtype": 8}}):
+    def test_fails_when_dtype_not_a_non_empty_string(self):
+        for payload in ({"engine": {"kv_dtype": None}}, {"engine": {"kv_dtype": 8}},
+                        {"engine": {"kv_dtype": ""}}):
             result = kv_dtype(payload)
             self.assertNotEqual(result.returncode, 0, payload)
 
