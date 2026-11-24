@@ -56,6 +56,18 @@ fn tiledWeight(score: f64, running_max: f64, final_max: f64) f64 {
     return @as(f64, half(@exp(score - running_max))) * @exp(running_max - final_max);
 }
 
+/// A row's highest score so far and its key.
+const Peak = struct { max: f64 = -std.math.inf(f64), top: usize = 0 };
+
+/// The kernel's running max as the 64-key tile from `j` starts: `p` raised by that tile's scores, never lowered.
+fn raiseTile(s: []const f64, j: usize, p: Peak) Peak {
+    var peak = p;
+    for (j..@min(j + 64, s.len)) |key| if (s[key] > peak.max) {
+        peak = .{ .max = s[key], .top = key };
+    };
+    return peak;
+}
+
 /// The spacing of fp16 values at |x| (subnormals 2^-24).
 fn ulp16(x: f64) f64 {
     const a = @abs(x);
@@ -236,25 +248,19 @@ pub const Attention = struct {
                 @memset(&out, 0);
                 @memset(&tol, 0);
                 @memset(&flip, 0);
-                var tile_max: f64 = -std.math.inf(f64);
-                var tile_top: usize = 0;
+                var tile: Peak = .{};
                 for (s, ds, 0..) |sj, dj, j| {
-                    if (t.rounded() and j % 64 == 0) {
-                        for (j..@min(j + 64, L)) |key| if (s[key] > tile_max) {
-                            tile_max = s[key];
-                            tile_top = key;
-                        };
-                    }
+                    if (t.rounded() and j % 64 == 0) tile = raiseTile(s, j, tile);
                     const pj = @exp(sj - m);
                     l += pj;
                     // Each tile rounds P against its running max, then rescales its numerator to the final max.
-                    const local = if (t.rounded()) @exp(sj - tile_max) else pj;
-                    const rescale = if (t.rounded()) @exp(tile_max - m) else 1;
-                    const rel = dj + ds[top] + (if (t.rounded()) ds[tile_top] + 0x1p-21 else 0) + 0x1p-21;
+                    const local = if (t.rounded()) @exp(sj - tile.max) else pj;
+                    const rescale = if (t.rounded()) @exp(tile.max - m) else 1;
+                    const rel = dj + ds[top] + (if (t.rounded()) ds[tile.top] + 0x1p-21 else 0) + 0x1p-21;
                     var used = pj;
                     var turn: f64 = 0;
                     if (t.rounded()) {
-                        used = tiledWeight(sj, tile_max, m);
+                        used = tiledWeight(sj, tile.max, m);
                         const u = ulp16(local);
                         const mid = (@floor(local / u) + 0.5) * u;
                         if (@abs(local - mid) <= local * rel + 0x1p-60) turn = u * rescale;
@@ -317,6 +323,17 @@ test "tiled attention rounds before a later tile raises the maximum" {
     const flat = @as(f64, half(@exp(score - raised)));
     try std.testing.expect(@abs(online - flat) > 0x1p-14);
     try std.testing.expect(@abs(online - @exp(score - raised)) <= ulp16(local) * @exp(old - raised));
+}
+
+test "an exact head's last tile keeps the first tile's higher maximum" {
+    // exact()'s scores at 65 keys: key 0 scores 0, the middle -256 and the last p_dot / 8, alone in the second tile
+    var s: [65]f64 = @splat(-256);
+    s[0] = 0;
+    s[64] = p_dot / 8;
+    const first = raiseTile(&s, 0, .{});
+    const last = raiseTile(&s, 64, first);
+    try std.testing.expectEqual(Peak{ .max = 0, .top = 0 }, last);
+    try std.testing.expectEqual(@as(f64, half(@exp(p_dot / 8))), tiledWeight(s[64], last.max, 0));
 }
 
 test "an exact head's fp32 remainder lies past the short form's allowance, and its fp16 P past no midpoint" {
