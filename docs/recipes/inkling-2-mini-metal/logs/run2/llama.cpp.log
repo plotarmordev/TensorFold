@@ -1,0 +1,4 @@
+[settings] llama.cpp b12655: /Users/agents/projects/capri/desk/jobs/tf250-engines/gguf/Inkling-2-Mini-IQ4_NL.gguf, 17627940768 bytes, sha256 cbdf3fa9dc50a4124977980f37da4f1fa764b0cfe800d275cd43d26ce2a81af4
+[settings] flags: -ngl 99 -fa on -ctk f16 -ctv f16 -c 262144 -np 64 --jinja (4,096 tokens a slot, no drafter)
+[llama.cpp] setup: 66 s
+[llama.cpp] measure: 418 s

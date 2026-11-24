@@ -92,9 +92,13 @@ Every TensorFold and llama.cpp cell finished with no failed or unmeasured reques
 with llama.cpp. Strata was not timed: it is neither slower nor faster here.
 
 Strata's figures are not timings. Its server finished every request with 256 tokens (`done: 256 tokens`, 420 in
-`server.log`). But it streamed the thinking text in a lump, so `bench_concurrent.py` saw no timed tokens in the "same" cells
-and on most 64-stream requests. The 659.5 tok/s is one burst after a 2.5 s first token, not a decode rate. Strata's
-own log puts single-stream SQ-20 at 67 to 99 tok/s; that figure is the engine's own count and was not checked by our client.
+`server.log`), but the model spent them thinking. Strata control 0.1.65 silently discards every `<|content_thinking|>`
+span (`serve/inkling_dialect.py:189`, "Inkling-2-Mini has no thinking mode"), so the stream carried only the few text
+pieces after the thinking. `bench_concurrent.py` then saw too few pieces to time: all of the "same" cells and most
+64-stream requests are unmeasured. The 659.5 tok/s is the burst of those last pieces after a 2.5 s first token, not a
+decode rate. Strata's own log puts single-stream SQ-20 at 67 to 99 tok/s; our client did not check that count.
+Timing Strata needs a window of about 35 minutes for `engines.sh strata-sq20 strata-sq10`, with a client setting that
+keeps Strata's stream carrying the tokens it decodes. The Desk has not opened that window.
 
 Settings that differ between engines (see the table above):
 

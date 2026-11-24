@@ -121,15 +121,20 @@ for cell, prompts in (("same", same), ("diverse", chat)):
     json.dump(prompts, open(f"{sys.argv[2]}/{cell}.json", "w"))
     print(f"[settings] {cell}: " + "; ".join(f"{q['name']}={q['prompt']!r}" for q in prompts))
 EOF
-status=0
+status=0 completed=()
 for engine in "${engines[@]}"; do
-    lockf -k /tmp/tensorfold-model.lock "$0" run "$engine" 2>&1 | tee "$out/$engine.log" || status=1
+    if lockf -k /tmp/tensorfold-model.lock "$0" run "$engine" 2>&1 | tee "$out/$engine.log"; then
+        completed+=("$engine")
+    else
+        status=1
+    fi
 done
-"$python" - "$out" <<'EOF'
+[ ${#completed[@]} -gt 0 ] || exit "$status"
+"$python" - "$out" "${completed[@]}" <<'EOF' # only engines this run completed, so stale results in OUT cannot vote
 import glob, json, os, sys
 fmt = lambda v: "-" if v is None else f"{v:.1f}"
 best = {}
-for path in sorted(glob.glob(f"{sys.argv[1]}/*/[0-9]*-*.json")):
+for path in sorted(p for e in sys.argv[2:] for p in glob.glob(f"{sys.argv[1]}/{e}/[0-9]*-*.json")):
     engine, cell = os.path.basename(os.path.dirname(path)), path.rsplit("-", 1)[1][:-5]
     for c in json.load(open(path))["cells"]:
         print(f"RESULT {engine} {c['streams']} streams {cell}: {fmt(c['aggregate_tps'])} tok/s total, "
