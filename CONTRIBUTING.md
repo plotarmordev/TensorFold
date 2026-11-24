@@ -15,21 +15,29 @@ Building with a coding agent? Have it load the [contributor skill](docs/recipes/
 
 ### Contributing with agents
 
-Install or upgrade ATC to 0.9.4 or later, then run from an updated TensorFold clone:
+Install ATC 0.9.4 or later, pinned to a tag you have looked at, then run from an updated TensorFold clone:
 
 ```sh
-npm install -g github:ashhart/ATC
+npm install -g github:ashhart/ATC#v0.9.6
 atc check ISSUE --json
 atc claim ISSUE --json
 ```
 
 Replace `ISSUE` with the issue number and claim only after a complete check says the work is free.
-TensorFold enables automatic public check-ins: with ATC 0.7.0 or later, a successful new claim starts an anonymous session on the radar and returns its `session` number.
+TensorFold turns public check-ins on by default: with ATC 0.7.0 or later, a successful new claim without `--local` starts a session on the radar and returns its `session` number.
 Keep that number instead of starting a duplicate session.
 For work already yours, start a session with `atc start ISSUE --json`.
 Add `--github-name` to `claim` or `start` only if you want your verified GitHub name shown; showing it is an explicit opt-in. `--local` keeps a new session on your machine.
 The board shows the issue, activity state and last check-in; GitHub still associates the verification comment with its author.
 Check that `publication` is `public`; `unavailable` means the public update failed even if the local claim or session succeeded.
+
+#### What a public check-in sends
+
+- A `/atc presence` comment on the issue, posted from your GitHub account. Anyone can see it until the session lands.
+- To `https://tensorfold.dev`, which the TensorFold project runs: the issue number, a random session token, that comment's ID, the work state and whether the session shows your GitHub name (the name itself is not sent), on the claim or start and again on every pulse.
+- The comment ID lets the site operator look up your GitHub account, so "anonymous" means the public radar hides your name, not that the operator can't see it. The site also sees your IP address and when you work.
+
+Pass `--local` to keep a session on your machine. You can also claim an issue without ATC by opening a draft pull request whose description says `Fixes #<issue>`.
 
 Pulse only while the agent is working, before its five-minute check-in expires:
 
@@ -46,6 +54,9 @@ Run `atc overlap --json` before opening a pull request and resolve conflicts wit
 Before opening a pull request, have the agent run the [pull request skill](docs/pr/SKILL.md); agents that support skills can install it as `tensorfold-pull-request`.
 
 ## Build and host tests
+
+For card checkouts, run `tools/zig/setup_cache.sh` before the first build so even plain `zig build` uses the external
+shared cache and installs outside the checkout; see [Keep checkouts small](#keep-checkouts-small).
 
 Use the exact Zig version in `.zig-version`, currently 0.17.0.
 `zig build native` needs Xcode's Metal compiler for the `.metal` sources. Install full Xcode and its Metal Toolchain
@@ -112,6 +123,30 @@ Linux release builds use the CUDA backend and qualified GPU kernel assets.
 Release archives include the native executable, runtime assets and license notices.
 [Packaging](packaging/README.md) lists the flat fatbin set and optional captured CUDA files required by `dist`.
 Compile success alone does not qualify a GPU or checkpoint.
+
+### Keep checkouts small
+
+Zig keeps every build of every revision in the local cache and never prunes it, so a worktree's `.zig-cache` grows past
+15 GB after a few days of `zig build test`; a fresh full build plus tests needs about 4 GB of cache on its own.
+Before building a fresh card checkout, link its ignored `.zig-cache` and `zig-out` into the shared cache outside the
+checkout:
+
+```sh
+tools/zig/setup_cache.sh
+zig build test test-golden
+```
+
+The setup refuses an existing `.zig-cache` or `zig-out` rather than discarding its contents; move it out of the checkout
+first. Run setup once in each checkout (or again to verify the links). By default the shared folder is
+`$HOME/.cache/tensorfold/zig`; set `ZIG_LOCAL_CACHE_DIR` when running setup to choose another absolute location.
+Zig chooses the local cache before `build.zig` runs, so plain `zig build` cannot relocate it itself. The link also
+moves Zig's test scratch files, which do not follow `ZIG_LOCAL_CACHE_DIR` alone. Zig locks its object cache for
+concurrent builds. Each checkout has its own folder under the shared cache's `checkouts/`: `zig-out` links to it, so the
+default install of `zig build` and `zig build native` lands there under the documented `zig-out/...` paths, and the
+standalone Metal scripts write their executables beside it, as `tools/zig/check_mlx_ops.py` does its runner and staged
+tensors. Model weights, GGUF files, fixtures (`TF_FIXTURES_DIR`, by default `$HOME/tensorfold-fixtures`) and job output
+belong outside the checkout; pass their paths instead of staging copies in the tree.
+Delete the shared folder to reclaim its space when no build is running.
 
 ## Exactness and precision
 

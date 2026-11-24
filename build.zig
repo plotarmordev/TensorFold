@@ -59,6 +59,17 @@ fn poolChecks(b: *std.Build, target: std.Build.ResolvedTarget, test_step: *std.B
     test_step.dependOn(step);
 }
 
+/// setup_cache_test.py runs nested Zig builds, so it waits for every other unit test: the timing ones fail beside it.
+fn checkoutCacheTest(b: *std.Build, test_step: *std.Build.Step) void {
+    if (b.graph.host.result.os.tag == .windows) return; // setup_cache.sh and the standalone build scripts are POSIX shell
+    const cache_test = b.addSystemCommand(&.{ "python3", "-m", "unittest", "discover", "-s", "tools/zig", "-p", "setup_cache_test.py" });
+    cache_test.setCwd(b.path("."));
+    cache_test.setEnvironmentVariable("PYTHONDONTWRITEBYTECODE", "1");
+    cache_test.has_side_effects = true;
+    for (test_step.dependencies.items) |unit| cache_test.step.dependOn(unit);
+    test_step.dependOn(&cache_test.step);
+}
+
 pub fn build(b: *std.Build) void {
     @import("zig/build/fixed_cpu.zig").apply(b); // first: everything below compiles for the host it sets
     @import("zig/build/test_allocator.zig").checks(b);
@@ -72,6 +83,7 @@ pub fn build(b: *std.Build) void {
     @import("zig/build/tokenizer_host.zig").steps(b);
     @import("zig/build/cluster_host.zig").steps(b);
     @import("zig/build/lane_halt_host.zig").steps(b);
+    @import("zig/build/lane_status_host.zig").steps(b);
     @import("zig/build/cache_replay.zig").steps(b);
     @import("zig/build/dsv41_shared.zig").steps(b);
     @import("zig/build/dsv41_cuda.zig").steps(b);
@@ -99,6 +111,7 @@ pub fn build(b: *std.Build) void {
     _ = ids_files.addCopyFile(b.path("zig/src/families/nemotron/draft_ids.txt"), "draft_ids.txt");
     const draft_ids = b.createModule(.{ .root_source_file = ids_files.add("draft_ids.zig", "pub const text = @embedFile(\"draft_ids.txt\");\n") });
     const test_step = b.step("test", "Unit tests (macOS includes available Metal device checks)");
+    defer checkoutCacheTest(b, test_step);
     @import("zig/build/gguf_host.zig").steps(b, test_step);
     @import("zig/build/glm_ocr.zig").hostTests(b, test_step);
     @import("zig/build/dots_mocr.zig").hostTests(b, test_step);
@@ -159,6 +172,7 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "noise", "schedule" }) |name| {
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(b.fmt("zig/src/families/moss_image/{s}.zig", .{name})), .target = target }) })).step);
     }
+    @import("zig/build/metal_cost_host.zig").compile(b, draft_ids);
     const cost_cases = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("zig/cost_rule_cases.zig"),
         .target = target,
@@ -289,6 +303,7 @@ pub fn build(b: *std.Build) void {
     @import("zig/build/save_guard.zig").wire(b);
     @import("zig/build/cpu_contract.zig").steps(b, test_step);
     @import("zig/build/bf16_round.zig").wire(b, test_step);
+    @import("zig/build/chunked_write.zig").wire(b, test_step);
     @import("zig/build/qwen35_layers.zig").wire(b, test_step);
     @import("zig/build/dev_tools.zig").wire(b, target);
     @import("zig/build/profile.zig").wire(b, test_step);

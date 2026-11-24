@@ -9,7 +9,7 @@ Produce a small, reviewable native contribution with evidence for every affected
 This skill defines the conditions a contribution must satisfy; it does not approve a merge, release or hardware qualification.
 
 Before editing, follow the [ATC contributor instructions](../atc/SKILL.md), inspect the public radar and check or claim the issue.
-Publish an anonymous session with `atc start <issue> --public https://tensorfold.dev --json` when reporting this work is authorized; show a GitHub name only when the human opts in.
+Publish a session with `atc start <issue> --public https://tensorfold.dev --json` only when the human has agreed to public check-ins; otherwise pass `--local`. The radar hides the name, but the check-in posts a comment from the human's GitHub account and sends its ID to tensorfold.dev (see [CONTRIBUTING.md](../../CONTRIBUTING.md#what-a-public-check-in-sends)). Show a GitHub name only when the human opts in.
 Pulse only while working, review overlaps before a pull request, and land the session when it stops.
 
 ## Establish the contribution contract
@@ -148,6 +148,7 @@ For multi-host changes, include matching build/checkpoint/precision checks and p
 ## Select checks by the change
 
 Use the exact Zig version in `.zig-version`; do not upgrade the toolchain as a porting shortcut.
+For card checkouts, run `tools/zig/setup_cache.sh` before building; follow [Keep checkouts small](../../CONTRIBUTING.md#keep-checkouts-small) for shared cache and external weights, GGUF files and job output.
 The native-code baseline host checks are visible in [no-GPU CI](../../.github/workflows/no-gpu.yml):
 
 ```sh

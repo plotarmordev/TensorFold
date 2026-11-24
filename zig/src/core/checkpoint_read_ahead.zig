@@ -169,8 +169,15 @@ fn packInner(gpa: std.mem.Allocator, io: std.Io, p: anytype, prefix: []const u8,
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
     const a = arena.allocator();
-    var spans: std.ArrayList(Span) = .empty;
-    errdefer spans.deinit(gpa);
+    var span_count: usize = 0;
+    for (p.names.keys(), p.names.values()) |name, info| {
+        if (info.file >= p.files.items.len or !std.mem.startsWith(u8, name, prefix) or info.nbytes == 0) continue;
+        span_count = try std.math.add(usize, span_count, @intCast((info.nbytes - 1) / prefetch.chunk + 1));
+    }
+    const spans = try gpa.alloc(Span, span_count);
+    var owned = true;
+    errdefer if (owned) gpa.free(spans);
+    var next: usize = 0;
     for (p.files.items, 0..) |file, i| {
         var path: ?[:0]u8 = null;
         for (p.names.keys(), p.names.values()) |name, info| {
@@ -187,12 +194,13 @@ fn packInner(gpa: std.mem.Allocator, io: std.Io, p: anytype, prefix: []const u8,
             var lo = info.start;
             while (lo < end) {
                 const hi = lo + @min(prefetch.chunk, end - lo);
-                try spans.append(gpa, .{ .path = path.?.ptr, .lo = lo, .hi = hi });
+                spans[next] = .{ .path = path.?.ptr, .lo = lo, .hi = hi };
+                next += 1;
                 lo = hi;
             }
         }
     }
-    const owned = try spans.toOwnedSlice(gpa);
-    const reader = try start(gpa, io, owned, count);
+    owned = false;
+    const reader = try start(gpa, io, spans, count);
     return .{ .reader = reader, .arena = arena };
 }
