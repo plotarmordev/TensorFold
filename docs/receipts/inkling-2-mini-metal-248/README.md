@@ -41,9 +41,12 @@ TF_INKLING2_METAL_DIR=$HOME/models/Inkling-2-Mini TF_INKLING2_DSPARK_DIR=$HOME/m
 TF_INKLING2_METAL_DIR=$HOME/models/Inkling-2-Mini TF_INKLING2_DSPARK_DIR=$HOME/models/Inkling-2-Mini zig build test-inkling2-metal-float64
 ```
 
-Run in the same window, these were still compiling and running behind other cards' test builds when the 15-minute
-call limit cut them off, so greedy draft-vs-disabled parity and the 0/32 float64 comparison remain unverified on
-the device. The bench's 0 failed requests in all 36 runs hold; `zig build test test-golden` passes.
+`test-inkling2-metal-float64` passes on this branch's source (`8b3ad49a3`'s `dspark.zig`): 0 of 32 greedy tokens
+differ from the float64 host reference and the planted control disagrees (21 minutes, mostly CPU under load 30).
+The DSpark device tests (drafts equal to no drafts, the sixteen-stream chain, four-stream leave and join) are in
+the Debug host suite (about 6.5 minutes on the GPU) and await the next Mac GPU window; the first window's attempt
+deadlocked on `/tmp/tensorfold-model.lock` because the tests take it themselves, so run them without `lockf`.
+The bench's 0 failed requests in all 36 runs hold; `zig build test test-golden` passes.
 
 ## Files
 
