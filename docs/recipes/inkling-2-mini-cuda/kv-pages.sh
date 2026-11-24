@@ -8,8 +8,8 @@
 # 64 streams, one context a job, greedy, 128 tokens, 3 reps, each stream its own prompt of about 860 or 8,000
 # tokens. Achieved K/V bandwidth is the bytes a decoded token's attention reads by the cache layout (40 sliding
 # visits of at most 1,024 keys, 8 global visits of the whole context; 8 key heads, K and V 512 B a key) times the
-# measured decode rate, not a counter. Setup and builds run first; the measurement runs under `timeout 600`, and any
-# failed request stops the job.
+# measured decode rate, not a counter. Setup, builds and the byte comparison run first; the three arms run under
+# `timeout 600`, and any failed request stops the job.
 set -eu
 control=/work/control
 if [ -z "${KV_PAGES_MEASURE:-}" ]; then
@@ -23,20 +23,20 @@ if [ -z "${KV_PAGES_MEASURE:-}" ]; then
     cmp "$control/native/bin/tensorfold-native" /work/sm121/native/bin/tensorfold-native >/dev/null && {
         echo "the control build repeated the candidate's binary" >&2; exit 1;
     }
+    contract() {
+        TF_CUDA_DUMP=1 "$1/bin/tf-cuda-test" kernel-contract "inkling2 attn" >"$1.log" 2>&1 || { cat "$1.log"; exit 1; }
+        grep -v '^DUMP ' "$1.log"
+        grep '^DUMP ' "$1.log" >"$1.dump" || :
+    }
+    contract /work/sm121
+    contract "$control"
+    [ -s "$control.dump" ] && cmp -s /work/sm121.dump "$control.dump" || {
+        echo "attention outputs differ between the bulk copies and the per-thread loads" >&2; exit 1;
+    }
+    echo "PASS attention outputs: $(wc -l <"$control.dump") served forms byte-identical, bulk copies and per-thread loads"
     export model out
     KV_PAGES_MEASURE=1 exec timeout -k 5 600 sh "$0"
 fi
-contract() {
-    TF_CUDA_DUMP=1 "$1/bin/tf-cuda-test" kernel-contract "inkling2 attn" >"$1.log" 2>&1 || { cat "$1.log"; exit 1; }
-    grep -v '^DUMP ' "$1.log"
-    grep '^DUMP ' "$1.log" >"$1.dump" || :
-}
-contract /work/sm121
-contract "$control"
-[ -s "$control.dump" ] && cmp -s /work/sm121.dump "$control.dump" || {
-    echo "attention outputs differ between the bulk copies and the per-thread loads" >&2; exit 1;
-}
-echo "PASS attention outputs: $(wc -l <"$control.dump") served forms byte-identical, bulk copies and per-thread loads"
 prompts() {
     python3 - "$out" "$1" "$2" <<'PY'
 import json, random, sys, urllib.request
