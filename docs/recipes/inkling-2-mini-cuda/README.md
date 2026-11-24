@@ -78,9 +78,10 @@ total at 64; SQ-20 gives 46.1 at one and 1,145.1 total at 64. Card 209's TOP run
 SQ-10 pack gave 74.4 at one and 382.5 at 64 with its built-in `--bench` (job `top-edfe387b00e5`), against our
 32.6–32.9 and 589.8–593.0 on the stored checkpoint; prompt lengths (64 vs code/chat), generated lengths (256 vs
 128), client protocols and pack sizes differ, so these are **not matched engine comparisons**. Strata SQ-20 has
-no same-session TOP measurement in this receipt. Card 247's first HTTP run of Strata on the SQ-10 pack (at
-`1e17bb6c`: 53.4, 79.3 and 269.3 tok/s at 1, 4 and 64 streams) returned mostly empty replies, so it is not a fair
-bar yet, and the published rows have not been reproduced on this GB10. Neither published pack nor the one-stream bar
+no same-session TOP measurement in this receipt. Card 247's HTTP runs of Strata on both packs (at `1e17bb6c`,
+on BOTTOM's GB10: SQ-10 53.4, 79.3 and 269.3 tok/s; SQ-20 38.1, 62.9 and 204.6 at 1, 4 and 64 streams, same
+prompt) returned mostly empty replies — Strata's server drops the thinking span — so they are not a fair bar,
+and the published rows have not been reproduced on a GB10. Neither published pack nor the one-stream bar
 is beaten by this engine; Mini CUDA has no draft path (`takes_drafter = false`). Card 209 proposes a CUDA DSpark tree
 on #4128's kernels, then fp4 tensor-core experts at 64 streams and a smaller pack. Cards 215 and 219 own that work,
 but their future results are not evidence for this card's bar.
@@ -106,11 +107,17 @@ the controls; 8K decode was 8.6–8.9% faster while end-to-end was 0.9–1.3% sl
 cache layout and the decode rate, not read from a counter. Its 16–24 GB/s is below the GB10's 273 GB/s peak;
 this estimate alone does not identify the decode bottleneck.
 
-| 64-stream comparison | Strata SQ-20 | Strata SQ-10 |
-|---|---|---|
-| Same-machine TOP | Not measured | 382.5 tok/s, Strata 0.1.66 `--bench`, `top-edfe387b00e5` |
-| Other GB10, BOTTOM | 180.8 tok/s HTTP, distinct prompts, `bottom-8e4de9ca491c` | 240.7 tok/s HTTP, distinct prompts, `bottom-93a2de938e6e` |
+The Desk's Strata v0.2.19 GB10 receipt (card 247) measured both packs on BOTTOM's GB10 — the same chip, a different
+machine — under two unmatched workloads:
 
-The BOTTOM rows are Strata v0.2.19's card 247 runs and mostly returned empty replies; TOP's SQ-10 `--bench` used
-about 64-token prompts. None matches this receipt's 858/7,814-token prompts or establishes a same-machine SQ-20
-bar. No matched Strata throughput claim follows from these rows.
+| 64 streams, total tok/s (median of 3) | Strata SQ-20 | Strata SQ-10 |
+|---|---:|---:|
+| Strata's own `--bench`, decode only (`bottom-c5e4253968cb`) | 332.1 | 442.8 |
+| HTTP end to end, distinct prompts (`bottom-8e4de9ca491c` / `bottom-93a2de938e6e`) | 180.8 | 240.7 |
+
+Neither row matches this receipt's workload: the `--bench` row decodes 32 tokens over distinct 64-id synthetic
+prompts; the HTTP rows use 21–47-token chat prompts and their replies came back mostly empty (Strata's server drops
+the thinking span), so tokens were counted but no usable answer text was served. This receipt's 130.5–132.9 (1K)
+and 38.1–41.5 (8K) tok/s decode 128 greedy tokens over 858/7,814-token prompts on TOP. The published GB10 rows
+(SQ-20 1,145.1, SQ-10 805.8) did not reproduce — the Desk's own-bench figures are 29%/55% of them — and remain
+unmatched. No matched Strata throughput claim follows; Strata on this GB10 has no measured SQ-20 row on TOP itself.

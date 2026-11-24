@@ -6,12 +6,11 @@
 # and multi-row verify, keys to 1M wrapping the sliding (2,048) and global (4,096) rings, page tails (1,030,
 # 16,390, 20,000, 300,000 keys). Both builds' bytes must match. Then fresh servers control, candidate, control at
 # 64 streams, one context a job, greedy, 128 tokens, 3 reps, each stream its own prompt of about 860 or 8,000
-# tokens. Achieved K/V bandwidth is the bytes a decoded token's attention reads by the cache layout (40 sliding
-# visits of at most 1,024 keys, 8 global visits of the whole context; 8 key heads, K and V 512 B a key) times the
-# measured decode rate, not a counter. Setup, builds and the byte comparison run first; the three arms run under
-# `timeout 600`, and any failed request stops the job.
+# measured decode rate, not a counter. Setup, builds and the byte comparison run first and log "setup: N s"; the
+# three arms run under `timeout 600`, log "measure: N s" and stop the job on any failed request.
 set -eu
 control=/work/control
+start=$(date +%s)
 if [ -z "${KV_PAGES_MEASURE:-}" ]; then
     . docs/recipes/inkling-2-mini-cuda/setup.sh
     build() {
@@ -34,9 +33,11 @@ if [ -z "${KV_PAGES_MEASURE:-}" ]; then
         echo "attention outputs differ between the bulk copies and the per-thread loads" >&2; exit 1;
     }
     echo "PASS attention outputs: $(wc -l <"$control.dump") served forms byte-identical, bulk copies and per-thread loads"
+    echo "setup: $(($(date +%s) - start)) s"
     export model out
     KV_PAGES_MEASURE=1 exec timeout -k 5 600 sh "$0"
 fi
+start=$(date +%s)
 prompts() {
     python3 - "$out" "$1" "$2" <<'PY'
 import json, random, sys, urllib.request
@@ -115,3 +116,4 @@ for arm in control-1 candidate control-2; do
     arm "$context" "$arm" "$([ "$arm" = candidate ] && echo /work/sm121/native/bin/tensorfold-native || echo "$control/native/bin/tensorfold-native")"
 done
 summary "$context"
+echo "measure: $(($(date +%s) - start)) s"
