@@ -111,6 +111,7 @@ for level in (1, 2, 4, 8):
         raise SystemExit(f"{level} streams: a request failed or was unmeasured")
     for c in cells:
         alone = c.get("alone") or {}
+        # one equal_alone vote per request per rep: level * reps
         if alone.get("unequal") or alone.get("failed") or alone.get("equal") != level * 3 or alone.get("vacuous"):
             raise SystemExit(f"{level} streams {c['prompt']}: greedy alone agreement failed or was vacuous: {alone}")
     agg[level] = max(c["aggregate_tps"] for c in cells)
