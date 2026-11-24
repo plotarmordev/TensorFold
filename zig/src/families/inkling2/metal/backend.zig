@@ -220,7 +220,6 @@ pub const Metal = struct {
 
     /// One chunk of `ids` from the cache's length, of at most `cap` rows when set, cut at planned chunks and marks.
     fn feedChunk(self: *Metal, cache: *st.Cache, ids: []const u32, stream: ?*lanes.Stream, cap: u32) !usize {
-        if (self.drafter) |d| try d.beforeForward();
         const base = cache.len;
         var end: usize = @min(ids.len, if (cap > 0) @min(st.prompt_rows, cap) else st.prompt_rows);
         if (stream) |sm| {
@@ -303,7 +302,6 @@ pub const Metal = struct {
 
     /// A pass that failed: its cache goes, as the whole pass's error leaves it.
     fn drop(self: *Metal, stream: *lanes.Stream) void {
-        if (self.drafter) |d| d.dropKeep(stream);
         const entry = self.caches.fetchRemove(stream) orelse return;
         self.held -= st.cacheBytes(entry.value.capacity);
         entry.value.deinit();
@@ -377,7 +375,6 @@ pub const Metal = struct {
 
     fn queueFn(ptr: *anyopaque, stream: *lanes.Stream, what: be.Feed, position: u64) !u64 {
         const self = cast(ptr);
-        if (self.drafter) |d| try d.beforeForward();
         const cache = try self.cacheOf(stream);
         if (position != cache.len + 1 or cache.pending != null) return error.InvalidInklingPosition;
         const token = switch (what) {
@@ -412,7 +409,6 @@ pub const Metal = struct {
 
     fn verifyFn(ptr: *anyopaque, windows: []const be.Window, out: []be.Verified) !void {
         const self = cast(ptr);
-        if (self.drafter) |d| try d.beforeForward();
         const words = maskWords(self.model.config.text.vocab);
         if (windows.len != out.len or windows.len > st.batch_rows) return error.InvalidInklingWindows;
         var segments: [st.batch_rows]fwd.Segment = undefined;
@@ -467,11 +463,6 @@ pub const Metal = struct {
             caches[i] = cache;
             accepted[i] = path.len;
         }
-        if (self.drafter) |d| {
-            var streams: [st.batch_rows]*lanes.Stream = undefined;
-            for (windows, 0..) |w, i| streams[i] = w.stream;
-            return d.stageKeep(streams[0..windows.len], caches[0..windows.len], accepted[0..windows.len]);
-        }
         try st.commit(self.model.queue, caches[0..windows.len], accepted[0..windows.len]);
     }
 
@@ -486,7 +477,6 @@ pub const Metal = struct {
 
     fn releaseFn(ptr: *anyopaque, stream: *lanes.Stream) void {
         const self = cast(ptr);
-        if (self.drafter) |d| d.dropKeep(stream);
         if (self.caches.fetchRemove(stream)) |entry| {
             const cache = entry.value;
             if (cache.pending != null) cache.rollback();
@@ -504,7 +494,6 @@ pub const Metal = struct {
 
     pub fn snapSave(ptr: *anyopaque, owner: ?*anyopaque, at: u32) anyerror!*anyopaque {
         const self = cast(ptr);
-        if (self.drafter) |d| try d.beforeForward();
         const stream: *lanes.Stream = @ptrCast(@alignCast(owner orelse return error.NoStream));
         const cache = try self.cacheOf(stream);
         if (cache.len != at or cache.pending != null) return error.SnapshotOutOfStep;
