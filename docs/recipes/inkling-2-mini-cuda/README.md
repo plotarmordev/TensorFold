@@ -6,6 +6,8 @@ GPU door. The job has no network, so the checkpoint must already sit in the pilo
 
 The server is jschmied's #4441 engine (`inkling2.native`, model type `inkling2_loop`, on his #4364 and #4365): graphs,
 fused input projections and one batched forward for every stream's rows in a round. #4387's checks run against it.
+Upstream, jschmied closed #4441 on 23 Nov as superseded: Mini on CUDA goes through #4387's engine there (#4640, then
+#4697, #4718, #4728 and #4729 for speed). This branch is local; an upstream claim must move to that stack first.
 The script fails on any of: `tf-cuda-test kernel-contract "inkling2 loop"` (the served message and gate kernels
 against FP64 references, with their planted controls), `tf-cuda-test inkling2-serving` (#4387's checks), `tf-cuda-test inkling2-mini-ref` (32
 greedy tokens equal to the float64 host reference), that reference's planted control staying green, a failed stream
@@ -51,6 +53,7 @@ Linux route. From #1010 (`5b1f10812`) and #2107:
 - Under WSL2 `/proc/meminfo` is WSL's RAM (about 30 GiB of 128 GB), not the GPU's 96 GB WDDM pool; with
   `WSL_DISTRO_NAME` set, admission reads the CUDA pool instead (`TENSORFOLD_UNIFIED_HOST_COUNTS` overrides it).
 - For Mini on native Windows, I need the Inkling CUDA kernels compiled with MSVC as nvcc's host front end (only gcc 14
-  has built them so far) and one load of the 18.9 GiB single-shard checkpoint through Windows' threaded reads.
+  has built them so far) and one load of the 18.2 GiB text shard (`model-00001-of-00001.safetensors`) through Windows'
+  threaded reads.
 - For Mini under WSL2, I need neither: it is the Linux build with gcc 14. Only the pool reading above differs.
 - Either way, the GB10's exactness checks must be repeated on the N1X. No N1X run of Mini exists yet.
