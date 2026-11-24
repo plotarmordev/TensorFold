@@ -12,7 +12,7 @@ for _ in 0..<n {
     let cb = queue.makeCommandBuffer()!
     let blit = cb.makeBlitCommandEncoder()!
     blit.endEncoding()
-    let t0 = Double(DispatchTime.now().uptimeNanoseconds)
+    let t0 = DispatchTime.now().uptimeNanoseconds
     cb.commit()
     cb.waitUntilCompleted()
     samples.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1000.0)

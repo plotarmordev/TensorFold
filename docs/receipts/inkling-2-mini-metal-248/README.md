@@ -17,8 +17,22 @@ following round. The three post-verify submissions become one.
 
 `run.sh` under one lock: build phase (control and candidate, logged), one submission's host cost (`submission.swift`:
 commit an empty command buffer and wait), then measure phase control/candidate/control, medians of 3 at 1 and 4
-streams (`bench.sh`). **Awaiting the Desk's Mac GPU window**; the figures go here when it runs, with the round ms
-delta and the two submissions it no longer makes beside the probe's per-submission cost.
+streams (`bench.sh`). Window of 25 Nov 01:00 HKT; machine load average 24–33 throughout (other builds running).
+Control `90fac7967`, candidate `8b3ad49a3`, `bench_concurrent.py --tokens 256 --temperatures 0`, aggregate tok/s,
+median of 3 (reps in brackets), 0 failed requests in every cell:
+
+| cell | ctrl1 | cand | ctrl2 |
+|---|---|---|---|
+| code, 1 stream | 118.5 (118.5, 100.6, 122.9) | 113.4 (113.4, 109.2, 118.2) | 120.9 (120.6, 120.9, 121.1) |
+| code, 4 streams | 298.4 (321.1, 298.4, 296.9) | 307.3 (309.2, 307.3, 304.1) | 323.8 (323.1, 323.8, 325.1) |
+| chat, 1 stream | 85.6 (74.2, 88.4, 85.6) | 89.7 (89.7, 92.2, 83.0) | 94.9 (94.9, 95.6, 72.8) |
+| chat, 4 streams | 264.6 (264.3, 264.6, 264.7) | 229.0 (229.0, 255.3, 208.8) | 175.8 (173.7, 175.8, 176.9) |
+
+**Bar not reached**: 113.4 at 1 stream against #4618's 123, under both controls. Round gap p50 at 1 stream (code):
+27.6 / 27.5 / 28.3 ms. One submission's commit-and-wait is 14.2 µs median (p95 44.8, min 9.9), so the two
+submissions a round no longer makes are worth about 0.03–0.09 ms of a ~27.5 ms round, under 0.3%: below this
+session's noise, and the controls' own drift (ctrl2 chat at 4 streams fell 34% from ctrl1) is far larger. A
+round's time is GPU work, not submission overhead; the remaining lever is the verify and hold kernels themselves.
 
 ## Exactness
 
@@ -27,9 +41,9 @@ TF_INKLING2_METAL_DIR=$HOME/models/Inkling-2-Mini TF_INKLING2_DSPARK_DIR=$HOME/m
 TF_INKLING2_METAL_DIR=$HOME/models/Inkling-2-Mini TF_INKLING2_DSPARK_DIR=$HOME/models/Inkling-2-Mini zig build test-inkling2-metal-float64
 ```
 
-These device checks require the Mac GPU window and both checkpoint variables; without them, the tests that need
-weights skip. Greedy draft-vs-disabled parity, the 0/32 float64 comparison and 0 failed device requests remain
-unverified; `zig build test test-golden` covers the host-only suites.
+Run in the same window, these were still compiling and running behind other cards' test builds when the 15-minute
+call limit cut them off, so greedy draft-vs-disabled parity and the 0/32 float64 comparison remain unverified on
+the device. The bench's 0 failed requests in all 36 runs hold; `zig build test test-golden` passes.
 
 ## Files
 
