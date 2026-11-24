@@ -302,11 +302,17 @@ Since that run:
 On TOP's GB10 (sm_121, Linux, nvcc 13.0) at `03e9b18df`, `kernel-contract h3d h3p d3_cfg_mix` passes gates 1-4 on
 all 27 kernels: `d3_cfg_mix` "3 non-finite and 20482 finite outputs match the float64 classes", with a COUNT line
 per kernel and the SUMMARY. It exits 1 on one limit problem, `d3_cfg_mix` "12 registers ... (recorded 0, 0)": that
-record is `registry.none`, pending on every OS. None of this has run on the laptop yet.
+record is `registry.none`, pending on every OS. At `a29b38dcd`, `contract-job.sh` (`h3d h3p tf_me_conv
+tf_idol_dec_attention`, four shards) exits 0: 28 kernels pass, the planted control red, no limit problem. TOP does not
+qualify Windows: the laptop's full run at this branch's head (Desk request `6203c38d`) is the receipt still owed.
 
-No serve or model download is part of this card. Model serving and tok/s belong to card 202.
+This card neither downloads nor serves a model on the laptop. Its one CUDA serve there is card 243's Inkling 2 Mini
+receipt (`docs/recipes/inkling-2-mini-cuda/README.md` on `feat/243-inkling-2-mini-runs-on-net-s-rtx-spark-l`): run 2 at
+`2a37918af`, a clean clone, `n1x-run.ps1 -Step build`, `-Step check` and `-Step serve` all exit 0; 32 of 32 greedy
+tokens equal the float64 reference; 256-token greedy replies decode at 32.2 tok/s on one stream and 117.0 in total on
+four, first token 0.104 s.
 
-Inkling 2 Mini is not served on any OS yet: `zig/src/families/inkling2` has kernels, ops and the host-side config,
+On this branch Inkling 2 Mini is not served on any OS: `zig/src/families/inkling2` has kernels, ops and the host-side config,
 names, plan and prompt, which `tf-cuda-test`'s contracts use (they compile for `aarch64-windows-gnu`). For Windows it
 needs:
 
@@ -341,8 +347,10 @@ needs:
    remaining gate failures: `tf_me_conv` left its signed interval at gate 4 because fp32 `expf(-s)` overflows
    for a stress sum of -89, yielding -0 instead of float64 silu's tiny negative result; the reference now
    includes zero in that interval. `tf_idol_dec_attention` exceeded its shapes bound by 1.07 at 16x1000x65:
-   the reference rounded P at the final row max, while the tiled kernel rounds against each tile's running
-   max before rescaling. Its reference now follows that tile grid. Both corrections await a laptop run.
+   the reference rounded P at the final row max, while the tiled kernel rounds against the highest score of every
+   tile so far before rescaling. Its reference now carries that running max across tiles. Both corrections pass on
+   TOP (above) and await the laptop's full run at this branch's head, whose SUMMARY, exit status and limit problems
+   are the receipt still owed.
    The 11 other non-control FAIL lines are declared known findings: qwen35 decode attention can leave a
    NaN-key row finite, and `tf_glm_scores` maps a NaN score to zero via `fmaxf`. Those served-kernel
    behaviors are unchanged by this card.

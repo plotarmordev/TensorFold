@@ -24,6 +24,7 @@
   a COUNT line after each kernel; `zig build kernel-contract -Dcontract-only=WORD` runs the kernels so named.
 - `tf-cuda-test kernel-contract I/N [WORD...]` runs every N-th kernel and gate 5 launch, so N processes side by side
   put a contract run on N cores (it was one thread: 2 h 40 min on the N1X); `contract-job.sh` runs its four on TOP.
+  A leading word shaped as a shard but out of range or malformed (`0/4`, `2/`) stops the run instead of naming kernels.
 - The MOSS-Image conv contract includes fp32 `expf` overflow at a stress sum of -89 in its signed silu
-  interval; the Idol decoder attention reference rounds P against each tile's running max before rescaling,
-  matching the kernel's 64-key tiles at the 65-key edge. Both corrections await a Windows receipt.
+  interval; the Idol decoder attention reference rounds P against the running max over its 64-key tiles so far
+  before rescaling, as the kernel does at the 65-key edge. Both corrections await a Windows receipt.
