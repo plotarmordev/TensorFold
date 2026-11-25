@@ -46,6 +46,10 @@ fn edges(g: *const weights.Graph, lattice: op.Lattice, parent: u32, token: u32, 
     for (0..g.config.rank) |r| sum += (try native(g.predecessor, parent, @intCast(r))) * @as(f64, lattice.projected[@as(usize, depth) * lattice.rank + r]) * (try native(g.successor, token, @intCast(r)));
     return sum;
 }
+fn softcapAfterCorrection(unary: f64, edge: f64, cap: f64) f64 {
+    return cap * std.math.tanh((unary + edge) / cap);
+}
+
 fn expand(g: *const weights.Graph, lattice: op.Lattice, options: Options, first: u64, parent_token: u32, parent: i32, depth: u32, cumulative: f64, frontier: *std.ArrayList(Node)) !void {
     @setFloatMode(.strict);
     var scores: [16]f64 = undefined;
@@ -55,7 +59,12 @@ fn expand(g: *const weights.Graph, lattice: op.Lattice, options: Options, first:
     var maximum: f64 = -std.math.inf(f64);
     for (0..lattice.topk) |i| {
         const token = lattice.candidates[row + i];
-        var score = @as(f64, lattice.unary[row + i]) / temperature + options.edge * try edges(g, lattice, parent_token, token, depth) / temperature;
+        var score: f64 = if (g.config.selector_softcap > 0) blk: {
+            const cap = @as(f64, g.config.selector_softcap);
+            break :blk softcapAfterCorrection(@as(f64, lattice.unary[row + i]),
+                options.edge * try edges(g, lattice, parent_token, token, depth), cap) / temperature;
+        } else @as(f64, lattice.unary[row + i]) / temperature +
+            options.edge * try edges(g, lattice, parent_token, token, depth) / temperature;
         if (options.noise) |n| score += options.noise_weight * try n.draw(n.ptr, try std.math.add(u64, first, depth), token);
         score /= options.tau;
         if (!std.math.isFinite(score)) return error.DraftScoreFinite;
@@ -134,6 +143,12 @@ pub fn propose(gpa: std.mem.Allocator, g: *const weights.Graph, lattice: op.Latt
     const out_parents = try gpa.dupe(i32, parents[0..count]);
     errdefer gpa.free(out_parents);
     return .{ .gpa = gpa, .tokens = out_tokens, .parents = out_parents, .scores = try gpa.dupe(f64, scores[0..count]) };
+}
+
+test "Inkling selector caps the parent-conditioned score after correction" {
+    const score = softcapAfterCorrection(27, 9, 30);
+    try std.testing.expect(score > 25 and score < 26);
+    try std.testing.expect(30 * std.math.tanh(@as(f64, 27) / 30) + 9 > 30);
 }
 
 test "draft roots shift to pending row while descendants retain topology" {

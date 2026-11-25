@@ -14,6 +14,19 @@ Verified 2026-11-25 on Mac17,15 (Apple M5 Ultra, 256 GiB, macOS 27.0), `tensorfo
 | --- | --- | --- |
 | `thinkingmachines/Inkling-2-Mini` | `~/Models/Inkling-2-Mini` (18.2 GiB `model-00001-of-00001.safetensors` + 0.6 GiB `mtp.safetensors`, 18.8 GiB total) | The verified checkpoint from card 188/210's Mac work; `info` reports `family: inkling2_loop`, `memory floor: 20.80 GiB` |
 
+## Optional DFlash2 drafter (separate from the live service)
+
+`--drafter <directory>` selects the bundled DSpark `mtp.safetensors` for an Inkling target directory,
+or `incoai/Inkling-2-Mini-DFlash2` when that directory's config declares `DFlash2DraftModel`.
+The separate DFlash2 checkpoint has 989.98 MB of BF16 weights: five sliding-attention
+layers, eight-token blocks, and target visits 5, 23, 41 and 48. The Metal adapter borrows the
+target's normalized embedding and BF16 unembedding; the target still verifies every proposed token.
+
+Run a separate test server with `--drafter /path/to/Inkling-2-Mini-DFlash2 --prompt-cache-gib 0`
+and a port other than 8082. DFlash2 does not restore prompt-cache states yet: its default disables
+the cache, and an explicit positive `--prompt-cache-gib` is refused instead of resuming with
+an empty drafter state. The running 8082 service is unchanged.
+
 ## Service
 
 - Binary: `/Users/agents/.local/libexec/tensorfold-inkling/tensorfold-native` (this checkout's

@@ -1,7 +1,7 @@
 //! Mini's whole 48-visit forward, encoded entirely on Metal for prompt chunks and decode.
 const std = @import("std");
 const mtl = @import("metal");
-const ck = @import("../../../core/checkpoint_metal.zig");
+const ck = @import("core").checkpoint_metal;
 const layer_plan = @import("../plan.zig");
 const ap = @import("attention_plan.zig");
 const attention = @import("attention.zig");

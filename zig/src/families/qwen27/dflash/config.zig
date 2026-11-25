@@ -31,6 +31,8 @@ pub const Config = struct {
     topk: u32 = 16,
     eps: f32 = 1e-6,
     theta: f64 = 10000000,
+    /// Inkling's candidate score is softcapped after the predecessor correction; zero keeps older drafts.
+    selector_softcap: f32 = 0,
     taps: [max_taps]u32 = tap_ids,
     tap_count: u32 = 5,
     /// v1: the layers whose layer_types entry is full_attention (DFlash2 layers are all sliding).
@@ -80,7 +82,8 @@ pub const Config = struct {
         const dimensions = [_]u32{ c.hidden, c.intermediate, c.layers, c.vocab, c.heads, c.kv_heads, c.head_dim, c.target_layers, c.group, c.rank, c.topk };
         for (dimensions) |n| if (n == 0) return error.BadDraftConfig;
         if (c.hidden % 64 != 0 or c.intermediate % 64 != 0 or c.hidden % c.group != 0 or c.heads % c.kv_heads != 0 or c.head_dim % 2 != 0 or (c.block != 8 and c.block != 16) or c.conv != 2 or c.layers > 8 or c.mask >= c.vocab or c.topk > c.vocab or c.window < c.block) return error.BadDraftConfig;
-        if (!std.math.isFinite(c.eps) or c.eps <= 0 or !std.math.isFinite(c.theta) or c.theta <= 0) return error.BadDraftConfig;
+        if (!std.math.isFinite(c.eps) or c.eps <= 0 or !std.math.isFinite(c.theta) or c.theta <= 0 or
+            !std.math.isFinite(c.selector_softcap) or c.selector_softcap < 0) return error.BadDraftConfig;
         if (c.tap_count == 0 or c.tap_count > max_taps) return error.BadDraftConfig;
         if (c.target_layers == 64 and !std.mem.eql(u32, c.tapIds(), tap_ids[0..5])) return error.UnsupportedDraftTaps;
         for (c.tapIds(), 0..) |tap, i| for (c.taps[0..i]) |previous| if (tap == previous) return error.UnsupportedDraftTaps;
@@ -121,7 +124,7 @@ pub const Config = struct {
         const stock = c.hidden == 5120 and c.intermediate == 17408 and c.layers == 5 and c.heads == 32 and c.kv_heads == 8 and c.target_layers == 64 and c.mask == 248070 and c.block == 8 and c.tap_count == 5;
         const ornith = c.hidden == 3072 and c.intermediate == 9216 and c.layers == 6 and c.heads == 32 and c.kv_heads == 8 and c.target_layers == 48 and c.mask == 248077 and c.block == 16 and c.tap_count == 8 and std.mem.eql(u32, c.tapIds(), ornith_tap_ids[0..8]);
         const flint = c.hidden == 2048 and c.intermediate == 6144 and c.layers == 5 and c.heads == 32 and c.kv_heads == 8 and c.target_layers == 49 and c.vocab == 150144 and c.mask == 150019 and c.block == 8 and c.tap_count == 5 and c.theta == 10000 and std.mem.eql(u32, c.tapIds(), flint_tap_ids[0..5]);
-        const inkling = c.hidden == 2304 and c.intermediate == 6912 and c.layers == 5 and c.heads == 32 and c.kv_heads == 8 and c.target_layers == 48 and c.vocab == 201024 and c.mask == 200056 and c.block == 8 and c.tap_count == 4 and c.theta == 10000 and std.mem.eql(u32, c.tapIds(), inkling_tap_ids[0..4]);
+        const inkling = c.hidden == 2304 and c.intermediate == 6912 and c.layers == 5 and c.heads == 32 and c.kv_heads == 8 and c.target_layers == 48 and c.vocab == 201024 and c.mask == 200056 and c.block == 8 and c.tap_count == 4 and c.theta == 10000 and c.selector_softcap == 30 and std.mem.eql(u32, c.tapIds(), inkling_tap_ids[0..4]);
         if ((flint or inkling) and c.head_dim == 128 and c.window == 2048 and c.group == 16 and c.conv == 2 and c.rank == 256 and c.topk == 16 and c.eps == 1e-6) return;
         if (c.vocab != 248320 or c.head_dim != 128 or c.window != 2048 or c.group != 16 or c.conv != 2 or c.rank != 256 or c.topk != 16 or c.eps != 1e-6 or c.theta != 10000000 or !(stock or ornith)) return error.NotStockDFlash2;
     }
@@ -179,11 +182,11 @@ pub fn parse(gpa: std.mem.Allocator, raw: []const u8) !Config {
     const types = o.get("layer_types") orelse return error.BadDraftConfig;
     if (types != .array or types.array.items.len != c.layers) return error.BadDraftConfig;
     for (types.array.items) |v| if (v != .string or !std.mem.eql(u8, v.string, "sliding_attention")) return error.BadDraftConfig;
-    try c.requireStock();
     if (c.vocab == 201024) {
         try text(d, "selector_softcap_mode", "after_correction");
-        if (try number(d, "final_logit_softcapping") != 30) return error.BadDraftConfig;
+        c.selector_softcap = @floatCast(try number(d, "final_logit_softcapping"));
     }
+    try c.requireStock();
     return c;
 }
 /// z-lab's DFlash v1 layout (DFlashDraftModel): its taps, block, mask and layer kinds from the config.
@@ -403,7 +406,7 @@ test "Flint DFlash2 binds only its published target shape and post-block taps" {
 test "Inkling DFlash2 binds the 48 visit target, four taps and BF16 inventory" {
     const c = Config{
         .hidden = 2304, .intermediate = 6912, .layers = 5, .vocab = 201024,
-        .target_layers = 48, .mask = 200056, .theta = 10000,
+        .target_layers = 48, .mask = 200056, .theta = 10000, .selector_softcap = 30,
         .taps = inkling_tap_ids, .tap_count = 4,
     };
     try c.requireStock();

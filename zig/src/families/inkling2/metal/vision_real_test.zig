@@ -1,7 +1,7 @@
 //! Run the original 23-layer tower against the independent FP64 tower formula.
 const std = @import("std");
 const mtl = @import("metal");
-const ck = @import("../../../core/checkpoint_metal.zig");
+const ck = @import("core").checkpoint_metal;
 const fixture = @import("vision_checkpoint_test.zig");
 const oracle = @import("vision_test.zig");
 const image = @import("vision_image.zig");

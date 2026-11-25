@@ -7,6 +7,7 @@ fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
     const tokenizer = b.createModule(.{ .root_source_file = b.path(dir ++ "tokenizer/tokenizer.zig"), .target = target, .optimize = optimize, .link_libc = true });
     m.addImport("tokenizer", tokenizer);
     const core = b.createModule(.{ .root_source_file = b.path(dir ++ "root.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    core.addImport("core", core);
     core.addImport("gpu_memory", @import("gpu_memory.zig").module(b, target));
     core.addImport("tokenizer", tokenizer);
     core.addImport("living", b.createModule(.{ .root_source_file = b.path("zig/src/living/living.zig"), .target = target, .optimize = optimize, .link_libc = true }));
@@ -20,7 +21,15 @@ fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
         metal.linkSystemLibrary("objc", .{});
     }
     m.addImport("metal", metal);
-    m.addImport("kernel_sources", b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/sources.zig"), .target = target, .optimize = optimize }));
+    const sources = b.createModule(.{ .root_source_file = b.path("zig/kernels/metal/sources.zig"), .target = target, .optimize = optimize });
+    m.addImport("kernel_sources", sources);
+    core.addImport("metal", metal);
+    core.addImport("kernel_sources", sources);
+    const qwen = @import("qwen27.zig");
+    m.addImport("qwen_runtime_sources", qwen.runtimeSources(b));
+    core.addImport("draft_ops", b.createModule(.{ .root_source_file = b.path("zig/src/core/draft_ops.zig"), .target = target, .optimize = .ReleaseSafe, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "draft_ops_sources", .module = b.createModule(.{ .root_source_file = b.path("zig/draft_ops_sources.zig") }) } } }));
+    const topk = b.createModule(.{ .root_source_file = b.path("zig/src/core/bf16_topk_contract.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "core", .module = core }} });
+    core.addImport("bf16_topk_gpu", b.createModule(.{ .root_source_file = b.path("zig/src/core/bf16_topk_gpu.zig"), .target = target, .optimize = .ReleaseSafe, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "bf16_topk", .module = topk }, .{ .name = "bf16_topk_sources", .module = b.createModule(.{ .root_source_file = b.path("zig/bf16_topk_sources.zig") }) } } }));
     const inkling2_metal_ref = b.createModule(.{ .root_source_file = b.path("zig/src/families/inkling2/metal/ref.zig"), .target = target, .optimize = optimize });
     inkling2_metal_ref.addImport("metal", m.import_table.get("metal").?);
     m.addImport("inkling2_metal_ref", inkling2_metal_ref);

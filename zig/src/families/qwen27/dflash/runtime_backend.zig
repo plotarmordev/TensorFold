@@ -87,10 +87,18 @@ pub const Backend = struct {
         errdefer if (attention_full) |x| x.deinit();
         const topk = try core.bf16_topk_gpu.Ops.init(target.device);
         errdefer topk.deinit();
-        var head = try @import("runtime_head.zig").Head.init(a, target.device, target.weights.head);
+        var head: Head = .{ .allocator = a, .linear = undefined };
         errdefer head.deinit();
-        // the trimmed head's shape is the drafter's own: compile its pipeline here, not in the first draft round
-        try target.kernels.prepareDecode(head.linear);
+        if (target.dense) |dense| {
+            for ([_]core.checkpoint_metal.Tensor{ dense.embed, dense.head }) |t| {
+                if (t.dtype != .bf16 or t.rank != 2 or t.shape[0] != c.vocab or t.shape[1] != c.hidden or
+                    t.bytes != @as(usize, c.vocab) * c.hidden * 2) return error.TargetBinding;
+            }
+        } else {
+            head = try Head.init(a, target.device, target.weights.head);
+            // The trimmed head's shape is the drafter's own: compile its pipeline before the first round.
+            try target.kernels.prepareDecode(head.linear);
+        }
         const caches = try newCaches(a, target.device, c, c.layers);
         return .{ .allocator = a, .target = target, .checkpoint = checkpoint, .config = c, .primitives = primitives, .attention = attention, .attention_full = attention_full, .topk = topk, .head = head, .frame = .{ .allocator = a, .device = target.device, .queue = target.queue }, .caches = caches };
     }

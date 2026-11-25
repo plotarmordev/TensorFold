@@ -58,7 +58,14 @@ fn embed(ptr: *anyopaque, epoch: u64, _: ck.Linear, ids: []const u32) !op.View {
     @memcpy(r.buf.slice(u32, ids.len), ids);
     const y = try b.frame.alloc(@intCast(ids.len), b.config.hidden, .bf16);
     const out = try b.frame.ref(y);
-    try b.target.glue.embeddingShape(e, b.target.config.hidden, b.target.config.vocab, b.target.weights.embed, .{ .buffer = r.buf, .offset = r.off }, .{ .buffer = out.buf, .offset = out.off }, @intCast(ids.len));
+    if (b.target.dense) |dense| {
+        if (dense.embedding) |binding| {
+            binding.run(binding.ptr, e, r.buf, r.off, out.buf, out.off, @intCast(ids.len));
+        } else try b.target.glue.embeddingBf16(e, b.config.hidden, b.config.vocab,
+            .{ .buffer = dense.embed.buffer, .offset = dense.embed.offset },
+            .{ .buffer = r.buf, .offset = r.off }, .{ .buffer = out.buf, .offset = out.off }, @intCast(ids.len));
+    } else try b.target.glue.embeddingShape(e, b.target.config.hidden, b.target.config.vocab, b.target.weights.embed,
+        .{ .buffer = r.buf, .offset = r.off }, .{ .buffer = out.buf, .offset = out.off }, @intCast(ids.len));
     e.barrier();
     return y;
 }
@@ -111,12 +118,20 @@ fn maskRows(ptr: *anyopaque, epoch: u64, x: op.View, first: u32, rows: u32) !op.
 fn head(ptr: *anyopaque, epoch: u64, x: op.View) !op.Head {
     const b = backend(ptr);
     const e = try b.encoder(epoch);
-    const y = try b.frame.alloc(x.rows, b.head.linear.n, .bf16);
+    const y = try b.frame.alloc(x.rows, if (b.target.dense != null) b.config.vocab else b.head.linear.n, .bf16);
     const input = try b.frame.ref(x);
     const output = try b.frame.ref(y);
-    try b.target.kernels.quant(e, b.head.linear, .{ .buffer = input.buf, .offset = input.off }, null, b.target.dims, .{ .buffer = output.buf, .offset = output.off }, x.rows);
+    if (b.target.dense) |dense| {
+        try b.primitives.linear(e, input, .{ .buf = dense.head.buffer, .off = dense.head.offset }, output,
+            .{ .rows = x.rows, .n = b.config.vocab, .k = b.config.hidden,
+                .x_stride = x.stride, .w_stride = b.config.hidden, .y_stride = y.stride });
+    } else {
+        try b.target.kernels.quant(e, b.head.linear, .{ .buffer = input.buf, .offset = input.off }, null,
+            b.target.dims, .{ .buffer = output.buf, .offset = output.off }, x.rows);
+    }
     e.barrier();
-    return .{ .logits = y, .token_ids = if (b.head.ids) |ids| try b.frame.add(.{ .buf = ids }, 1, b.head.linear.n, b.head.linear.n, .u32) else null };
+    return .{ .logits = y, .token_ids = if (b.head.ids) |ids|
+        try b.frame.add(.{ .buf = ids }, 1, b.head.linear.n, b.head.linear.n, .u32) else null };
 }
 fn lattice(ptr: *anyopaque, epoch: u64, h: op.Head, projected: op.View, c: Config) !op.Lattice {
     const b = backend(ptr);

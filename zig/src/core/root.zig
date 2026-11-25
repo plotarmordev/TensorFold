@@ -50,6 +50,17 @@ pub const norms_ref = @import("norms_ref.zig");
 pub const l2_ref = @import("l2_ref.zig");
 pub const act_ref = @import("act_ref.zig");
 pub const bf16_round = @import("bf16_round");
+pub const gpu_profile = @import("gpu_profile.zig");
+pub const checkpoint_metal = @import("checkpoint_metal.zig");
+pub const draft_ops = @import("draft_ops");
+pub const bf16_topk = @import("bf16_topk.zig");
+pub const bf16_topk_gpu = @import("bf16_topk_gpu");
+pub const shared_attention = @import("shared_attention.zig");
+pub const lane_projection = @import("lane_projection.zig");
+pub const frags = lane_projection.frags;
+pub const row_projection = @import("row_projection.zig");
+pub const affine4 = @import("affine4.zig");
+pub const affine4_lane = @import("affine4_lane.zig");
 pub const joint_schema = @import("joint_schema/joint_schema.zig");
 pub const rope_yarn = @import("rope_yarn.zig");
 /// transformers' default and proportional RoPE inverse frequencies in fp32, word for word.
