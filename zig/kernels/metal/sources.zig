@@ -219,6 +219,8 @@ pub const ops_softmax = @embedFile("ops/softmax.metal");
 pub const ops_embed_norm = @embedFile("ops/embed_norm.metal");
 /// The Flash Next checked-in kernels' embedded texts (flashnext_checked.py).
 pub const flashnext_gen = @import("flashnext/sources_gen.zig");
+/// Flash Next TFQ3 (2D-AffineCoset/half4) routed MoE decode and prefill kernels.
+pub const flashnext_tfq3 = @import("flashnext_tfq3/sources.zig");
 /// Nemotron's packed kernels prebuilt as one metallib, for a macOS whose runtime compiler refuses uint4b_format.
 pub const packed_metallib = @import("nemotron_packed_metallib").bytes;
 /// The core lane projection (tensor units): every window row's sums in one weight read, and its row order.
@@ -329,6 +331,11 @@ pub const glm_draft_topk = @embedFile("glm_draft_topk.metal");
 pub const glm_draft_accept = @embedFile("glm_draft_accept.metal");
 /// GLM-5.3-Flash's DFlash2 inline follow: copies accepted tap rows into the drafter ring ahead of its block.
 pub const glm_draft_follow = @embedFile("glm_draft_follow.metal");
+/// GLM-5.3-Flash's TFQ3 (2D-AffineCoset/half4) decode and prefill kernels.
+pub const glm_tfq3 = @import("glm_tfq3/sources.zig");
 
 /// Inkling 2 Mini's runtime helpers, the exact source compiled by its model and kernel contract.
 pub const inkling2_runtime = @embedFile("inkling2/runtime.metal");
+
+/// Fused DFlash2 decode kernels: K-norm+RoPE+append, QKV prep, and dynamic-conv2+residual+RMSNorm.
+pub const glm_dflash_opt = @embedFile("glm_dflash_opt.metal");
