@@ -86,7 +86,37 @@ only those non-H3 families and the live FAILs match `g0`'s unverified 41 count f
 same stale non-H3 records. All of it is pre-existing on Ash's main: this head adds only the h3_image_* sources and
 their registry line under `zig/kernels/cuda` and `zig/src/core/contract`.
 
-Still to run at `89d5f14c6`: `g1` to `g5`, `back` and `after`, about 10 min of TOP each plus the queue.
+The rest of the gates ran shard-wise; shards 3 and 5 each needed quarters because the 600 s measure cap stopped
+them mid-shard (the capped runs' logs are kept too). Every shard exits 1 only from the same 41 non-H3 live-limit
+problems and, in `g2`/`g5c`, one pre-existing non-H3 gate failure each; every planted control in every shard is
+red at its planted gate. Logs are `<part>-top-<job>.txt`.
+
+| part | job | gates pass/fail | controls red | notes |
+| --- | --- | --- | --- | --- |
+| g0 `%0/6` | (earlier) | 87/0 | 61/61 | receipted before |
+| g1 `%1/6` | `top-14a6f81fb640` | 83/0 | 63/63 | at `89d5f14c6` |
+| g2 `%2/6` | `top-7d5bd5a64223` | 83/1 | 63/63 | 1 fail `idol tf_idol_dec_attention`: idol files identical to base, pre-existing |
+| g3 capped `%3/6` | `top-7341f0af31e5`, `top-921df348ef19` | — | — | 600 s cap mid-shard, twice → quartered |
+| g3a `%3/24` | `top-963079c78404` | 18/0 | — | |
+| g3b `%9/24` | `top-b5a1cc82fd81` | 22/0 | — | |
+| g3c `%15/24` | `top-4d9312822d5c` | 23/0 | — | |
+| g3d `%21/24` | `top-2f4029305a44` | 20/0 | 16/16 | |
+| g4 `%4/6` | `top-6ff1a5489f7d` | 87/0 | 60/60 | at `b4d9984112` |
+| g5 capped `%5/6` | `top-8ed47625be2f` | — | — | 600 s cap mid-shard → quartered |
+| g5a `%5/24` | `top-cd940a7bd324` | 19/0 | 18/18 | |
+| g5b `%11/24` | `top-f51e5ee7dd48` | 20/0 | 17/17 | |
+| g5c `%17/24` | `top-192e8adfac07` | 20/1 | 16/16 | 1 fail `moss image encoder tf_me_conv` sums: kernel and records identical to base, pre-existing |
+| g5d `%23/24` | `top-c3903f9458c7` | 21/0 | 15/15 | |
+| back | `top-a8e24fd8c558` | pass | — | exit 0, `SUMMARY kernel-contract-suites back: pass in 35701 ms` |
+| after | `top-6a411e0690ce`, `top-9cc1c34890e4` | — | — | exceeds the 600 s cap both runs (no SUMMARY); the part is indivisible — `suites()` runs its 7 sub-suites serially with no shard/filter argument |
+
+`after` holds the served-to-SwiGLU pair suites (`contract_qwen_served/pages/shared_prefix/pending/learning`,
+`contract_fn_lanes`, `contract_prompt_swiglu`); none of those files mentions H3 or MiniMax, so its non-completion
+leaves no H3 record unverified. The two `g2`/`g5c` gate failures are both on non-H3 kernels whose sources and
+contract records are byte-identical to the base `2f5e1ca37` (`git diff` on every `tf_me_conv`/`tf_idol` file
+returns empty), so they are pre-existing there, the same class as `g2`'s idol fail. No H3 record is stale: the
+`h3` filter run above and every shard's `SUMMARY` report zero H3 gate failures, zero missed controls and zero
+H3 live-limit problems.
 
 On this Mac, `zig build test test-golden` at this head ends `991/998 steps succeeded (5 failed); 1909/1943 tests
 passed, 4 failed`. The base `2f5e1ca37` on the same Mac ends `989/998 steps succeeded (7 failed); 17444/17596 tests

@@ -1,0 +1,175 @@
+queued for the GPU behind another run; waiting
+started top-6a411e0690ce
+2f4adc645f1fea48c0404e686a463d667a5ebdb5
+NVIDIA GB10, 580.173.02
+== build
+== build: 463 s
+== measure: tf-cuda-test kernel-contract-suites after
+== measure: exit 124 (124: stopped at 600 s) in 601 s, 42 PASS lines
+kernel-contract-fatbins
++- fatbins
+   +- install generated to fatbin/flashnext_attn.fatbin
+      +- run /usr/local/cuda/bin/nvcc (flashnext_attn.fatbin) w
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=false]" at line 483
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/flashnext_attn.cu(436): warning #128-D: loop is not reachable
+      for (int h = 0; h < 2; ++h) {
+      ^
+          detected during instantiation of "void attn_chunks<NB,ONE,FUSE,PAGED>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, const int *, float *, float *, float *, const int *, const int *, const int *, int, int, int, int, int, float, int, int, fn_attn::Pg) [with NB=1, ONE=true, FUSE=true, PAGED=true]" at line 512
+
+
+kernel-contract-fatbins
++- fatbins
+   +- install generated to fatbin/glm_mm.fatbin
+      +- run /usr/local/cuda/bin/nvcc (glm_mm.fatbin) w
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=16, BM=64, WM=2, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=16, BM=32, WM=1, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=16, BM=16, WM=1, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=8, BM=128, WM=2, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=8, BM=64, WM=2, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=8, BM=32, WM=1, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=8, BM=16, WM=1, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=6, BM=128, WM=2, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=6, BM=64, WM=2, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=6, BM=32, WM=1, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=6, BM=16, WM=1, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=4, BM=128, WM=2, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=4, BM=64, WM=2, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=4, BM=32, WM=1, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=4, BM=16, WM=1, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+./zig/kernels/cuda/glm_mm.cu(85): warning #177-D: member "<unnamed>::Tile<BITS, BM, WM, STAGES>::SMEM [with BITS=16, BM=128, WM=2, STAGES=3]" was declared but never referenced
+      static constexpr int SMEM = STAGES * STAGE;
+                           ^
+
+
+kernel-contract-fatbins
++- fatbins
+   +- install generated to fatbin/fp8_experts.fatbin
+      +- run /usr/local/cuda/bin/nvcc (fp8_experts.fatbin) w
+./zig/kernels/cuda/fp8_experts.cu(143): warning #177-D: variable "RW" was declared but never referenced
+    constexpr int RW = PromptCfg<M, RT, CW>::RW;
+                  ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+
+kernel-contract-fatbins
++- fatbins
+   +- install generated to fatbin/flashnext_fact.fatbin
+      +- run /usr/local/cuda/bin/nvcc (flashnext_fact.fatbin) w
+./zig/kernels/cuda/flashnext_fact.cu(175): warning #128-D: loop is not reachable
+              for (int kt = 0; kt < GS / 16; ++kt) {
+              ^
+          detected during instantiation of "void fact::fact_kernel<BM,BN,WM,WN,STAGES,GPS,DBUF,MINB,FOLD,OUT16,BLOCKED>(const __nv_bfloat16 *, const float *, const uint32_t *, const __nv_bfloat16 *, const __nv_bfloat16 *, void *, float *, int, int, int, int, int, int, int) [with BM=64, BN=128, WM=2, WN=4, STAGES=3, GPS=2, DBUF=false, MINB=2, FOLD=true, OUT16=true, BLOCKED=true]" at line 264
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+
+kernel-contract-fatbins
++- fatbins
+   +- install generated to fatbin/drama3_fp8.fatbin
+      +- run /usr/local/cuda/bin/nvcc (drama3_fp8.fatbin) w
+./zig/kernels/cuda/drama3_fp8.cu(179): warning #177-D: variable "RW" was declared but never referenced
+    constexpr int RW = PromptCfg<M, RT, CW>::RW;
+                  ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+
+kernel-contract-fatbins
++- fatbins
+   +- install generated to fatbin/exl3_linear.fatbin
+      +- run /usr/local/cuda/bin/nvcc (exl3_linear.fatbin) w
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=2, KS=2, NS=4, FOLD=true]" at line 215
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=4, NS=4, FOLD=true]" at line 215
