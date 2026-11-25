@@ -44,7 +44,7 @@ zig build compile-cuda-tests -Dtarget=x86_64-linux-gnu
 
 This step has no NVCC or Metal compiler dependency and does not execute the resulting binary.
 
-## MiniMax-H3-Image's prompt path and image decoder on these blocks
+## MiniMax-H3-Image's pipeline on these blocks
 
 The image pipeline's two CPU-bound stages run on the same CUDA blocks as the clip transformer, each writing the
 file its Metal sibling writes, so a stage swaps on a Spark with no Metal and no PyTorch:
@@ -86,3 +86,28 @@ Same prompt, seed 42, six distilled steps, BF16 throughout, one GB10:
 The 2048² latent decoded on both paths is 56.65 dB PSNR from the host reference (86.180% of bytes identical, 99.923%
 within 1, at most 5 apart, relative error 3.15e-3 against the 3e-2 bound). CPU times are the host reference tools on
 the same case; the GPU times are warm means over three repeats after one cold run.
+
+### The transformer on the CUDA blocks
+
+`tf-h3-image-cuda` runs the picture transformer itself on the same blocks, taking the prompt stage's
+`picture.safetensors` case to the `.rows.f32` and `.latent.f32` the Metal tool writes, so the middle stage swaps as
+the outer two do:
+
+```sh
+zig build tf-h3-image-cuda -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 -Doptimize=ReleaseFast
+zig-out/bin/tf-h3-image-cuda MODEL_DIR out/case.safetensors out/case
+zig-out/bin/tf-h3-image-cuda MODEL_DIR --serve
+```
+
+The image transformer's blocks are dense: the checkpoint holds no `attn.to_gate_compress`, and the release fuses each
+head's q, k and v rows. `Model.loadSharded` reads the released `transformer/` shards in place and stacks the fused
+parts as `h3_heads` reads them; `weights.read` takes the same dense layout. The timestep embedder and each block's
+AdaLN projection per timestep run on the GPU (`cuda_modulation.zig`); the rows in and out, the final norm and the
+per-step head stay on the host at the Metal kernels' rounding (`rows_reference.zig`). `--serve` loads the model once
+and keeps the AdaLN tables resident across pictures: preparing them re-reads ~26 GB of projection weights, and they
+depend on the timesteps alone, so a run of same-schedule pictures prepares them once. The server reads one
+`picture.safetensors OUT_PREFIX` line of stdin at a time and answers `done OUT_PREFIX` or `failed OUT_PREFIX`.
+
+CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check is the finished picture's PSNR
+against the Metal tool's. On one GB10 at 2048² — the red-fox prompt, seed 42, six distilled steps, BF16 — the CUDA
+pipeline's picture measures 29.2 dB PSNR against the M5 Ultra's Metal picture; the latents' cosine is 0.996.
