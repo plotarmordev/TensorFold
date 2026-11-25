@@ -1,8 +1,10 @@
 #!/bin/sh
 # Card 178's same-job int8 A/B, one prompt a job so each stays inside the GPU slot's 600 s: this commit, then
 # bench-178-base.patch reverse-applied so zig/ is exactly the branch's merge parent (main at 6b6822bbd). Each side
-# renders the prompt cold, then three times warm; H3_PROFILE is on throughout. The fused epilogue must reproduce
-# main's latents and PNGs byte for byte. The contract gates are check-178.sh's own job.
+# renders the prompt cold, then three times warm; H3_PROFILE is on throughout. The baseline half rebuilds only
+# the fatbins the patch touches and links a second tf-h3-image-cuda: TOP's /work/zig-cache is shared across jobs,
+# so after one cold pass each later job reuses every object but the two changed kernel images. The fused
+# epilogue must reproduce main's latents and PNGs byte for byte. The contract gates are check-178.sh's own job.
 # Results: /work/out/h3-178-PROMPT-{heads,base}. Run through bench-178-{fox,harbour,meadow,steam}.sh:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-178-fox.sh
 set -eu
@@ -29,7 +31,6 @@ stages() { # every run's wall split and H3_PROFILE block stages
 echo "=== heads ($H3_178_PROMPT): this commit $(git -c safe.directory='*' rev-parse --short HEAD), int8 qkv + fused heads ==="
 phase heads
 echo "=== base ($H3_178_PROMPT): main at 6b6822bbd, int8 qkv + h3_heads ==="
-git -c safe.directory='*' apply -R "$patch_file"
 trap 'git -c safe.directory="*" apply "$patch_file"; rm -f "$tmp_index"' EXIT
 tmp_index=$(mktemp)
 GIT_INDEX_FILE=$tmp_index git -c safe.directory='*' read-tree HEAD
