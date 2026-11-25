@@ -136,7 +136,7 @@ pub fn dense(m: *const Model, e: mtl.ComputeEncoder, weight: ck.Tensor, input: R
 /// On M5, multi-row prompt projections use tensor units; all other shapes keep upstream's existing paths.
 fn project(m: *const Model, e: mtl.ComputeEncoder, weight: ck.Tensor, input: Ref, out: Ref, rows: usize) !void {
     const k = weight.shape[weight.rank - 1];
-    if (m.experts.units != null and rows > state.window_rows and (k == 2304 or k == 3072))
+    if (m.experts.units != null and rows > state.pre_m5_prompt_rows and (k == 2304 or k == 3072))
         return experts.denseUnits(&m.experts, e, x(input), x(r(weight)), x(out), @intCast(rows), @intCast(weight.shape[weight.rank - 2]), @intCast(k));
     if (m.dense_mma) |mma| {
         const n: u32 = @intCast(weight.shape[weight.rank - 2]);
@@ -278,7 +278,7 @@ fn routedExperts(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, laye
     const gu_call = experts.Call{ .rows = @intCast(rows), .k = state.hidden, .n = state.intermediate, .format = precision };
     const down_call = experts.Call{ .rows = @intCast(rows), .k = state.intermediate, .n = state.hidden, .format = precision };
     // Tensor-unit expert reductions change greedy choices at small widths; keep ordered sums there.
-    if (m.experts.units != null and rows > 32) {
+    if (m.experts.units != null and rows > state.pre_m5_prompt_rows) {
         const nv = precision == .nvfp4;
         const gu_globals: ?experts.Globals = if (nv) .{ .amax = x(r(w.gu.amax.?)), .denominator = x(r(w.gu.denominator.?)) } else null;
         const down_globals: ?experts.Globals = if (nv) .{ .amax = x(r(w.down.amax.?)), .denominator = x(r(w.down.denominator.?)) } else null;

@@ -139,14 +139,16 @@ and `drama-speech` (:18794). No service was displaced.
 
 ## M5 tensor-unit path
 
-On M5, `device.tensorUnits()` selects routed expert gate/up/down for chunks
-over 32 rows, dense prompt projections over 16 rows and the logits projection.
-Smaller expert widths keep the ordered fallback: tensor-unit reduction order
-changed greedy tokens on short prompts. Prompt chunks can span 1,024 rows;
-wide chunks stage convolution taps in shared scratch and use in-cache prompt
-attention. Other Metal devices retain their MMA and scalar kernels and their
-256-row prompt limit. Compare greedy output against plain and drafted decoding
-before claiming a throughput improvement.
+On M5, `device.tensorUnits()` selects routed expert gate/up/down and dense
+projections only for chunks over 256 rows, plus the logits projection.
+Smaller widths keep the ordered fallback: a 33-token chat prompt changed
+greedy tokens with the earlier expert and dense thresholds, and four
+concurrent drafted streams diverged from plain output. Prompt chunks
+can span 1,024 rows; wide chunks stage convolution taps in shared scratch
+and use in-cache prompt attention. Other Metal devices retain their MMA
+and scalar kernels and their 256-row prompt limit. The matched M5 code/chat
+256-token checks at one and four streams must match upstream, plain, DSpark
+and DFlash2 before claiming a throughput improvement.
 
 The complete Metal qualification includes the host tests, kernel-contract
 float64 references and planted controls, and matched cold-cache one- and
