@@ -63,6 +63,7 @@ pub const Server = struct {
     voices: @import("drama_voice_store.zig").Store = .{},
     /// An engine-owned voice catalog in its own order (`SpeechRequest.voice` indexes it); the store's sort must not reorder it.
     engine_voices: []const @import("drama_voice.zig").Voice = &.{},
+    zonos: ?*@import("zonos_speech.zig").State = null, // a ZONOS3 Mini release's voices; Drama 3's stay in `voices`
     keys: ?*auth.Store,
     late_system: []const u8 = "system",
     needs_user_after_tool: bool = false,

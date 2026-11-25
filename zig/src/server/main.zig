@@ -350,6 +350,8 @@ fn modelType(a: std.mem.Allocator, io: std.Io, dir: []const u8, problem: *[]cons
     const bytes = (try @import("checkpoint_config").read(a, io, dir, problem)) orelse {
         // Woof's HF download ships no config.json: its weights file names the family.
         if (@import("checkpoint_config").hasFile(io, dir, "woof_int8.npz")) return "woof";
+        // a ZONOS3 release without config.json
+        if (@import("zonos_request").release.present(io, dir)) return "zonos3";
         return "unknown";
     };
     const doc = std.json.parseFromSliceLeaky(std.json.Value, a, bytes, .{}) catch return "unknown";
