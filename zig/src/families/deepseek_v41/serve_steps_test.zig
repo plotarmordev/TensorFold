@@ -19,15 +19,14 @@ const Stepped = struct {
     steps: bool,
     /// ms a piece (and a whole prompt, per step's rows) takes, so other requests arrive while a prompt runs
     delay_ms: u32 = 0,
+    /// the first finish waits on this until the test opens it, so no round runs before every request is queued
+    gate: ?*std.atomic.Value(bool) = null,
     /// the piece (counted over every slot, from 1) that fails with error.Planted; 0: none
     fail_at: u64 = 0,
     pieces: std.atomic.Value(u64) = .init(0),
     prompts: std.atomic.Value(u64) = .init(0),
     windows: std.atomic.Value(u64) = .init(0),
     abandoned: u64 = 0,
-    /// decode rounds of other slots while each slot's prompt ran in pieces (begin to finish), the last one's
-    began_windows: [4]u64 = @splat(0),
-    between: u64 = 0,
     /// decode rounds since a slot's last piece, and the most seen between two pieces of one prompt
     mark: [4]u64 = @splat(0),
     most_between: u64 = 0,
@@ -81,8 +80,7 @@ const Stepped = struct {
         if (x.at[slot] != null or ids.len == 0) return error.SlotLive;
         _ = x.prompts.fetchAdd(1, .monotonic);
         x.at[slot] = 0;
-        x.began_windows[slot] = x.windows.load(.monotonic);
-        x.mark[slot] = x.began_windows[slot];
+        x.mark[slot] = x.windows.load(.monotonic);
         return .{};
     }
 
@@ -102,9 +100,12 @@ const Stepped = struct {
     fn finish(p: *anyopaque, slot: u32, ids: []const u32, smp: ?lanes.Sampling, draw: u64) anyerror!u32 {
         const x = of(p);
         const at = x.at[slot] orelse return error.NotBegun;
+        if (x.gate) |g| {
+            while (!g.load(.acquire)) std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
+            x.gate = null;
+        }
         x.wait(ids.len - at);
         x.at[slot] = null;
-        x.between = x.windows.load(.monotonic) - x.began_windows[slot];
         const c = try twinPrompt(x.inner(), slot, ids, smp, draw);
         try x.order.append(gpa, ids.len);
         return c;
@@ -256,26 +257,30 @@ test "serve steps: a decoding reply and prompts in steps == serial; decode round
     defer gpa.free(p0);
     const p1 = try prompt(700, 2);
     defer gpa.free(p1);
-    const w0 = try serial(p0, 120);
+    const w0 = try serial(p0, 64);
     defer gpa.free(w0);
     const w1 = try serial(p1, 40);
     defer gpa.free(w1);
     var r: Rig = undefined;
     try r.open(4, true);
     defer r.close();
-    r.x.delay_ms = 1;
     var boxes: [2]Box = @splat(.{});
     defer for (&boxes) |*b| b.out.deinit(gpa);
-    const reqs = [2]api.Request{ .{ .prompt = p0, .max_tokens = 120 }, .{ .prompt = p1, .max_tokens = 40 } };
+    // both queued before any round runs: the short prompt fills whole and decodes first, its rounds falling
+    // between the long one's pieces, one a host visit
+    var go = std.atomic.Value(bool).init(false);
+    r.x.gate = &go;
+    defer go.store(true, .release); // a refused submit cannot leave the host's thread waiting on it
+    const reqs = [2]api.Request{ .{ .prompt = p0, .max_tokens = 64 }, .{ .prompt = p1, .max_tokens = 40 } };
     try r.submit(1, &reqs[0], &boxes[0]);
-    try until(&r.x.windows, 1);
     try r.submit(2, &reqs[1], &boxes[1]);
+    go.store(true, .release);
     for (&boxes) |*b| try b.wait();
     try t.expectEqualSlices(u32, w0, boxes[0].out.items);
     try t.expectEqualSlices(u32, w1, boxes[1].out.items);
-    // 700 rows in 16-row steps: 43 pieces, and the decoding reply's rounds between them
+    // 700 rows in 16-row steps: 43 pieces, one a host visit, the decoding reply's round after each
     try t.expectEqual(@as(u64, 43), r.x.pieces.load(.monotonic));
-    try t.expect(r.x.between > 0);
+    try t.expect(r.x.most_between > 0);
 }
 
 test "serve steps: a short prompt arriving during a long one draws its first token first; whole prompts do not" {
