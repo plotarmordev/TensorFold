@@ -92,7 +92,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     const h3_image_fatbins: [3]?std.Build.LazyPath = if (nvcc) |tool| .{
         fatbin(b, tool, version.?, .{ .name = "h3_image_decoder", .flags = &.{ "-O3", "--fmad=false" }, .min_sm = 80 }, sms),
         fatbin(b, tool, version.?, .{ .name = "h3_image_prompt", .flags = &.{ "-O3" }, .min_sm = 80 }, sms),
-        fatbin(b, tool, version.?, .{ .name = "h3_image_modulation", .flags = &.{ "-O3", "--fmad=false" } }, sms),
+        fatbin(b, tool, version.?, .{ .name = "h3_image_modulation", .flags = &.{ "-O3", "--fmad=false" }, .min_sm = 80 }, sms),
     } else .{ null, null, null };
     const cuda = @import("cuda_runtime.zig").runtimeWithTargets(b, target, optimize, if (nvcc != null or prebuilt != null) &images else &.{}, null, if (nvcc != null and prebuilt == null) sms else "");
     const mods = family(b, target, optimize, cuda, draft_ids);

@@ -139,6 +139,8 @@ pub const Projection = enum(c_int) { qkv, gate_compress, out, fc1, fc2 };
 pub fn set(self: *Model, block: usize, which: Projection, w: u64, rows: usize, cols: usize) !void {
     if (block >= self.blocks.len) return error.NoSuchBlock;
     if (which == .gate_compress and !self.gated) return error.NoGate;
+    // a dense model stacks each head's q, k and v (Fused); a contiguous write would permute them silently
+    if (which == .qkv and !self.gated) return error.DenseQkv;
     try self.ctx.makeCurrent();
     const b = &self.blocks[block];
     const inner = self.inner;

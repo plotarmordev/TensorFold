@@ -312,6 +312,8 @@ test "h3 blocks: a dense-only checkpoint loads q, k and v alone and refuses the 
     // q, k and v of 128 rows over a hidden of 1, bf16: no room kept for a gate
     try std.testing.expectEqual(@as(usize, 3 * 128 * 2), m.blocks[1].qkvc.len);
     try std.testing.expectError(error.NoGate, weights.set(&m, 0, .gate_compress, 0x1000, 128, 1));
+    // a contiguous qkv write can't produce the stacked device layout: it is refused, not silently permuted
+    try std.testing.expectError(error.DenseQkv, weights.set(&m, 0, .qkv, 0x1000, 3 * 128, 1));
 }
 
 test "h3 blocks: a fused qkv product lands stacked, every head's q before any k" {
