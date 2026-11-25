@@ -91,5 +91,6 @@ the same case; the GPU times are warm means over three repeats after one cold ru
 registers while the current one sums, and sums each product as one rounded `__fmaf_rn` — the same ordered fp32
 sums the selftest gates, one rounding instead of two. On the same GB10 the decoder's GPU time for the 2048²
 latent fell from 5.25 s to 4.54 s (its stage split: products 2.26 s, attention 1.88 s, finish 0.25 s), and the
-picture `reference` check passed at 56.60 dB PSNR. `H3_PROFILE=1` makes `tf-h3-image-decoder-cuda` print each
-stage's seconds.
+latent `reference` check repeated its pass at 56.60 dB PSNR. `H3_PROFILE=1` makes `tf-h3-image-decoder-cuda` print
+each stage's seconds. The receipt's warm 19.9 s whole-picture time ran the transformer under `--int8`, which this
+port does not include and whose rendered-picture gate missed, so it is not a receipt for this head's pipeline.
