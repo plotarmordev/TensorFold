@@ -443,8 +443,9 @@ pub const Head = struct {
         c.from, c.end = .{ span.from, span.end };
     }
 
-    /// Queue seven device-side greedy picks without advancing the committed context span.
-    pub fn draft(h: *const Head, s: cuda.Stream, c: *const Context) !void {
+    /// Queue only the requested greedy picks; the eight-row block projection remains shared.
+    pub fn draft(h: *const Head, s: cuda.Stream, c: *const Context, n: usize) !void {
+        if (n == 0 or n > depth) return error.DSparkDraftDepth;
         if (c.end <= c.from) return error.DSparkNoContext;
         const tw = h.t.w;
         try h.k.launchInit(s, h.picks, tw.embed, tw.embed_norm, tw.c.text.eps, h.w.mask, h.w.norms[0].input, h.resid, h.x);
@@ -465,7 +466,7 @@ pub const Head = struct {
         try h.k.launchKappa(s, h.x, c.newest.ptr, h.w.rnn, h.w.rnn_b, h.kappa);
         try (DeviceBuffer{ .d = s.d, .ptr = h.state, .len = rank * 4, .borrowed = true }).fill8(0, s.handle);
         const v = vocab(h.t);
-        for (0..depth) |step| {
+        for (0..n) |step| {
             try h.k.launchStep(s, h.picks + step * 4, h.w.markov, h.w.rnn, h.kappa + step * 3 * rank * 4, h.w.hidden_w, h.w.hidden_b, h.x + (step + 1) * hidden * 2, h.state, h.h);
             const logits = h.logits + step * v * 4;
             try h.t.lane.matmulOut(s, h.h, hidden, 1, h.t.unembed, logits, .f32, h.part);

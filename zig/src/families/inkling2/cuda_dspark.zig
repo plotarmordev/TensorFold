@@ -148,7 +148,7 @@ pub const Drafter = struct {
             if (item.lanes != null or item.depth == 0 or item.depth > dspark.depth or item.position != entry.context.end + 1)
                 return error.DSparkHoldGeometry;
             try cuda.copy_source.enqueue(out.d, out.head.picks, std.mem.asBytes(&item.pending), out.s);
-            try out.head.draft(out.s, &entry.context);
+            try out.head.draft(out.s, &entry.context, item.depth);
             var picks: [1 + dspark.depth]u32 = undefined;
             try out.s.synchronize();
             try (cuda.DeviceBuffer{ .d = out.d, .ptr = out.head.picks, .len = @sizeOf(@TypeOf(picks)), .borrowed = true }).download(0, std.mem.asBytes(&picks));
