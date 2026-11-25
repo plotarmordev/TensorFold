@@ -71,6 +71,18 @@ const contract = core.contract;
 const g = contract.gates;
 const kk = cuda.kernels;
 
+/// The first form of each distinct kernel symbol, so every kernel gets exactly one planted control.
+fn firstPerSymbol(comptime K: type) []const K.Which {
+    comptime {
+        var out: []const K.Which = &.{};
+        outer: for (std.enums.values(K.Which)) |w| {
+            for (out) |o| if (std.mem.eql(u8, K.symbol(o), K.symbol(w))) continue :outer;
+            out = out ++ .{w};
+        }
+        return out;
+    }
+}
+
 const images = struct {
     pub const controls align(16) = @embedFile("fatbin_contract_controls").*;
     pub const h3 align(16) = @embedFile("fatbin_h3").*;
@@ -343,20 +355,24 @@ fn registered(gpu: check.Gpu, only: []const []const u8, t0: *i96) !g.Tally {
     var h3d_mod = try cuda.Module.load(gpu.d, &images.h3_image_decoder);
     defer h3d_mod.unload();
     const h3d_which = comptime std.enums.values(h3d_k.Which);
-    var h3d_list: [h3d_which.len]h3d_k.Dec = undefined;
-    for (h3d_which, &h3d_list) |w, *m| {
-        const f = try h3d_mod.function(h3d_k.symbol(w));
-        m.* = .{ .rig = .{ .gpu = gpu, .s = s }, .which = w, .f = f, .arena = std.heap.ArenaAllocator.init(a) };
+    const h3d_planted = firstPerSymbol(h3d_k);
+    var h3d_list: [h3d_which.len + h3d_planted.len]h3d_k.Dec = undefined;
+    for (&h3d_list, 0..) |*m, i| {
+        const planted = i >= h3d_which.len;
+        const w = if (planted) h3d_planted[i - h3d_which.len] else h3d_which[i];
+        m.* = .{ .rig = .{ .gpu = gpu, .s = s }, .which = w, .f = try h3d_mod.function(h3d_k.symbol(w)), .arena = std.heap.ArenaAllocator.init(a), .planted = planted };
     }
     defer for (&h3d_list) |*m| m.deinit();
     for (&h3d_list) |*m| try kernels.append(a, m.kernel());
     var h3p_mod = try cuda.Module.load(gpu.d, &images.h3_image_prompt);
     defer h3p_mod.unload();
     const h3p_which = comptime std.enums.values(h3p_k.Which);
-    var h3p_list: [h3p_which.len]h3p_k.Prm = undefined;
-    for (h3p_which, &h3p_list) |w, *m| {
-        const f = try h3p_mod.function(h3p_k.symbol(w));
-        m.* = .{ .rig = .{ .gpu = gpu, .s = s }, .which = w, .f = f, .arena = std.heap.ArenaAllocator.init(a) };
+    const h3p_planted = firstPerSymbol(h3p_k);
+    var h3p_list: [h3p_which.len + h3p_planted.len]h3p_k.Prm = undefined;
+    for (&h3p_list, 0..) |*m, i| {
+        const planted = i >= h3p_which.len;
+        const w = if (planted) h3p_planted[i - h3p_which.len] else h3p_which[i];
+        m.* = .{ .rig = .{ .gpu = gpu, .s = s }, .which = w, .f = try h3p_mod.function(h3p_k.symbol(w)), .arena = std.heap.ArenaAllocator.init(a), .planted = planted };
     }
     defer for (&h3p_list) |*m| m.deinit();
     for (&h3p_list) |*m| try kernels.append(a, m.kernel());

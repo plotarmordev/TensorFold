@@ -131,7 +131,7 @@ pub const H3 = struct {
         } else return error.NoGemmNax;
         const gemm = try std.mem.replaceOwned(u8, a, nax, "#include \"../nax.h\"", sources.nax);
         defer a.free(gemm);
-        const src = try std.mem.concat(a, u8, &.{ gemm, if (which == .far_pool) far_defines else defines, h3k.source });
+        const src = try std.mem.concat(a, u8, &.{ gemm, if (which == .far_pool) far_defines else defines, h3k.source, h3k.gemm_source });
         defer a.free(src);
         var h: H3 = .{ .a = a, .rig = .{ .a = a, .device = device, .queue = queue }, .which = which, .pipe = try rig_.pipeline(device, src, function(which)), .arena = std.heap.ArenaAllocator.init(a) };
         if (which == .norm_quant) {

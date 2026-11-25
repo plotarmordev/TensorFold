@@ -103,28 +103,37 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, device: mtl.Device, dir: []const
 }
 
 pub fn loadWith(gpa: std.mem.Allocator, io: std.Io, factory: anytype, dir: []const u8, c: Config) !Weights {
-    return loadAt(gpa, io, factory, dir, prefix, c);
+    return loadWithPrefixes(gpa, io, factory, dir, c, &.{prefix});
 }
 
-/// `loadWith` for tensors named under `at` (an HF checkpoint's `model.visual.`), with each DeepStack tap's merger.
-pub fn loadAt(gpa: std.mem.Allocator, io: std.Io, factory: anytype, dir: []const u8, at_prefix: []const u8, c: Config) !Weights {
+/// Search `prefixes` in order so looped SenseNova checkpoints can opt into `"model.visual."` without widening others.
+pub fn loadWithPrefixes(gpa: std.mem.Allocator, io: std.Io, factory: anytype, dir: []const u8, c: Config, prefixes: []const []const u8) !Weights {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const found = try shards.headersAt(arena, io, dir, at_prefix);
+    var used_prefix: []const u8 = prefix;
+    var found: std.StringArrayHashMapUnmanaged(Src) = .empty;
+    for (prefixes, 0..) |pfx, pi| {
+        found = shards.headersFor(arena, io, dir, pfx) catch |err| switch (err) {
+            error.NoVisionTower => if (pi + 1 < prefixes.len) continue else return err,
+            else => return err,
+        };
+        used_prefix = pfx;
+        break;
+    }
     var w: Weights = .{ .buf = undefined, .blocks = try gpa.alloc(Block, c.depth) };
     errdefer gpa.free(w.blocks);
     w.deep = try gpa.alloc(Merger, c.taps().len);
     errdefer gpa.free(w.deep);
     const wants = (try wanted(arena, c, &w)).items;
     if (found.count() != wants.len) {
-        std.log.err("qwen vision: the checkpoint has {d} {s}* tensors; this tower reads {d}", .{ found.count(), at_prefix, wants.len });
+        std.log.err("qwen vision: the checkpoint has {d} {s}* tensors; this tower reads {d}", .{ found.count(), used_prefix, wants.len });
         return error.UnexpectedVisionTensors;
     }
     const srcs = try arena.alloc(Src, wants.len);
     var total: usize = 0;
     for (wants, srcs, 0..) |want, *s, i| {
-        const name = try std.fmt.allocPrint(arena, "{s}{s}", .{ at_prefix, want.name });
+        const name = try std.fmt.allocPrint(arena, "{s}{s}", .{ used_prefix, want.name });
         s.* = found.get(name) orelse {
             std.log.err("qwen vision: the checkpoint has no tensor {s}", .{name});
             return error.MissingVisionTensor;
@@ -207,4 +216,27 @@ test "DeepStack's three mergers add HF Qwen3-VL's 18 tensors and their bytes; no
     try std.testing.expectEqual(@as(usize, 269_073_408), with.source - without.source);
     try std.testing.expectEqual(@as(usize, 269_073_408), with.device - without.device);
     try std.testing.expectEqual(without, try plan(std.testing.allocator, (try Config.parseDeepStack(a, sample.sample_config, null, null)).?));
+}
+
+test "loadWith keeps vision_tower. only; model.visual. requires explicit prefix opt-in" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const sample = @import("config.zig");
+    const c = (try Config.parse(arena.allocator(), sample.sample_config, null, null)).?;
+    const hdr = "{\"model.visual.patch_embed.proj.weight\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]}}";
+    var buf: [8 + hdr.len + 2]u8 = undefined;
+    std.mem.writeInt(u64, buf[0..8], hdr.len, .little);
+    @memcpy(buf[8..][0..hdr.len], hdr);
+    buf[8 + hdr.len ..][0..2].* = .{ 0, 0 };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "model.safetensors", .data = &buf });
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(dir);
+    try std.testing.expectError(error.NoVisionTower, loadWith(gpa, io, @as(mtl.Device, undefined), dir, c));
+    const found = try shards.headersFor(arena.allocator(), io, dir, "model.visual.");
+    try std.testing.expectEqual(@as(usize, 1), found.count());
+    try std.testing.expect(found.contains("model.visual.patch_embed.proj.weight"));
 }
