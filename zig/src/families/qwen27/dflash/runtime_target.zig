@@ -11,6 +11,16 @@ pub const Target = struct {
     kernels: *@import("../quant_gpu.zig").Kernels,
     glue: *@import("../glue_gpu.zig").Kernels,
     dims: projection.Ref,
+    /// A family with a BF16 target embedding and head borrows them without Qwen's packed projection layout.
+    dense: ?struct {
+        embed: core.checkpoint_metal.Tensor,
+        head: core.checkpoint_metal.Tensor,
+        /// The target may normalize embedding rows before its first visit (Inkling does).
+        embedding: ?struct {
+            ptr: *const anyopaque,
+            run: *const fn (*const anyopaque, mtl.ComputeEncoder, mtl.Buffer, usize, mtl.Buffer, usize, u32) void,
+        } = null,
+    } = null,
 
     pub fn qwen(m: *@import("../model.zig").Model) Target {
         return .{ .device = m.device, .queue = m.queue, .checkpoint = &m.checkpoint, .config = .{ .hidden = m.config.hidden, .vocab = m.config.vocab, .layers = m.config.layers }, .weights = .{ .embed = m.weights.embed, .head = m.weights.head }, .kernels = &m.kernels, .glue = &m.glue, .dims = m.frame.get(.dims) };

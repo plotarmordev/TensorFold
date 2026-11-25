@@ -20,11 +20,16 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len != 4 or !std.mem.eql(u8, args[3], "--check")) return error.CheckModeRequired;
+    if (args.len != 4 or (!std.mem.eql(u8, args[3], "--check") and !std.mem.eql(u8, args[3], "--check-inkling"))) return error.CheckModeRequired;
+    const inkling = std.mem.eql(u8, args[3], "--check-inkling");
     const text = try read(io, args[2]);
     defer a.free(text);
     const c = try df.config.parse(a, text);
-    var target = try core.Checkpoint.openModelPrefix(a, io, args[1], "language_model.");
+    if (inkling != (c.vocab == 201024)) return error.DraftForAnotherTarget;
+    var target = if (inkling)
+        try core.Checkpoint.openModel(a, io, args[1])
+    else
+        try core.Checkpoint.openModelPrefix(a, io, args[1], "language_model.");
     defer target.close();
     var draft = try core.Checkpoint.openModel(a, io, args[2]);
     defer draft.close();
@@ -32,13 +37,23 @@ pub fn main(init: std.process.Init) !void {
     defer names.deinit(a);
     for (draft.files.items) |file| for (file.names.keys()) |name| try names.append(a, name);
     const source = q.checkpoint.Source.from(&target);
-    _ = try bind(source, arena, "language_model.", "lm_head", c);
-    var graph = try df.weights.load(a, .{ .source = q.checkpoint.Source.from(&draft), .names = names.items }, c, try bind(source, arena, "language_model.", "model.embed_tokens", c));
+    const embed: q.checkpoint.Linear = if (inkling) blk: {
+        const embedding = try source.get("model.llm.embed.weight");
+        const unembedding = try source.get("model.llm.unembed.weight");
+        if (embedding.dtype != .bf16 or unembedding.dtype != .bf16) return error.TargetBinding;
+        try q.checkpoint.shape(embedding, &.{ c.vocab, c.hidden });
+        try q.checkpoint.shape(unembedding, &.{ c.vocab, c.hidden });
+        break :blk .{ .dense = embedding };
+    } else blk: {
+        _ = try bind(source, arena, "language_model.", "lm_head", c);
+        break :blk try bind(source, arena, "language_model.", "model.embed_tokens", c);
+    };
+    var graph = try df.weights.load(a, .{ .source = q.checkpoint.Source.from(&draft), .names = names.items }, c, embed);
     defer graph.deinit();
     var config_hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(text, &config_hash, .{});
     const hex = std.fmt.bytesToHex(config_hash, .lower);
-    const record = try std.json.Stringify.valueAlloc(arena, .{ .kind = "qwen27_dflash2_metadata", .block = c.block, .layers = c.layers, .heads = c.heads, .kv_heads = c.kv_heads, .head_dim = c.head_dim, .taps = c.taps, .window = c.window, .tensor_count = names.items.len, .native_bytes = try graph.nativeBytes(), .linears = c.linearCount(), .config_sha256 = @as([]const u8, &hex), .native_storage = "bf16", .target_binding = "mlx-q4g64", .tensor_payload_read = false, .gpu = false, .model_ready = false, .default_quantization_verified = false }, .{});
+    const record = try std.json.Stringify.valueAlloc(arena, .{ .kind = if (inkling) "inkling2_dflash2_metadata" else "qwen27_dflash2_metadata", .block = c.block, .layers = c.layers, .heads = c.heads, .kv_heads = c.kv_heads, .head_dim = c.head_dim, .taps = if (inkling) c.tapIds() else c.taps[0..], .window = c.window, .tensor_count = names.items.len, .native_bytes = try graph.nativeBytes(), .linears = c.linearCount(), .config_sha256 = @as([]const u8, &hex), .native_storage = "bf16", .target_binding = if (inkling) "inkling2-bf16" else "mlx-q4g64", .tensor_payload_read = false, .gpu = false, .model_ready = false, .default_quantization_verified = false }, .{});
     try std.Io.File.stdout().writeStreamingAll(io, record);
     try std.Io.File.stdout().writeStreamingAll(io, "\n");
 }

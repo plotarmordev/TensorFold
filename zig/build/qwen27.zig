@@ -18,24 +18,29 @@ pub const Shared = struct {
 /// The 27B's Metal sources, embedded by name (zig/kernels/metal/qwen27).
 const parts = [_][]const u8{ "xsum", "norm_xs", "norm_input", "mlp_xs", "mlp_ane", "glue", "copy", "moe", "moe_rows", "attention_mpp", "attention_io", "attention_prompt", "attention_prompt_sg" };
 
-/// The shared modules, imported into `engine` (whose `core` is itself) for the server and the release binary.
-pub fn engineModules(b: *std.Build, target: std.Build.ResolvedTarget, metal: *std.Build.Module, sources: *std.Build.Module, engine: *std.Build.Module) Shared {
+/// Shared DFlash2's Metal sources also serve the Inkling host-only build.
+pub fn runtimeSources(b: *std.Build) *std.Build.Module {
     const files = b.addWriteFiles();
     var index: []const u8 = "";
     for (parts) |part| {
         _ = files.addCopyFile(b.path(b.fmt("zig/kernels/metal/qwen27/{s}.metal", .{part})), b.fmt("{s}.metal", .{part}));
-        // The prompt kernels' pick comes from core: its macro heads attention_prompt.
         const head = if (std.mem.eql(u8, part, "attention_prompt")) "@embedFile(\"prompt_pick.metal\") ++ " else "";
         index = b.fmt("{s}pub const {s} = {s}@embedFile(\"{s}.metal\");\n", .{ index, part, head, part });
     }
     _ = files.addCopyFile(b.path("zig/kernels/metal/core/prompt_pick.metal"), "prompt_pick.metal");
+    return b.createModule(.{ .root_source_file = files.add("qwen_runtime_sources.zig", index) });
+}
+
+/// The shared modules, imported into `engine` (whose `core` is itself) for the server and the release binary.
+pub fn engineModules(b: *std.Build, target: std.Build.ResolvedTarget, metal: *std.Build.Module, sources: *std.Build.Module, engine: *std.Build.Module) Shared {
+    const files = b.addWriteFiles();
     _ = files.addCopyFile(b.path("zig/kernels/metal/core/deltanet.metal"), "gdn.metal");
     _ = files.addCopyFile(b.path("zig/kernels/metal/core/deltanet_slots.metal"), "gdn_slots.metal");
     const bf16_topk = b.createModule(.{ .root_source_file = b.path("zig/src/core/bf16_topk.zig"), .target = target, .optimize = .ReleaseSafe });
     const tree_round = b.createModule(.{ .root_source_file = b.path("zig/src/core/tree_round.zig"), .target = target, .optimize = .ReleaseSafe });
     const s: Shared = .{
         .delta = b.createModule(.{ .root_source_file = b.path("zig/src/core/deltanet_kernels.zig"), .target = target, .optimize = .ReleaseSafe, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "kernel_sources", .module = sources } } }),
-        .runtime_sources = b.createModule(.{ .root_source_file = files.add("qwen_runtime_sources.zig", index) }),
+        .runtime_sources = runtimeSources(b),
         .gdn_source = b.createModule(.{ .root_source_file = files.add("qwen_gdn_source.zig", "pub const text = @embedFile(\"gdn.metal\") ++ \"\\n\" ++ @embedFile(\"gdn_slots.metal\");\n") }),
         .bf16_topk = bf16_topk,
         .bf16_topk_gpu = b.createModule(.{ .root_source_file = b.path("zig/src/core/bf16_topk_gpu.zig"), .target = target, .optimize = .ReleaseSafe, .link_libc = true, .imports = &.{ .{ .name = "metal", .module = metal }, .{ .name = "bf16_topk", .module = bf16_topk }, .{ .name = "bf16_topk_sources", .module = b.createModule(.{ .root_source_file = b.path("zig/bf16_topk_sources.zig") }) } } }),

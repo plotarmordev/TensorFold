@@ -7,6 +7,7 @@ const Model = @import("../families/inkling2/metal/model.zig").Model;
 const st = @import("../families/inkling2/metal/state.zig");
 const backend = @import("../families/inkling2/metal/backend.zig");
 const dspark = @import("../families/inkling2/metal/dspark.zig");
+const dflash = @import("../families/inkling2/metal/dflash.zig");
 const admit = @import("../families/inkling2/metal/admit.zig");
 const vision = @import("../families/inkling2/metal/vision.zig");
 
@@ -16,6 +17,7 @@ const Host = struct {
     model: *Model,
     metal: *backend.Metal,
     drafter: ?*dspark.Drafter = null,
+    dflash: ?*dflash.Drafter = null,
     drafted: ?lanes.drafted.Drafted = null,
     vision: ?*vision.Tower = null,
     markers: [1]u32 = undefined,
@@ -35,6 +37,7 @@ const Host = struct {
         h.config.deinit(h.gpa);
         if (h.drafted) |*d| d.deinit();
         if (h.drafter) |d| d.deinit();
+        if (h.dflash) |d| d.deinit();
         h.metal.deinit();
         if (h.vision) |v| v.deinit();
         h.model.deinit();
@@ -57,7 +60,7 @@ const Host = struct {
 pub fn refusal(o: api.Open) ?[]const u8 {
     if (o.cfg_enabled or o.cfg_batched) return "inkling2_loop: classifier-free guidance is unsupported; images need --vision and audio is unsupported";
     if (o.loops != null) return "inkling2_loop: the model has exactly three core passes; --loops cannot override them";
-    if (o.mtp_drafts != null or o.mtp_confidence != null) return "inkling2_loop: use --drafter for the checkpoint's DSpark head; external draft controls remain unsupported";
+    if (o.mtp_drafts != null or o.mtp_confidence != null) return "inkling2_loop: use --drafter for the DSpark head or DFlash2 checkpoint; external draft controls remain unsupported";
     if (o.precision != null) return "inkling2_loop: the checkpoint's NVFP4, MXFP8 and BF16 arithmetic is fixed; serve without --precision";
     if (o.speed_up != null) return "inkling2_loop: this Metal engine serves one Mac; --speed-up is unsupported";
     if (o.learn != null or o.learn_conversations) return "inkling2_loop: learned disk states are not implemented; serve without --learn and --learn-conversations";
@@ -69,9 +72,25 @@ fn drafterDirectory(o: api.Open) ?[]const u8 {
     return if (o.drafts) o.drafter else null;
 }
 
+/// The publisher's drafter has its own config; mtp.safetensors beside the target remains DSpark.
+fn isDFlash(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !bool {
+    if (std.mem.endsWith(u8, dir, ".safetensors")) return false;
+    const path = try std.fs.path.join(gpa, &.{ dir, "config.json" });
+    defer gpa.free(path);
+    const raw = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20));
+    defer gpa.free(raw);
+    var json = try std.json.parseFromSlice(std.json.Value, gpa, raw, .{});
+    defer json.deinit();
+    if (json.value != .object) return error.BadDrafterConfig;
+    const architectures = json.value.object.get("architectures") orelse return error.BadDrafterConfig;
+    if (architectures != .array or architectures.array.items.len != 1 or architectures.array.items[0] != .string)
+        return error.BadDrafterConfig;
+    return std.mem.eql(u8, architectures.array.items[0].string, "DFlash2DraftModel");
+}
+
 fn contextProblem(window: i64, fits: usize) ?[]const u8 {
     if (window < 1) return "inkling2_loop: --context must be at least one token, and the selected context must fit the Metal state budget";
-    if (window > fits) return "inkling2_loop: --context exceeds the largest window this Mac can afford beside the checkpoint and DSpark state";
+    if (window > fits) return "inkling2_loop: --context exceeds the largest window this Mac can afford beside the checkpoint and drafter state";
     return null;
 }
 
@@ -92,15 +111,33 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
     };
     const drafter_dir = drafterDirectory(o);
     errdefer model.deinit();
-    const drafter = if (drafter_dir) |dir| dspark.Drafter.init(gpa, io, model.device, model, dir) catch |err| {
-        problem.* = try std.fmt.allocPrint(a, "--drafter: Inkling 2 Mini DSpark cannot load {s} ({s})", .{ dir, @errorName(err) });
+    const flash = if (drafter_dir) |dir| isDFlash(gpa, io, dir) catch |err| {
+        problem.* = try std.fmt.allocPrint(a, "--drafter: cannot inspect {s} ({s})", .{ dir, @errorName(err) });
+        model.deinit();
+        return null;
+    } else false;
+    if (flash and o.prompt_cache_gib != null and o.prompt_cache_gib.? > 0) {
+        problem.* = "inkling2_loop: DFlash2 does not support prompt-cache restoration; use --prompt-cache-gib 0";
+        model.deinit();
+        return null;
+    }
+    const drafter = if (drafter_dir != null and !flash) dspark.Drafter.init(gpa, io, model.device, model, drafter_dir.?) catch |err| {
+        problem.* = try std.fmt.allocPrint(a, "--drafter: Inkling 2 Mini DSpark cannot load {s} ({s})", .{ drafter_dir.?, @errorName(err) });
         model.deinit();
         return null;
     } else null;
     errdefer if (drafter) |d| d.deinit();
+    const flash_drafter = if (flash) dflash.Drafter.init(gpa, io, model, drafter_dir.?) catch |err| {
+        problem.* = try std.fmt.allocPrint(a, "--drafter: Inkling 2 Mini DFlash2 cannot load {s} ({s})", .{ drafter_dir.?, @errorName(err) });
+        if (drafter) |d| d.deinit();
+        model.deinit();
+        return null;
+    } else null;
+    errdefer if (flash_drafter) |d| d.deinit();
     const tower = if (o.vision) |v| vision.Tower.load(gpa, io, o.dir, model.device, model.queue, &model.config, .{ .max_tokens = v.image_tokens }) catch |err| {
         problem.* = try std.fmt.allocPrint(a, "Inkling 2 Mini cannot load its image tower ({s})", .{@errorName(err)});
         if (drafter) |d| d.deinit();
+        if (flash_drafter) |d| d.deinit();
         model.deinit();
         return null;
     } else null;
@@ -112,24 +149,27 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
         if (std.c.sysctlbyname("hw.memsize", &ram, &len, null, 0) != 0) ram = 0;
     }
     const scratch: u64 = st.scratchBytes(st.batch_rows) + st.scratchBytes(if (model.device.tensorUnits()) st.prompt_rows else st.pre_m5_prompt_rows);
-    const resident = model.checkpoint.residentBytes() + scratch + if (drafter) |d| d.fixedBytes() + dspark.Drafter.scoreBytes(0) else 0;
+    const resident = model.checkpoint.residentBytes() + scratch +
+        (if (drafter) |d| d.fixedBytes() + dspark.Drafter.scoreBytes(0) else if (flash_drafter) |d| d.fixedBytes() else 0);
     const image_bytes: u64 = if (tower) |t| t.bytes() + image_rows else 0;
     const budget = cacheBudget(ram, model.device.maxWorkingSet(), @import("sys").getenv("INKLING2_LOAD_LIMIT_GB"), resident + image_bytes) catch {
         if (tower) |t| t.deinit();
         if (drafter) |d| d.deinit();
+        if (flash_drafter) |d| d.deinit();
         model.deinit();
         problem.* = "INKLING2_LOAD_LIMIT_GB is not a load limit: give a number of GB above 0, or unset it for 75% of RAM";
         return null;
     };
     const streams: u64 = @max(o.lanes, 1);
-    const draft_fixed = if (drafter != null) dspark.Drafter.streamBytes(0) + 127 * (dspark.Drafter.streamBytes(1) - dspark.Drafter.streamBytes(0)) else 0;
-    const draft_token = if (drafter) |_| dspark.Drafter.streamBytes(1) - dspark.Drafter.streamBytes(0) else 0;
-    const draft_shared_token = if (drafter) |_| dspark.Drafter.scoreBytes(1) - dspark.Drafter.scoreBytes(0) else 0;
+    const draft_fixed = if (drafter != null) dspark.Drafter.streamBytes(0) + 127 * (dspark.Drafter.streamBytes(1) - dspark.Drafter.streamBytes(0)) else if (flash_drafter) |d| d.streamBytes() else 0;
+    const draft_token = if (drafter != null) dspark.Drafter.streamBytes(1) - dspark.Drafter.streamBytes(0) else 0;
+    const draft_shared_token = if (drafter != null) dspark.Drafter.scoreBytes(1) - dspark.Drafter.scoreBytes(0) else 0;
     const fits = longest(budget, model.config.text.max_context, streams, draft_fixed, draft_token, draft_shared_token);
     const window: i64 = o.context orelse @intCast(fits);
     if (contextProblem(window, fits)) |why| {
         if (tower) |t| t.deinit();
         if (drafter) |d| d.deinit();
+        if (flash_drafter) |d| d.deinit();
         model.deinit();
         problem.* = why;
         return null;
@@ -142,10 +182,11 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
     h.io = io;
     h.model = model;
     h.drafter = drafter;
+    h.dflash = flash_drafter;
     h.vision = tower;
     h.markers = .{model.config.image_token};
-    const reserved = if (drafter != null) streams * dspark.Drafter.streamBytes(@intCast(window)) + dspark.Drafter.scoreBytes(@intCast(window)) - dspark.Drafter.scoreBytes(0) else 0;
-    if (reserved > budget) return error.DSparkReservationExceeded;
+    const reserved = if (drafter != null) streams * dspark.Drafter.streamBytes(@intCast(window)) + dspark.Drafter.scoreBytes(@intCast(window)) - dspark.Drafter.scoreBytes(0) else if (flash_drafter) |d| streams * d.streamBytes() else 0;
+    if (reserved > budget) return error.DrafterReservationExceeded;
     h.metal = try backend.Metal.init(gpa, model, .{ .capacity = @intCast(window), .streams = @max(o.lanes, 1), .budget = budget - reserved, .images = if (tower != null) .{ .ctx = h, .encode = Host.encode } else null });
     errdefer h.metal.deinit();
     try h.metal.warm();
@@ -159,6 +200,11 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
         h.drafted = try lanes.drafted.Drafted.init(gpa, h.metal.backend(), d.drafter());
         h.drafted.?.first_rows = true;
     }
+    if (flash_drafter) |d| {
+        try h.metal.measure();
+        h.drafted = try lanes.drafted.Drafted.init(gpa, h.metal.backend(), d.drafter());
+        h.drafted.?.first_rows = true;
+    }
     errdefer if (h.drafted) |*d| d.deinit();
     const facts = if (h.drafted) |*d| d.facts(h.metal.facts()) else h.metal.facts();
     h.config = try lanes.Config.init(gpa, facts, st.window_rows, st.window_rows - 1);
@@ -166,10 +212,10 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
     h.clock = .{ .io = io };
     h.core = lanes.Engine.init(gpa, &h.config, if (h.drafted) |*d| d.backend() else h.metal.backend(), h.clock.clock());
     errdefer h.core.deinit();
-    h.host = api.LaneHost.init(gpa, io, &h.core, .{ .lanes = o.lanes, .context_window = @intCast(window), .prefill_step = if (model.device.tensorUnits()) st.prompt_rows else st.pre_m5_prompt_rows, .decode_share = o.decode_share, .structures = true, .logprobs = true, .draft_sources = .{ .drafter = if (drafter_dir) |dir| .{ .kind = "DSpark", .name = o.drafter_name orelse dir } else null } });
+    h.host = api.LaneHost.init(gpa, io, &h.core, .{ .lanes = o.lanes, .context_window = @intCast(window), .prefill_step = if (model.device.tensorUnits()) st.prompt_rows else st.pre_m5_prompt_rows, .decode_share = o.decode_share, .structures = true, .logprobs = true, .draft_sources = .{ .drafter = if (drafter_dir) |dir| .{ .kind = if (flash) "DFlash2" else "DSpark", .name = o.drafter_name orelse dir } else null } });
     if (o.vision) |v| h.host.info_.vision = .{ .ctx = h, .prepare = Host.prepare, .image_token = model.config.image_token, .markers = &h.markers, .part_type = "image", .image_tokens = v.image_tokens, .max_images = v.max_images, .explain = vision.problem };
     h.cache = null;
-    h.cache_cap = if (o.prompt_cache_gib) |g| @intFromFloat(g * (1 << 30)) else budget;
+    h.cache_cap = if (flash) 0 else if (o.prompt_cache_gib) |g| @intFromFloat(g * (1 << 30)) else budget;
     if (h.cache_cap > 0) {
         const M = backend.Metal;
         const rules: api.prompt_cache.Rules = .{ .lookahead = 0, .planned = true, .grid = st.prompt_rows, .min_prompt = 0 };
@@ -229,6 +275,11 @@ fn fitCache(ctx: *anyopaque, bytes: u64, restoring: ?*anyopaque, prompt: []const
     _ = store.giveBack(restoring, prompt, Left{ .s = store });
 }
 
+test "Inkling --drafter identifies the published DFlash2 checkpoint" {
+    const dir = @import("sys").getenv("TF_INKLING2_DFLASH_DIR") orelse return error.SkipZigTest;
+    try std.testing.expect(try isDFlash(std.testing.allocator, std.testing.io, dir));
+}
+
 test "Inkling native admission keeps DSpark opt-in and refuses learned modes" {
     var o: api.Open = .{ .dir = "checkpoint", .model_type = "inkling2_loop" };
     try std.testing.expect(refusal(o) == null);
@@ -272,7 +323,7 @@ test "Inkling native open releases DSpark when the later context admission refus
     o.context = std.math.maxInt(i64);
     problem = "not published";
     try std.testing.expect((try open(std.testing.allocator, std.testing.allocator, std.testing.io, o, &problem)) == null);
-    try std.testing.expectEqualStrings("inkling2_loop: --context exceeds the largest window this Mac can afford beside the checkpoint and DSpark state", problem);
+    try std.testing.expectEqualStrings("inkling2_loop: --context exceeds the largest window this Mac can afford beside the checkpoint and drafter state", problem);
     // Null skips errdefer; omitting explicit deinit leaks allocations caught by std.testing.allocator.
 }
 

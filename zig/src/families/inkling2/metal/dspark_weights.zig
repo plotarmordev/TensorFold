@@ -1,7 +1,7 @@
 //! Validated mtp.safetensors weights and the one-time folded Markov output head.
 const std = @import("std");
 const mtl = @import("metal");
-const ck = @import("../../../core/checkpoint_metal.zig");
+const ck = @import("core").checkpoint_metal;
 const cfg = @import("../config.zig");
 const Model = @import("model.zig").Model;
 const fold = @import("dspark_fold.zig");

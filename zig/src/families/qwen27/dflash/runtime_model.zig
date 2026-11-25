@@ -440,7 +440,11 @@ pub fn loadGraph(a: std.mem.Allocator, b: *Backend) !weights.Graph {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const local = arena.allocator();
-    const embed = try binding(local, target, prefix, "model.embed_tokens", .{ .bits = target.weights.embed.bits, .group_size = target.weights.embed.group });
+    const embed = if (target.dense) |dense|
+        ck.Linear{ .dense = Backend.cpu(dense.embed) }
+    else
+        try binding(local, target, prefix, "model.embed_tokens",
+            .{ .bits = target.weights.embed.bits, .group_size = target.weights.embed.group });
     var names: std.ArrayList([]const u8) = .empty;
     var iterator = b.checkpoint.tensors.keyIterator();
     while (iterator.next()) |name| try names.append(local, name.*);
