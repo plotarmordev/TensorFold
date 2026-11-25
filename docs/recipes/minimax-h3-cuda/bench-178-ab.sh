@@ -1,10 +1,10 @@
 #!/bin/sh
 # Card 178's same-job int8 A/B, one prompt a job so each stays inside the GPU slot's 600 s: this commit, then
 # bench-178-base.patch reverse-applied so zig/ is exactly the branch's merge parent (main at 6b6822bbd). Each side
-# renders the prompt cold, then three times warm; H3_PROFILE is on throughout. The baseline half rebuilds only
-# the fatbins the patch touches and links a second tf-h3-image-cuda: TOP's /work/zig-cache is shared across jobs,
-# so after one cold pass each later job reuses every object but the two changed kernel images. The fused
-# epilogue must reproduce main's latents and PNGs byte for byte. The contract gates are check-178.sh's own job.
+# renders the prompt cold, then three times warm; H3_PROFILE is on throughout. TOP's checkout and /work/zig-cache
+# are shared across jobs, so a job killed mid-A/B can leave zig/ on the baseline: the heads phase restores it
+# first, and after one cold pass every later job's second build reuses all but the two changed kernel images.
+# The fused epilogue must reproduce main's latents and PNGs byte for byte; the contract gates are check-178.sh's.
 # Results: /work/out/h3-178-PROMPT-{heads,base}. Run through bench-178-{fox,harbour,meadow,steam}.sh:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-178-fox.sh
 set -eu
@@ -28,11 +28,14 @@ stages() { # every run's wall split and H3_PROFILE block stages
         grep -E '^  [a-z ]+: [0-9.]+ s$' "$1/2048-$run.image.log" || true
     done
 }
+# a prior job killed mid-A/B leaves zig/ on the baseline on TOP's shared checkout
+git -c safe.directory='*' checkout -- zig/ 2>/dev/null || :
 echo "=== heads ($H3_178_PROMPT): this commit $(git -c safe.directory='*' rev-parse --short HEAD), int8 qkv + fused heads ==="
 phase heads
 echo "=== base ($H3_178_PROMPT): main at 6b6822bbd, int8 qkv + h3_heads ==="
-trap 'git -c safe.directory="*" apply "$patch_file"; rm -f "$tmp_index"' EXIT
+git -c safe.directory='*' apply -R "$patch_file"
 tmp_index=$(mktemp)
+trap 'git -c safe.directory="*" apply "$patch_file"; rm -f "$tmp_index"' EXIT
 GIT_INDEX_FILE=$tmp_index git -c safe.directory='*' read-tree HEAD
 tree=$(GIT_INDEX_FILE=$tmp_index git -c safe.directory='*' add -A zig && GIT_INDEX_FILE=$tmp_index git -c safe.directory='*' write-tree --prefix=zig/)
 [ "$tree" = 8a06c4029fff70b09d7e9286813975262ed0bd89 ] || { echo "patch -R rebuilt zig/ $tree, not main's" >&2; exit 1; }
