@@ -164,14 +164,13 @@ pub const Probe = struct {
                 self.blocks = try self.rig.scratch(std.mem.sliceAsBytes(blocks).len);
                 @memcpy(self.rig.bytes(self.blocks, std.mem.sliceAsBytes(blocks).len), std.mem.sliceAsBytes(blocks));
             },
-            .mlp_partial => {
-                try self.convolved(rng);
-                self.wide = try self.rig.scratch(n * 4);
-            },
+            .mlp_partial => try self.convolved(rng),
             .copy_f32 => {},
         }
         if (fill == .nonfinite) self.f[0][if (self.kind == .copy_bf16 and shape.k == 3) 2 * p.hidden else 0] = std.math.nan(f32);
         self.refs[0] = try self.input(self.f[0], self.kind == .copy_bf16 or self.kind == .widen or self.kind == .attention_partial or self.kind == .capture_tap);
+        // Production widens into its own FP32 input; every invocation reads and replaces only t[i].
+        if (self.kind == .mlp_partial) self.wide = self.refs[0];
         const elem: c.Elem = switch (self.kind) {
             .copy_bf16, .mlp_partial, .capture_tap => .bf16,
             .copy_f32, .widen, .attention_partial => .f32,
