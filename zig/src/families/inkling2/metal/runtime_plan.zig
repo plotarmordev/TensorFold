@@ -100,6 +100,13 @@ pub fn roundBf16(v: anytype) f64 {
     return value;
 }
 
+/// Static convolution in the production FP32 order, including its BF16 boundary before the partial.
+pub fn conv(taps: []const f32, weight: []const f32, row: usize, d: usize) f32 {
+    var sum: f32 = taps[(row + 3) * hidden + d];
+    for (0..4) |tap| sum += weight[d * 4 + tap] * taps[(row + tap) * hidden + d];
+    return @floatCast(roundBf16(sum / @sqrt(@as(f32, 5))));
+}
+
 /// Boundary restarts the FP32 partial; otherwise the two exact BF16 inputs undergo one FP32 add.
 pub fn attentionPartial(p: f32, x: f32, boundary: usize) f64 {
     std.debug.assert(boundary <= block_slots);

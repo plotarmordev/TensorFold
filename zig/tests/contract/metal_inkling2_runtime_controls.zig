@@ -14,8 +14,8 @@ fn edit(kind: p.Kind) Edit {
             .to = "kernel void tf_ink2_copy_f32(const device float* x [[buffer(0)]], device float* y [[buffer(1)]], constant InkRuntimeArgs& a [[buffer(2)]], uint i [[thread_position_in_grid]]) {\n  if (i < a.count) y[i] = 0.0f;",
         },
         .widen => .{ .from = "if (i < a.count) y[i] = float(x[i]);", .to = "if (i < a.count) y[i] = 2.0f * float(x[i]);" },
-        .attention_partial => .{ .from = "blocks[row * 4 * 2304 + (a.boundary - 1) * 2304 + d] = p[i];", .to = "blocks[row * 2304 + (a.boundary - 1) * 2304 + d] = p[i];" },
-        .mlp_partial => .{ .from = "p[i] = bfloat(t[i] + float(x[i]));", .to = "p[i] = bfloat(t[i] - float(x[i]));" },
+        .attention_partial => .{ .from = "blocks[row * 4u * 2304u + (a.boundary - 1u) * 2304u + d] = p[i];", .to = "blocks[row * 2304u + (a.boundary - 1u) * 2304u + d] = p[i];" },
+        .mlp_partial => .{ .from = "const bfloat v = bfloat(t[i] + float(ink2_conv(old, fresh, w, i / 2304u, i % 2304u)));", .to = "const bfloat v = bfloat(t[i] - float(ink2_conv(old, fresh, w, i / 2304u, i % 2304u)));" },
         .capture_tap => .{ .from = "y[row * 4 * 2304 + a.boundary * 2304 + d] = x[i];", .to = "y[row * 4 * 2304 + ((a.boundary + 1) % 4) * 2304 + d] = x[i];" },
     };
 }
