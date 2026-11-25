@@ -109,5 +109,6 @@ depend on the timesteps alone, so a run of same-schedule pictures prepares them 
 `picture.safetensors OUT_PREFIX` line of stdin at a time and answers `done OUT_PREFIX` or `failed OUT_PREFIX`.
 
 CUDA and Metal are not bit-identical (SwiGLU rounding, RMS sum order): the check is the finished picture's PSNR
-against the Metal tool's. On one GB10 at 2048² — the red-fox prompt, seed 42, six distilled steps, BF16 — the CUDA
-pipeline's picture measures 29.2 dB PSNR against the M5 Ultra's Metal picture; the latents' cosine is 0.996.
+against the Metal tool's. On one GB10 at 2048² — the red-fox prompt, seed 42, six distilled steps, BF16 — this
+head's run (`run-script.sh`) measures 30.45 dB PSNR against the M5 Ultra's Metal picture, the latents' cosine
+0.9989; the fork's earlier receipt read 29.2 dB / 0.996.

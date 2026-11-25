@@ -18,6 +18,8 @@ pub fn steps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
 
     // the host ports' hand-checked values, and the sharded checkpoint reader, no GPU anywhere
     const ports = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/rows_reference.zig"), .target = b.graph.host, .imports = &.{.{ .name = "core", .module = @import("h3_host.zig").coreModule(b, b.graph.host) }} });
-    b.step("test-h3-image-cuda-host", "The host ports of the H3 row kernels and the shard reader, no GPU").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = ports })).step);
+    const ports_test = b.addRunArtifact(b.addTest(.{ .root_module = ports }));
+    b.step("test-h3-image-cuda-host", "The host ports of the H3 row kernels and the shard reader, no GPU").dependOn(&ports_test.step);
+    test_step.dependOn(&ports_test.step);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("zig/src/families/h3/checkpoint.zig"), .target = b.graph.host, .imports = &.{.{ .name = "core", .module = @import("h3_host.zig").coreModule(b, b.graph.host) }} }) })).step);
 }

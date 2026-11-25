@@ -10,6 +10,7 @@ const rows = h3image.rows;
 const usage =
     \\usage: tf-h3-image-cuda MODEL_DIR picture.safetensors OUT_PREFIX
     \\       tf-h3-image-cuda MODEL_DIR --serve
+    \\       tf-h3-image-cuda --self-test
     \\  MODEL_DIR    the MiniMax-H3-Image folder: model_index.json, transformer/, pdd_config.json and its heads
     \\  picture      the prompt stage's case: canvas, text (the token refiner's rows), noise from the seed
     \\Writes OUT_PREFIX.rows.f32 (the target's rows) and OUT_PREFIX.latent.f32, as tf-h3-image's free run does.

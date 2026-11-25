@@ -15,11 +15,6 @@ pub fn read(self: *Model, path: [*:0]const u8) !void {
     try readFrom(self, ck.shards());
 }
 
-/// `read` over a checkpoint's already-open shards, searched by tensor name.
-pub fn readShards(self: *Model, ck: Shards) !void {
-    try readFrom(self, ck);
-}
-
 fn readFrom(self: *Model, ck: Shards) !void {
     const d = &self.driver;
     var name: [128]u8 = undefined;

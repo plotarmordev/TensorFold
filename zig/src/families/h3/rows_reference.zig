@@ -1,7 +1,7 @@
 //! The Metal H3 row kernels as host functions: the stream's rows in and out, the final norm and the
 //! AdaLN projections, for the backends that run the blocks another way (CUDA) or a check without a GPU.
 //! Accumulation follows each kernel's float32 order: sequential for h3_rows_in, the 32 lane sums then
-//! combined for the strided h3_rows_out and h3_modulation.
+//! combined for the strided h3_rows_out, h3_final_norm and h3_modulation.
 const std = @import("std");
 const bf16 = @import("bf16_round");
 /// The AdaLN shapes the projections share; `pub` for the tools that fetch the embedder's width.
@@ -52,11 +52,13 @@ pub fn finalNorm(x: []align(1) const u16, w: []align(1) const u16, table: []alig
     for (line, 0..) |t, r| {
         const xr = x[r * hidden ..][0..hidden];
         const tab = table[@as(usize, @intCast(t)) * 2 * hidden ..][0 .. 2 * hidden];
-        var sq: f32 = 0;
-        for (xr) |v| {
-            const f = bf16.value(v);
-            sq += f * f;
+        var partials: [32]f32 = @splat(0);
+        for (0..hidden) |c| {
+            const f = bf16.value(xr[c]);
+            partials[c % 32] += f * f;
         }
+        var sq: f32 = 0;
+        for (partials) |p| sq += p;
         const inv = 1.0 / @sqrt(sq / @as(f32, @floatFromInt(hidden)) + eps);
         for (0..hidden) |c| {
             y[r * hidden + c] = bf16.bits(modulated(bf16.value(xr[c]), inv, bf16.value(w[c]), bf16.value(tab[hidden + c]), bf16.value(tab[c])));

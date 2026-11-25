@@ -136,6 +136,7 @@ test "h3 library: exported host and device refusals need no CUDA dependencies or
     m.inner = 128;
     m.heads = 1;
     m.mlp = 128;
+    m.gated = true;
     var block: [1]h3.Block = undefined;
     m.blocks = &block;
     if (@hasField(h3.Model, "tp")) m.tp = null;
