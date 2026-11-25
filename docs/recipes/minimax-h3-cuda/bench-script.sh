@@ -4,10 +4,13 @@ set -eu
 model=/assets/drama3-pilot/models/MiniMax-H3-Image
 pilot=/assets/drama3-pilot/h3-image-pilot
 commit=$(git -c safe.directory='*' rev-parse HEAD)
-bin=/work/out/tensorfold-cuda-$commit
+bin=${H3_BENCH_BIN:-/work/out/tensorfold-cuda-$commit}
 out=${H3_BENCH_OUT:-/work/out/h3-image-bench}
-# the sm_121 tools only: the five SMs' build and limits audit are cuda-build.sh's own job
-H3_BUILD=sm121 sh docs/recipes/minimax-h3-cuda/cuda-build.sh
+# the sm_121 tools only: the five SMs' build and limits audit are cuda-build.sh's own job. H3_BENCH_BIN names a
+# phase's output dir (a same-job A/B keeps each side's once-built tools); it is reused when already populated.
+if [ ! -x "$bin/tf-h3-image-cuda" ]; then
+    H3_BUILD=sm121 H3_BUILD_OUT=$bin sh docs/recipes/minimax-h3-cuda/cuda-build.sh
+fi
 export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 for path in "$model/model_index.json" "$model/text_encoder/config.json" "$pilot/prompt.txt" "$bin/tf-h3-image-cuda" "$bin/tf-h3-image-prompt-cuda" "$bin/tf-h3-image-decoder-cuda"; do
     [ -e "$path" ] || { echo "missing $path" >&2; exit 1; }

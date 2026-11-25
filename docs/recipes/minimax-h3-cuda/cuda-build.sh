@@ -39,7 +39,7 @@ export LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib${LD_LIBRARY_PATH:+
 export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
 # H3_BUILD=limits: the five SMs' images and kernel-contract-limits alone, no picture tools, CLI or tf-cuda-test —
 # the audit as its own job, never inside a timed bench
-cuda=$out/tensorfold-cuda-$sha
+cuda=${H3_BUILD_OUT:-$out/tensorfold-cuda-$sha}
 mkdir -p "$cuda"
 if [ "${H3_BUILD:-}" = limits ]; then
     zig build fatbins kernel-contract-fatbins tf-cuda-limits -Dsm=80,86,89,120,121 -Dnvcc=$nvcc -Doptimize=ReleaseFast \

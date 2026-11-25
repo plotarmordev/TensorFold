@@ -16,9 +16,14 @@ fox) file=/assets/drama3-pilot/h3-image-pilot/prompt.txt ;;
 *) file=$here/prompts/$H3_178_PROMPT.txt ;;
 esac
 status=0
-phase() {
-    H3_LINEAR=int8 H3_PROFILE=1 H3_BENCH_OUT=/work/out/h3-178-$H3_178_PROMPT-$1 H3_BENCH_SKIP_COMPARE=1 \
-        H3_BENCH_PROMPTS="$file $file $file $file" sh "$here/bench-script.sh" || status=$?
+phase() { # $1 heads|base; each side's tools build once into a phase-named dir TOP's /work keeps across jobs
+    case $1 in
+    heads) bindir=/work/out/h3-178-bin-heads ;;
+    base) bindir=/work/out/h3-178-bin-base ;;
+    esac
+    H3_BENCH_BIN=$bindir H3_LINEAR=int8 H3_PROFILE=1 H3_BENCH_OUT=/work/out/h3-178-$H3_178_PROMPT-$1 \
+        H3_BENCH_SKIP_COMPARE=1 H3_BENCH_PROMPTS="$file $file $file $file" \
+        sh "$here/bench-script.sh" || status=$?
 }
 stages() { # every run's wall split and H3_PROFILE block stages
     for run in 1 2 3 4; do
