@@ -4,6 +4,10 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- MiniMax-H3-Image's CUDA image decoder: `h3d_linear` reads each thread's K share as one 16-byte load and
+  prefetches the next K slice into registers, then sums each product as one rounded `__fmaf_rn`, the selftest's
+  ordered fp32 sums kept: on a GB10 the decoder's GPU time for a 2048² latent fell from 5.25 s to 4.54 s, and
+  `H3_PROFILE=1` prints its per-stage seconds.
 - Metal: SenseNova-Loop-9B is served natively through the qwen27 lane backend in BF16 and AWQ 4-bit (group size 128), with its looped 56-step schedule, two-stream mHC, 512K YaRN context and vision, and drafts with its published `mtp.safetensors` (#3868, carries #3859, fixes #3781). Thanks @gilby.
 
 - ZONOS3 Mini text to speech on CUDA: named voices, reference codes and cloning from a clip, with frame budgets checked at load; serving checkpoints other than ZONOS3 is unchanged (#3720).

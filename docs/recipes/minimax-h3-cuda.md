@@ -86,3 +86,10 @@ Same prompt, seed 42, six distilled steps, BF16 throughout, one GB10:
 The 2048² latent decoded on both paths is 56.65 dB PSNR from the host reference (86.180% of bytes identical, 99.923%
 within 1, at most 5 apart, relative error 3.15e-3 against the 3e-2 bound). CPU times are the host reference tools on
 the same case; the GPU times are warm means over three repeats after one cold run.
+
+`h3d_linear` then loads each thread's share of a K slice as one 16-byte vector, prefetches the next slice into
+registers while the current one sums, and sums each product as one rounded `__fmaf_rn` — the same ordered fp32
+sums the selftest gates, one rounding instead of two. On the same GB10 the decoder's GPU time for the 2048²
+latent fell from 5.25 s to 4.54 s (its stage split: products 2.26 s, attention 1.88 s, finish 0.25 s), and the
+picture `reference` check passed at 56.60 dB PSNR. `H3_PROFILE=1` makes `tf-h3-image-decoder-cuda` print each
+stage's seconds.
