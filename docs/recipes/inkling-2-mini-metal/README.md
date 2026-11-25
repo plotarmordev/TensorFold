@@ -18,7 +18,11 @@ Verified 2026-11-25 on Mac17,15 (Apple M5 Ultra, 256 GiB, macOS 27.0), `tensorfo
 
 - Binary: `/Users/agents/.local/libexec/tensorfold-inkling/tensorfold-native` (this checkout's
   `zig-out/native/bin/tensorfold-native` copied to a stable agents-owned path — never point the plist at a
-  worktree's `zig-out/` or `.scratch/`, which are deleted when the card's worktree is removed).
+  worktree's `zig-out/` or `.scratch/`, which are deleted when the card's worktree is removed) plus
+  `libtfgrammar.dylib` beside it (`zig-out/native/lib/libtfgrammar.dylib`, built with `zig build grammar
+  -Dxgrammar=DIR` from an xgrammar v0.2.8 checkout; see [Structured output](../api.md#structured-output)).
+  The server loads it beside its binary. Without it `tool_choice: "required"` or a named function and
+  `response_format` return HTTP 400 naming the library — `tool_choice: "auto"` and plain requests still serve.
 - launchd LaunchAgent `com.infra.tensorfold.inkling` in the `agents` account (this Mac's bot account):
   `~/Library/LaunchAgents/com.infra.tensorfold.inkling.plist`, `KeepAlive`, `ThrottleInterval` 30 s,
   logs to `~/Library/Logs/infra/tensorfold-inkling.log`.
@@ -77,14 +81,26 @@ tail -f ~/Library/Logs/infra/tensorfold-inkling.log                             
 curl -s http://127.0.0.1:8082/health                                                        # {"status": "ok"}
 ```
 
-A crash restarts under `KeepAlive` after the 30 s throttle. Model load is ~7 s (weights mmap'd); the first
-request is slower while Metal compiles its pipelines.
+Rollback also removes the `inkling-local` provider block from `~/.omp/agent/models.yml` — left in place,
+OMP agents keep routing to the dead endpoint. The binary, `libtfgrammar.dylib` and
+`~/.config/tensorfold/inkling-keys` may stay installed (inert, 25 MiB total) or be deleted with the service.
+
+A crash restarts under `KeepAlive` after the 30 s throttle. Model load is ~8 s (6.4–12.0 s observed; weights
+mmap'd); the first request is slower while Metal compiles its pipelines.
+
+Pre-change baseline (recorded on the card before any host change): Mac Studio M5 Ultra 256 GiB, 97% free on
+`memory_pressure`, zero swapins/swapouts; `mac-admin model-status` showed nothing on :8081 (GLM off by Net
+since 7 Nov); listeners were `mac-models-tunnel` (:19222), `spark-gateway-tunnel` (:8091), `talia-voice-tunnel`
+and `drama-speech` (:18794). No service was displaced.
 
 ## Verification (2026-11-25)
 
 - 401 without a key, 403 for a read-scoped key on POST, 200 for `omp-agents` on `/v1/models` and
   `/v1/chat/completions`; `/v1/models` reports `id: inkling-2-mini`, `owned_by: tensorfold`,
   `context_length: 32768`.
+- `tool_choice: "required"` returned 200 with a real `calc` tool call after `libtfgrammar.dylib` was installed
+  beside the binary (the same request got the documented 400 before); `grammar_windows`/`grammar_fills` appear
+  in the response's usage block. `auto` served 200 throughout.
 - A second authorized process reached the model through the `inkling-local` provider as configured:
   `omp -p --model inkling-local/inkling-2-mini` authenticated with the file-derived bearer key and logged
   `key=omp-agents` on `POST /v1/chat/completions` (HTTP 200); and a card reviewer ran the provider path as
