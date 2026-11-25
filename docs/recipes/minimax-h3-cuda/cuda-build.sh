@@ -56,7 +56,7 @@ if [ "${H3_BUILD:-}" = contract ]; then
 fi
 # -Dfatbins takes images holding the one SASS profile, so sm_121 is built apart from the audit's five SMs
 zig build fatbins tf-h3-image-prompt-cuda tf-h3-image-cuda tf-h3-image-decoder-cuda \
-    -Dsm=121 -Dnvcc=$nvcc -Doptimize=ReleaseFast --prefix /work/sm121
+    -Dsm=121 -Dnvcc=$nvcc -Doptimize=${H3_OPT:-ReleaseFast} --prefix /work/sm121
 fatbins=$out/tensorfold-fatbins-$sha
 mkdir -p "$fatbins"
 cp /work/sm121/fatbin/*.fatbin "$fatbins"
