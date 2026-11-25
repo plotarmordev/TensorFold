@@ -13,8 +13,8 @@ venv/
 *.swp
 *.log
 .zig-toolchain
-.zig-cache/
-zig-out/
+.zig-cache
+zig-out
 
 # Native Qwen CPU-only Metal compiler receipts.
 .q27-metal-check/

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import cuda_sass_identity as sid
 import cuda_sass_sources as sources
+from outside_checkout import shared_cache
 
 
 def select(trees,catalogs):
@@ -199,7 +200,9 @@ def main(argv=None):
     parser.add_argument('--no-recheck',action='store_true',help='diagnostic only, exit 2 after matching images')
     parser.add_argument('-j','--jobs',type=int,choices=(1,2),default=2)
     args=parser.parse_args(argv)
-    output=(args.output or Path('sass-compare-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+str(os.getpid()))).resolve()
+    output=(args.output or shared_cache(Path(__file__).resolve().parents[2])/'sass-compare'/(
+        datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+str(os.getpid()))).resolve()
+    print('output: '+str(output),flush=True)
     output.mkdir(parents=True,exist_ok=False)
     rows=[]
     report={'inputs':{},'sms':sid.SMS,'qualified':False,'output':str(output),'mode':'plan' if args.plan_only else 'generate' if args.generate_only else 'sass'}
