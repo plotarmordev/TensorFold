@@ -218,7 +218,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         @memcpy(x[0 .. text * hidden], text_rows);
         if (anchors) |v| rows.rowsIn(v, w_in, b_in, x, text, held, width, hidden);
         rows.rowsIn(video, w_in, b_in, x, text + held, target, width, hidden);
-        in.line = @intFromPtr(adaln[s * count ..].ptr);
+        in.line = @intFromPtr(adaln[s * count ..][0..count].ptr);
         const checked = try model.plan(&in);
         try model.drain();
         // stage() treats every address as host memory; stage the small inputs without the resident table.
@@ -229,7 +229,7 @@ fn render(init: std.process.Init, a: std.mem.Allocator, folder: *Folder, case_pa
         _ = try model.forward(&device);
         try h3.host.readback(model, &in, checked);
         // the final norm over every row, then this step's head over the target's rows
-        rows.finalNorm(x, final_norm, final, line_of[s * count ..], normed, hidden, h3.eps);
+        rows.finalNorm(x, final_norm, final, line_of[s * count ..][0..count], normed, hidden, h3.eps);
         rows.rowsOut(normed, w_out[s * width * hidden ..], b_out[s * width ..], velocity, text + held, target, hidden, width);
         picture.euler(video, velocity, pdd.deltas[s]);
         std.debug.print("step {d}/{d}: {d:.2} s\n", .{ s + 1, steps, h3.seconds() - step });
