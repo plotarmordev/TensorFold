@@ -1,4 +1,4 @@
-//! Text-only Inkling 2 Mini on Metal, with exact prompt reuse and budgeted stream state.
+//! Inkling 2 Mini on Metal: text and images, with exact prompt reuse and budgeted stream state.
 const std = @import("std");
 const mtl = @import("metal");
 const api = @import("engine_api");
@@ -7,6 +7,8 @@ const Model = @import("../families/inkling2/metal/model.zig").Model;
 const st = @import("../families/inkling2/metal/state.zig");
 const backend = @import("../families/inkling2/metal/backend.zig");
 const dspark = @import("../families/inkling2/metal/dspark.zig");
+const admit = @import("../families/inkling2/metal/admit.zig");
+const vision = @import("../families/inkling2/metal/vision.zig");
 
 const Host = struct {
     gpa: std.mem.Allocator,
@@ -15,6 +17,8 @@ const Host = struct {
     metal: *backend.Metal,
     drafter: ?*dspark.Drafter = null,
     drafted: ?lanes.drafted.Drafted = null,
+    vision: ?*vision.Tower = null,
+    markers: [1]u32 = undefined,
     warm: mtl.keepalive.Target,
     clock: lanes.backend.WallClock,
     config: lanes.Config = undefined,
@@ -32,13 +36,26 @@ const Host = struct {
         if (h.drafted) |*d| d.deinit();
         if (h.drafter) |d| d.deinit();
         h.metal.deinit();
+        if (h.vision) |v| v.deinit();
         h.model.deinit();
         h.gpa.destroy(h);
+    }
+
+    fn encode(ctx: *anyopaque, image: lanes.stream.Image) !mtl.Buffer {
+        const h: *Host = @ptrCast(@alignCast(ctx));
+        const tower = h.vision orelse return error.InklingVisionDisabled;
+        return tower.encodeInput(image.pixels, image.gh, image.gw);
+    }
+
+    fn prepare(ctx: *anyopaque, a: std.mem.Allocator, bytes: []const u8, cap: u32) !api.PreparedImage {
+        const h: *Host = @ptrCast(@alignCast(ctx));
+        const p = try vision.prepare(h.io, a, bytes, cap);
+        return .{ .pixels = p.pixels, .gh = p.gh, .gw = p.gw, .tokens = p.tokens, .hash = p.hash };
     }
 };
 
 pub fn refusal(o: api.Open) ?[]const u8 {
-    if (o.vision != null or o.cfg_enabled or o.cfg_batched) return "inkling2_loop: this Metal engine serves text only; images and audio are unsupported";
+    if (o.cfg_enabled or o.cfg_batched) return "inkling2_loop: classifier-free guidance is unsupported; images need --vision and audio is unsupported";
     if (o.loops != null) return "inkling2_loop: the model has exactly three core passes; --loops cannot override them";
     if (o.mtp_drafts != null or o.mtp_confidence != null) return "inkling2_loop: use --drafter for the checkpoint's DSpark head; external draft controls remain unsupported";
     if (o.precision != null) return "inkling2_loop: the checkpoint's NVFP4, MXFP8 and BF16 arithmetic is fixed; serve without --precision";
@@ -81,6 +98,14 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
         return null;
     } else null;
     errdefer if (drafter) |d| d.deinit();
+    const tower = if (o.vision) |v| vision.Tower.load(gpa, io, o.dir, model.device, model.queue, &model.config, .{ .max_tokens = v.image_tokens }) catch |err| {
+        problem.* = try std.fmt.allocPrint(a, "Inkling 2 Mini cannot load its image tower ({s})", .{@errorName(err)});
+        if (drafter) |d| d.deinit();
+        model.deinit();
+        return null;
+    } else null;
+    errdefer if (tower) |t| t.deinit();
+    const image_rows: u64 = if (o.vision) |v| @as(u64, v.image_tokens) * st.hidden * 2 else 0;
     var ram: u64 = 0;
     if (@import("builtin").os.tag.isDarwin()) {
         var len: usize = @sizeOf(u64);
@@ -88,7 +113,9 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
     }
     const scratch: u64 = st.scratchBytes(st.batch_rows) + st.scratchBytes(st.prompt_rows);
     const resident = model.checkpoint.residentBytes() + scratch + if (drafter) |d| d.fixedBytes() + dspark.Drafter.scoreBytes(0) else 0;
-    const budget = cacheBudget(ram, model.device.maxWorkingSet(), @import("sys").getenv("INKLING2_LOAD_LIMIT_GB"), resident) catch {
+    const image_bytes: u64 = if (tower) |t| t.bytes() + image_rows else 0;
+    const budget = cacheBudget(ram, model.device.maxWorkingSet(), @import("sys").getenv("INKLING2_LOAD_LIMIT_GB"), resident + image_bytes) catch {
+        if (tower) |t| t.deinit();
         if (drafter) |d| d.deinit();
         model.deinit();
         problem.* = "INKLING2_LOAD_LIMIT_GB is not a load limit: give a number of GB above 0, or unset it for 75% of RAM";
@@ -101,27 +128,32 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
     const fits = longest(budget, model.config.text.max_context, streams, draft_fixed, draft_token, draft_shared_token);
     const window: i64 = o.context orelse @intCast(fits);
     if (contextProblem(window, fits)) |why| {
+        if (tower) |t| t.deinit();
         if (drafter) |d| d.deinit();
         model.deinit();
         problem.* = why;
         return null;
     }
-    std.log.info("inkling2_loop: {d:.1} GiB for stream and prompt state, context up to {d} tokens", .{ @as(f64, @floatFromInt(budget)) / (1 << 30), window });
+    const demand = admit.demandAt(resident, @intCast(window), drafter != null);
+    std.log.info("inkling2_loop: {d:.1} GiB for stream and prompt state, context up to {d} tokens; {d} streams ask {d:.2} GiB ({d:.2} GiB weights, dense layers and scratch, {d} x {d:.2} GiB a stream, {d:.2} GiB shared)", .{ inGib(budget), window, streams, inGib(demand.of(streams)), inGib(demand.fixed), streams, inGib(demand.stream), inGib(demand.shared) });
     const h = try gpa.create(Host);
     errdefer gpa.destroy(h);
     h.gpa = gpa;
     h.io = io;
     h.model = model;
     h.drafter = drafter;
+    h.vision = tower;
+    h.markers = .{model.config.image_token};
     const reserved = if (drafter != null) streams * dspark.Drafter.streamBytes(@intCast(window)) + dspark.Drafter.scoreBytes(@intCast(window)) - dspark.Drafter.scoreBytes(0) else 0;
     if (reserved > budget) return error.DSparkReservationExceeded;
-    h.metal = try backend.Metal.init(gpa, model, .{ .capacity = @intCast(window), .streams = @max(o.lanes, 1), .budget = budget - reserved });
+    h.metal = try backend.Metal.init(gpa, model, .{ .capacity = @intCast(window), .streams = @max(o.lanes, 1), .budget = budget - reserved, .images = if (tower != null) .{ .ctx = h, .encode = Host.encode } else null });
     errdefer h.metal.deinit();
     try h.metal.warm();
     h.drafted = null;
     h.warm = .{ .queue = model.queue };
     if (drafter) |d| {
         try d.setContext(@intCast(window));
+        h.metal.drafter = d;
         h.drafted = try lanes.drafted.Drafted.init(gpa, h.metal.backend(), d.drafter());
         h.drafted.?.first_rows = true;
     }
@@ -133,12 +165,13 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
     h.core = lanes.Engine.init(gpa, &h.config, if (h.drafted) |*d| d.backend() else h.metal.backend(), h.clock.clock());
     errdefer h.core.deinit();
     h.host = api.LaneHost.init(gpa, io, &h.core, .{ .lanes = o.lanes, .context_window = @intCast(window), .prefill_step = st.prompt_rows, .decode_share = o.decode_share, .structures = true, .logprobs = true, .draft_sources = .{ .drafter = if (drafter_dir) |dir| .{ .kind = "DSpark", .name = o.drafter_name orelse dir } else null } });
+    if (o.vision) |v| h.host.info_.vision = .{ .ctx = h, .prepare = Host.prepare, .image_token = model.config.image_token, .markers = &h.markers, .part_type = "image", .image_tokens = v.image_tokens, .max_images = v.max_images, .explain = vision.problem };
     h.cache = null;
     h.cache_cap = if (o.prompt_cache_gib) |g| @intFromFloat(g * (1 << 30)) else budget;
     if (h.cache_cap > 0) {
         const M = backend.Metal;
         const rules: api.prompt_cache.Rules = .{ .lookahead = 0, .planned = true, .grid = st.prompt_rows, .min_prompt = 0 };
-        h.cache = api.prompt_cache.Store.init(gpa, .{ .ptr = h.metal, .vtable = &.{ .bytes = M.snapBytes, .save = M.snapSave, .restore = M.snapRestore, .drop = M.snapDrop } }, rules, @min(h.cache_cap, budget));
+        h.cache = api.prompt_cache.Store.init(gpa, .{ .ptr = h.metal, .vtable = &.{ .bytes = M.snapBytes, .save = M.snapSave, .restore = M.snapRestore, .drop = M.snapDrop } }, rules, @min(h.cache_cap, budget - reserved));
         h.host.cache = &h.cache.?;
         h.host.info_.prompt_cache = true;
         h.metal.room = .{ .ctx = h, .fit = fitCache };
@@ -149,7 +182,11 @@ pub fn open(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, o: api.Ope
     return .{ .engine = h.host.engine(), .close = Host.close, .ctx = h };
 }
 
-fn cacheBudget(ram: u64, working_set: u64, text: ?[]const u8, resident: u64) error{BadLoadLimit}!u64 {
+fn inGib(bytes: u64) f64 {
+    return @as(f64, @floatFromInt(bytes)) / (1 << 30);
+}
+
+pub fn cacheBudget(ram: u64, working_set: u64, text: ?[]const u8, resident: u64) error{BadLoadLimit}!u64 {
     var limit: u64 = @intFromFloat(@as(f64, @floatFromInt(ram)) * 0.75);
     const value = std.mem.trim(u8, text orelse "", " \t");
     if (value.len > 0) {
@@ -163,14 +200,15 @@ fn cacheBudget(ram: u64, working_set: u64, text: ?[]const u8, resident: u64) err
     return if (limit > resident + margin) limit - resident - margin else 0;
 }
 
+/// The longest context every stream can hold at once: each owns a target state and draft rows; the scores are shared.
 fn longest(bytes: u64, most: u32, streams: u64, draft_fixed: u64, draft_token: u64, draft_shared_token: u64) usize {
-    const one: u64 = st.cacheBytes(1) + streams * (draft_fixed + draft_token) + draft_shared_token;
+    const one: u64 = streams * (st.cacheBytes(1) + draft_fixed + draft_token) + draft_shared_token;
     if (one > bytes) return 0;
     var lo: usize = 1;
     var hi: usize = most;
     while (lo < hi) {
         const mid = lo + (hi - lo + 1) / 2;
-        const need = st.cacheBytes(mid) + streams * (draft_fixed + draft_token * @as(u64, @intCast(mid))) + draft_shared_token * @as(u64, @intCast(mid));
+        const need = streams * (st.cacheBytes(mid) + draft_fixed + draft_token * @as(u64, @intCast(mid))) + draft_shared_token * @as(u64, @intCast(mid));
         if (need <= bytes) lo = mid else hi = mid - 1;
     }
     return lo;
@@ -206,6 +244,13 @@ test "Inkling native admission keeps DSpark opt-in and refuses learned modes" {
     try std.testing.expect(contextProblem(-1, 10) != null);
     try std.testing.expect(contextProblem(11, 10) != null);
     try std.testing.expect(contextProblem(10, 10) == null);
+}
+
+test "Inkling native admission serves images under --vision and still refuses guidance" {
+    var o: api.Open = .{ .dir = "checkpoint", .model_type = "inkling2_loop", .vision = .{} };
+    try std.testing.expect(refusal(o) == null);
+    o.cfg_enabled = true;
+    try std.testing.expect(refusal(o) != null);
 }
 
 test "Inkling native open publishes the exact admission refusal" {
@@ -278,9 +323,11 @@ test "Inkling native load limit clamps before integer conversion" {
 }
 
 test "Inkling native longest context accounts target, streams and shared draft scores" {
-    const budget = st.cacheBytes(7) + 2 * (11 + 7 * 13) + 7 * 17;
+    const budget = 2 * (st.cacheBytes(7) + 11 + 7 * 13) + 7 * 17;
     try std.testing.expectEqual(@as(usize, 7), longest(budget, 8, 2, 11, 13, 17));
+    try std.testing.expectEqual(@as(usize, 6), longest(budget - 1, 8, 2, 11, 13, 17));
     try std.testing.expectEqual(@as(usize, 0), longest(st.cacheBytes(1) - 1, 8, 1, 0, 0, 0));
+    try std.testing.expectEqual(@as(usize, 0), longest(st.cacheBytes(1), 8, 2, 0, 0, 0));
     const per_token = dspark.Drafter.streamBytes(1) - dspark.Drafter.streamBytes(0);
     const conservative = dspark.Drafter.streamBytes(0) + 127 * per_token + 129 * per_token;
     try std.testing.expect(conservative >= dspark.Drafter.streamBytes(129));

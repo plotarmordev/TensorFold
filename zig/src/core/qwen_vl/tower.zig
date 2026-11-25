@@ -132,18 +132,17 @@ pub const Tower = struct {
     }
 
     pub fn loadWith(gpa: std.mem.Allocator, io: std.Io, device: mtl.Device, dir: []const u8, c: Config, max_tokens: u32, factory: anytype) !*Tower {
-        return loadAt(gpa, io, device, dir, wts.prefix, c, max_tokens, factory);
+        return loadWithPrefixes(gpa, io, device, dir, c, max_tokens, factory, &.{wts.prefix});
     }
 
-    /// `loadWith` for a tower whose tensors are named under `prefix` (an HF checkpoint's `model.visual.`).
-    pub fn loadAt(gpa: std.mem.Allocator, io: std.Io, device: mtl.Device, dir: []const u8, prefix: []const u8, c: Config, max_tokens: u32, factory: anytype) !*Tower {
+    pub fn loadWithPrefixes(gpa: std.mem.Allocator, io: std.Io, device: mtl.Device, dir: []const u8, c: Config, max_tokens: u32, factory: anytype, prefixes: []const []const u8) !*Tower {
         const t = try gpa.create(Tower);
         errdefer gpa.destroy(t);
         t.gpa = gpa;
         t.c = c;
         t.k = try Kernels.load(gpa, device);
         errdefer t.k.deinit();
-        t.w = try wts.loadAt(gpa, io, factory, dir, prefix, c);
+        t.w = try wts.loadWithPrefixes(gpa, io, factory, dir, c, prefixes);
         errdefer t.w.deinit(gpa);
         t.inv = try gpa.alloc(f32, c.headDim() / 4);
         errdefer gpa.free(t.inv);

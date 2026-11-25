@@ -6,10 +6,18 @@ const st = @import("state.zig");
 const fwd = @import("forward.zig");
 const Model = @import("model.zig").Model;
 const snapshot = @import("snapshot.zig");
+const img = @import("images.zig");
+const dspark = @import("dspark.zig");
+const dspark_state = @import("dspark_state.zig");
 const cfg = @import("../config.zig");
 const be = lanes.backend;
 
-pub const Options = struct { capacity: usize, streams: u32 = 4, budget: u64 };
+const SavedSnap = struct {
+    target: snapshot.Snap,
+    dspark: ?dspark_state.Snap = null,
+};
+
+pub const Options = struct { capacity: usize, streams: u32 = 4, budget: u64, images: ?img.Encoder = null };
 const ring = 4096;
 
 /// The prompt cache gets the bytes left by live streams and never evicts the state being restored.
@@ -38,6 +46,7 @@ pub const Metal = struct {
     prepared: bool = false,
     sink: ?be.FeatureSink = null,
     tap_gen: u64 = 0,
+    drafter: ?*dspark.Drafter = null,
 
     pub fn init(gpa: std.mem.Allocator, model: *Model, options: Options) !*Metal {
         const out = try gpa.create(Metal);
@@ -169,7 +178,7 @@ pub const Metal = struct {
         return h;
     }
 
-    fn feed(self: *Metal, cache: *st.Cache, ids: []const u32, stream: ?*lanes.Stream) !void {
+    fn feed(self: *Metal, cache: *st.Cache, ids: []const u32, stream: ?*lanes.Stream, pictures: ?*img.Rows) !void {
         const base = cache.len;
         var at: usize = 0;
         while (at < ids.len) {
@@ -187,7 +196,8 @@ pub const Metal = struct {
             const capture = self.prepared and stream != null;
             if (capture) _ = self.nextTapGeneration();
             const taps: ?st.Ref = if (capture) .{ .buf = s.taps.? } else null;
-            try fwd.run(self.model, s, cache, ids[at..end], .{ .taps = taps });
+            const rows_of: []const fwd.ImageRows = if (pictures) |p| p.chunk(base + at, base + end) else &.{};
+            try fwd.run(self.model, s, cache, ids[at..end], .{ .taps = taps, .images = rows_of });
             if (capture) {
                 const rows = end - at;
                 if (self.sink) |k| try k.take(k.ptr, stream.?, .{
@@ -219,7 +229,6 @@ pub const Metal = struct {
         const self = cast(ptr);
         const ids = stream.prompt();
         if (ids.len == 0 or ids.len + stream.max_new > self.options.capacity or self.caches.contains(stream)) return error.InvalidInklingPrompt;
-        if (stream.images.len > 0) return error.InklingHasNoImageTower;
         const need = st.cacheBytes(ids.len + stream.max_new);
         if (self.held + need > self.options.budget) {
             std.log.warn("inkling2_loop: a stream needs {d:.1} GiB of state; {d:.1} of {d:.1} GiB are held", .{ gib(need), gib(self.held), gib(self.options.budget) });
@@ -235,12 +244,25 @@ pub const Metal = struct {
         errdefer _ = self.caches.remove(stream);
         stream.cached = 0;
         if (stream.reuse.saved) |saved| {
-            const snap: *const snapshot.Snap = @ptrCast(@alignCast(saved));
-            if (snap.at < ids.len) {
-                if (snapshot.restore(cache, self.model.queue, snap)) stream.cached = @intCast(snap.at) else |_| stream.reuse_failed = true;
+            const snap: *const SavedSnap = @ptrCast(@alignCast(saved));
+            if (snap.target.at < ids.len) {
+                if (self.restoreSnap(cache, stream, snap)) {
+                    stream.cached = @intCast(snap.target.at);
+                } else |_| {
+                    cache.len = 0;
+                    if (self.drafter) |d| d.resetLane(stream);
+                    stream.reuse_failed = true;
+                }
             } else stream.reuse_failed = true;
         }
-        try self.feed(cache, ids[cache.len..], stream);
+        var pictures = try img.Rows.init(self.gpa, self.options.images, stream, cache.len);
+        defer pictures.deinit();
+        try self.feed(cache, ids[cache.len..], stream, &pictures);
+    }
+
+    fn restoreSnap(self: *Metal, cache: *st.Cache, stream: *lanes.Stream, snap: *const SavedSnap) !void {
+        if (self.drafter) |d| try d.restoreSnap(stream, if (snap.dspark) |*ds| ds else null, snap.target.at);
+        try snapshot.restore(cache, self.model.queue, &snap.target);
     }
 
     pub fn warm(self: *Metal) !void {
@@ -248,7 +270,7 @@ pub const Metal = struct {
         defer cache.deinit();
         var ids: [st.prompt_rows]u32 = undefined;
         for (&ids, 0..) |*t, i| t.* = @intCast(1000 + i * 37 % 20000);
-        try self.feed(&cache, &ids, null);
+        try self.feed(&cache, &ids, null, null);
         try fwd.run(self.model, &self.scratch, &cache, ids[0..st.window_rows], .{ .all = true });
     }
 
@@ -284,8 +306,7 @@ pub const Metal = struct {
     }
 
     fn read(self: *Metal, handle: u64) !u32 {
-        if (handle >= self.next) return error.InvalidInklingTokenHandle;
-        const token = self.tokens[handle % ring];
+        const token = try ringToken(self.tokens, self.next, handle);
         if (token >= self.vocab()) return error.InvalidInklingToken;
         return token;
     }
@@ -377,17 +398,22 @@ pub const Metal = struct {
     }
 
     pub fn snapBytes(ptr: *anyopaque, at: u32) u64 {
-        _ = ptr;
-        return snapshot.bytes(at);
+        const self = cast(ptr);
+        return snapshot.bytes(at) + if (self.drafter != null) dspark_state.Snap.bytes(at) else 0;
     }
 
     pub fn snapSave(ptr: *anyopaque, owner: ?*anyopaque, at: u32) anyerror!*anyopaque {
         const self = cast(ptr);
-        const cache = try self.cacheOf(@ptrCast(@alignCast(owner orelse return error.NoStream)));
+        const stream: *lanes.Stream = @ptrCast(@alignCast(owner orelse return error.NoStream));
+        const cache = try self.cacheOf(stream);
         if (cache.len != at or cache.pending != null) return error.SnapshotOutOfStep;
-        const snap = try self.gpa.create(snapshot.Snap);
+        const snap = try self.gpa.create(SavedSnap);
         errdefer self.gpa.destroy(snap);
-        snap.* = try snapshot.save(self.model.device, self.model.queue, cache);
+        snap.* = .{ .target = try snapshot.save(self.model.device, self.model.queue, cache) };
+        errdefer snap.target.free();
+        if (self.drafter) |d| {
+            snap.dspark = try d.saveSnap(stream, at, cache.tap, self.tap_gen);
+        }
         return snap;
     }
 
@@ -396,8 +422,9 @@ pub const Metal = struct {
     }
 
     pub fn snapDrop(ptr: *anyopaque, saved: *anyopaque) void {
-        const snap: *snapshot.Snap = @ptrCast(@alignCast(saved));
-        snap.free();
+        const snap: *SavedSnap = @ptrCast(@alignCast(saved));
+        if (snap.dspark) |*ds| ds.free();
+        snap.target.free();
         cast(ptr).gpa.destroy(snap);
     }
 };
@@ -425,6 +452,12 @@ test "a window's masks step by the padded vocabulary's words" {
 
 fn gib(bytes: u64) f64 {
     return @as(f64, @floatFromInt(bytes)) / (1 << 30);
+}
+
+/// The token behind `handle`: only the last `ring` handles drawn are still held.
+fn ringToken(tokens: []const u32, next: u64, handle: u64) !u32 {
+    if (handle >= next or next - handle > ring) return error.InvalidInklingTokenHandle;
+    return tokens[handle % ring];
 }
 
 fn firstLogprobRow(l: []const f32, tokens: []const u32, next: usize, count: u8) lanes.LogprobRow {
@@ -465,4 +498,13 @@ test "sampled first-token logprob uses the last written handle, not argmax" {
     try std.testing.expect(std.math.isFinite(row.logprob));
     const lse = @log(@as(f64, 1) + @exp(-@as(f64, 1)) + @exp(-@as(f64, 2)) + @exp(-@as(f64, 3)));
     try std.testing.expectApproxEqAbs(@as(f32, -3) - @as(f32, @floatCast(lse)), row.logprob, 1e-6);
+}
+
+test "a token handle expires once the ring has wrapped past it" {
+    var tokens: [ring]u32 = @splat(0);
+    tokens[0] = 7;
+    try std.testing.expectEqual(@as(u32, 7), try ringToken(&tokens, ring, 0));
+    try std.testing.expectError(error.InvalidInklingTokenHandle, ringToken(&tokens, ring + 1, 0));
+    try std.testing.expectEqual(@as(u32, 7), try ringToken(&tokens, ring + 1, ring));
+    try std.testing.expectError(error.InvalidInklingTokenHandle, ringToken(&tokens, ring, ring));
 }

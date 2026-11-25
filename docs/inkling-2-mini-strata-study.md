@@ -239,6 +239,159 @@ lever:
   remeasurement. TensorFold's 589.8–593.0 control is 1.54–1.55× higher on its different HTTP workload; this is not
   a matched comparison.
 
+## Card 251: Unsloth's llama.cpp, Mia's Derisked server, and the lever list
+
+### What Unsloth's build is
+
+Unsloth's "1.9× faster, 125 tok/s on an RTX PRO 6000" (2026-11-23) is not a branch. `unslothai/llama.cpp` `master`
+(`a5aa5bacbc2b`) holds only a pin list, `scripts/unsloth/pr-set.json`: 43 PR commits that CI merges onto a ggml-org
+tag. The tree it ships is the source asset `llama.cpp-source-b12651-mix-c7059d6.tar.gz` (sha256 `dedb1c00…7bb0`) of
+release [`b12651-mix-c7059d6`](https://github.com/unslothai/llama.cpp/releases/tag/b12651-mix-c7059d6): mainline
+[b12651](https://github.com/ggml-org/llama.cpp/releases/tag/b12651) plus the pins. Unsloth's docs table
+(`tg1024`, UD-Q4_K_XL, F16 KV, DSpark **off**) gives **125.24 vs mainline b12649's 81.35** on the RTX PRO 6000 (1.54×)
+and 110.77 vs 68.00 on a B200; the 1.9× headline is a Ryzen AI Max row (25.65 vs 13.74). Diffing the shipped tree
+against b12651's source adds seven CUDA files, all graph-pattern fusions matched in `ggml-cuda.cu`'s
+`ggml_cuda_try_fuse`, each with a `GGML_CUDA_DISABLE_*_FUSION` switch and a `test-backend-ops` case.
+
+| Unsloth pin (unslothai/llama.cpp) | What it does | Unsloth's stated gain | In TensorFold's Mini engine (188) |
+|---|---|---|---|
+| [#386](https://github.com/unslothai/llama.cpp/pull/386) `210fc2653` | banded flash attention for the relative bias; one block stack per prefix, no repeat at T = 1 | 7,328 → 6,653 kernels a token, tg128 +8–10% | yes: `tf_ink2_rel_table` once, attention reads it (`attention.cu`) |
+| [#401](https://github.com/unslothai/llama.cpp/pull/401) `6c0e84ddf` | q/k/r L2 clip (sqr, sum_rows, sqrt, div, clamp, mul) as one kernel (`clip-rows.cu`) | → 5,723 kernels | yes: the clip is inside `tf_ink2_prep` |
+| [#402](https://github.com/unslothai/llama.cpp/pull/402) `0bfd204bd` | SiTU gate, 9 nodes → 1 (`situ.cu`) | → 5,350; tg128 +27% with #400/#401 | yes: soft caps fused into the expert gate-up (`tf_nvfp4_softcap`, `tf_ink2_gateup`) |
+| [#411](https://github.com/unslothai/llama.cpp/pull/411) `7e633d60b` | short conv: concat, state store, SSM_CONV, dynamic taps, residual add, scale, ≈16 kernels → 1 (`conv-chain.cu`) | 950 → 192 kernels; −11.5% tg128 on UD-Q4_K_XL without it | yes: `tf_ink2_conv` (state, dynamic taps, residual modes in one kernel) |
+| [#412](https://github.com/unslothai/llama.cpp/pull/412) `874c88cad` | tanh·mul±add, router norm, add + rms_norm (`elem-fuse.cu`) | −606 kernels, tg128 +5–7% | partly: the router's top-k and its weight norm are one kernel (`tf_ink2_topk`); the loop controller's gate is three (`tf_ink2_loop_gate_down`, `_lin`, `_mix` in `loop.zig`) |
+| [#413](https://github.com/unslothai/llama.cpp/pull/413) `260b1ffa4` | relative bias read inside the vector flash attention (`fattn-rel.cu`) | −240 kernels, tg128 +2–6% | yes (as #386) |
+| [#414](https://github.com/unslothai/llama.cpp/pull/414) `f766457c8` | depth mix: rms_norm, concat, q·stack, softmax, mix → 1 (`depth-mix.cu`) | −300 kernels, tg128 +2–3% | yes: `tf_ink2_mix` / `tf_ink2_mix_rows` |
+| [#400](https://github.com/unslothai/llama.cpp/pull/400) `a5667a9c0` | `mul_mat_vec_f` up to 8 rows a block | pp512 +36%, tg flat | n/a: TensorFold's mix is one kernel |
+| [#415](https://github.com/unslothai/llama.cpp/pull/415) `a7c4e14de`, [#416](https://github.com/unslothai/llama.cpp/pull/416), [#418](https://github.com/unslothai/llama.cpp/pull/418) | matvec instead of mma at 2–8 columns, one q8_1 copy shared by same-input matmuls, flat concat | 4 streams 1.21–1.35× | n/a as named (TensorFold has no same-input matmul pairs or concat nodes to collapse); no pin-off run here, so their share of Unsloth's 4-stream code total (121.9–139.8 vs our 118.7) is unmeasured → card 258 |
+| [#417](https://github.com/unslothai/llama.cpp/pull/417), [#421](https://github.com/unslothai/llama.cpp/pull/421) | MoE matvec 4 rows (cc 12.x keeps 2); one cache entry per looped expert | host-expert runs only | n/a on GB10 (unified memory, every expert resident) |
+| [#405](https://github.com/unslothai/llama.cpp/pull/405) `b5ed9f284` | loads Unsloth's padded-vocab DSpark drafter | 126.6 vs 102.1 greedy, B200 | no: lever 1 (cards 236, 246) |
+
+Unsloth's gain is kernel count: about 7,300 kernels a token down to about 3,400 on 1.8 TB/s cards, where Mini's
+5 GB of weights take ≈3 ms and a few µs a kernel dominate. TensorFold's Mini engine was written fused from the start;
+its one-row decode launches about 1,200 kernels a token ([INFERENCE]: a count of 236's source, about 20 a plain visit
+and 29 a looped one), already below Unsloth's. On GB10 the same kernel time sits under a 21–23 ms weight-read floor
+(5.55 GB at the 242 GB/s a copy measures, against the 273 GB/s spec), so Unsloth's levers are worth less there than
+on its cards, and TensorFold has most of them.
+
+### GB10, the same GGUF
+
+[`recipes/inkling-2-mini-llamacpp/job.sh`](recipes/inkling-2-mini-llamacpp/job.sh) builds mainline b12651 and
+Unsloth's tree from source with card 232's flags plus `-fa on`, and serves 232's UD-Q4_K_M GGUF (sha256
+`78fcedcf…34ae`, no second download) at 232's settings (4 slots, all layers on the GPU, greedy, 256 tokens, 3 reps,
+`tools/bench_concurrent.py` code and chat prompts). The Desk stages both source tarballs with
+[`stage.sh`](recipes/inkling-2-mini-llamacpp/stage.sh).
+
+| Decode tok/s, code / chat prompts | 1 stream | 4 streams total | Source |
+|---|---|---|---|
+| TensorFold (bf16 checkpoint, 188's engine) | 32.9 / 32.8 | 118.7 / 120.1 | job `top-b77911768550` (232) |
+| llama.cpp b12611, UD-Q4_K_M | 38.8 / 39.1 | 85.9 / 87.6 | job `top-b77911768550` (232) |
+| llama.cpp b12651, UD-Q4_K_M | 38.4 / 39.2 | 85.5 / 88.8 | job `top-d561fdb4ceb9`, this branch at `a0efea99d` (waits: jobs `top-28403507400a`, `top-87b11998bb03`, `top-68cf8da0fc84`, `top-2faa590d03a5` ran before staging) |
+| Unsloth b12651-mix-c7059d6, UD-Q4_K_M | **44.7 / 45.3** | **139.8 / 117.1**; code 121.9 on the review's same-head rerun | job `top-d561fdb4ceb9`; review rerun |
+| *RTX PRO 6000, Unsloth's docs (UD-Q4_K_XL, tg1024)* | *125.24 (Unsloth) / 81.35 (mainline b12649)* | — | Unsloth |
+
+Measured on GB10: Unsloth over mainline is **+16% solo** (45.3 / 39.2 chat; expected above: the removed kernel time
+is a smaller share under a ≈21 ms weight-read floor than under ≈3 ms on the 1.8 TB/s cards, so 1.54× shrank to
+1.15–1.17×) and **1.43–1.63× / 1.32× at 4 streams** (code, across the two runs / chat). The 4-stream code total
+moved from 139.8 to 121.9 between two runs of the same build, so one run does not fix it; neither run switched pins
+off, so which pins carry the 4-stream gain is not measured here. Against TensorFold's rows, Unsloth's build leads
+solo (45.3 vs 32.9 chat, on ≈3.3 GB of weights a token against our 5.55 GB) and on 4-stream code (121.9–139.8 vs
+118.7); TensorFold still leads 4-stream chat (120.1 vs 117.1). Solo, llama.cpp reads fewer weight bytes a token than
+our bf16 trunk does; this card's MXFP8 trunk (below) takes TensorFold to 41.7 solo and 144.8–149.7 at 4 streams.
+
+### Mia's 45.8 tok/s: Derisked is not a faster model
+
+[Blackfrost-AI/Inkling-2-Mini-Derisked](https://huggingface.co/Blackfrost-AI/Inkling-2-Mini-Derisked) (revision
+`31ec2edd`) is a refusal edit: per-block directions on layers 9–18 applied to the weights, "native vendor quantization,
+unmodified", the MTP module byte-identical to upstream, served on vLLM with DSpark (7 draft tokens). Its one 19.5 GB
+shard has the checkpoint's layout and bytes a token, so it cannot read fewer bytes than ours. Mia's
+[sparkDash](https://github.com/MiaAI-Lab/sparkDash) (`86f972e2`, `server/collectors/DecodeBench.js`) streams
+`/v1/chat/completions` at temperature 0.7, top_k 20, thinking on; a 1.39× lead at one stream on the same bytes points
+to drafting in her TensorFold build ([INFERENCE]: her server's flags are not published). For scale: Unsloth's plain
+llama.cpp build, no drafting, decodes 45.3 tok/s solo on the same GB10 — but on UD-Q4_K_M weights (≈3.3 GB read a
+token from a 16.6 GB file), so byte-identical comparisons still need drafting. Matching it on our GB10 needs our
+server with DSpark (card 236's branch) and sparkDash's Node collectors staged for the job; that is follow-up 4 below,
+with sparkDash's prefill sweep (4k–128k), which TensorFold has no GB10 receipt for.
+
+### Inco's Splash: a 4-bit GGUF and a block-diffusion drafter
+
+[Splash 1.7.2](https://github.com/incoai/splash/blob/main/docs/release-notes/1.7.2.md) (Apache-2.0, a Metal engine,
+2026-11-24) is Inco's "200+ tok/s on an M5 Max" (its release lists 213 on a 32-core M5 Max, pre-release build; 113 and
+149 on 16- and 20-core M5 Pros). Its two levers:
+
+- **Weights:** the default is Unsloth's `UD-Q4_K_M` (16.61 GB, card 232's GGUF), not the release's bf16 trunk; the
+  release's BF16 attention and head load as Q8_0, which its notes measure within a mean KL of 0.0024 and the same top
+  token at 98.7% of 1,933 teacher-forced positions. This is card 252's lever, and that number is its first quality
+  evidence.
+- **Drafter:** [`incoai/Inkling-2-Mini-DFlash2`](https://huggingface.co/incoai/Inkling-2-Mini-DFlash2), a 0.49B
+  block-diffusion draft (5 layers, an 8-row block, top-16 candidates a row and a low-rank pairwise selector that traces
+  one path) reading the target's rows at applications 5, 23 and 41. Its notes give 6.30 accepted tokens a cycle
+  (greedy, 512-token answers, UD-Q4_K_M) and its card 4.8–5.0 for code and 3.9 for chat when sampled on an H200, where
+  MTP/DSpark gives 2.95–3.66.
+
+Its decode work matches TensorFold's and Unsloth's fused glue (one call for a layer's three mixer gates, a block mix
+per query, one relative-attention pass a layer, the FFN convolution in the MoE combine). No Mac GPU window was open
+for this card, so Splash is unmeasured on our M5 Ultra (DSpark there: 122.5 code / 91.9 chat, plain ≈62); card 255
+measures it and DFlash2's acceptance against DSpark's.
+
+### Levers, marked
+
+| Lever | Source | In TensorFold (Mini, 188) | Expected GB10 gain, 1 stream | Card |
+|---|---|---|---|---|
+| Fused glue: conv chain, clip, SiTU, depth mix, rel bias in attention | Unsloth #386, #401, #402, #411, #413, #414 | in | taken | — |
+| Controller gate fusion and dependent launches (PDL off for Mini: `qmmf.zig` `pdl` false) | Unsloth #412 | missing | 2–3 ms of 30.4: +7–11% ([INFERENCE], no per-kernel GB10 profile) | 253 |
+| Small-batch kernel choice, q8_1 reuse, flat concat | Unsloth #415, #416, #418 | n/a as named (no same-input matmul pairs or concat nodes to collapse) | none at 1 stream; at 4 streams Unsloth's code total (121.9–139.8 over two runs) beats our 118.7, with no pin-off run to tie it to these pins | 258 |
+| MoE cache dedupe, 4-row MoE matvec | Unsloth #417, #421 | n/a on GB10 | — | — |
+| W=4 beam-tree DSpark | Strata 1; Unsloth #405 | missing on CUDA (chain drafter on 236's branch) | unmeasured; Mia's 45.8 at the same bytes suggests ≈1.4× | 236, then 209's follow-up 2 |
+| Block-diffusion drafter (DFlash2) | Splash | missing | unmeasured on our hardware; sampled on an H200, 4.8–5.0 (code) and 3.9 (chat) tokens a cycle against MTP/DSpark's 2.95–3.66 ([INFERENCE]: a larger gain than DSpark's) | 255 |
+| Zero-logits device-to-host | Strata 2 | in | taken | — |
+| fp4 tensor-core MoE at M ≥ 24 | Strata 3 | missing | none at 1 stream; c=64 unmeasured | 209's follow-up 3 |
+| Smaller trunk bytes (SQ packs) | Strata 4 | **built here (card 251), opt-in:** `TF_INKLING2_TRUNK=mxfp8`; bf16 stays the default | measured: 32.9 → **41.7** tok/s (+27%) at 1 stream, 117.2–121.0 → **144.8–149.7** (+24%) at 4; NVFP4 ≈52 (+58%) unbuilt | 252 (NVFP4 and the quality gate) |
+| CUDA graphs | Strata 5 | in | taken | — |
+| 64-slot batching | Strata 6 | in | taken | — |
+| FP8 KV | Strata 7 | missing | none at short context; twice the resident streams | 209's follow-up 3 |
+
+**The biggest missing lever, trunk bytes, is built in this card.** Card 188's Mini engine is merged into this branch
+(`4051c7372`); `TF_INKLING2_TRUNK=mxfp8` rounds the bf16 attention projections (the fused `qx`/`all` rows, `wq`…`wo`)
+and the unembedding to MXFP8 at load in `mini_weights.zig` (e4m3 codes, a UE8M0 scale per 32 inputs chosen so no code
+saturates) and runs them on `qmmf.zig`'s existing `mxfp8` lane kernels. One job, one build, both arms
+([`recipes/inkling-2-mini-cuda/trunk-ab.sh`](recipes/inkling-2-mini-cuda/trunk-ab.sh), job `top-751b5c791bc7` at
+`77d6f94bd`, 188's settings: 4 slots of 8,192, greedy, 256 tokens, 3 reps, medians):
+
+| Decode tok/s, code / chat | 1 stream | 4 streams total |
+|---|---|---|
+| bf16 trunk (default) | 32.9 / 32.7 | 117.2 / 121.0 |
+| MXFP8 trunk | **41.7 / 41.7** | **144.8 / 149.7** |
+
+That is +27% solo, short of the +34% estimated from bytes (24.0 ms a token against 30.4), and +24% at 4 streams.
+It passes Unsloth's build at 4 streams (139.8 and 121.9 code, 117.1 chat) but not solo (45.3). Quality: with MXFP8,
+1 of 32 greedy tokens differs from the float64 bf16 reference (position 24, where the reference's margin is 0.11);
+bf16 gives 0 of 32, and llama.cpp's UD-Q4_K_M agrees at 31 of 32 teacher-forced picks (232). One prompt, so this
+does not show the error is harmless; the switch stays opt-in until card 252's KL gate passes.
+A second job on the same code (`top-5e3d39db7aed` at `376d52d0f`, same settings) repeats it: bf16 32.9 / 33.0 solo and
+117.2 / 121.0 at 4 streams, MXFP8 41.7 / 41.2 and 145.4 / 149.7, and again 1 of 32 tokens differs.
+
+### Follow-up cards from 251 (252–254 and 258 start after 188 merges; 255 needs a Mac GPU window)
+
+1. **Card 252: NVFP4 trunk and head for Mini on CUDA, and the quality gate for both.** MXFP8 is built here (41.7 tok/s,
+   1 of 32 tokens differ); add `qmmf`'s `fp4` mode for the same rows, then a top-1/KL gate on the float64 reference over
+   many prompts decides whether either becomes the default. Gain: ≈+58% for NVFP4 over bf16 (estimate), +27% measured for MXFP8.
+2. **Lossless alternative to 252, if its quality gate fails:** a 12-bit coded bf16 GEMV and a certified greedy head screen
+   ([dsgb10](https://github.com/blaesus/dsgb10), MIT). Gain: ≈+15–20%, exact.
+3. **Card 253: controller-gate fusion and PDL for Mini.** Merge the loop gate's three kernels and the router-plan launches,
+   set `pdl` on Mini's lanes; a GB10 per-kernel profile first. Gain: +7–11% ([INFERENCE]).
+4. **Card 254: sparkDash on our GB10, decode and prefill.** Stage sparkDash `86f972e2`'s collectors and Node, run Net's
+   settings (prose, 256 tokens, temperature 0.7, top_k 20, thinking on, 1/2/4 streams; prefill 4k–128k) against our
+   server with and without DSpark, beside Mia's 45.8 / 69.9 / 102.9 and 2,877…1,919.
+5. **Card 255: Splash and DFlash2 on our M5 Ultra.** Serve Splash 1.7.2 with `UD-Q4_K_M` and its DFlash2 draft in a
+   Mac GPU window (after the owner agrees to the install), beside DSpark's 122.5 / 91.9, and compare accepted tokens a
+   cycle. Gain: unmeasured; DFlash2's published acceptance is 1.3–1.6× DSpark's.
+6. **Card 258: close Unsloth's 4-stream code-prompt lead.** Its build's code total at 4 streams (139.8 in job
+   `top-d561fdb4ceb9`, 121.9 on the review's same-head rerun) beats our 118.7 while our chat total still leads (120.1
+   vs 117.1). First repeat both arms enough times to fix the spread, then run Unsloth's build with and without pins
+   #415, #416 and #418 to measure their share; profile TensorFold's 4-stream code step, land what transfers, and
+   re-measure beside these rows.
+
 ## Windows on ARM: Inkling builds exist; none is Strata's or tuned for the N1X
 
 - Strata ships no Windows ARM64 build. v0.2.19 and v0.2.20 have `windows-x86_64` engines only. `install.ps1` refuses

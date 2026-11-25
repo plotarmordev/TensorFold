@@ -58,6 +58,7 @@ pub const kda = @import("kda.zig");
 pub const gdn_prep = @import("gdn_prep.zig");
 pub const qk_rows = @import("qk_rows.zig");
 pub const experts = @import("experts.zig");
+pub const experts_mx = @import("experts_mx.zig");
 pub const pair_experts = @import("experts_pair.zig");
 pub const affine_experts = @import("affine_experts.zig");
 pub const experts32 = @import("experts32.zig");
@@ -121,6 +122,7 @@ test {
     _ = @import("experts.zig");
     _ = @import("experts32.zig");
     _ = @import("experts_waves.zig");
+    _ = @import("experts_mx.zig");
     _ = @import("sample.zig");
     _ = @import("roce.zig");
     _ = @import("roce_nap.zig");
@@ -183,6 +185,7 @@ test {
     _ = @import("graph_cache_regression_test.zig");
     _ = @import("graph_cache_ranks_test.zig");
     _ = @import("graph_cache_shapes_test.zig");
+    _ = @import("graph_cache_refresh_test.zig");
     _ = exl3.block.dense;
     _ = exl3.block.experts;
     _ = exl3.block.lin2;
