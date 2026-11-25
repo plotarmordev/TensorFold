@@ -1622,30 +1622,38 @@ fused output word and must go red at gate 1. The launch record fixes the fused k
 shared bytes, and at most 255 registers. With the fused product, geometry allocates no `qkvc` rows (236 MB at
 4,120 rows). The same-job driver is `bench-178-ab.sh`, one prompt a job through `bench-178-{fox,harbour,meadow,steam}.sh`
 so each stops within 600 s, with the contract gates in `check-178.sh`; its reverse patch reconstructs merge parent
-`a03e5c4595bb22f45436b2f1e5073d9e58f26ace` (Zig tree `9fa1f41ca6c1029251ad09b47f36424f3cc5875d`) for the baseline
-half.
+`6b6822bbd` (Zig tree `8a06c4029fff70b09d7e9286813975262ed0bd89`) for the baseline half. Each side's tools build
+into their own `h3-178-bin-{heads,base}` dir so the commit-keyed default can never serve one side's binaries to
+the other, and TOP's per-job zig-cache decides whether both builds fit the slot (four jobs, three retried once on
+a cold cache).
 
-TOP job `top-8ee513cc8609` at `d0784afc6` passed the fused contract's four shape cases, nonfinite and repeat gates,
-and its live launch limit (255 registers). The same job ran cold fox and three warm runs each of fox, harbour,
-meadow and steam on both sides. All 13 latent files and all 13 PNGs were byte-identical. The candidate's 12 warm
-walls total **133.77 s** against main's **138.65 s** (means 11.15 and 11.55 s); it ships. QKV pays about 0.52 s for
-the fused work while removing the 0.95 s separate pass.
+`check-178.sh` (job `top-6576d2b492d2` at `5fc3646a9`, exit 0) passed the fused contract's four shape cases, the
+nonfinite and repeat gates, its live launch limit (256 threads, 255 registers, 99,360 shared bytes) and the
+planted control, which went red as designed. The four A/B jobs at `ae5df6602` — `top-3a3edd22c677` (fox,
+`17b096cec`), `top-ad33290d48b5` (harbour, `17b096cec`), `top-bb48d6a737fc` (meadow) and `top-4557ead30ce2`
+(steam) — ran one cold and three warm 2048² renders a side; every selftest passed and all 16 latent files and 16
+PNGs were byte-identical between the sides. The fused `heads` stage measured 0.00 s against main's 0.93–0.95 s;
+QKV pays ~0.5 s for the fused work while the separate pass goes away. The candidate's 12 warm walls total
+**132.59 s** against main's **136.73 s** (means 11.05 and 11.39 s); it ships.
 
-| Run | Prompt | Candidate wall s | Main wall s | Candidate QKV s | Main QKV s | Candidate heads s | Main heads s |
-|---|---|---:|---:|---:|---:|---:|---:|
-| 1 (cold) | fox | 154.36 | 151.85 | 2.14 | 1.63 | 0.00 | 0.94 |
-| 2 | fox | 11.09 | 11.41 | 2.17 | 1.65 | 0.00 | 0.94 |
-| 3 | fox | 11.10 | 11.52 | 2.17 | 1.67 | 0.00 | 0.94 |
-| 4 | fox | 11.07 | 11.50 | 2.17 | 1.66 | 0.00 | 0.95 |
-| 5 | harbour | 11.26 | 11.71 | 2.17 | 1.65 | 0.00 | 0.94 |
-| 6 | harbour | 11.10 | 11.50 | 2.19 | 1.65 | 0.00 | 0.94 |
-| 7 | harbour | 11.08 | 11.57 | 2.18 | 1.67 | 0.00 | 0.94 |
-| 8 | meadow | 11.26 | 11.71 | 2.18 | 1.67 | 0.00 | 0.95 |
-| 9 | meadow | 11.04 | 11.53 | 2.18 | 1.67 | 0.00 | 0.94 |
-| 10 | meadow | 11.10 | 11.47 | 2.18 | 1.66 | 0.00 | 0.95 |
-| 11 | steam | 11.25 | 11.65 | 2.18 | 1.66 | 0.00 | 0.95 |
-| 12 | steam | 11.11 | 11.49 | 2.19 | 1.65 | 0.00 | 0.95 |
-| 13 | steam | 11.31 | 11.59 | 2.23 | 1.67 | 0.00 | 0.97 |
+| Run | Prompt | Candidate wall s | Main wall s | Candidate heads s | Main heads s |
+|---|---|---:|---:|---:|---:|
+| cold | fox | 148.05 | 149.74 | 0.00 | 0.93 |
+| 1 | fox | 10.99 | 11.37 | 0.00 | 0.93 |
+| 2 | fox | 11.07 | 11.40 | 0.00 | 0.93 |
+| 3 | fox | 11.10 | 11.42 | 0.00 | 0.93 |
+| cold | harbour | 144.26 | 145.49 | 0.00 | 0.94 |
+| 1 | harbour | 10.97 | 11.35 | 0.00 | 0.94 |
+| 2 | harbour | 11.03 | 11.38 | 0.00 | 0.95 |
+| 3 | harbour | 11.08 | 11.44 | 0.00 | 0.94 |
+| cold | meadow | 141.16 | 147.51 | 0.00 | 0.95 |
+| 1 | meadow | 10.97 | 11.36 | 0.00 | 0.95 |
+| 2 | meadow | 11.05 | 11.53 | 0.00 | 0.95 |
+| 3 | meadow | 11.13 | 11.43 | 0.00 | 0.95 |
+| cold | steam | 148.59 | 146.25 | 0.00 | 0.94 |
+| 1 | steam | 11.01 | 11.27 | 0.00 | 0.94 |
+| 2 | steam | 11.06 | 11.40 | 0.00 | 0.95 |
+| 3 | steam | 11.13 | 11.38 | 0.00 | 0.95 |
 
 ### Card 181: the norms' AdaLN tables in bf16, read a lane's four values at once — measured, no gain shown
 
