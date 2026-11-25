@@ -24,9 +24,12 @@ export NVCC_PREPEND_FLAGS="-ccbin /work/$gcc/bin/aarch64-none-linux-gnu-g++"
 part=${1:?part: g0..g5, back, after or limits}
 case $part in
 g[0-5]) cmd="kernel-contract @window_rows %${part#g}/6 -tf_md_conv3x3" ;;
-# a g<N> shard that stops at the measure cap runs its halves instead: g<N>a is %N/12, g<N>b %N+6/12
-g[0-5]a) d=${part%[ab]}; cmd="kernel-contract @window_rows %${d#g}/12 -tf_md_conv3x3" ;;
-g[0-5]b) d=${part#g}; d=${d%b}; cmd="kernel-contract @window_rows %$((d + 6))/12 -tf_md_conv3x3" ;;
+# a g<N> shard that stops at the measure cap runs finer slices instead: halves g<N>a/b are %N/12 and %N+6/12,
+# quarters g<N>a..d are %N/24, %N+6/24, %N+12/24, %N+18/24
+g[0-5]a) d=${part%[ab]}; cmd="kernel-contract @window_rows %${d#g}/24 -tf_md_conv3x3" ;;
+g[0-5]b) d=${part#g}; d=${d%b}; cmd="kernel-contract @window_rows %$((d + 6))/24 -tf_md_conv3x3" ;;
+g[0-5]c) d=${part#g}; d=${d%c}; cmd="kernel-contract @window_rows %$((d + 12))/24 -tf_md_conv3x3" ;;
+g[0-5]d) d=${part#g}; d=${d%d}; cmd="kernel-contract @window_rows %$((d + 18))/24 -tf_md_conv3x3" ;;
 back|after|limits) cmd="kernel-contract-suites $part" ;;
 *) echo "unknown part $part" >&2; exit 2 ;;
 esac
