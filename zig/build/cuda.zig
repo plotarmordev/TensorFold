@@ -89,10 +89,11 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     }, .{ .name = "h3", .flags = &.{"-O3"} }, sms) else null;
     @import("h3_host.zig").library(b, target, optimize, h3_image);
     // MiniMax-H3-Image's decoder and prompt kernel images, built to the served flags, for the contract
-    const h3_image_fatbins: [2]?std.Build.LazyPath = if (nvcc) |tool| .{
+    const h3_image_fatbins: [3]?std.Build.LazyPath = if (nvcc) |tool| .{
         fatbin(b, tool, version.?, .{ .name = "h3_image_decoder", .flags = &.{ "-O3", "--fmad=false" }, .min_sm = 80 }, sms),
-        fatbin(b, tool, version.?, .{ .name = "h3_image_prompt", .flags = &.{"-O3"}, .min_sm = 80 }, sms),
-    } else .{ null, null };
+        fatbin(b, tool, version.?, .{ .name = "h3_image_prompt", .flags = &.{ "-O3" }, .min_sm = 80 }, sms),
+        fatbin(b, tool, version.?, .{ .name = "h3_image_modulation", .flags = &.{ "-O3", "--fmad=false" } }, sms),
+    } else .{ null, null, null };
     const cuda = @import("cuda_runtime.zig").runtimeWithTargets(b, target, optimize, if (nvcc != null or prebuilt != null) &images else &.{}, null, if (nvcc != null and prebuilt == null) sms else "");
     const mods = family(b, target, optimize, cuda, draft_ids);
     const cli = b.createModule(.{ .root_source_file = b.path("zig/src/cli/cuda_main.zig"), .target = target, .optimize = optimize, .link_libc = true, .strip = strip });

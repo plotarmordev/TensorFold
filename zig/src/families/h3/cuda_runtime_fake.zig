@@ -139,8 +139,9 @@ pub fn model() !*h3.Model {
     m.inner = 128;
     m.heads = 1;
     m.mlp = 128;
+    m.gated = true;
     m.geometry = .{};
-    m.load_stage = .{};
+    m.load_stages = .{ .{}, .{} };
     m.load_failed = false;
     m.retained_next = null;
     m.inputs = @splat(null);

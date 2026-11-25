@@ -4,6 +4,7 @@ const mtl = @import("metal");
 const h3 = @import("h3.zig");
 const schedule = @import("schedule.zig");
 const shape = @import("modulation_shape.zig");
+const host_rows = @import("rows_reference.zig");
 const bf16_round = @import("bf16_round");
 
 const Model = h3.Model;
@@ -19,45 +20,12 @@ fn names(m: *const Model) Names {
     return .{ .in_w = "time_embedder.linear_1.weight", .in_b = "time_embedder.linear_1.bias", .out_w = "time_embedder.linear_2.weight", .out_b = "time_embedder.linear_2.bias", .block = "transformer_blocks.", .final = "norm_out.linear." };
 }
 
-/// y (rows, n) = x (rows, k) w^T + b on the host, summed in float64 and rounded once to float32.
-fn linear(a: std.mem.Allocator, x: []const f32, w: []const f32, b: []const f32, rows: usize, k: usize) ![]f32 {
-    const n = b.len;
-    const y = try a.alloc(f32, try shape.linear(x.len, w.len, n, rows, k));
-    for (0..rows) |r| for (0..n) |o| {
-        var s: f64 = 0;
-        for (x[r * k ..][0..k], w[o * k ..][0..k]) |p, q| s += @as(f64, p) * q;
-        y[r * n + o] = @floatCast(s + b[o]);
-    };
-    return y;
-}
-
-fn silu(v: f32) f32 {
-    return v / (1.0 + @exp(-v));
-}
-
 /// silu(time_embedder(sinusoid(t))) in bf16 for every timestep of `table`: the AdaLN projections' input.
 fn embed(m: *Model, a: std.mem.Allocator, table: []const f32) ![]u16 {
     const ck = &m.checkpoint;
     const n = names(m);
     const dim = try shape.embedding(ck.entry(n.in_w) orelse return error.MissingTensor, ck.entry(n.in_b) orelse return error.MissingTensor, ck.entry(n.out_w) orelse return error.MissingTensor, ck.entry(n.out_b) orelse return error.MissingTensor, table.len);
-    const w_in = try ck.floats(a, n.in_w);
-    const b_in = try ck.floats(a, n.in_b);
-    const w_out = try ck.floats(a, n.out_w);
-    const b_out = try ck.floats(a, n.out_b);
-    const half = dim / 2;
-    // cosine half first, angles and frequencies in float32 as MLX computes them
-    const sinusoid = try a.alloc(f32, table.len * dim);
-    for (table, 0..) |t, r| for (0..half) |i| {
-        const freq = @exp(@as(f32, @floatCast(-@log(10000.0))) * @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(half)));
-        sinusoid[r * dim + i] = @cos(t * freq);
-        sinusoid[r * dim + half + i] = @sin(t * freq);
-    };
-    const hidden = try linear(a, sinusoid, w_in, b_in, table.len, dim);
-    for (hidden) |*v| v.* = silu(v.*);
-    const temb = try linear(a, hidden, w_out, b_out, table.len, b_in.len);
-    const out = try a.alloc(u16, temb.len);
-    for (out, temb) |*o, v| o.* = bf16(silu(v));
-    return out;
+    return host_rows.embed(a, table, dim, try ck.floats(a, n.in_w), try ck.floats(a, n.in_b), try ck.floats(a, n.out_w), try ck.floats(a, n.out_b));
 }
 
 /// float32 to bf16, round to nearest even; NaN stays NaN.

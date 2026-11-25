@@ -4,7 +4,11 @@ const report = @import("report.zig");
 const cuda = @import("cuda");
 const weights = @import("cuda_weights.zig");
 pub const geometry = @import("cuda_geometry.zig");
-const host = @import("cuda_host.zig");
+pub const checkpoint = @import("checkpoint.zig");
+pub const host = @import("cuda_host.zig");
+pub const modulation = @import("cuda_modulation.zig");
+pub const modulation_test = @import("cuda_modulation_test.zig");
+pub const image_host = @import("image_host.zig");
 const Gemms = @import("cuda_gemm.zig").Gemms;
 
 pub const head_dim = 128;
@@ -26,13 +30,10 @@ pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "at
 /// h3_attention's dynamic shared bytes: a query, a key and a value tile in bf16.
 const attention_shared = 3 * slot_tile * head_dim * 2;
 
-pub fn seconds() f64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
-    return @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) * 1e-9;
-}
+pub const seconds = @import("clock.zig").seconds;
 
-/// A block's bf16 projections (N, K) as stored, `qkvc` qkv_proj then the gate; `norms`: norm1, norm2, q and k norms.
+/// A block's bf16 projections (N, K) as stored, `qkvc` qkv_proj then the gate when the checkpoint has one;
+/// `norms`: norm1, norm2, q and k norms.
 pub const Block = struct { qkvc: cuda.DeviceBuffer, out: cuda.DeviceBuffer, fc1: cuda.DeviceBuffer, fc2: cuda.DeviceBuffer, norms: cuda.DeviceBuffer };
 
 pub const Model = struct {
@@ -48,6 +49,8 @@ pub const Model = struct {
     heads: usize,
     mlp: usize,
     blocks: []Block,
+    /// The blocks carry attn.to_gate_compress, which routed forwards need; MiniMax-H3-Image's dense blocks do not.
+    gated: bool,
     geometry: geometry.Geometry = .{},
     profile: bool = false,
     spent: [stages.len]f64 = @splat(0),
@@ -56,8 +59,10 @@ pub const Model = struct {
     inputs: [8]?cuda.DeviceBuffer = @splat(null),
 
     hosts: std.AutoHashMapUnmanaged(usize, cuda.HostBuffer) = .empty,
-    load_stage: cuda.copy_source.Stage = .{},
+    load_stages: [2]cuda.copy_source.Stage = .{ .{}, .{} },
     load_failed: bool = false,
+    /// The monotonic second when driver setup finished; `loaded_seconds` measures the weight read after it.
+    opened: f64 = 0,
     retained_next: ?*Model = null,
 
     fn function(self: *const Model, comptime name: []const u8) cuda.Function {
@@ -71,8 +76,26 @@ pub const Model = struct {
 
     /// `path`: FastH3's transformer in one safetensors file (ComfyUI's layout: blocks.N.attn.qkv_proj.weight ...).
     pub fn load(gpa: std.mem.Allocator, path: [*:0]const u8) !*Model {
+        const self = try setup(gpa);
+        try self.loadWeights(path);
+        self.loaded_seconds = seconds() - self.opened;
+        return self;
+    }
+
+    /// `load` over a checkpoint's already-open shards (the released MiniMax-H3's model-NNNNN-of-COUNT files).
+    pub fn loadSharded(gpa: std.mem.Allocator, ck: *checkpoint.Shards) !*Model {
+        const self = try setup(gpa);
+        weights.readSyncedShards(self, ck.*) catch |err| {
+            self.tryDeinit() catch @import("cuda_load_retained.zig").keep(self);
+            return err;
+        };
+        self.loaded_seconds = seconds() - self.opened;
+        return self;
+    }
+
+    /// The driver, context, kernels and GEMM handles before the weights are read.
+    fn setup(gpa: std.mem.Allocator) !*Model {
         try @import("cuda_load_retained.zig").admit();
-        const started = seconds();
         const self = try gpa.create(Model);
         var ordinary_cleanup = true;
         errdefer if (ordinary_cleanup) gpa.destroy(self);
@@ -83,7 +106,8 @@ pub const Model = struct {
         self.inputs = @splat(null);
         self.hosts = .empty;
         self.blocks = &.{};
-        self.load_stage = .{};
+        self.gated = false;
+        self.load_stages = .{ .{}, .{} };
         self.load_failed = false;
         self.retained_next = null;
         self.driver = try cuda.Driver.open();
@@ -100,8 +124,7 @@ pub const Model = struct {
         self.gemms = try Gemms.init(gpa, d);
         errdefer if (ordinary_cleanup) self.gemms.deinit();
         ordinary_cleanup = false;
-        try self.loadWeights(path);
-        self.loaded_seconds = seconds() - started;
+        self.opened = seconds();
         return self;
     }
 
@@ -126,7 +149,7 @@ pub const Model = struct {
     }
     pub fn tryDeinit(self: *Model) !void {
         try self.drain();
-        try self.load_stage.close();
+        for (&self.load_stages) |*stage| try stage.close();
         geometry.releaseCompleted(self);
         host.free(self);
         weights.free(self);
