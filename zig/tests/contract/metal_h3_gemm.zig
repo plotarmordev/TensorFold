@@ -30,7 +30,7 @@ fn library(a: std.mem.Allocator, device: mtl.Device) !mtl.Library {
     } else return error.NoGemmNax;
     const gemm = try std.mem.replaceOwned(u8, a, nax, "#include \"../nax.h\"", sources.nax);
     defer a.free(gemm);
-    const text = try std.mem.concat(a, u8, &.{ gemm, "#define H3_HEADS 56\n#define H3_SLOTS 18432\n#define H3_TILES 288\n", h3k.source });
+    const text = try std.mem.concat(a, u8, &.{ gemm, "#define H3_HEADS 56\n#define H3_SLOTS 18432\n#define H3_TILES 288\n", h3k.source, h3k.gemm_source });
     defer a.free(text);
     return mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
 }
