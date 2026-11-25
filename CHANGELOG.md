@@ -109,6 +109,7 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 - Kernel contract: MiniMax-H3-Image's 19 Metal kernels register with the contract, in 31 registrations with 34 planted controls, instead of being gated only by each tool's own self-test (#2808).
 
 - MiniMax-H3-Image on Metal: `tf-h3-image-prompt` writes a whole text-to-image case from a size and a seed (the canvas, the size and the seed's starting rows), so text to image runs end to end with TensorFold's own tools, and `tf-h3-image ... free` exits 0 when there is no reference to gate against (#2781).
+- Inkling 2 Mini on CUDA: `TF_INKLING2_TRUNK=mxfp8` (opt-in) rounds the attention projections and the unembedding from bf16 to MXFP8 at load, one UE8M0 scale per 32 inputs, so one stream decodes at 41.7 tok/s instead of 32.9 on TOP's GB10 and four at 144.8–149.7 instead of 117.2–121.0; 1 of 32 greedy tokens then differs from the float64 reference (bf16: 0). Unset keeps bf16 (card 251).
 
 - Flash Next on Metal: `TF_FN_GX_SHARED=1` (opt-in) routes eligible shared rounds through the existing bit-preserving grouped expert kernels; off keeps per-pair launches (#4834).
 
