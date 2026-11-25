@@ -19,7 +19,6 @@ pub const ImageRows = struct { row: u32, rows: u32, buf: mtl.Buffer, off: usize 
 pub const Options = struct {
     all: bool = false,
     ids: ?Ref = null,
-    flight: ?*mtl.CommandBuffer = null,
     taps: ?state.Ref = null,
     images: []const ImageRows = &.{},
 };
@@ -366,10 +365,6 @@ pub fn runShared(m: *const Model, s: *state.Scratch, segments: []const Segment, 
     commitFullHistories(m, e, s, segments);
     e.end();
     cb.commit();
-    if (options.flight) |flight| {
-        flight.* = cb.retain();
-        return;
-    }
     cb.wait();
     if (cb.failure()) |msg| {
         std.log.err("inkling2_loop forward: {s}", .{msg});
