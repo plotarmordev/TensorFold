@@ -37,8 +37,9 @@ pub const Kind = enum {
 pub const Call = struct { rows: usize, n: usize, k: usize };
 pub const Geometry = struct { groups: usize, threads: u32 = 256, tg_memory: u32 };
 
+pub const max_rows: u32 = 1024;
 pub fn valid(kind: Kind, c: Call) bool {
-    if (c.rows == 0 or c.rows > 256) return false;
+    if (c.rows == 0 or c.rows > max_rows) return false;
     return switch (kind) {
         .messages => c.n == message_entries * hidden and c.k == hidden,
         .gates => c.n == hidden and c.k == rank,

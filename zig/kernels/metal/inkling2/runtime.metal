@@ -4,7 +4,10 @@ using namespace metal;
 struct InkRuntimeArgs { uint count, boundary; };
 [[max_total_threads_per_threadgroup(256)]]
 kernel void tf_ink2_copy_bf16(const device bfloat* x [[buffer(0)]], device bfloat* y [[buffer(1)]], constant InkRuntimeArgs& a [[buffer(2)]], uint i [[thread_position_in_grid]]) {
-  if (i < a.count) y[i] = x[i];
+  if (i >= a.count) return;
+  // boundary=3 gathers the third of four completed blocks per row into a contiguous bank.
+  const uint src = a.boundary == 0u ? i : (i / 2304u * 4u + a.boundary - 1u) * 2304u + i % 2304u;
+  y[i] = x[src];
 }
 [[max_total_threads_per_threadgroup(256)]]
 kernel void tf_ink2_copy_f32(const device float* x [[buffer(0)]], device float* y [[buffer(1)]], constant InkRuntimeArgs& a [[buffer(2)]], uint i [[thread_position_in_grid]]) {

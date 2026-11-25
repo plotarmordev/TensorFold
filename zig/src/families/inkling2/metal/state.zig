@@ -6,8 +6,10 @@ const ap = @import("attention_plan.zig");
 
 pub const window_rows = 16;
 pub const batch_rows = 32;
-pub const prompt_rows = 256;
-pub const max_rows = 256;
+/// Older Macs keep the prior 256-row chunk and expert grouping limit.
+pub const pre_m5_prompt_rows = 256;
+pub const prompt_rows = 1024;
+pub const max_rows = prompt_rows;
 pub const max_segments = batch_rows;
 pub const max_attention_stride = 64;
 pub const hidden = 2304;
@@ -31,7 +33,13 @@ pub const sliding_ring = ap.ringFor(1024, max_rows);
 pub const conv_widths = [conv_states]usize{ 1024, 1024, 2304, 2304 };
 pub const conv_row_values = 1024 + 1024 + 2304 + 2304;
 pub const conv_bytes = visit_slots * 3 * conv_row_values * 2;
-pub const taps_bytes = visit_slots * (3 + max_rows) * conv_row_values * 2;
+/// A stream's cache stages only verify windows; wide prompt chunks stage taps in the scratch.
+pub const stage_rows = 3 + window_rows;
+pub const taps_bytes = visit_slots * stage_rows * conv_row_values * 2;
+
+pub fn stageBytes(rows: usize) usize {
+    return if (rows > window_rows) visit_slots * (3 + rows) * conv_row_values * 2 else 0;
+}
 
 pub fn globalSlots(capacity: usize) usize {
     return std.mem.alignForward(usize, capacity, ap.tile_keys);
@@ -182,7 +190,7 @@ pub const Cache = struct {
     }
 
     pub fn staged(c: *const Cache, slot: usize, state: usize, rows_before: usize) Ref {
-        return .{ .buf = c.taps, .off = convByteOffset(slot, state, rows_before, 3 + max_rows) };
+        return .{ .buf = c.taps, .off = convByteOffset(slot, state, rows_before, stage_rows) };
     }
 
     pub fn attentionLayer(c: *const Cache, schedule: *const plan.Plan, slot: usize, rows: usize) ap.Layer {
@@ -211,7 +219,7 @@ pub const Cache = struct {
             e.copy(c.backup, 0, c.conv, 0, conv_bytes);
             for (0..visit_slots) |slot| for (0..conv_states) |state| {
                 const bytes = 3 * convWidth(state) * 2;
-                e.copy(c.taps, convByteOffset(slot, state, accepted, 3 + max_rows), c.conv, convByteOffset(slot, state, 0, 3), bytes);
+                e.copy(c.taps, convByteOffset(slot, state, accepted, stage_rows), c.conv, convByteOffset(slot, state, 0, 3), bytes);
             };
             e.end();
             cb.commit();
@@ -284,7 +292,7 @@ fn sizes(rows: usize) [fields.len]usize {
         r * h * fp,                r * h * bf,                                       r * h * bf,                                r * h * bf,                     r * q * bf,     r * kv * bf,    r * kv * bf,
         r * rel_width * bf,        r * 24 * bf,                                      r * q * bf,                                r * kv * bf,                    r * kv * bf,    r * q * bf,     r * rel_width * bf,
         r * 24 * ap.extent * bf,   r * 24 * max_attention_stride * ap.head_dim * fp, r * 24 * max_attention_stride * 2 * fp,    r * q * bf,                     r * h * bf,     r * h * bf,     r * h * bf,
-        r * experts_per_token * 4, r * experts_per_token * fp,                       r * experts_per_token * intermediate * bf, r * experts_per_token * h * bf, r * h * bf,     r * h * bf,     r * vocabulary * fp,
+        r * experts_per_token * 4, r * experts_per_token * fp,                       r * experts_per_token * intermediate * bf, r * experts_per_token * h * bf, r * h * bf,     r * h * bf,     @as(usize, @min(r, batch_rows)) * vocabulary * fp,
         r * 128 * fp,              r * 2 * h * bf,                                   r * 64 * fp,
     };
 }
@@ -292,7 +300,7 @@ fn sizes(rows: usize) [fields.len]usize {
 pub fn scratchBytes(rows: usize) usize {
     var out: usize = 0;
     for (sizes(rows)) |n| out += n;
-    return out;
+    return out + stageBytes(rows);
 }
 
 pub const Scratch = struct {
@@ -344,6 +352,7 @@ pub const Scratch = struct {
     gate_zeta: mtl.Buffer,
     /// Opt-in DSpark features [row][tap][H], allocated by prepare_features.
     taps: ?mtl.Buffer = null,
+    stage: ?mtl.Buffer = null,
     rows: usize,
 
     pub fn init(device: mtl.Device, rows: usize) !Scratch {
@@ -358,17 +367,33 @@ pub const Scratch = struct {
             made += 1;
         }
         s.taps = null;
+        s.stage = if (stageBytes(rows) > 0) try device.buffer(stageBytes(rows), mtl.ResourceOptions.private) else null;
         s.rows = rows;
         return s;
+    }
+
+    /// Full logits are uncommon during prefill; grow only when the caller requests them.
+    pub fn ensureLogits(s: *Scratch, device: mtl.Device, rows: usize) !void {
+        if (rows == 0 or rows > s.rows) return error.Inkling2ScratchRows;
+        const bytes = rows * vocabulary * @sizeOf(f32);
+        if (s.logits_all.length() >= bytes) return;
+        const wide = try device.buffer(bytes, mtl.ResourceOptions.shared);
+        s.logits_all.deinit();
+        s.logits_all = wide;
     }
 
     pub fn deinit(s: *Scratch) void {
         inline for (fields) |f| @field(s, f).deinit();
         if (s.taps) |b| b.deinit();
+        if (s.stage) |b| b.deinit();
         s.* = undefined;
+    }
+
+    pub fn staged(s: *const Scratch, slot: usize, state: usize, rows_before: usize) Ref {
+        return .{ .buf = s.stage.?, .off = convByteOffset(slot, state, rows_before, 3 + s.rows) };
     }
 };
 
 comptime {
-    if (sliding_ring != 1280 or conv_bytes != 1916928) @compileError("Inkling cache geometry drift");
+    if (sliding_ring != 2048 or conv_bytes != 1916928) @compileError("Inkling cache geometry drift");
 }

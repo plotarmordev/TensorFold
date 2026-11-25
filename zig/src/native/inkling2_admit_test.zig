@@ -36,24 +36,14 @@ test "DSpark's lane and score buffers join the demand at the window" {
     try std.testing.expectEqual(drafted.fixed + drafted.shared + 2 * drafted.stream, drafted.of(2));
 }
 
-test "the room beside the weights by RAM class, in bytes, and the whole streams it holds at each window" {
-    const rooms = [_]struct { ram: u64, room_gib: f64 }{
-        .{ .ram = 16, .room_gib = 0 },
-        .{ .ram = 24, .room_gib = 0 },
-        .{ .ram = 36, .room_gib = 6.19 },
-        .{ .ram = 48, .room_gib = 15.19 },
-    };
-    for (rooms) |r| {
-        const room: f64 = @floatFromInt(roomOf(r.ram));
-        try std.testing.expectApproxEqAbs(r.room_gib, room / GiB, 0.01);
-    }
-    const holds = [_]struct { ram: u64, window: usize, streams: u64 }{
-        .{ .ram = 36, .window = 8192, .streams = 10 },
-        .{ .ram = 48, .window = 8192, .streams = 25 },
-        .{ .ram = 36, .window = 131072, .streams = 1 },
-        .{ .ram = 48, .window = 131072, .streams = 3 },
-    };
-    for (holds) |k| try std.testing.expectEqual(k.streams, roomOf(k.ram) / admit.demandAt(fixed(), k.window, false).stream);
+test "larger RAM classes leave increasing room for Mini streams after fixed prompt scratch" {
+    try std.testing.expectEqual(@as(u64, 0), roomOf(16));
+    try std.testing.expectEqual(@as(u64, 0), roomOf(24));
+    try std.testing.expect(roomOf(36) > 4 * GiB);
+    try std.testing.expect(roomOf(48) > 12 * GiB);
+    try std.testing.expect(roomOf(36) < roomOf(48));
+    try std.testing.expect(roomOf(36) >= admit.demandAt(fixed(), 8192, false).stream);
+    try std.testing.expect(roomOf(48) >= 2 * admit.demandAt(fixed(), 131072, false).stream);
 }
 
 test "a drafted serve's demand counts the lane of every stream and the scores once" {

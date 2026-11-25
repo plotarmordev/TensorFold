@@ -6,8 +6,8 @@ const Edit = struct { from: []const u8, to: []const u8 };
 fn edit(kind: p.Kind) Edit {
     return switch (kind) {
         .copy_bf16 => .{
-            .from = "kernel void tf_ink2_copy_bf16(const device bfloat* x [[buffer(0)]], device bfloat* y [[buffer(1)]], constant InkRuntimeArgs& a [[buffer(2)]], uint i [[thread_position_in_grid]]) {\n  if (i < a.count) y[i] = x[i];",
-            .to = "kernel void tf_ink2_copy_bf16(const device bfloat* x [[buffer(0)]], device bfloat* y [[buffer(1)]], constant InkRuntimeArgs& a [[buffer(2)]], uint i [[thread_position_in_grid]]) {\n  if (i < a.count) y[i] = bfloat(0);",
+            .from = "y[i] = x[src];",
+            .to = "y[i] = bfloat(0);",
         },
         .copy_f32 => .{
             .from = "kernel void tf_ink2_copy_f32(const device float* x [[buffer(0)]], device float* y [[buffer(1)]], constant InkRuntimeArgs& a [[buffer(2)]], uint i [[thread_position_in_grid]]) {\n  if (i < a.count) y[i] = x[i];",

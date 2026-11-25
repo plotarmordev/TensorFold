@@ -120,6 +120,7 @@ pub const Pipelines = struct {
         inline for (@typeInfo(Pipelines).@"struct".field_names, 0..) |name, i| {
             const kind: Kind = @fromBackingInt(@intCast(i));
             const req_threads: usize = switch (kind) {
+                .kappa => 64,
                 .block_qkv, .context_kv, .attention => 128,
                 else => 256,
             };

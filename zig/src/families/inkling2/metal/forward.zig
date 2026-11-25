@@ -133,11 +133,14 @@ pub fn dense(m: *const Model, e: mtl.ComputeEncoder, weight: ck.Tensor, input: R
     }
 }
 
-/// A visit's projection: `dense`, or its sums on simdgroup matrices for many rows where the GPU has no tensor units.
-fn project(m: *const Model, e: mtl.ComputeEncoder, weight: ck.Tensor, input: Ref, out: Ref, rows: usize) void {
+/// On M5, multi-row prompt projections use tensor units; all other shapes keep upstream's existing paths.
+fn project(m: *const Model, e: mtl.ComputeEncoder, weight: ck.Tensor, input: Ref, out: Ref, rows: usize) !void {
+    const k = weight.shape[weight.rank - 1];
+    if (m.experts.units != null and rows > state.window_rows and (k == 2304 or k == 3072))
+        return experts.denseUnits(&m.experts, e, x(input), x(r(weight)), x(out), @intCast(rows), @intCast(weight.shape[weight.rank - 2]), @intCast(k));
     if (m.dense_mma) |mma| {
         const n: u32 = @intCast(weight.shape[weight.rank - 2]);
-        const call = dense_mma.Call{ .rows = @intCast(rows), .n = n, .k = @intCast(weight.shape[weight.rank - 1]), .ldy = n };
+        const call = dense_mma.Call{ .rows = @intCast(rows), .n = n, .k = @intCast(k), .ldy = n };
         if (dense_mma.Mma.serves(call)) return mma.launch(e, .{ .buf = input.buf, .off = input.off }, .{ .buf = weight.buffer, .off = weight.offset }, .{ .buf = out.buf, .off = out.off }, call);
     }
     dense(m, e, weight, input, out, rows);
@@ -153,10 +156,8 @@ fn residual(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, queries: 
 }
 
 fn bankAndReset(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, rows: usize) void {
-    for (0..rows) |i| {
-        // The second completed block of the previous pass is B12; its final p is P18.
-        copyBf16(m, e, at(s.blocks, (i * state.block_slots + 2) * state.hidden * 2), row(s.bank0, i, state.hidden * 2), state.hidden);
-    }
+    // B12 is the third of four completed blocks for each row.
+    runtime(m, e, .copy_bf16, &.{ at(s.blocks, 0), at(s.bank0, 0) }, rows * state.hidden, 3);
     copyBf16(m, e, at(s.p, 0), at(s.bank1, 0), rows * state.hidden);
     loop.crossPassMessageAttention(&m.loop, e, l(at(s.bank0, 0)), l(at(s.bank1, 0)), l(r(m.weights.cross_queries)), l(r(m.weights.cross_kv_queries)), l(at(s.messages, 0)), @intCast(rows));
     // The prelude p is restored, but every visit's KV and convolution state remains live.
@@ -195,11 +196,16 @@ fn prepareAttentionInputs(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scra
     }
 }
 
-fn staticPostConv(m: *const Model, e: mtl.ComputeEncoder, cache: *state.Cache, slot: usize, conv_state: usize, raw: Ref, weight: ck.Tensor, out: Ref, base: usize, rows: usize) void {
+/// Wide prompt chunks stage their taps in scratch; verify windows stage them in their stream's cache.
+fn staged(s: *const state.Scratch, cache: *const state.Cache, rows: usize, slot: usize, conv_state: usize, before: usize) Ref {
+    return if (rows > state.window_rows) s.staged(slot, conv_state, before) else cache.staged(slot, conv_state, before);
+}
+
+fn staticPostConv(m: *const Model, e: mtl.ComputeEncoder, s: *const state.Scratch, cache: *state.Cache, slot: usize, conv_state: usize, raw: Ref, weight: ck.Tensor, out: Ref, base: usize, rows: usize) void {
     const channels = state.convWidth(conv_state);
-    const taps = cache.staged(slot, conv_state, 0);
+    const taps = staged(s, cache, rows, slot, conv_state, 0);
     copyBf16(m, e, cache.history(slot, conv_state), taps, 3 * channels);
-    copyBf16(m, e, at(raw.buf, raw.off + base * channels * 2), cache.staged(slot, conv_state, 3), rows * channels);
+    copyBf16(m, e, at(raw.buf, raw.off + base * channels * 2), staged(s, cache, rows, slot, conv_state, 3), rows * channels);
     glue.convStatic(&m.glue, e, taps, r(weight), at(out.buf, out.off + base * channels * 2), @intCast(rows), @intCast(channels));
 }
 
@@ -234,9 +240,9 @@ fn convInputForAttention(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scrat
     const raw = if (key) at(s.k_conv, base * state.kv_width * 2) else at(s.v_conv, base * state.kv_width * 2);
     const projected = if (key) at(s.k_raw, base * state.kv_width * 2) else at(s.v_raw, base * state.kv_width * 2);
     const normalized = if (key) at(s.k_norm, 0) else if (v.pass > 0 or lp.kind == .global) at(s.v_norm, 0) else at(s.q_norm, 0);
-    const taps = cache.staged(v.of(.conv).?, if (key) 0 else 1, 0);
+    const taps = staged(s, cache, rows, v.of(.conv).?, if (key) 0 else 1, 0);
     copyBf16(m, e, cache.history(v.of(.conv).?, if (key) 0 else 1), taps, 3 * state.kv_width);
-    copyBf16(m, e, projected, cache.staged(v.of(.conv).?, if (key) 0 else 1, 3), rows * state.kv_width);
+    copyBf16(m, e, projected, staged(s, cache, rows, v.of(.conv).?, if (key) 0 else 1, 3), rows * state.kv_width);
     switch (if (key) w.attn.k_conv else w.attn.v_conv) {
         .static => |weight| glue.convStatic(&m.glue, e, taps, r(weight), raw, @intCast(rows), state.kv_width),
         .dynamic => |d| glue.convDynamic(&m.glue, e, taps, at(normalized.buf, normalized.off + base * state.hidden * 2), r(d.static_w), r(d.projection), raw, @intCast(rows), state.kv_width),
@@ -251,7 +257,15 @@ fn routedExperts(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, laye
     };
     const gu_call = experts.Call{ .rows = @intCast(rows), .k = state.hidden, .n = state.intermediate, .format = precision };
     const down_call = experts.Call{ .rows = @intCast(rows), .k = state.intermediate, .n = state.hidden, .format = precision };
-    if (m.experts.mma != null and rows >= experts.mma_rows) {
+    // Tensor-unit expert reductions change greedy choices at small widths; keep ordered sums there.
+    if (m.experts.units != null and rows > 32) {
+        const nv = precision == .nvfp4;
+        const gu_globals: ?experts.Globals = if (nv) .{ .amax = x(r(w.gu.amax.?)), .denominator = x(r(w.gu.denominator.?)) } else null;
+        const down_globals: ?experts.Globals = if (nv) .{ .amax = x(r(w.down.amax.?)), .denominator = x(r(w.down.denominator.?)) } else null;
+        try experts.group(&m.experts, e, x(at(s.route_ids, 0)), gu_call);
+        try experts.units(&m.experts, e, false, x(at(s.mlp_normed, 0)), x(r(w.gu.weight)), x(r(w.gu.scale)), gu_globals, x(at(s.gu, 0)), gu_call);
+        try experts.units(&m.experts, e, true, x(at(s.gu, 0)), x(r(w.down.weight)), x(r(w.down.scale)), down_globals, x(at(s.down, 0)), down_call);
+    } else if (m.experts.mma != null and rows >= experts.mma_rows) {
         // A row's sums are the same on either path, so a chunk or window takes the one that fits its width.
         const nv = precision == .nvfp4;
         const gu_globals: ?experts.Globals = if (nv) .{ .amax = x(r(w.gu.amax.?)), .denominator = x(r(w.gu.denominator.?)) } else null;
@@ -292,17 +306,17 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     try prepareAttentionInputs(m, e, s, v, rows);
     const knorm = if (gated or lp.kind == .global) at(s.k_norm, 0) else at(s.q_norm, 0);
     const vnorm = if (gated or lp.kind == .global) at(s.v_norm, 0) else at(s.q_norm, 0);
-    project(m, e, w.attn.wq, at(s.q_norm, 0), at(s.q_raw, 0), rows);
-    project(m, e, w.attn.wk, knorm, at(s.k_raw, 0), rows);
-    project(m, e, w.attn.wv, vnorm, at(s.v_raw, 0), rows);
-    project(m, e, w.attn.wr, at(s.q_norm, 0), at(s.rel_raw, 0), rows);
-    project(m, e, w.attn.sink, at(s.q_norm, 0), at(s.sink, 0), rows);
-    project(m, e, w.attn.gate, at(s.q_norm, 0), at(s.gate, 0), rows);
+    try project(m, e, w.attn.wq, at(s.q_norm, 0), at(s.q_raw, 0), rows);
+    try project(m, e, w.attn.wk, knorm, at(s.k_raw, 0), rows);
+    try project(m, e, w.attn.wv, vnorm, at(s.v_raw, 0), rows);
+    try project(m, e, w.attn.wr, at(s.q_norm, 0), at(s.rel_raw, 0), rows);
+    try project(m, e, w.attn.sink, at(s.q_norm, 0), at(s.sink, 0), rows);
+    try project(m, e, w.attn.gate, at(s.q_norm, 0), at(s.gate, 0), rows);
     try attendSegments(m, e, s, v, segments);
-    project(m, e, w.attn.wo, at(s.att, 0), at(s.attn_dense, 0), rows);
+    try project(m, e, w.attn.wo, at(s.att, 0), at(s.attn_dense, 0), rows);
     var base: usize = 0;
     for (segments) |seg| {
-        staticPostConv(m, e, seg.cache, v.of(.conv).?, 2, at(s.attn_dense, 0), w.attn_conv, at(s.attn_conv, 0), base, seg.rows);
+        staticPostConv(m, e, s, seg.cache, v.of(.conv).?, 2, at(s.attn_dense, 0), w.attn_conv, at(s.attn_conv, 0), base, seg.rows);
         base += seg.rows;
     }
     runtime(m, e, .attention_partial, &.{ at(s.p, 0), at(s.attn_conv, 0), at(s.blocks, 0), at(s.partial, 0) }, rows * state.hidden, if (lp.boundary) lp.blocks_in + 1 else 0);
@@ -320,7 +334,7 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     try routedExperts(m, e, s, v.layer, rows);
     base = 0;
     for (segments) |seg| {
-        staticPostConv(m, e, seg.cache, v.of(.conv).?, 3, at(s.mlp_out, 0), w.mlp_conv, at(s.mlp_conv, 0), base, seg.rows);
+        staticPostConv(m, e, s, seg.cache, v.of(.conv).?, 3, at(s.mlp_out, 0), w.mlp_conv, at(s.mlp_conv, 0), base, seg.rows);
         base += seg.rows;
     }
     runtime(m, e, .mlp_partial, &.{ at(s.partial, 0), at(s.mlp_conv, 0), at(s.p, 0) }, rows * state.hidden, 0);
@@ -328,9 +342,8 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
 }
 
 fn commitFullHistories(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, segments: []const Segment) void {
-    _ = s;
     for (segments) |seg| for (0..state.visit_slots) |slot| for (0..state.conv_states) |cs| {
-        copyBf16(m, e, seg.cache.staged(slot, cs, seg.rows), seg.cache.history(slot, cs), 3 * state.convWidth(cs));
+        copyBf16(m, e, staged(s, seg.cache, seg.rows, slot, cs, seg.rows), seg.cache.history(slot, cs), 3 * state.convWidth(cs));
     };
 }
 
@@ -372,6 +385,7 @@ pub fn runShared(m: *const Model, s: *state.Scratch, segments: []const Segment, 
         @memcpy(s.ids.slice(u32, rows), ids);
     }
     try checkImages(m, ids, segments.len, options);
+    if (options.all) try s.ensureLogits(m.device, rows);
     const pool = mtl.objc.Pool.push();
     defer pool.pop();
     const cb = m.queue.commandBuffer();
@@ -386,7 +400,10 @@ pub fn runShared(m: *const Model, s: *state.Scratch, segments: []const Segment, 
     norm(m, e, at(s.mlp_ar, 0), m.weights.norm, at(s.mlp_normed, 0), final.work_rows);
     if (options.taps) |to| captureTap(m, e, at(s.mlp_normed, 0), to, final.capture_rows, 3);
     const logits = if (options.all) at(s.logits_all, 0) else at(segments[0].cache.logits, 0);
-    glue.logits(&m.glue, e, at(s.mlp_normed, final.logits_row * state.hidden * 2), r(m.weights.unembed), logits, @intCast(final.logits_rows), m.config.text.unpadded_vocab);
+    if (m.experts.units != null)
+        try experts.logitsUnits(&m.experts, e, x(at(s.mlp_normed, final.logits_row * state.hidden * 2)), x(r(m.weights.unembed)), x(logits), @intCast(final.logits_rows), m.config.text.unpadded_vocab)
+    else
+        glue.logits(&m.glue, e, at(s.mlp_normed, final.logits_row * state.hidden * 2), r(m.weights.unembed), logits, @intCast(final.logits_rows), m.config.text.unpadded_vocab);
     commitFullHistories(m, e, s, segments);
     e.end();
     cb.commit();

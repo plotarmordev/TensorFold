@@ -8,6 +8,9 @@ pub const Suites = struct {
     glue: @import("metal_inkling2_glue.zig").Suite,
     experts: @import("metal_inkling2_experts.zig").Suite,
     mma: @import("metal_inkling2_mma.zig").Suite,
+    units: @import("metal_inkling2_units.zig").Suite,
+    dense_units: @import("metal_inkling2_dense_units.zig").Suite,
+    logits_units: @import("metal_inkling2_logits_units.zig").Suite,
     dense_mma: @import("metal_inkling2_dense_mma.zig").Suite,
     gates_mma: @import("metal_inkling2_gates_mma.zig").Suite,
     loop: @import("metal_inkling2_loop.zig").Suite,
@@ -22,6 +25,9 @@ pub const Suites = struct {
             .glue = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
             .experts = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
             .mma = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
+            .units = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
+            .dense_units = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
+            .logits_units = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
             .dense_mma = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
             .gates_mma = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
             .loop = .{ .a = a, .device = device, .queue = queue, .kernels = kernels },
@@ -34,6 +40,9 @@ pub const Suites = struct {
         try s.glue.collect(only);
         try s.experts.collect(only);
         try s.mma.collect(only);
+        try s.units.collect(only);
+        try s.dense_units.collect(only);
+        try s.logits_units.collect(only);
         try s.dense_mma.collect(only);
         try s.gates_mma.collect(only);
         try s.loop.collect(only);
@@ -47,6 +56,9 @@ pub const Suites = struct {
         s.glue.deinit();
         s.experts.deinit();
         s.mma.deinit();
+        s.units.deinit();
+        s.dense_units.deinit();
+        s.logits_units.deinit();
         s.dense_mma.deinit();
         s.gates_mma.deinit();
         s.loop.deinit();
