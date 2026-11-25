@@ -64,7 +64,7 @@ test "managed log: an exited child's last diagnostic without a newline reaches i
     defer tmp.cleanup();
     var s = try Setup.init(a, &tmp);
     for ([_][]const u8{
-        "sleep 4 & printf 'loading\\nerror: bad model child-log-key'; exit 3", // a descendant keeps the pipe open
+        "sleep 8 & printf 'loading\\nerror: bad model child-log-key'; exit 3", // a descendant keeps the pipe open
         "printf 'loading\\nerror: bad model child-log-key'; exit 3", // ordinary end of stream
     }) |script| {
         var problem: []const u8 = "";
@@ -75,7 +75,7 @@ test "managed log: an exited child's last diagnostic without a newline reaches i
         try std.testing.expectEqualStrings("Benchmark server exited during startup; check the checkpoint and backend toolchain", problem);
         try lines(&.{"error: bad model [redacted]"}, tail);
         const took = t0.durationTo(std.Io.Clock.awake.now(std.testing.io)).toMilliseconds();
-        try std.testing.expect(took < 4000); // bounded: no wait for the descendant
+        try std.testing.expect(took < 7000); // bounded: no wait for the descendant
     }
 }
 
