@@ -1,12 +1,13 @@
 #!/bin/sh
 # Card 178's same-job int8 A/B, one prompt a job so each stays inside the GPU slot's 600 s. TOP gives each job a
-# fresh /work, so two cold nvcc passes cannot fit the slot. The baseline builds first at full cost; the heads
-# phase then applies the card's patch back and zig reuses every unchanged object, recompiling only the fatbins
-# the fused epilogue touches (h3, h3_int8_tma) plus relinking the picture tools — small enough to fit the same
-# slot. bench-178-base.patch's reverse applies to zig/ to reconstruct main at 6b6822bbd; its zig tree is checked
-# against 8a06c4029fff70b09d7e9286813975262ed0bd89. Each side renders the prompt cold, then three times warm with
-# H3_PROFILE on; the fused epilogue must reproduce main's latents and PNGs byte for byte. check-178.sh's own job
-# holds the contract gates. Run through bench-178-{fox,harbour,meadow,steam}.sh:
+# fresh /work except a zig-cache that survives while the slot stays with this card, so the baseline builds first
+# at full cost and the heads phase re-applies the card's patch and rebuilds into its own bin dir — zig reuses
+# every object the patch did not touch, and each side's tools land in a phase dir so the commit-keyed default
+# could never serve one side's binaries to the other. bench-178-base.patch's reverse applies to zig/ to
+# reconstruct main at 6b6822bbd; its zig tree is checked against 8a06c4029fff70b09d7e9286813975262ed0bd89. Each
+# side renders the prompt cold, then three times warm with H3_PROFILE on; the fused epilogue must reproduce
+# main's latents and PNGs byte for byte. check-178.sh's own job holds the contract gates. Run through
+# bench-178-{fox,harbour,meadow,steam}.sh:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-178-fox.sh
 set -eu
 [ -n "${H3_178_TIMED:-}" ] || H3_178_TIMED=1 exec timeout 600 sh "$0"
@@ -17,9 +18,14 @@ fox) file=/assets/drama3-pilot/h3-image-pilot/prompt.txt ;;
 *) file=$here/prompts/$H3_178_PROMPT.txt ;;
 esac
 status=0
-phase() { # $1 heads|base
-    H3_LINEAR=int8 H3_PROFILE=1 H3_BENCH_OUT=/work/out/h3-178-$H3_178_PROMPT-$1 H3_BENCH_SKIP_COMPARE=1 \
-        H3_BENCH_PROMPTS="$file $file $file $file" sh "$here/bench-script.sh" || status=$?
+phase() { # $1 heads|base; each side builds into its own dir or the same key would reuse the other side's tools
+    case $1 in
+    heads) bindir=/work/out/h3-178-bin-heads ;;
+    base) bindir=/work/out/h3-178-bin-base ;;
+    esac
+    H3_BENCH_BIN=$bindir H3_LINEAR=int8 H3_PROFILE=1 H3_BENCH_OUT=/work/out/h3-178-$H3_178_PROMPT-$1 \
+        H3_BENCH_SKIP_COMPARE=1 H3_BENCH_PROMPTS="$file $file $file $file" \
+        sh "$here/bench-script.sh" || status=$?
 }
 stages() { # every run's wall split and H3_PROFILE block stages
     for run in 1 2 3 4; do
