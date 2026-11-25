@@ -4,6 +4,8 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Inkling 2 Mini on CUDA: `TF_INKLING2_TRUNK=mxfp8` (opt-in) rounds the attention projections and the unembedding from bf16 to MXFP8 at load, one UE8M0 scale per 32 inputs, so one stream decodes at 41.7 tok/s instead of 32.9 on TOP's GB10 and four at 144.8–149.7 instead of 117.2–121.0; 1 of 32 greedy tokens then differs from the float64 reference (bf16: 0). Unset keeps bf16 (card 251).
+
 - Flash Next on Metal: `TF_FN_GX_SHARED=1` (opt-in) routes eligible shared rounds through the existing bit-preserving grouped expert kernels; off keeps per-pair launches (#4834).
 
 - Metal: the two pairs of u32 copy kernels build from one source, with the kernels unchanged (#4740). Thanks @jschmied.
