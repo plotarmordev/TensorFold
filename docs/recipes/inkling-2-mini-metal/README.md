@@ -12,7 +12,7 @@ Verified 2026-11-25 on Mac17,15 (Apple M5 Ultra, 256 GiB, macOS 27.0), `tensorfo
 
 | Repository | On disk | Notes |
 | --- | --- | --- |
-| `thinkingmachines/Inkling-2-Mini` | `~/Models/Inkling-2-Mini` (18.8 GiB `model-00001-of-00001.safetensors` + 0.6 GiB `mtp.safetensors`) | The verified checkpoint from card 188/210's Mac work; `info` reports `family: inkling2_loop`, `memory floor: 20.80 GiB` |
+| `thinkingmachines/Inkling-2-Mini` | `~/Models/Inkling-2-Mini` (18.2 GiB `model-00001-of-00001.safetensors` + 0.6 GiB `mtp.safetensors`, 18.8 GiB total) | The verified checkpoint from card 188/210's Mac work; `info` reports `family: inkling2_loop`, `memory floor: 20.80 GiB` |
 
 ## Service
 
@@ -20,7 +20,7 @@ Verified 2026-11-25 on Mac17,15 (Apple M5 Ultra, 256 GiB, macOS 27.0), `tensorfo
   `zig-out/native/bin/tensorfold-native` copied to a stable agents-owned path — never point the plist at a
   worktree's `zig-out/` or `.scratch/`, which are deleted when the card's worktree is removed) plus
   `libtfgrammar.dylib` beside it (`zig-out/native/lib/libtfgrammar.dylib`, built with `zig build grammar
-  -Dxgrammar=DIR` from an xgrammar v0.2.8 checkout; see [Structured output](../api.md#structured-output)).
+  -Dxgrammar=DIR` from an xgrammar v0.2.8 checkout; see [Structured output](../../api.md#structured-output)).
   The server loads it beside its binary. Without it `tool_choice: "required"` or a named function and
   `response_format` return HTTP 400 naming the library — `tool_choice: "auto"` and plain requests still serve.
 - launchd LaunchAgent `com.infra.tensorfold.inkling` in the `agents` account (this Mac's bot account):
@@ -109,8 +109,8 @@ and `drama-speech` (:18794). No service was displaced.
 - `drama-speech` (`127.0.0.1:18794`, `--parallel 1`) answered a voice take in 1.9 s while the Inkling
   service was loaded and idle (18.0 s for the same take earlier that hour with no Inkling; voice takes
   vary with GPU warm state, the service does not hold the GPU between requests).
-- Startup reports `drafts: copies only` (no `--drafter` flag; DSpark needs the mtp path passed explicitly —
-  this deployment keeps copy drafting off). A request's log line shows `accepted=0/0` accordingly.
+- Startup reports `drafts: copies only` (no `--drafter` flag; DSpark/MTP needs the mtp path passed explicitly).
+  Copy drafts from the token history stay on, so a request's log line shows a non-zero `accepted` count when a copy lands.
 - The model thinks by default (`reasoning.default_enabled`): a client that wants a short direct answer
   should send `chat_template_kwargs {"enable_thinking": false}` or accept `reasoning_content`. At the
   current decode rate (~1 tok/s under GPU contention) a thinking reply can take minutes; keep requests
