@@ -135,8 +135,7 @@ __global__ void __launch_bounds__(256) h3d_layer_norm(
 #define H3D_TILE 128
 #define H3D_STEP 16
 
-// One thread's share of a 128 x 16 slice of x or w (rows by K): 8 consecutive K of one row as a 16-byte load,
-// zeros past the matrix. k is a multiple of 8, so a load is wholly inside k or wholly past it.
+// One thread's share of a 128 x 16 x/w slice: 8 consecutive K of a row as one 16-byte load, zeros past k (% 8 == 0).
 static __device__ __forceinline__ uint4 h3d_slice(const bf16* a, unsigned rows, unsigned k, unsigned row0, unsigned k0) {
     const unsigned r = threadIdx.x / 2;
     const unsigned kk = k0 + (threadIdx.x % 2) * 8;
@@ -152,10 +151,7 @@ static __device__ __forceinline__ void h3d_stage(float (*s)[H3D_TILE + 1], uint4
     for (unsigned i = 0; i < 8; ++i) s[kk + i][r] = f(e[i]);
 }
 
-// y [m, n] = x [m, k] . w [n, k]^T in fp32: a 128 x 128 tile a block, staged 16 K at a time through shared
-// memory while the next 16 K load into registers. Each thread sums its 8 x 8 outputs in increasing K, one
-// rounded fma a product (closer to the float64 reference than the unfused multiply and add it replaced, and
-// half their instructions); zeros past k add +0.
+// y = x . w^T fp32: 128x128 tiles staged 16 K through shared while the next loads; fma sums in K order, +0 past k.
 __global__ void __launch_bounds__(256) h3d_linear(
         const bf16* x, const bf16* w, float* y, H3dShape p) {
     // One float of padding a row spreads the K-major stores across banks.
