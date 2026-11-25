@@ -124,6 +124,7 @@ pub fn build(b: *std.Build) void {
     @import("zig/build/checkpoint_security.zig").tests(b, test_step);
     @import("zig/build/quant_geometry_host.zig").steps(b, test_step);
     @import("zig/build/stage.zig").steps(b, test_step);
+    @import("zig/build/dsv41_metal.zig").hostSteps(b);
     if (b.graph.host.result.os.tag == .macos) {
         const step5_mods = metalEngineModules(b, b.graph.host, .Debug, draft_ids);
         const empty = b.addWriteFiles().add("step5-compile-only.metallib", "");
@@ -200,10 +201,13 @@ pub fn build(b: *std.Build) void {
     @import("zig/build/drama3_quant.zig").targets(b, target, optimize, test_step);
     // the backend options are declared for every target, so one build script may pass the same flags on every OS
     const cuda_options = @import("zig/build/options.zig").cuda(b);
+    // their selftests read checkpoints through mmap, which Windows lacks
+    if (target.result.os.tag != .windows) {
+        @import("zig/build/h3_image_decoder_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
+        @import("zig/build/h3_image_prompt_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
+    }
     const tp_options = @import("zig/build/options.zig").tp(b);
     @import("zig/build/h3_image_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
-    @import("zig/build/h3_image_decoder_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
-    @import("zig/build/h3_image_prompt_cuda.zig").steps(b, target, optimize, cuda_options, test_step);
     switch (target.result.os.tag) {
         .macos => metalTargets(b, target, optimize, draft_ids, build_options, test_step),
         .linux, .windows => cuda_build.targets(b, target, optimize, draft_ids, build_options, cuda_options),
