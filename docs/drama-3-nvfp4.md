@@ -25,9 +25,18 @@ zig-out/native/bin/tensorfold-native serve drama-3-NVFP4-Pruned --name drama-3 -
   --voices voices --default-voice NAME --cfg-gamma 1.5 --cfg-batched
 ```
 
-Serve the 5,900-expert checkpoint, `plotarmordev/drama-3-NVFP4-Pruned-5900`, the same way. The startup log names what
-was loaded: `routed experts held 7369 of 10240` (or `5900 of 10240`) and `routed experts NVFP4 in 40 of 40 layers`.
-A malformed, unordered, missing or extra-expert map fails before any model memory is allocated.
+The 5,900-expert checkpoint, `plotarmordev/drama-3-NVFP4-Pruned-5900`, serves the same way — but that repository's
+default revision now holds a different (int3) build main cannot serve, so download the NVFP4 revision its model
+card pins:
+
+```sh
+hf download plotarmordev/drama-3-NVFP4-Pruned-5900 --revision 4bfe2c32daa771566970ad385292fab43d060bb8 \
+  --local-dir drama-3-NVFP4-Pruned-5900
+```
+
+The startup log names what was loaded: `routed experts held 7369 of 10240` (or `5900 of 10240`) and `routed experts
+NVFP4 in 40 of 40 layers`. A malformed, unordered, missing or extra-expert map fails before any model memory is
+allocated.
 
 Guidance (`--cfg-gamma 1.5 --cfg-batched`) acts only on a prompt with audio rows, so serve a catalog voice: a
 reference-backed `NAME.json` in `--voices`, written by `drama3-voice` as
@@ -84,7 +93,7 @@ python3 -m unittest discover -s tools/zig -p 'test_drama*.py'
 On a GPU, [`tools/zig/drama3_checkpoints_check.py`](../tools/zig/drama3_checkpoints_check.py) serves each checkpoint
 it is given (`--fp8`, `--pruned`, `--pruned-5900`) and fails unless each holds its experts and its fixed-seed whole and
 streamed replies equal their repeats and their concurrent lanes; it records load, peak memory, first audio, total time
-and RTF. On TOP's Spark, [`run-script.sh`](receipts/drama3-pruned-main/run-script.sh) builds and runs it over all three
-with no arguments, from the pilot folder at `/assets/drama3-pilot`, as the GPU door runs a job; its kernel images come
-from a [`cuda-build.sh`](recipes/minimax-h3-cuda/cuda-build.sh) TOP job at the same commit, as the job image has no C++
-compiler.
+and RTF. The receipt's Spark run scripted it end to end: [`run-script.sh`](receipts/drama3-pruned-main/run-script.sh)
+builds the server and runs the check over all three checkpoints from a fixed data folder, and
+[`prebuild-fatbins.sh`](receipts/drama3-pruned-main/prebuild-fatbins.sh) prepares the kernel images it embeds for a
+machine with the CUDA toolkit but no C++ compiler for nvcc.

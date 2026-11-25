@@ -4,11 +4,37 @@ Each release's page on GitHub has its notes and measurements. See [the 1.0.0 rel
 
 ## Unreleased
 
+- Tests: `test-metal-residency-owners-host` builds and passes again; its Qwen27 fixture no longer reads an unset draft-backend field (#4987).
+- DeepSeek-V4.1 on Metal: if the BF16 `mv_mma` pipeline fails to load, the F32 pipeline created before it is released instead of leaked (#5015). Thanks @cwschroeder.
+
+- Tokenizer: split patterns may use `\A`, `\z`, `$`, `\G` and atomic groups `(?>...)` as Oniguruma reads them, so ERNIE 5.5's `tokenizer.json`, which groups digits in threes from the right with them, loads instead of failing with `UnsupportedRegex`; patterns that loaded before split as they did (#4984).
+
+- LFM3-1.7B on CUDA: the block FP8 export (`LiquidAI/LFM3-1.7B-FP8`) is served weight-only, with bf16 activations and without the export's dynamic FP8 input quantization, and `LiquidAI/LFM3-1.7B-MLX-4bit` is served as stored; Metal and the Intel GPU engine refuse the FP8 export by name before reading any weight (`Lfm3Fp8BlockNotOnMetal`, `Lfm3Fp8BlockNotOnXpu`), and CUDA refuses the 6- and 8-bit MLX exports and LFM3-VL by name (#1634). Thanks to @jschmied.
+
+
+
+- Drama 3: a guide to serving the pruned checkpoints, with a checker (`tools/zig/drama3_checkpoints_check.py`) that serves each pinned checkpoint, compares its PCM replies and counts against the recorded ones, and reads only the successful attempt's log on a retry (#4992). Thanks @plotarmordev.
+
+- Flash Next on CUDA: `TF_FLASHNEXT_GRAPH_TAIL=1` runs a lone verify's tail copies and greedy best-row pick inside its captured window graph, with the same copies, kernel, arguments and order; off by default (#4544).
+
+
+
+- LFM3-1.7B on CUDA: the ModelOpt NVFP4 text export (`LiquidAI/LFM3-1.7B-NVFP4`) is served weight-only (the FFN's FP4 weights as stored, bf16 activations), and `TENSORFOLD_LFM3_KV_PAGES=0` gives each stream fixed pages; the MLX affine and FP8 exports are refused by name on CUDA for now, Metal and the Intel GPU engine refuse the NVFP4 export by name before reading weights, and LFM2.5-24B-A2B on CUDA moves to the same shared Liquid backend (#1508, part of #1491). Thanks to @jschmied.
+
+- MiniMax-H3-Image on Metal: loading reads ahead only the prompt-path and decoder tensors it uses; the mapped BF16 bytes and the decoder's conversion are unchanged (#4909). Thanks @plotarmordev.
+
+- Metal: SenseNova-Loop's MLX-affine g64 checkpoints load and serve (#4415). Thanks @gilby.
+
+- DeepSeek-V4.1 on Metal: `TF_DSV41_POOL_TOKENS`, off by default, lets the slots share one pool of positions for the compressed latents and index keys instead of `--context` each, while any one request may still use up to `--context`; a request waits while too few positions are free, its tokens equal an unpooled run, and unset, memory and startup are as before (#3278, refs #2984). Thanks to @gilby.
+
+- Inkling 2 Mini on Metal without tensor units (M1 to M4): a prompt's routed experts, attention projections and loop gates run on simdgroup matrices with the same sums, in chunks of up to 256 rows with one attention-residual launch per chunk and role and an expert combine that sorts a token's routes once, so a cold 2,048-token prompt takes 9.7 s instead of 146 s on an M4 Pro, with identical greedy output (#4756).
+
+- Kolibri-1 on CUDA: `TENSORFOLD_KOLIBRI_GRAPHS` is registered with the other settings and checked at a CUDA start: unset, blank or `1` keeps the one-row decode step graphs and the multi-row decode round graphs (the default), `0` runs both eager, and other text, which read as on before, is refused by name; tokens are the same either way, and `docs/environment.md` documents it (#5002).
+- Inkling 2 on Metal: six shaders declare the threadgroup sizes their launches reserve, so the kernel contract passes for them, and their loads guard partial rows; the shader arithmetic is unchanged (#4981). Thanks @gilby.
+
 - CUDA: `TF_GLM_KEEP_SEQS=1` keeps a released stream's sequence for its next request on its slot, so that request starts with no allocation, fill or free; unset is main's behaviour, byte for byte (#4809).
 
 - GLM on Metal: DFlash2's Q4 draft decode fuses its K/V, Q/K/V and gate/up projections where tensor units and the split allow, and batched heads read packed rows, without changing verified tokens; other geometries keep their current paths (#4258). Thanks to @gilby.
-
-
 
 - Hy4-flash on CUDA: the NVFP4 build's routed experts run at one rank on core's grouped NVFP4 kernels with Hy4's SwiGLU clamp, checked byte for byte across 1 to 300 rows by `tf-cuda-test hy4-nvfp4-experts`; there is no serving path yet (slice 2 of #3801) (#4934). Thanks @atakann.
 

@@ -47,6 +47,7 @@ pub fn isReal(kind: Kind) bool {
 }
 
 pub const rules = [_]Rule{
+    .{ .name = "TENSORFOLD_KOLIBRI_GRAPHS", .scope = .cuda, .kind = .flag, .forms = "0 or 1 (default 1; 0 runs Kolibri-1's one-row decode steps and multi-row decode rounds eager, with the same tokens)" },
     .{ .name = "TF_CUDA_POOL_AFTER_WARMUP", .scope = .cuda, .kind = .flag, .blank_default = false, .forms = "0 or 1 (default 0; size an idle Qwen DFlash2 device pool after warm-up)" },
     .{ .name = "TF_QWEN_KV_HOST_GIB", .scope = .cuda, .kind = .u64, .min = 1, .max = std.math.maxInt(u64) >> 30, .forms = "positive whole GiB fitting an unsigned 64-bit byte count; blank or unset: one full KV window" },
     .{ .name = "TF_CACHE_EVICT", .scope = .common, .kind = .word, .words = &.{ "main", "decayed_resume" }, .forms = "main or decayed_resume (default main)" },
@@ -101,6 +102,7 @@ pub const rules = [_]Rule{
     .{ .name = "TF_PROMPT_INTERMEDIATE", .scope = .cuda, .kind = .flag, .forms = "0 or 1 (default 0)" },
     .{ .name = "TF_Q35_DFLASH_ABSORB_BATCH", .scope = .cuda, .kind = .flag, .forms = "0 or 1 (default 0)" },
     .{ .name = "TENSORFOLD_LFM2_KV_PAGES", .scope = .cuda, .kind = .flag, .forms = "0 or 1 (unset leases pool pages)" },
+    .{ .name = "TENSORFOLD_LFM3_KV_PAGES", .scope = .cuda, .kind = .flag, .forms = "0 or 1 (unset leases pool pages)" },
     .{ .name = "TENSORFOLD_UNIFIED_HOST_COUNTS", .scope = .cuda, .kind = .flag, .forms = "0 or 1 (an integrated GPU on Linux: 1 counts /proc/meminfo, 0 the CUDA pool)" },
     .{ .name = "TF_ROCE_GID_INDEX", .scope = .cuda, .kind = .u32, .forms = "a whole GID index from 0 to 2147483647" },
     .{ .name = "TF_QWEN35_CHUNK_SOLO", .scope = .cuda, .kind = .size, .forms = "a solo prompt pass's rows, 4096 (off) or 8192" },
@@ -306,6 +308,7 @@ pub const rules = [_]Rule{
     .{ .name = "TF_FLASHNEXT_READOUT_FUSED", .scope = .flashnext, .kind = .flag, .forms = "0 or 1 (default 1)" },
     .{ .name = "TF_FLASHNEXT_KEEP_LATE", .scope = .flashnext, .kind = .flag, .forms = "0 or 1 (unset or blank leaves it unset)" },
     .{ .name = "TF_FLASHNEXT_DECODE_GRAPH", .scope = .flashnext, .kind = .flag, .forms = "0 or 1 (default 0)" },
+    .{ .name = "TF_FLASHNEXT_GRAPH_TAIL", .scope = .flashnext, .kind = .flag, .forms = "0 or 1 (1 runs a lone verify's tail copies and greedy row best in its window graph; default 0)" },
     .{ .name = "TF_FLASHNEXT_SPLIT_DENSE", .scope = .flashnext, .kind = .flag, .forms = "0 or 1 (default 1)" },
     .{ .name = "TF_FLASHNEXT_SHARD_HEAD", .scope = .flashnext, .kind = .flag, .forms = "0 or 1 (default 0)" },
     .{ .name = "TF_FLASHNEXT_FUSED_SPLIT", .scope = .flashnext, .kind = .flag, .forms = "0 or 1 (default 0)" },
@@ -566,4 +569,5 @@ test {
     _ = @import("environment_test.zig");
     _ = @import("environment_flashnext_test.zig");
     _ = @import("environment_kv_test.zig");
+    _ = @import("environment_kolibri_test.zig");
 }

@@ -28,6 +28,7 @@ Diagnostics quote and escape the supplied text so it cannot create another termi
 | `TENSORFOLD_CUDA_KERNELS` | A path without control characters, used as given: a captured kernel set's folder, or `native` for the engine's own kernels. Unset uses the binary's bundled set for the GPU when it has one, else the engine's own kernels. A family that runs only on the engine's own kernels (Qwen3 among them) refuses any other value; Qwen3 reads a blank value as unset |
 | `TF_CUDA_CARVEOUT` | Exactly `0` or `1`; default off |
 | `TF_CUDA_CARVEOUT_MIB` | Positive whole MiB count whose byte size fits the platform, or empty for 1792 MiB |
+| `TENSORFOLD_KOLIBRI_GRAPHS` | Kolibri-1 on CUDA: exactly `0` or `1`; unset or blank is `1`. `1` replays one-row decode steps and multi-row decode rounds from CUDA graphs captured once a shape; `0` runs both eager. Tokens are the same either way |
 | `TF_CUDA_POOL_AFTER_WARMUP` | Dense Qwen 3.5/3.8 on CUDA: exactly `0` or `1`; default `0` (blank is refused). `1` sizes the still-empty KV page pool again after warm-up from the free memory then measured, under the same reserve and cap; it applies only to a one-rank paged serve with `--prompt-cache-gib 0` and without `--slide` or vision, and other modes keep their startup pool. A pool that cannot keep its pages and the reserve is refused by name; `/memory` reports the decision |
 | `TF_Q27_COPY_ROWS` | Whole u32 count; zero disables copied rows; default 48 |
 | `TF_Q27_DRAFT_SLOTS` | Whole u32 count, clamped to 1 through the lane stream limit; default 8. DFlash2 can draft for at most the smaller of this count and the admitted streams, and none without a drafter. Under `--mtp-drafts` the MTP head drafts every stream and this does nothing. |
@@ -61,6 +62,7 @@ Diagnostics quote and escape the supplied text so it cannot create another termi
 | `TF_PROMPT_INTERMEDIATE` | Exactly `0` or `1`, checked when the CUDA backend starts; default off. `1` keeps Flash Next's ladder of intermediate prompt-cache checkpoints under a long prompt's history |
 | `TF_Q35_DFLASH_ABSORB_BATCH` | Exactly `0` or `1`, checked when the CUDA backend starts; default off. `1` runs a shared round's live DFlash2 absorbs (two or more streams) as one pass over every stream's kept rows, each row's arithmetic unchanged |
 | `TENSORFOLD_LFM2_KV_PAGES` | Exactly `0` or `1`, checked when the CUDA backend starts; unset leases pool pages ([profiles](profiles.md)) |
+| `TENSORFOLD_LFM3_KV_PAGES` | Exactly `0` or `1`, checked when the CUDA backend starts; unset leases pool pages ([profiles](profiles.md)) |
 | `TENSORFOLD_UNIFIED_HOST_COUNTS` | Exactly `0` or `1`, checked when the CUDA backend starts. An integrated GPU on Linux admits against `/proc/meminfo` with `1` and against the CUDA pool with `0`; unset, it reads the pool under WSL2 (`WSL_DISTRO_NAME` set) and `/proc/meminfo` otherwise ([Windows](WINDOWS.md)) |
 | `TF_HEAD_GEOMETRY` | Whole native-size nonnegative geometry count in the head benchmark |
 | `TF_ROCE_GID_INDEX` | Whole index 0 through 2147483647; unset searches for a RoCE v2 IPv4 GID |
@@ -127,6 +129,7 @@ Diagnostics quote and escape the supplied text so it cannot create another termi
 | `TF_DSV41_ASSETS` | DeepSeek-V4.1 on Metal: a directory path without control characters that holds the Engram token map; unset or blank reads it beside the checkpoint |
 | `TF_DSV41_ENGRAM_DIR` | DeepSeek-V4.1 on Metal: a directory path without control characters that holds the packed Engram tables; unset or blank takes the checkpoint's `engram_table_dir` |
 | `TF_DSV41_ENGRAM_VERIFY` | DeepSeek-V4.1 on Metal: exactly `sample` or `full`; `full` also checks every byte of the Engram tables against their manifest at boot; default `sample` |
+| `TF_DSV41_POOL_TOKENS` | DeepSeek-V4.1 on Metal: a whole number of positions from 256 through `--parallel` x `--context` that every slot shares, so `--parallel 4 --context 1048576 TF_DSV41_POOL_TOKENS=1048576` holds one 1M request or four 256K reservations (each reservation includes reply and draft reserves; four literal 256K prompts need a larger pool once reply and draft reserves are added); `--context` stays the most one request uses and is cut to the pool when larger; a request takes its prompt, its reply limit and one window of drafts at once (the reply limit the server enforces: `max_tokens`, or `--max-tokens` when a client omits it, plus `--thinking-reserve` when thinking, cut to the window) and waits while too few positions are free; refused by name when it is out of range or does not fit the GPU working set; unset or blank: each slot holds `--context` positions, as before. On CUDA it sizes the paged pool |
 | `TF_DSV41_ENGRAM_CACHE` | DeepSeek-V4.1 on Metal: whole u32 count of Engram records a layer kept cached; default 4194304 (about 1.2 GiB a layer) |
 | `TF_DSV41_MARKOV_GPU` | DeepSeek-V4.1 on Metal: `1` draws DSpark drafts (greedy, and keyed ones whose sampling races the whole row) on the GPU right behind the drafter's head from the Markov-biased logits over the whole vocabulary, the release's rule; `0` draws them on the host from each row's 64 best logits; drafts only, replies are unchanged; default 1 |
 | `TF_DSV41_DSPARK_BLOCK` | DeepSeek-V4.1 on Metal: drafts a DSpark pass makes, 1 to 15, after a window that verified the checkpoint's whole block of 5 (a pass after any other window makes 5); a block under 5 applies to every pass, and the depth may verify up to all of them; drafts only, replies are unchanged; `0` keeps the checkpoint's block; default 7 |
@@ -190,7 +193,7 @@ Windows uses the same proxy routes and timeout settings through native asynchron
 
 ## Flash Next
 
-Flash Next checks these 41 settings when its engine loads, before any device or checkpoint work: a malformed value
+Flash Next checks these 42 settings when its engine loads, before any device or checkpoint work: a malformed value
 stops the start with the variable, the supplied text and the accepted forms.
 
 | Variable | Accepted explicit value |
@@ -214,6 +217,7 @@ stops the start with the variable, the supplied text and the accepted forms.
 | `TF_FLASHNEXT_READOUT_FUSED` | Exactly `0` or `1`; default on. `0` restores the five-launch read-out; Metal, HIP and an MLX affine read-out refuse an explicit `1` |
 | `TF_FLASHNEXT_KEEP_LATE` | Exactly `0` or `1`; unset or blank leaves the choice to the loader |
 | `TF_FLASHNEXT_DECODE_GRAPH` | Exactly `0` or `1`; default off |
+| `TF_FLASHNEXT_GRAPH_TAIL` | Exactly `0` or `1`; default off. `1` queues a lone drafted window's rollback copies (the n-gram tail before the pass, its rows after) and, for an unmasked greedy draw or one whose sampling is unusable, the row best over its scores, inside that window's CUDA graph when one exists, using the same arguments in the same order; an ineligible window runs them eagerly in that order, so tokens keep their bits |
 | `TF_FLASHNEXT_SPLIT_DENSE` | Exactly `0` or `1`; default on: two ranks split the BF16 dense projections |
 | `TF_FLASHNEXT_SHARD_HEAD` | Exactly `0` or `1`; default off: each rank keeps its half of the output head |
 | `TF_FLASHNEXT_FUSED_SPLIT` | Exactly `0` or `1`; default off. `1` runs CUDA split-K lane calls of 2,048 columns or more on the fused form, with the same bits; Metal and HIP refuse `1` |

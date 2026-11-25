@@ -43,14 +43,19 @@ kernel void tf_inkling2_embed_norm(
     out[size_t(row) * 2304 + d] = bfloat(float(weight[d]) * (float(x[d]) * inverse));
 }
 
-struct InkARArgs { uint sources, queries; };
+struct InkARArgs { uint sources, queries, rows, blocks_stride, partial_stride, out_stride; };
 [[max_total_threads_per_threadgroup(256)]]
 kernel void tf_inkling2_ar(
-    const device bfloat* blocks [[buffer(0)]], const device float* partial [[buffer(1)]],
-    const device float* queries [[buffer(2)]], device float* out [[buffer(3)]],
-    constant InkARArgs& a [[buffer(4)]], uint t [[thread_position_in_threadgroup]],
-    uint q [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-  if (q >= a.queries || a.sources == 0 || a.sources > 5) return;
+    const device bfloat* blocks_base [[buffer(0)]], const device float* partial_base [[buffer(1)]],
+    const device float* queries [[buffer(2)]], device float* out_base [[buffer(3)]],
+    constant InkARArgs& a [[buffer(4)]], uint t [[thread_index_in_threadgroup]],
+    uint2 at [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+  const uint q = at.x, row = at.y;
+  if (q >= a.queries || row >= a.rows || a.sources == 0 || a.sources > 5) return;
+  // Row `row`'s blocks, partial sums and output start that row's stride past the first row's.
+  const device bfloat* blocks = blocks_base + size_t(row) * a.blocks_stride;
+  const device float* partial = partial_base + size_t(row) * a.partial_stride;
+  device float* out = out_base + size_t(row) * a.out_stride;
   threadgroup float red[2 * 5 * 8], means[5], weights[5];
   for (uint s = 0; s < a.sources; ++s) {
     float ss = 0.0f;
@@ -101,6 +106,7 @@ kernel void tf_inkling2_ar(
 }
 
 struct InkConvArgs { uint rows, channels; };
+[[max_total_threads_per_threadgroup(32)]]
 kernel void tf_inkling2_conv_static(
     const device bfloat* taps [[buffer(0)]], const device bfloat* weight [[buffer(1)]],
     device bfloat* out [[buffer(2)]], constant InkConvArgs& a [[buffer(3)]],
@@ -113,6 +119,7 @@ kernel void tf_inkling2_conv_static(
   out[size_t(r) * a.channels + c] = bfloat(precise::divide(sum, precise::sqrt(5.0f)));
 }
 
+[[max_total_threads_per_threadgroup(256)]]
 kernel void tf_inkling2_conv_dynamic(
     const device bfloat* taps [[buffer(0)]], const device bfloat* input [[buffer(1)]],
     const device bfloat* static_w [[buffer(2)]], const device bfloat* projection [[buffer(3)]],
@@ -138,6 +145,7 @@ kernel void tf_inkling2_conv_dynamic(
 }
 
 struct InkRouteArgs { uint rows; };
+[[max_total_threads_per_threadgroup(256)]]
 kernel void tf_inkling2_router(
     const device bfloat* x [[buffer(0)]], const device bfloat* weight [[buffer(1)]],
     const device float* bias [[buffer(2)]], device uint* ids [[buffer(3)]],
@@ -178,6 +186,7 @@ kernel void tf_inkling2_router(
 }
 
 struct InkActArgs { uint rows, width; };
+[[max_total_threads_per_threadgroup(32)]]
 kernel void tf_inkling2_swiglu(
     const device bfloat* gu [[buffer(0)]], device bfloat* out [[buffer(1)]],
     constant InkActArgs& a [[buffer(2)]], uint2 at [[thread_position_in_grid]]) {
@@ -189,6 +198,7 @@ kernel void tf_inkling2_swiglu(
 }
 
 struct InkLogitArgs { uint rows, vocab; };
+[[max_total_threads_per_threadgroup(32)]]
 kernel void tf_inkling2_logits(
     const device bfloat* h [[buffer(0)]], const device bfloat* unembed [[buffer(1)]],
     device float* out [[buffer(2)]], constant InkLogitArgs& a [[buffer(3)]],
@@ -203,6 +213,7 @@ kernel void tf_inkling2_logits(
 }
 
 struct InkExpertArgs { uint rows, channels; };
+[[max_total_threads_per_threadgroup(32)]]
 kernel void tf_inkling2_expert_pick(
     const device bfloat* experts [[buffer(0)]], const device uint* ids [[buffer(1)]],
     device bfloat* out [[buffer(2)]], constant InkExpertArgs& a [[buffer(3)]],
@@ -212,6 +223,7 @@ kernel void tf_inkling2_expert_pick(
   out[(size_t(r) * 8 + j) * a.channels + d] = experts[(size_t(r) * 128 + ids[r * 8 + j]) * a.channels + d];
 }
 
+[[max_total_threads_per_threadgroup(32)]]
 kernel void tf_inkling2_expert_combine(
     const device bfloat* picked [[buffer(0)]], const device float* weights [[buffer(1)]],
     device bfloat* out [[buffer(2)]], constant InkExpertArgs& a [[buffer(3)]],

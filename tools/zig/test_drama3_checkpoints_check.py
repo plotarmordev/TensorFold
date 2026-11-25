@@ -1,9 +1,12 @@
 """The checkpoints check's verdict, peak-memory source and reply timing, without a model or GPU."""
 import copy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 import drama3_checkpoints_check as check
 
@@ -82,6 +85,78 @@ class SpeakTests(unittest.TestCase):
         self.assertEqual(reply["bytes"], 12)
         self.assertLess(reply["first_audio_s"], 0.5)
         self.assertGreaterEqual(reply["total_s"], 1.0)
+
+
+class RunTests(unittest.TestCase):
+    """run_checkpoint rebinds and retries once when the port it probed is taken before the server binds."""
+
+    class FakeServer:
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return b'{"process": {"lifetime_peak_physical_footprint_bytes": 7}}'
+
+    def run_with(self, ready_side_effects, log, writes=((), ())):
+        args = unittest.mock.Mock(bin="bin", voices="voices", voice="v", ready_timeout=1, timeout=1)
+        reply = {"sha256": "x", "bytes": 4, "first_audio_s": 0.1, "total_s": 0.2}
+
+        def popen(*popen_args, **kwargs):
+            if writes:
+                for line in writes[min(popen.call_count, len(writes) - 1)]:
+                    kwargs["stdout"].write(line + "\n")
+                    kwargs["stdout"].flush()
+                popen.call_count += 1
+            return self.FakeServer()
+        popen.call_count = 0
+        with unittest.mock.patch.object(check.subprocess, "Popen", side_effect=popen), \
+                unittest.mock.patch.object(check, "ready", side_effect=ready_side_effects), \
+                unittest.mock.patch.object(check, "speak", return_value=reply), \
+                unittest.mock.patch.object(check.urllib.request, "urlopen", return_value=self.FakeResponse()):
+            return check.run_checkpoint(args, "ckpt", log)
+
+    def test_a_taken_port_is_retried_once(self):
+        log = tempfile.NamedTemporaryFile(suffix=".log", delete=False)
+        log.close()
+        run = self.run_with([RuntimeError("port in use"), None], Path(log.name))
+        self.assertEqual(run["held"], None)
+
+    def test_a_failed_attempts_held_count_does_not_pass_for_the_successful_one(self):
+        log = tempfile.NamedTemporaryFile(suffix=".log", delete=False)
+        log.close()
+        run = self.run_with([RuntimeError("port in use"), None], Path(log.name),
+                            writes=[("routed experts held 7369 of 10240",), ()])
+        problems = check.verdict({"pruned": run})
+        self.assertIn("pruned: routed experts held None, expected 7369", problems)
+
+    def test_a_server_that_keeps_dying_still_fails(self):
+        log = tempfile.NamedTemporaryFile(suffix=".log", delete=False)
+        log.close()
+        with self.assertRaises(RuntimeError):
+            self.run_with([RuntimeError("port in use"), RuntimeError("port in use")], Path(log.name))
+
+
+class TableTests(unittest.TestCase):
+    def test_an_empty_reply_prints_its_missing_values_not_a_crash(self):
+        runs = matching()
+        for reply in runs["pruned"]["replies"].values():
+            reply.update(bytes=0, first_audio_s=None)
+        for other in runs.values():
+            other.update(load_s=1, peak_bytes=1, total_s=1, first_audio_s=1, audio_s=1, rtf=1)
+        runs["pruned"].update(load_s=0, peak_bytes=0, total_s=0, first_audio_s=None, audio_s=0, rtf=None, held=None)
+        line = [l for l in check.table(runs).splitlines() if l.startswith("| pruned |")][0]
+        self.assertIn("no reply", line)
+        self.assertNotIn("None", line)
 
 
 if __name__ == "__main__":

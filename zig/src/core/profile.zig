@@ -37,6 +37,7 @@ pub const Switch = enum {
     TENSORFOLD_GEMMA4_KV_PAGES,
     TENSORFOLD_SPARK25_KV_PAGES,
     TENSORFOLD_LFM2_KV_PAGES,
+    TENSORFOLD_LFM3_KV_PAGES,
     TF_NEMOTRON_METAL_KV_PAGES,
     TF_QWEN27_METAL_KV_PAGES,
     TF_QWEN35_METAL_KV_PAGES,
@@ -145,7 +146,7 @@ const nemotron: []const []const u8 = &.{ "nemotron_h", "nemotron_h_omni" };
 const slide_cuda: []const []const u8 = &.{ "nemotron_h", "nemotron_h_omni", "qwen3_5" };
 const flash: []const []const u8 = &.{"qwen4_exp"};
 /// The CUDA families whose host prompt cache the generic CUDA host builds (cuda_keep_others_test.zig checks the list).
-pub const cuda_cache: []const []const u8 = &.{ "nemotron_h", "nemotron_h_omni", "nemo_speechlm", "glm5_next", "minimax_m3_vl", "qwen3_5", "qwen3_5_moe", "qwen4_exp", "kolibri1", "gemma4", "gemma4_unified", "spark2_5", "dory", "lfm2_moe", "muse_spark", "ricursive", "inkling2_loop" };
+pub const cuda_cache: []const []const u8 = &.{ "nemotron_h", "nemotron_h_omni", "nemo_speechlm", "glm5_next", "minimax_m3_vl", "qwen3_5", "qwen3_5_moe", "qwen4_exp", "kolibri1", "gemma4", "gemma4_unified", "spark2_5", "dory", "lfm2_moe", "muse_spark", "ricursive", "inkling2_loop", "lfm3" };
 
 pub const entries = [_]Entry{
     .{ .id = .TF_CUDA_POOL_AFTER_WARMUP, .families = &.{"qwen3_5"}, .class = .experimental, .syntax = .one, .report_values = &.{"1"}, .effect = "Size an idle device KV pool after Qwen DFlash2 warm-up", .evidence = "Default off; host sizing checks; device capacity and token checks required" },
@@ -182,6 +183,7 @@ pub const entries = [_]Entry{
     .{ .id = .TENSORFOLD_GEMMA4_KV_PAGES, .families = &.{ "gemma4", "gemma4_unified" }, .class = .identical, .report_values = &.{"0"}, .effect = "Global caches lease pool pages by default; 0 keeps them linear", .evidence = "#1619" },
     .{ .id = .TENSORFOLD_SPARK25_KV_PAGES, .families = &.{"spark2_5"}, .class = .identical, .report_values = &.{"0"}, .effect = "Full caches lease pool pages by default; 0 keeps them linear", .evidence = "#1653" },
     .{ .id = .TENSORFOLD_LFM2_KV_PAGES, .families = &.{"lfm2_moe"}, .class = .identical, .report_values = &.{"0"}, .effect = "Attention caches lease pool pages by default; 0 keeps fixed pages a stream", .evidence = "#1503" },
+    .{ .id = .TENSORFOLD_LFM3_KV_PAGES, .families = &.{"lfm3"}, .class = .identical, .report_values = &.{"0"}, .effect = "Full-attention caches lease pool pages by default; 0 keeps fixed pages a stream", .evidence = "#1508" },
     .{ .id = .TF_NEMOTRON_METAL_KV_PAGES, .families = &.{"nemotron_h"}, .backend = "metal", .class = .identical, .syntax = .one, .effect = "Only exact 1 puts keys and values in the core pool's pages; unset, whole caches made at open", .evidence = "#1537" },
     .{ .id = .TF_QWEN27_METAL_KV_PAGES, .families = &.{"qwen3_5"}, .backend = "metal", .class = .arithmetic, .syntax = .one, .effect = "Only exact 1 puts the 27B's keys and values in core-pool pages; refused on Macs with tensor units", .evidence = "#2370; class until a main-against-branch token-hash run on a Mac without tensor units" },
     .{ .id = .TF_QWEN35_METAL_KV_PAGES, .families = qwen, .backend = "metal", .class = .arithmetic, .syntax = .one, .effect = "Only exact 1 puts the streams' keys and values in core-pool pages; unset, whole caches at load", .evidence = "#2370; class until a main-against-branch token-hash run" },
