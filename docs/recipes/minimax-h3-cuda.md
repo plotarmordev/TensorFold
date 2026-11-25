@@ -1603,6 +1603,58 @@ the file absent then present, one cold 2048² picture each way plus three warm).
 The int8 handle leak its review found (a plan stored before its pick was recorded) lived only in that cache code:
 main's int8 products no longer plan through cuBLASLt, so no fix lands here.
 
+### Card 178: q/k norm and rotary in the int8 qkv epilogue
+
+The first fusion at `3e2fce2fa` staged each 128-column head in the GEMM's shared ring. It preserved the output
+bytes but merely moved the cost: TOP job `top-bde3a9eee232` measured fox QKV 2.56 s against main's 1.65 s while
+`heads` fell from 0.94 to zero. Four-prompt warm means were 13.3 candidate and 13.2 main. That shared-tile design
+was removed; adding another whole-head allocation beside the 99,360-byte ring is not a speedup.
+
+The register-resident replacement gives one warp all 128 columns of one head. Redistribution uses convergent
+warp shuffles so each lane reconstructs its original contiguous 32-value quarter before `h3_heads`'s serial
+norm sum, xor reductions, bf16 normalization, rotary products, and packed stores. Q and K stay in registers;
+V is written in slot order. No shared tile or second TMA ring pass is added. The 48-angle MiniMax geometry
+launches `h3_heads_int8_tma`; other rotary widths retain the independent `h3_heads` pass.
+
+`contract_h3_int8` mode `heads` compares every q/k/v byte against the original pipeline for grouped layouts,
+including a partial 256-row tile, padding slots, nonfinite products, and exact bf16 rounding; its control flips one
+fused output word and must go red at gate 1. The launch record fixes the fused kernel at 256 threads, 99,360 opt-in
+shared bytes, and at most 255 registers. With the fused product, geometry allocates no `qkvc` rows (236 MB at
+4,120 rows). The same-job driver is `bench-178-ab.sh`, one prompt a job through `bench-178-{fox,harbour,meadow,steam}.sh`
+so each stops within 600 s, with the contract gates in `check-178.sh`; its reverse patch reconstructs merge parent
+`6b6822bbd` (Zig tree `8a06c4029fff70b09d7e9286813975262ed0bd89`) for the baseline half. Each side's tools build
+into their own `h3-178-bin-{heads,base}` dir so the commit-keyed default can never serve one side's binaries to
+the other, and TOP's per-job zig-cache decides whether both builds fit the slot (four jobs, three retried once on
+a cold cache).
+
+`check-178.sh` (job `top-6576d2b492d2` at `5fc3646a9`, exit 0) passed the fused contract's four shape cases, the
+nonfinite and repeat gates, its live launch limit (256 threads, 255 registers, 99,360 shared bytes) and the
+planted control, which went red as designed. The four A/B jobs at `ae5df6602` — `top-3a3edd22c677` (fox,
+`17b096cec`), `top-ad33290d48b5` (harbour, `17b096cec`), `top-bb48d6a737fc` (meadow) and `top-4557ead30ce2`
+(steam) — ran one cold and three warm 2048² renders a side; every selftest passed and all 16 latent files and 16
+PNGs were byte-identical between the sides. The fused `heads` stage measured 0.00 s against main's 0.93–0.95 s;
+QKV pays ~0.5 s for the fused work while the separate pass goes away. The candidate's 12 warm walls total
+**132.59 s** against main's **136.73 s** (means 11.05 and 11.39 s); it ships.
+
+| Run | Prompt | Candidate wall s | Main wall s | Candidate heads s | Main heads s |
+|---|---|---:|---:|---:|---:|
+| cold | fox | 148.05 | 149.74 | 0.00 | 0.93 |
+| 1 | fox | 10.99 | 11.37 | 0.00 | 0.93 |
+| 2 | fox | 11.07 | 11.40 | 0.00 | 0.93 |
+| 3 | fox | 11.10 | 11.42 | 0.00 | 0.93 |
+| cold | harbour | 144.26 | 145.49 | 0.00 | 0.94 |
+| 1 | harbour | 10.97 | 11.35 | 0.00 | 0.94 |
+| 2 | harbour | 11.03 | 11.38 | 0.00 | 0.95 |
+| 3 | harbour | 11.08 | 11.44 | 0.00 | 0.94 |
+| cold | meadow | 141.16 | 147.51 | 0.00 | 0.95 |
+| 1 | meadow | 10.97 | 11.36 | 0.00 | 0.95 |
+| 2 | meadow | 11.05 | 11.53 | 0.00 | 0.95 |
+| 3 | meadow | 11.13 | 11.43 | 0.00 | 0.95 |
+| cold | steam | 148.59 | 146.25 | 0.00 | 0.94 |
+| 1 | steam | 11.01 | 11.27 | 0.00 | 0.94 |
+| 2 | steam | 11.06 | 11.40 | 0.00 | 0.95 |
+| 3 | steam | 11.13 | 11.38 | 0.00 | 0.95 |
+
 ### Card 181: the norms' AdaLN tables in bf16, read a lane's four values at once — measured, no gain shown
 
 I stored the AdaLN tables as bf16 (`h3m_project` already rounded every value to bf16 before writing it to an f32

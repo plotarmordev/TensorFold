@@ -76,9 +76,11 @@ pub const cuda_pending = [_]CudaRecord{
 };
 
 /// The picture's TMA products (h3_int8_tma.cuh): sm_120's and sm_121's usage from the five-SM limits job
-/// (card 199's TOP check); sm_80 to sm_89 sit below their min_sm.
+/// (card 199's TOP check) but h3_heads_int8_tma's sm_121 alone from card 178's GB10 check;
+/// sm_80 to sm_89 sit below their min_sm.
 pub const cuda_tma_pending = [_]CudaRecord{
     .{ .launch = .{ .name = "h3 h3_gemm_int8_tma", .symbol = "h3_gemm_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(222) },
+    .{ .launch = .{ .name = "h3 h3_heads_int8_tma", .symbol = "h3_heads_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm121(255) },
     .{ .launch = .{ .name = "h3 h3_swiglu_int8_tma", .symbol = "h3_swiglu_int8_tma", .image = "h3", .threads = 256, .dynamic = 99360, .opt_in = true, .min_sm = 90 }, .usage = sm12x(225) },
     .{ .launch = .{ .name = "h3 h3_swiglu_rows", .symbol = "h3_swiglu_rows", .image = "h3", .threads = 256, .min_sm = 90 }, .usage = sm12x(22) },
 };
@@ -87,5 +89,12 @@ pub const cuda_tma_pending = [_]CudaRecord{
 fn sm12x(regs: u32) [5]@import("limits.zig").Usage {
     var u = @import("registry.zig").none;
     for (u[3..]) |*v| v.* = .{ .regs = regs, .static = 0, .bound = 256 };
+    return u;
+}
+
+/// A usage row measured on sm_121 alone; the other targets stay missing receipts.
+fn sm121(regs: u32) [5]@import("limits.zig").Usage {
+    var u = @import("registry.zig").none;
+    u[4] = .{ .regs = regs, .static = 0, .bound = 256 };
     return u;
 }

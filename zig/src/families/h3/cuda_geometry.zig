@@ -13,6 +13,8 @@ pub const Geometry = struct {
     tiles: usize = 0,
     prefix: usize = 0,
     keep: usize = 0,
+    /// The int8 product writes q, k and v straight to their tiles: no qkvc rows.
+    fused: bool = false,
     buffers: [24]cuda.DeviceBuffer = undefined,
     used: usize = 0,
     y: u64 = 0,
@@ -66,7 +68,8 @@ pub fn prepare(self: *Model, in: *const Model.Inputs, p: @import("cuda_validatio
     const row_of = try @import("cuda_packing.zig").read(self, in, p);
     defer self.gpa.free(row_of);
     const g = &self.geometry;
-    const same = g.rows == in.rows and g.tiles == in.tiles and g.prefix == p.prefix and g.keep == p.keep;
+    const fused = self.fusedHeads(in.rot);
+    const same = g.rows == in.rows and g.tiles == in.tiles and g.prefix == p.prefix and g.keep == p.keep and g.fused == fused;
     if (same) {
         const map: cuda.DeviceBuffer = .{ .d = &self.driver, .ptr = g.row_of, .len = row_of.len * 4, .borrowed = true };
         try map.upload(0, std.mem.sliceAsBytes(row_of));
@@ -76,7 +79,7 @@ pub fn prepare(self: *Model, in: *const Model.Inputs, p: @import("cuda_validatio
     releaseCompleted(self);
     g.y = try buffer(self, p.buffers[0], false);
     g.xn = try buffer(self, p.buffers[1], false);
-    g.qkvc = try buffer(self, p.buffers[2], false);
+    g.qkvc = if (fused) 0 else try buffer(self, p.buffers[2], false);
     g.tq = try buffer(self, p.buffers[3], true);
     g.tk = try pair(self, p.buffers[4], true);
     g.tv = try pair(self, p.buffers[5], true);
@@ -100,4 +103,5 @@ pub fn prepare(self: *Model, in: *const Model.Inputs, p: @import("cuda_validatio
     g.tiles = in.tiles;
     g.prefix = p.prefix;
     g.keep = p.keep;
+    g.fused = fused;
 }

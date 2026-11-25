@@ -28,7 +28,7 @@ const scale_m = 4;
 const gate_m = 5;
 
 const image align(16) = @embedFile("fatbin_h3").*;
-const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
+const kernel_names = [_][:0]const u8{ "h3_norm", "h3_norm_quant", "h3_gate_add", "h3_heads", "h3_pool", "h3_tile_scores", "h3_topk", "h3_coarse", "h3_gate_mix", "h3_swiglu", "h3_attention", "h3_quantize", "h3_quantize_fp4", "h3_norm_quant_fp4", "h3_rows_in", "h3_rows_out", "h3_euler", "h3_gemm_int8_tma", "h3_heads_int8_tma", "h3_swiglu_int8_tma", "h3_swiglu_rows" };
 
 pub const stages = [_][]const u8{ "norms", "q k v gate", "heads", "routing", "attention", "gate mix", "attention out", "mlp in", "mlp out" };
 
@@ -147,6 +147,7 @@ pub const Model = struct {
         // the TMA products' two-stage rings (h3_int8_tma.cuh Config::shared_bytes), once at setup so
         // no launch needs the attribute raced against the stream
         try self.function("h3_gemm_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
+        try self.function("h3_heads_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
         try self.function("h3_swiglu_int8_tma").allowDynamicShared(@import("cuda_int8.zig").gemm_shared);
         // the legacy default stream: work queued by the caller's framework comes first
         self.stream = .{ .d = d, .handle = null };
@@ -297,6 +298,11 @@ pub const Model = struct {
         return @import("cuda_validation.zig").read(self, in, 0, in.tiles);
     }
 
+    /// The int8 qkv product normalizes, rotates and lays out the heads itself at MiniMax's 48 rotary angles.
+    pub fn fusedHeads(self: *const Model, rot: u32) bool {
+        return self.int8 != null and rot == 48;
+    }
+
     /// Every block over the stream, in place; returns once the GPU has finished.
     pub fn forward(self: *Model, in: *const Inputs) !f64 {
         const started = seconds();
@@ -353,6 +359,7 @@ pub const Model = struct {
         const lay4 = if (self.fp4) |t| try t.layout(self, rows) else null;
         const iq: u64 = if (lay) |l| l.xq else if (lay4) |l| l.q else 0;
         const is: u64 = if (lay) |l| l.xs else if (lay4) |l| l.s else 0;
+        const fused_heads = self.fusedHeads(in.rot);
         for (self.blocks[0..count], 0..) |*b, index| {
             const tab = in.tables + index * table_bytes;
             const par = index & 1;
@@ -360,18 +367,32 @@ pub const Model = struct {
             if (index == 0) try self.norm(in.x, b.norms.ptr, tab, tab, in.line, -1, scale_a, shift_a, iq, is) else try self.norm(in.x, b.norms.ptr, tab - table_bytes, tab, in.line, gate_m, scale_a, shift_a, iq, is);
             try self.lap("norms", &mark);
             if (self.int8) |t| {
-                // the TMA product writes the bf16 qkvc rows straight into g.qkvc — h3_heads reads
-                // them, the int32 sums and h3_dequantize's pass are gone
-                try t.gemm(self, lay.?, t.blocks[index].qkvc, g.qkvc, rows);
+                if (fused_heads) {
+                    const heads_args: @import("cuda_int8.zig").Heads = .{
+                        .nq = b.norms.ptr + hidden * 4,
+                        .nk = b.norms.ptr + hidden * 4 + head_dim * 2,
+                        .cos = in.cos,
+                        .sin = in.sin,
+                        .slot = in.slot,
+                        .tq = g.tq,
+                        .tk = g.tk[par],
+                        .tv = g.tv[par],
+                        .heads = @intCast(heads),
+                        .slots = @intCast(tiles * slot_tile),
+                        .eps = eps,
+                    };
+                    try t.gemmHeads(self, lay.?, t.blocks[index].qkvc, rows, heads_args);
+                } else {
+                    try t.gemm(self, lay.?, t.blocks[index].qkvc, g.qkvc, rows);
+                }
             } else if (self.fp4) |t| {
                 try t.gemm(self, lay4.?, t.blocks[index].qkvc, g.qkvc, rows);
             } else {
                 try self.gemms.run(self.stream, g.xn, b.qkvc.ptr, g.qkvc, rows, width, hidden);
             }
             try self.lap("q k v gate", &mark);
-            {
-                // q, k and v in tile order, beginning at tile zero; the int8 path's product already
-                // wrote them bf16 into g.qkvc, so both modes feed plain h3_heads
+            if (!fused_heads) {
+                // bf16, fp4 and other rotary widths still feed the separate head layout pass.
                 const at = own0 * slot_tile * head_dim * 2;
                 var args: cuda.Args = .{};
                 for ([_]u64{ g.qkvc, b.norms.ptr + hidden * 4, b.norms.ptr + hidden * 4 + head_dim * 2, in.cos, in.sin, g.row_of + own0 * slot_tile * 4, g.tq + at, g.tk[par] + at, g.tv[par] + at }) |p| args.add(p);
@@ -435,5 +456,4 @@ pub const Model = struct {
             try self.launch("h3_gate_add", .{ .x = @intCast(rows) }, 256, 0, &args);
         }
     }
-
 };
