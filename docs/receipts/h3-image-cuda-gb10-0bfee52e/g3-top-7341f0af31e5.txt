@@ -1,0 +1,200 @@
+queued for the GPU behind another run; waiting
+started top-7341f0af31e5
+== build: 551 s
+== measure: tf-cuda-test kernel-contract @window_rows %3/6 -tf_md_conv3x3
+== measure: exit 124 (124: stopped at 600 s) in 601 s, 297 PASS lines
+N/A  cuda affine4 MLP128 replacement bits: cluster path needs sm_90 or newer, this GPU is sm_121
+N/A  cuda affine4 MLP128 FP64: cluster path needs sm_90 or newer, this GPU is sm_121
+FAIL shapes control: decode partials whose window starts a key early: at 16x16x40000: row 1 head 0 out[73] = -3.1280518e-4 (0xb9a4) outside float64's -3.418552758367482e-4 +- 2.4423771766130722e-5
+CONTROL control: decode partials whose window starts a key early: red at shapes, as planted
+FAIL shapes control: P32 paged prompt rows whose first page id is a later page's: at 128x16x4096: row 0 head 0 out[0] = 2.6489258e-2 (0x3cd9) outside float64's 1.0468745805942332e0 +- 4.177309375212251e-5
+CONTROL control: P32 paged prompt rows whose first page id is a later page's: red at shapes, as planted
+FAIL nonfinite cuda glm tf_glm_scores on pages out of order: 1024 of 16384 outputs differ in class; first at 0: finite where float64 gives nan
+KNOWN nonfinite cuda glm tf_glm_scores on pages out of order: relu is fmaxf(x, 0), as Triton's tl.maximum: a NaN dot scores 0 where float64 keeps the NaN
+N/A  sums cuda glm tf_glm_dsa_tokens, pools of 1: declares none sums
+FAIL nonfinite cuda glm tf_glm_index_scores on pages out of order: 1024 of 16384 outputs differ in class; first at 0: finite where float64 gives nan
+KNOWN nonfinite cuda glm tf_glm_index_scores on pages out of order: relu is fmaxf(x, 0), as Triton's tl.maximum: a NaN dot scores 0 where float64 keeps the NaN
+N/A  sums cuda glm tf_glm_dsa_tokens on pages out of order: declares none sums
+FAIL shapes control: GLM paged pooled keys use a swapped table: at 8x128x4 output 0 is 0.000000e0 where float64 gives -5.695015e-1: 70.58 of its bound
+CONTROL control: GLM paged pooled keys use a swapped table: red at shapes, as planted
+FAIL shapes control: GLM chunks32 sparse uses swapped page rows: at 64x16384x300 output 0 is 5.029297e-2 where float64 gives 5.336724e-2: 1.45 of its bound
+CONTROL control: GLM chunks32 sparse uses swapped page rows: red at shapes, as planted
+N/A  sums cuda glm tf_glm_kvh_prev_mark: the layer cache's rows, less this call's: declares none sums
+FAIL shapes control: GLM kv host remap reads swapped slots: at 1x2051x1: token 733: 0 where 1 is due
+CONTROL control: GLM kv host remap reads swapped slots: red at shapes, as planted
+FAIL shapes control: GLM kv host unmark drops a previous row (a stale mark): at 1x2051x1: cache mark of arena row 942: 653 where -1 is due
+CONTROL control: GLM kv host unmark drops a previous row (a stale mark): red at shapes, as planted
+FAIL shapes control: mla tf_mla_rope (plain) turns each row by the next position's angle: at 1x32x64 output 0 is -5.000000e0 where float64 gives -9.867009e-1: 1040.57 of its bound
+CONTROL control: mla tf_mla_rope (plain) turns each row by the next position's angle: red at shapes, as planted
+FAIL shapes control: mla tf_mla_merge_part merges one chunk short of the rank's: at 8x16384x1024 output 0 is -4.028320e-2 where float64 gives -2.636678e-2: 5.99 of its bound
+CONTROL control: mla tf_mla_merge_part merges one chunk short of the rank's: red at shapes, as planted
+FAIL nonfinite cuda Qwen4 GDN silu weights3 readout nan: 256 of 1280 outputs differ in class; first at 1024: finite where float64 gives nan
+CONTROL cuda Qwen4 GDN silu weights3 readout nan: red at nonfinite, as planted
+FAIL shapes cuda Qwen4 GDN silu weights3 state tail: at 1x1x2 output 0 is -nan where float64 gives -6.325329e-3: nan of its bound
+CONTROL cuda Qwen4 GDN silu weights3 state tail: red at shapes, as planted
+FAIL nonfinite cuda Qwen4 GDN silu weights11 readout nan: 256 of 1280 outputs differ in class; first at 1024: finite where float64 gives nan
+CONTROL cuda Qwen4 GDN silu weights11 readout nan: red at nonfinite, as planted
+FAIL repeat cuda Qwen4 GDN silu weights11 state repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda Qwen4 GDN silu weights11 state repeat: red at repeat, as planted
+FAIL shapes cuda Qwen4 GDN silu weights15 readout tail: at 1x1x2 output 0 is -nan where float64 gives -1.483154e-2: nan of its bound
+CONTROL cuda Qwen4 GDN silu weights15 readout tail: red at shapes, as planted
+FAIL nonfinite cuda Qwen4 GDN sigmoid weights3 state nan: 32768 of 163840 outputs differ in class; first at 131072: finite where float64 gives nan
+CONTROL cuda Qwen4 GDN sigmoid weights3 state nan: red at nonfinite, as planted
+FAIL shapes cuda Qwen4 GDN sigmoid weights7 readout tail: at 1x1x2 output 0 is -nan where float64 gives -1.269531e-1: nan of its bound
+CONTROL cuda Qwen4 GDN sigmoid weights7 readout tail: red at shapes, as planted
+FAIL nonfinite cuda Qwen4 GDN sigmoid weights15 readout nan: 256 of 1280 outputs differ in class; first at 1024: finite where float64 gives nan
+CONTROL cuda Qwen4 GDN sigmoid weights15 readout nan: red at nonfinite, as planted
+FAIL shapes cuda Qwen4 PLE gated tail: at 1x256x2 output 0 is -nan where float64 gives -6.176758e-2: nan of its bound
+CONTROL cuda Qwen4 PLE gated tail: red at shapes, as planted
+FAIL sums cuda Qwen4 PLE normed sums: infx over its exact-sum bound at k 4: not fp32 sums (fp16 would miss infx, bf16 0x)
+CONTROL cuda Qwen4 PLE normed sums: red at sums, as planted
+FAIL nonfinite cuda Qwen4 native HC act nan: 2 of 1285 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda Qwen4 native HC act nan: red at nonfinite, as planted
+FAIL repeat cuda weight-only bf16 g64 bf16 repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda weight-only bf16 g64 bf16 repeat: red at repeat, as planted
+FAIL shapes cuda weight-only fp8 g64 bf16 tail: at 3x7x128 output 0 is 1.281250e1 where float64 gives 2.047939e2: 239.87 of its bound
+CONTROL cuda weight-only fp8 g64 bf16 tail: red at shapes, as planted
+FAIL sums cuda weight-only nvfp4 g64 bf16 sums: 256.0x over its exact-sum bound at k 20480: not fp32 sums (fp16 would miss infx, bf16 256x)
+CONTROL cuda weight-only nvfp4 g64 bf16 sums: red at sums, as planted
+FAIL nonfinite cuda weight-only mlx4 g32 f32 nan: 11 of 35 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda weight-only mlx4 g32 f32 nan: red at nonfinite, as planted
+FAIL repeat cuda weight-only mlx4 g64 bf16 repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda weight-only mlx4 g64 bf16 repeat: red at repeat, as planted
+FAIL shapes cuda weight-only mlx4 g64 f16 tail: at 3x7x128 output 0 is -3.812500e0 where float64 gives -4.812500e0: 53.11 of its bound
+CONTROL cuda weight-only mlx4 g64 f16 tail: red at shapes, as planted
+FAIL sums cuda weight-only mlx4 g64 f32 sums: 256.0x over its exact-sum bound at k 20480: not fp32 sums (fp16 would miss infx, bf16 256x)
+CONTROL cuda weight-only mlx4 g64 f32 sums: red at sums, as planted
+FAIL nonfinite cuda weight-only mlx4 g128 f32 nan: 14 of 35 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda weight-only mlx4 g128 f32 nan: red at nonfinite, as planted
+FAIL repeat cuda weight-only mlx8 g32 bf16 repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda weight-only mlx8 g32 bf16 repeat: red at repeat, as planted
+FAIL shapes cuda weight-only mlx8 g32 f16 tail: at 3x7x128 output 0 is 1.600000e1 where float64 gives 2.897656e1: 114.37 of its bound
+CONTROL cuda weight-only mlx8 g32 f16 tail: red at shapes, as planted
+FAIL sums cuda weight-only mlx8 g32 f32 sums: 67109120.0x over its exact-sum bound at k 20480: not fp32 sums (fp16 would miss infx, bf16 256x)
+CONTROL cuda weight-only mlx8 g32 f32 sums: red at sums, as planted
+FAIL nonfinite cuda weight-only mlx8 g64 f32 nan: 14 of 35 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda weight-only mlx8 g64 f32 nan: red at nonfinite, as planted
+FAIL repeat cuda weight-only mlx8 g128 bf16 repeat: 4 of 4 repeats differ from the first run's bytes, first at byte 0
+CONTROL cuda weight-only mlx8 g128 bf16 repeat: red at repeat, as planted
+FAIL shapes cuda weight-only mlx8 g128 f16 tail: at 3x7x128 output 0 is 4.975000e1 where float64 gives 1.987500e2: 191.83 of its bound
+CONTROL cuda weight-only mlx8 g128 f16 tail: red at shapes, as planted
+FAIL sums cuda weight-only mlx8 g128 f32 sums: 256.0x over its exact-sum bound at k 20480: not fp32 sums (fp16 would miss infx, bf16 256x)
+CONTROL cuda weight-only mlx8 g128 f32 sums: red at sums, as planted
+FAIL nonfinite cuda HC activation streams2 injecttrue nan: 1 of 20 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda HC activation streams2 injecttrue nan: red at nonfinite, as planted
+FAIL shapes cuda HC activation streams3 injectfalse tail: at 4x257x1 output 1027 is -nan where float64 gives 2.499129e0: nan of its bound
+CONTROL cuda HC activation streams3 injectfalse tail: red at shapes, as planted
+FAIL nonfinite cuda HC activation streams4 injectfalse nan: 2 of 1285 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda HC activation streams4 injectfalse nan: red at nonfinite, as planted
+FAIL shapes cuda HC activation streams4 injecttrue tail: at 4x4x1 output 15 is -nan where float64 gives 1.757813e0: nan of its bound
+CONTROL cuda HC activation streams4 injecttrue tail: red at shapes, as planted
+FAIL nonfinite cuda HC activation streams5 injecttrue nan: 1 of 20 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda HC activation streams5 injecttrue nan: red at nonfinite, as planted
+FAIL shapes cuda HC activation streams6 injectfalse tail: at 4x257x1 output 1027 is -nan where float64 gives 1.057823e0: nan of its bound
+CONTROL cuda HC activation streams6 injectfalse tail: red at shapes, as planted
+FAIL nonfinite cuda HC activation streams7 injectfalse nan: 2 of 1285 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda HC activation streams7 injectfalse nan: red at nonfinite, as planted
+FAIL shapes cuda HC activation streams7 injecttrue tail: at 4x4x1 output 15 is -nan where float64 gives 1.515625e0: nan of its bound
+CONTROL cuda HC activation streams7 injecttrue tail: red at shapes, as planted
+FAIL nonfinite cuda HC activation streams8 injecttrue nan: 1 of 20 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda HC activation streams8 injecttrue nan: red at nonfinite, as planted
+FAIL shapes cuda HC pointwise branch native streams2 pairedfalse tail: at 4x257x1 output 2055 is -nan where float64 gives 2.987500e1: nan of its bound
+CONTROL cuda HC pointwise branch native streams2 pairedfalse tail: red at shapes, as planted
+FAIL nonfinite cuda HC pointwise branch native streams4 pairedfalse nan: 5 of 5140 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda HC pointwise branch native streams4 pairedfalse nan: red at nonfinite, as planted
+FAIL shapes cuda HC pointwise branch hf streams4 pairedfalse tail: at 4x257x1 output 4111 is -nan where float64 gives -3.500000e1: nan of its bound
+CONTROL cuda HC pointwise branch hf streams4 pairedfalse tail: red at shapes, as planted
+FAIL nonfinite cuda HC pointwise branch hf streams8 pairedfalse nan: 9 of 10280 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda HC pointwise branch hf streams8 pairedfalse nan: red at nonfinite, as planted
+FAIL shapes cuda HC pointwise output_gate native streams1 pairedfalse tail: at 4x257x1 output 1027 is -nan where float64 gives 4.176101e-2: nan of its bound
+CONTROL cuda HC pointwise output_gate native streams1 pairedfalse tail: red at shapes, as planted
+FAIL nonfinite cuda HC pointwise output_gate native streams1 pairedtrue nan: 1 of 2560 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL cuda HC pointwise output_gate native streams1 pairedtrue nan: red at nonfinite, as planted
+FAIL shapes cuda HC pointwise output_gate hf streams1 pairedtrue tail: at 4x512x1 output 2047 is -nan where float64 gives 7.293701e-3: nan of its bound
+CONTROL cuda HC pointwise output_gate hf streams1 pairedtrue tail: red at shapes, as planted
+FAIL shapes control: MiniMax index scores read the keys one row late: at 64x48x128 output 35 is 4.264121e1 where float64 gives 3.950524e1: 573.23 of its bound
+CONTROL control: MiniMax index scores read the keys one row late: red at shapes, as planted
+N/A  sums cuda minimax tf_mm3_swiglu_oai: declares none sums
+FAIL shapes control: MiniMax MoE partial weighs each pick with the next pick's weight: output leaves its signed pointwise interval
+CONTROL control: MiniMax MoE partial weighs each pick with the next pick's weight: red at shapes, as planted
+N/A  sums cuda minimax tf_mm3_put_words: declares none sums
+FAIL shapes control: inkling2 attn sliding rows read each distance's bias one distance late: at 16x3072x4096 output 0 is 2.708435e-4 where float64 gives -3.637762e-5: 852.89 of its bound
+CONTROL control: inkling2 attn sliding rows read each distance's bias one distance late: red at shapes, as planted
+N/A  sums inkling2 ops tf_ink2_topk (sigmoid scores, bias, route scale 8): declares none sums
+N/A  sums inkling2 ops tf_ink2_conv_rewind (a slot's states from its backup and kept rows): declares none sums
+FAIL shapes control: inkling2 ops tf_ink2_prompt_tail reading the next column's svh: output leaves its signed pointwise interval
+CONTROL control: inkling2 ops tf_ink2_prompt_tail reading the next column's svh: red at shapes, as planted
+FAIL shapes control: inkling2 ops tf_ink2_tobf rounding rank 1's padding ids: at 16x100512x2: row 0 column 200058: c1b2 where ff80 is due
+CONTROL control: inkling2 ops tf_ink2_tobf rounding rank 1's padding ids: red at shapes, as planted
+FAIL shapes control: moss image tf_moss_norm modulated drops bf16(y s): output leaves its signed pointwise interval
+CONTROL control: moss image tf_moss_norm modulated drops bf16(y s): red at shapes, as planted
+N/A  sums cuda moss image tf_moss_situ two inputs: declares none sums
+N/A  sums cuda moss image decoder tf_md_norm: declares none sums
+N/A  sums cuda moss image encoder tf_me_silu_mul: declares none sums
+N/A  sums cuda nemo audio tf_nemo_qk speaker (8 x 64): declares none sums
+FAIL nonfinite control: nemo audio tf_nemo_relu drops NaN (fmaxf): 1 of 12288 outputs differ in class; first at 1: finite where float64 gives nan
+CONTROL control: nemo audio tf_nemo_relu drops NaN (fmaxf): red at nonfinite, as planted
+FAIL shapes control: tf_vit_conv_cols reads the clamped edge, not the zero padding: at 2x1x32868: output 0 has bits beda where the copy has 0000
+CONTROL control: tf_vit_conv_cols reads the clamped edge, not the zero padding: red at shapes, as planted
+FAIL shapes control: Flash Next qmmf BF16 weights scaled 1.5x: at 1x8240x2560 output 0 is -1.640000e2 where float64 gives -1.094503e2: 118.91 of its bound
+CONTROL control: Flash Next qmmf BF16 weights scaled 1.5x: red at shapes, as planted
+N/A  sums cuda GB10 grouped affine-4 decode/verify: declares none sums
+N/A  sums cuda GB10 grouped affine-4 decode/verify: declares none sums
+N/A  sums cuda GB10 grouped affine-4 decode/verify: declares none sums
+N/A  sums cuda GB10 grouped affine-4 decode/verify: declares none sums
+N/A  sums cuda flashnext lanes' DeltaNet front fn_gdn_lanes_front: declares none sums
+N/A  sums cuda flashnext fn_hcn_down2 (normalize and fp32 down, 32-row tiles): declares none sums
+N/A  sums cuda flashnext fn_row_topk (a row's top_k candidates for sampled draws): declares none sums
+FAIL shapes control: exl3 4-bit linear_wc at another K split posing as linear_body: at 128x1024x5120 its bytes differ from tf_exl3_linear (linear_body)'s from byte 23160
+CONTROL control: exl3 4-bit linear_wc at another K split posing as linear_body: red at shapes, as planted
+FAIL shapes control: qmmf BF16 prompt scaled 1.5x: at 512x129x2048 its bytes differ from qmmf BF16 64x64 with identical pinned K slices's from byte 0
+CONTROL control: qmmf BF16 prompt scaled 1.5x: red at shapes, as planted
+N/A  sums cuda muse muse_linear_multi_k6 (q, k, v, gate in one launch): declares none sums
+N/A  sums cuda muse dr_block_embed (anchor rows bf16, mask rows fp32): declares none sums
+N/A  sums cuda muse dfl_topk (a rank's top 16 of its head slice): declares none sums
+FAIL nonfinite control nonfinite: joint schema softmax skipping non-finite scores: 735 of 1960 outputs differ in class; first at 0: finite where float64 gives nan
+CONTROL control nonfinite: joint schema softmax skipping non-finite scores: red at nonfinite, as planted
+N/A  sums cuda joint schema tf_js_span_means: declares none sums
+N/A  sums cuda joint schema tf_js_combine: declares none sums
+N/A  sums cuda idol tf_idol_bias, fp16(GELU(fp16(acc + b))): declares none sums
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=2, KS=2, NS=4, FOLD=true]" at line 215
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=8, MT=4, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=2, KS=4, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=2, NS=4, FOLD=true]" at line 215
+
+./zig/kernels/cuda/exl3_linear_wc.cuh(179): warning #128-D: loop is not reachable
+      for (int idx = threadIdx.x; idx < rows * 32; idx += NTH) {
+      ^
+          detected during instantiation of "void tf_exl3::linear_wc_body<K2,MT,KS,NS,FOLD>(const tf_exl3::WcArgs &) [with K2=12, MT=4, KS=4, NS=4, FOLD=true]" at line 215
