@@ -64,18 +64,16 @@ test "managed log: an exited child's last diagnostic without a newline reaches i
     defer tmp.cleanup();
     var s = try Setup.init(a, &tmp);
     for ([_][]const u8{
-        "sleep 8 & printf 'loading\\nerror: bad model child-log-key'; exit 3", // a descendant keeps the pipe open
+        "sleep 30 & printf 'loading\\nerror: bad model child-log-key'; exit 3", // a descendant keeps the pipe open
         "printf 'loading\\nerror: bad model child-log-key'; exit 3", // ordinary end of stream
     }) |script| {
         var problem: []const u8 = "";
         var tail: []const []const u8 = &.{};
         const argv = try a.dupe([]const u8, &.{ "/bin/sh", "-c", script });
-        const t0 = std.Io.Clock.awake.now(std.testing.io);
         try none(try server.Managed.start(a, std.testing.io, &s.env, plan, .{ .startup_timeout_s = 10, .bench_dir = s.bench, .argv = argv, .tail = &tail, .key = "child-log-key" }, &problem));
+        // bounded: the descendant outlives the startup deadline, so waiting for it would read timed out
         try std.testing.expectEqualStrings("Benchmark server exited during startup; check the checkpoint and backend toolchain", problem);
         try lines(&.{"error: bad model [redacted]"}, tail);
-        const took = t0.durationTo(std.Io.Clock.awake.now(std.testing.io)).toMilliseconds();
-        try std.testing.expect(took < 7000); // bounded: no wait for the descendant
     }
 }
 
