@@ -259,7 +259,7 @@ pub const Dec = struct {
                 self.p = .{ .m = @intCast(s.rows), .eps = 1e-5 };
             },
             .linear => {
-                if (s.k > 8192) return false;
+                if (s.k > 8192 or s.k % 8 != 0) return false;
                 const x = try self.values(s.rows * s.k, -1, 1, fill, rng, true, true);
                 const w = try self.values(s.n * s.k, -1, 1, .random, rng, true, false);
                 self.in = .{ .a = x, .b = w, .rows = s.rows, .n = s.n, .k = s.k };
