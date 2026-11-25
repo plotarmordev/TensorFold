@@ -1,11 +1,12 @@
 #!/bin/sh
-# Card 178's same-job int8 A/B, one prompt a job so each stays inside the GPU slot's 600 s: this commit, then
-# bench-178-base.patch reverse-applied so zig/ is exactly the branch's merge parent (main at 6b6822bbd). Each side
-# renders the prompt cold, then three times warm; H3_PROFILE is on throughout. TOP's checkout and /work/zig-cache
-# are shared across jobs, so a job killed mid-A/B can leave zig/ on the baseline: the heads phase restores it
-# first, and after one cold pass every later job's second build reuses all but the two changed kernel images.
-# The fused epilogue must reproduce main's latents and PNGs byte for byte; the contract gates are check-178.sh's.
-# Results: /work/out/h3-178-PROMPT-{heads,base}. Run through bench-178-{fox,harbour,meadow,steam}.sh:
+# Card 178's same-job int8 A/B, one prompt a job so each stays inside the GPU slot's 600 s. TOP gives each job a
+# fresh /work, so two cold nvcc passes cannot fit the slot. The baseline builds first at full cost; the heads
+# phase then applies the card's patch back and zig reuses every unchanged object, recompiling only the fatbins
+# the fused epilogue touches (h3, h3_int8_tma) plus relinking the picture tools — small enough to fit the same
+# slot. bench-178-base.patch's reverse applies to zig/ to reconstruct main at 6b6822bbd; its zig tree is checked
+# against 8a06c4029fff70b09d7e9286813975262ed0bd89. Each side renders the prompt cold, then three times warm with
+# H3_PROFILE on; the fused epilogue must reproduce main's latents and PNGs byte for byte. check-178.sh's own job
+# holds the contract gates. Run through bench-178-{fox,harbour,meadow,steam}.sh:
 #   swarm gpu-run plotarmordev/TensorFold SHA docs/recipes/minimax-h3-cuda/bench-178-fox.sh
 set -eu
 [ -n "${H3_178_TIMED:-}" ] || H3_178_TIMED=1 exec timeout 600 sh "$0"
@@ -16,14 +17,9 @@ fox) file=/assets/drama3-pilot/h3-image-pilot/prompt.txt ;;
 *) file=$here/prompts/$H3_178_PROMPT.txt ;;
 esac
 status=0
-phase() { # $1 heads|base; each side's tools build once into a phase-named dir TOP's /work keeps across jobs
-    case $1 in
-    heads) bindir=/work/out/h3-178-bin-heads ;;
-    base) bindir=/work/out/h3-178-bin-base ;;
-    esac
-    H3_BENCH_BIN=$bindir H3_LINEAR=int8 H3_PROFILE=1 H3_BENCH_OUT=/work/out/h3-178-$H3_178_PROMPT-$1 \
-        H3_BENCH_SKIP_COMPARE=1 H3_BENCH_PROMPTS="$file $file $file $file" \
-        sh "$here/bench-script.sh" || status=$?
+phase() { # $1 heads|base
+    H3_LINEAR=int8 H3_PROFILE=1 H3_BENCH_OUT=/work/out/h3-178-$H3_178_PROMPT-$1 H3_BENCH_SKIP_COMPARE=1 \
+        H3_BENCH_PROMPTS="$file $file $file $file" sh "$here/bench-script.sh" || status=$?
 }
 stages() { # every run's wall split and H3_PROFILE block stages
     for run in 1 2 3 4; do
@@ -33,10 +29,8 @@ stages() { # every run's wall split and H3_PROFILE block stages
         grep -E '^  [a-z ]+: [0-9.]+ s$' "$1/2048-$run.image.log" || true
     done
 }
-# a prior job killed mid-A/B leaves zig/ on the baseline on TOP's shared checkout
+# a prior job killed mid-A/B can leave zig/ on the baseline; start clean so 'apply -R' is the only patch
 git -c safe.directory='*' checkout -- zig/ 2>/dev/null || :
-echo "=== heads ($H3_178_PROMPT): this commit $(git -c safe.directory='*' rev-parse --short HEAD), int8 qkv + fused heads ==="
-phase heads
 echo "=== base ($H3_178_PROMPT): main at 6b6822bbd, int8 qkv + h3_heads ==="
 git -c safe.directory='*' apply -R "$patch_file"
 tmp_index=$(mktemp)
@@ -46,6 +40,10 @@ tree=$(GIT_INDEX_FILE=$tmp_index git -c safe.directory='*' add -A zig && GIT_IND
 [ "$tree" = 8a06c4029fff70b09d7e9286813975262ed0bd89 ] || { echo "patch -R rebuilt zig/ $tree, not main's" >&2; exit 1; }
 git -c safe.directory='*' diff --cached --quiet || { echo "real index touched by staged baseline" >&2; exit 1; }
 phase base
+git -c safe.directory='*' apply "$patch_file"
+trap 'rm -f "$tmp_index"' EXIT
+echo "=== heads ($H3_178_PROMPT): this commit $(git -c safe.directory='*' rev-parse --short HEAD), int8 qkv + fused heads ==="
+phase heads
 for side in heads base; do stages /work/out/h3-178-$H3_178_PROMPT-$side; done
 echo "=== fused int8 against main, byte for byte ==="
 for run in 1 2 3 4; do
