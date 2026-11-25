@@ -122,6 +122,7 @@ pub const ricursive_prep: []const u8 = if (available) &Blob("fatbin_ricursive_pr
 pub const inkling2_experts: []const u8 = if (available) &Blob("fatbin_inkling2_experts").bytes else &.{};
 pub const inkling2_modelopt: []const u8 = if (available) &Blob("fatbin_inkling2_modelopt").bytes else &.{};
 pub const inkling2_loop_math: []const u8 = if (available) &Blob("fatbin_inkling2_loop_math").bytes else &.{};
+pub const inkling2_dspark: []const u8 = if (available) &Blob("fatbin_inkling2_dspark").bytes else &.{};
 pub const inkling2_vision: []const u8 = if (available) &Blob("fatbin_inkling2_vision").bytes else &.{};
 pub const glm_quant: []const u8 = if (available) &Blob("fatbin_glm_quant").bytes else &.{};
 pub const glm_vision: []const u8 = if (available) &Blob("fatbin_glm_vision").bytes else &.{};

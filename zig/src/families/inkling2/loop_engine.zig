@@ -8,6 +8,7 @@ const ops = @import("ops.zig");
 const attention = @import("kernels.zig");
 const modelopt = @import("modelopt.zig");
 const loop_math = @import("loop_math_cuda.zig");
+const dspark = @import("dspark.zig");
 
 pub const prompt_rows: usize = 2048;
 pub const window_rows: usize = 16;
@@ -19,6 +20,7 @@ pub const Kernels = struct {
     loop: loop_math.Kernels,
     sample_mod: cuda.Module,
     draws: cuda.sample.Draws,
+    draft: ?dspark.Kernels = null,
 
     pub fn load(ctx: *const cuda.Context) !Kernels {
         const d = ctx.d;
@@ -45,6 +47,7 @@ pub const Kernels = struct {
 
     pub fn deinit(k: *Kernels) void {
         k.sample_mod.unload();
+        if (k.draft) |*draft| draft.unload();
         k.loop.unload();
         k.moe.unload();
         k.attn.unload();
@@ -96,6 +99,7 @@ const Scratch = struct {
     logits: u64,
     backup: u64,
     hist: u64,
+    taps: u64 = 0, // [rows][4][hidden] BF16, allocated only when a drafter attaches
 };
 
 /// A stream's state (every visit's K/V rows and conv states, its rewind sites); at most `max_slots`, one in use.
@@ -282,6 +286,10 @@ pub const Model = struct {
         return m;
     }
 
+    pub fn prepareTaps(m: *Model) !void {
+        if (m.s.taps == 0) m.s.taps = try m.alloc(prompt_rows * dspark.taps.len * m.w.c.text.hidden * 2);
+    }
+
     fn deinitBuffers(m: *Model) void {
         for (m.buffers.items) |*b| b.free();
         m.buffers.deinit(m.gpa);
@@ -365,7 +373,10 @@ pub const Model = struct {
         var n_blocks: usize = 0;
         const lp = c.loop.?;
 
-        for (m.w.p.visits[0..m.w.p.n_visits]) |visit| {
+        for (m.w.p.visits[0..m.w.p.n_visits], 0..) |visit, vi| {
+            if (m.s.taps != 0) for (dspark.taps[0 .. dspark.taps.len - 1], 0..) |tap, ch| {
+                if (vi == tap) try k.draft.?.launchTap(s, partial, m.s.taps, rows, ch);
+            };
             const layer = m.w.p.at(visit.layer);
             const lw = &m.w.layers[visit.layer];
             if (visit.pass >= 2 and visit.layer == lp.core_start) {
@@ -505,8 +516,10 @@ pub const Model = struct {
             }
         }
 
-        if (heads == 0) return;
+        if (heads == 0 and m.s.taps == 0) return;
         try ops.mix(&k.glue, s, m.mixArgs(m.s.blocks[0..n_blocks], partial, m.w.output_query, .{ m.w.norm, m.w.norm, m.w.norm }, m.s.hidden, 1, true, rows));
+        if (m.s.taps != 0) try k.draft.?.launchTap(s, m.s.hidden, m.s.taps, rows, dspark.taps.len - 1);
+        if (heads == 0) return;
         try ops.rowdot(&k.glue, s, m.s.hidden + head0 * h * 2, m.w.unembed, m.s.logits, heads, c.unpadded_vocab, h, false, false);
         try loop_math.roundBf16(&k.loop, s, m.s.logits, m.s.logits, heads * c.unpadded_vocab);
         try ops.softcap(&k.glue, s, m.s.logits, heads * c.unpadded_vocab, c.logit_cap);
