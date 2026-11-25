@@ -153,8 +153,9 @@ static __device__ __forceinline__ void h3d_stage(float (*s)[H3D_TILE + 1], uint4
 }
 
 // y [m, n] = x [m, k] . w [n, k]^T in fp32: a 128 x 128 tile a block, staged 16 K at a time through shared
-// memory while the next 16 K load into registers. Each thread sums its 8 x 8 outputs in increasing K with
-// unfused, individually rounded multiplies and adds, the sums a sequential fp32 dot gives; zeros past k add +0.
+// memory while the next 16 K load into registers. Each thread sums its 8 x 8 outputs in increasing K, one
+// rounded fma a product (closer to the float64 reference than the unfused multiply and add it replaced, and
+// half their instructions); zeros past k add +0.
 __global__ void __launch_bounds__(256) h3d_linear(
         const bf16* x, const bf16* w, float* y, H3dShape p) {
     // One float of padding a row spreads the K-major stores across banks.
@@ -183,7 +184,7 @@ __global__ void __launch_bounds__(256) h3d_linear(
 #pragma unroll
             for (unsigned i = 0; i < 8; ++i)
 #pragma unroll
-                for (unsigned j = 0; j < 8; ++j) acc[i][j] = __fadd_rn(acc[i][j], __fmul_rn(a[i], b[j]));
+                for (unsigned j = 0; j < 8; ++j) acc[i][j] = __fmaf_rn(a[i], b[j], acc[i][j]);
         }
         __syncthreads();
     }
