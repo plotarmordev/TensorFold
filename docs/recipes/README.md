@@ -41,6 +41,7 @@ For agent-assisted contributions, read the [TensorFold contributor skill](SKILL.
 | Inkling 2 Mini | [SGLang, vLLM and llama.cpp serving recipes vs native CUDA/Metal](inkling-2-mini-cuda/engine-comparison.md) |
 | Ripple-65B-Preview | [Native CUDA, the publisher's NVFP4 release](ripple-65b-cuda.md), [native Metal, the publisher's NVFP4 and bf16 releases](ripple-65b-metal.md) |
 | Ling-3.0-tiny | [Native CPU on aarch64 Linux, the Q4_K_M GGUF, exact greedy decode from token IDs](ling-3.0-tiny-cpu.md) |
+| SenseNova-Loop-9B | [Native Metal, BF16 and AWQ g128, 512k context, MTP drafts, images](sensenova-loop-9b.md) |
 
 [Persisted serving-state identities](persisted-serving-keys.md) lists the disk owners, their compatibility keys and stale-state host checks.
 

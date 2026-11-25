@@ -141,6 +141,7 @@ pub fn chunk(b: *Metal, s: *lanes.Stream, f: *Fill, _: u32) !bool {
         const session = q.session.Session{ .runner = b.runner, .slot = slot };
         if (decoded) try session.decodeChunk(part, last) else try session.promptChunk(part, last);
         if (b.ringOf(slot)) |g| try ringChunk(b, g, part.len);
+        try @import("sensenova_features.zig").recordChunk(b, s, slot, at, part.len, last);
         try draft_fns.mtpChunk(b, s, slot, at, end);
     }
     charge(b, s, before);

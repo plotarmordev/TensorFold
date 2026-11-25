@@ -15,7 +15,9 @@ pub const Layout = struct {
         const a: usize = if (limits.shared_prefix) hk * @as(usize, chunks) * rp else 0;
         const tail_chunks = if (limits.shared_prefix) 3 else chunks; // a tail of up to 191 keys over 128-key chunks
         const tree_rows = if (limits.shared_prefix) limits.rows else @min(limits.rows, planning.max_rows);
-        const chunk_rows = if (limits.shared_prefix) @as(usize, tree_rows) * 16 else @max(@as(usize, tree_rows) * 16, rp);
+        // SenseNova-Loop's 2048-row prompt chains keep pob for the bounded decode tail only; a plain shared-prefix run covers every row.
+        const b_rows = if (limits.geometry.wide_prompt) @min(limits.rows, planning.max_rows) else tree_rows;
+        const chunk_rows = if (limits.shared_prefix) @as(usize, b_rows) * 16 else @max(@as(usize, tree_rows) * 16, rp);
         const b: usize = hk * @as(usize, tail_chunks) * chunk_rows;
         const sizes = [_]usize{ tiles * 4, rp * 4, limits.rows * planning.node_words * 4, limits.rows * planning.path_width * 4, limits.rows * 4, hk * rp * dim * 2, hk * @as(usize, tree_rows) * 16 * dim * 2, a * dim * 4, a * 4, a * 4, b * dim * 4, b * 4, b * 4, limits.rows * hk * dim * 2, limits.rows * hk * dim * 2, 48, limits.rows * 3 * 4 }; // pick: the scan's flag, then two indirect grids
         return .{ .tiles = tiles, .chunks = chunks, .tail_chunks = tail_chunks, .chunk_rows = chunk_rows, .sizes = sizes };
