@@ -6,6 +6,7 @@ pub const prompt_attention_pre_m5 = @import("inkling2/attention_sources.zig").pr
 pub const glue = @import("inkling2/glue_sources.zig").glue;
 pub const experts = @import("inkling2/experts_sources.zig").experts;
 pub const experts_mma = @import("inkling2/experts_sources.zig").experts_mma;
+pub const experts_units = @import("inkling2/experts_sources.zig").experts_units;
 pub const dense_mma = @import("inkling2/dense_sources.zig").dense_mma;
 pub const loop = @import("inkling2/loop_sources.zig").loop;
 pub const loop_mma = @import("inkling2/loop_sources.zig").loop_mma;

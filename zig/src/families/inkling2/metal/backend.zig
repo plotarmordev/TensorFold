@@ -61,7 +61,7 @@ pub const Metal = struct {
         errdefer gpa.destroy(out);
         var scratch = try st.Scratch.init(model.device, st.batch_rows);
         errdefer scratch.deinit();
-        var prompt = try st.Scratch.init(model.device, st.prompt_rows);
+        var prompt = try st.Scratch.init(model.device, if (model.device.tensorUnits()) st.prompt_rows else st.pre_m5_prompt_rows);
         errdefer prompt.deinit();
         const tokens = try gpa.alloc(u32, ring);
         errdefer gpa.free(tokens);
@@ -102,7 +102,7 @@ pub const Metal = struct {
         const device = self.model.device;
         const decode = self.scratch.taps orelse try device.buffer(st.captureBytes(st.batch_rows), mtl.ResourceOptions.shared);
         errdefer if (self.scratch.taps == null) decode.deinit();
-        const prompt = self.prompt.taps orelse try device.buffer(st.captureBytes(st.prompt_rows), mtl.ResourceOptions.shared);
+        const prompt = self.prompt.taps orelse try device.buffer(st.captureBytes(self.prompt.rows), mtl.ResourceOptions.shared);
         errdefer if (self.prompt.taps == null) prompt.deinit();
         self.scratch.taps = decode;
         self.prompt.taps = prompt;
@@ -173,7 +173,7 @@ pub const Metal = struct {
         const base = cache.len;
         var at: usize = 0;
         while (at < ids.len) {
-            var end = @min(ids.len, at + st.prompt_rows);
+            var end = @min(ids.len, at + self.prompt.rows);
             if (stream) |sm| {
                 if (sm.isCancelled()) return error.Cancelled;
                 for (sm.chunks) |x| if (x > base + at and x < base + end) {
@@ -257,11 +257,11 @@ pub const Metal = struct {
     }
 
     pub fn warm(self: *Metal) !void {
-        var cache = try st.Cache.init(self.model.device, st.prompt_rows + st.window_rows, &self.model.weight_plan);
+        var cache = try st.Cache.init(self.model.device, self.prompt.rows + st.window_rows, &self.model.weight_plan);
         defer cache.deinit();
         var ids: [st.prompt_rows]u32 = undefined;
-        for (&ids, 0..) |*t, i| t.* = @intCast(1000 + i * 37 % 20000);
-        try self.feed(&cache, &ids, null, null);
+        for (ids[0..self.prompt.rows], 0..) |*t, i| t.* = @intCast(1000 + i * 37 % 20000);
+        try self.feed(&cache, ids[0..self.prompt.rows], null, null);
         try fwd.run(self.model, &self.scratch, &cache, ids[0..st.window_rows], .{ .all = true });
         // A window of each width after that prompt, the second of two runs timed.
         for (1..st.window_rows + 1) |rows| {

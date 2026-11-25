@@ -56,11 +56,12 @@ pub const Pipelines = struct {
     /// Each expert's count, then its route pairs: launches in one encoder run in order, so they share it.
     groups: ?mtl.Buffer = null,
     mma: ?[mma_names.len]mtl.Pipeline = null,
+    units: ?[units_names.len]mtl.Pipeline = null,
 
     pub fn load(device: mtl.Device) !Pipelines {
         var out = try loadSource(device, src.experts);
         errdefer out.deinit();
-        if (!device.tensorUnits()) try out.loadMma(device, src.experts_mma);
+        if (device.tensorUnits()) try out.loadUnits(device, src.experts_units) else try out.loadMma(device, src.experts_mma);
         return out;
     }
 
@@ -82,6 +83,24 @@ pub const Pipelines = struct {
         p.groups = groups;
     }
 
+    pub fn loadUnits(p: *Pipelines, device: mtl.Device, text: []const u8) !void {
+        const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
+        defer lib.deinit();
+        var pipes: [units_names.len]mtl.Pipeline = undefined;
+        var made: usize = 0;
+        errdefer for (pipes[0..made]) |pipe| pipe.deinit();
+        for (units_names, &pipes) |name, *pipe| {
+            pipe.* = try mtl.Pipeline.init(device, lib, name, false);
+            made += 1;
+            if (pipe.maxThreads() < (if (made == 1) @as(usize, 32) else 256)) return error.ExpertThreads;
+        }
+        const groups = try device.buffer((plan.expert_count + plan.expert_count * units_group_cap) * @sizeOf(u32), mtl.ResourceOptions.shared);
+        if (p.units) |old| for (old) |pipe| pipe.deinit();
+        if (p.groups) |old| old.deinit();
+        p.units = pipes;
+        p.groups = groups;
+    }
+
     pub fn loadSource(device: mtl.Device, text: []const u8) !Pipelines {
         const lib = try mtl.Library.fromSource(device, text, mtl.CompileOptions.mlx());
         defer lib.deinit();
@@ -98,6 +117,7 @@ pub const Pipelines = struct {
     }
 
     pub fn deinit(p: *Pipelines) void {
+        if (p.units) |pipes| for (pipes) |pipe| pipe.deinit();
         if (p.mma) |pipes| for (pipes) |pipe| pipe.deinit();
         if (p.groups) |buf| buf.deinit();
         for (p.entries) |pipe| pipe.deinit();
@@ -195,18 +215,21 @@ pub fn gu(p: *const Pipelines, e: mtl.ComputeEncoder, x: Ref, w: Ref, scales: Re
     }
 }
 
-/// Each expert's route pairs of `ids` [rows, topk], for the simdgroup-matrix products after it.
+/// Group route pairs in ascending pair order for either M5 tensor units or non-M5 simdgroup matrices.
 pub fn group(p: *const Pipelines, e: mtl.ComputeEncoder, ids: Ref, c: Call) !void {
-    const pipes = p.mma orelse return error.NoSimdgroupMatrices;
     try plan.check(c);
-    if (c.rows > mma_cap or c.experts > plan.expert_count) return error.BadExpertShape;
-    const groups = p.groups.?;
-    e.setPipeline(pipes[0]);
+    const cap = if (p.units != null) units_group_cap else mma_cap;
+    if (c.rows > cap or c.experts > plan.expert_count) return error.BadExpertShape;
+    const groups = p.groups orelse return error.NoGroupedExperts;
+    e.setPipeline(if (p.units) |pipes| pipes[0] else (p.mma orelse return error.NoGroupedExperts)[0]);
     e.setBuffer(ids.buf, ids.off, 0);
     e.setBuffer(groups, 0, 1);
     e.setBuffer(groups, plan.expert_count * @sizeOf(u32), 2);
-    e.setValue(MmaGroupArgs{ .pairs = c.rows * c.topk, .experts = c.experts, .cap = mma_cap }, 3);
-    e.dispatchGroups(mtl.Size.of(1, 1, 1), mtl.Size.of(c.experts, 1, 1));
+    e.setValue(MmaGroupArgs{ .pairs = c.rows * c.topk, .experts = c.experts, .cap = cap }, 3);
+    if (p.units != null)
+        e.dispatchGroups(mtl.Size.of((c.experts + 31) / 32, 1, 1), mtl.Size.of(32, 1, 1))
+    else
+        e.dispatchGroups(mtl.Size.of(1, 1, 1), mtl.Size.of(c.experts, 1, 1));
 }
 
 /// Gate-up, or down (`down`), after `group`: 64 weight rows by bands of 32 of an expert's pairs a threadgroup.

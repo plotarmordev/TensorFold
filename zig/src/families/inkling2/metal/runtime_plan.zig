@@ -4,7 +4,7 @@ const std = @import("std");
 pub const hidden = 2304;
 pub const block_slots = 4;
 pub const tap_channels = 4;
-pub const max_rows = 256;
+pub const max_rows = 1024;
 pub const threads: u32 = 256;
 pub const RuntimeArgs = extern struct { count: u32, boundary: u32 };
 
@@ -45,7 +45,8 @@ pub const Geometry = struct { count: usize, threads: u32 = threads, tg_memory: u
 pub fn valid(kind: Kind, c: Call) bool {
     if (c.rows == 0 or c.rows > max_rows or c.n == 0 or c.rows > std.math.maxInt(u32) / c.n) return false;
     return switch (kind) {
-        .copy_bf16, .copy_f32 => c.k == 1,
+        .copy_bf16 => c.k == 1 or (c.k == 3 and c.n == hidden),
+        .copy_f32 => c.k == 1,
         .capture_tap => c.n == hidden and c.k < tap_channels,
         .widen, .attention_partial, .mlp_partial => c.n == hidden and switch (kind) {
             .attention_partial => c.k <= block_slots,
@@ -66,7 +67,13 @@ pub fn outputCount(kind: Kind, c: Call) usize {
 
 pub fn args(kind: Kind, c: Call) RuntimeArgs {
     std.debug.assert(valid(kind, c));
-    return .{ .count = @intCast(c.rows * c.n), .boundary = if (kind == .attention_partial or kind == .capture_tap) @intCast(c.k) else 0 };
+    return .{ .count = @intCast(c.rows * c.n), .boundary = if (kind == .attention_partial or kind == .capture_tap or (kind == .copy_bf16 and c.k == 3)) @intCast(c.k) else 0 };
+}
+
+/// B12 is the third completed block in each row of four; it is banked before a new pass.
+pub fn bankOffset(row: usize, col: usize) usize {
+    std.debug.assert(row < max_rows and col < hidden);
+    return (row * block_slots + 2) * hidden + col;
 }
 
 /// Completed blocks are [row][four BF16 blocks][H]; the separate partial is not stored here.

@@ -54,7 +54,14 @@ pub const Probe = struct {
                 .{ .rows = 2, .n = p.hidden, .k = 3 },
                 .{ .rows = 7, .n = p.hidden, .k = 4 },
             },
-            .copy_bf16, .copy_f32 => .{
+            .copy_bf16 => .{
+                .{ .rows = 1, .n = p.hidden, .k = 1 },
+                .{ .rows = 5, .n = 1024, .k = 1 },
+                .{ .rows = 7, .n = p.hidden, .k = 1 },
+                .{ .rows = 16, .n = 1024, .k = 1 },
+                .{ .rows = 32, .n = p.hidden, .k = 3 },
+            },
+            .copy_f32 => .{
                 .{ .rows = 1, .n = p.hidden, .k = 1 },
                 .{ .rows = 5, .n = 1024, .k = 1 },
                 .{ .rows = 7, .n = p.hidden, .k = 1 },
@@ -130,7 +137,7 @@ pub const Probe = struct {
         var prng = std.Random.DefaultPrng.init(seed);
         const rng = prng.random();
         const n = shape.rows * shape.n;
-        self.f[0] = try self.floats(n, rng);
+        self.f[0] = try self.floats(if (self.kind == .copy_bf16 and shape.k == 3) n * p.block_slots else n, rng);
         switch (self.kind) {
             .copy_bf16, .widen, .capture_tap => round(self.f[0]),
             .attention_partial => {
@@ -151,7 +158,7 @@ pub const Probe = struct {
             },
             .copy_f32 => {},
         }
-        if (fill == .nonfinite) self.f[0][0] = std.math.nan(f32);
+        if (fill == .nonfinite) self.f[0][if (self.kind == .copy_bf16 and shape.k == 3) 2 * p.hidden else 0] = std.math.nan(f32);
         self.refs[0] = try self.input(self.f[0], self.kind == .copy_bf16 or self.kind == .widen or self.kind == .attention_partial or self.kind == .capture_tap);
         const elem: c.Elem = switch (self.kind) {
             .copy_bf16, .mlp_partial, .capture_tap => .bf16,
@@ -203,7 +210,7 @@ pub const Probe = struct {
             return;
         }
         for (want, mag, 0..) |*w, *m, i| {
-            const x = self.f[0][i];
+            const x = self.f[0][if (self.kind == .copy_bf16 and self.shape.k == 3) p.bankOffset(i / p.hidden, i % p.hidden) else i];
             const y = if (self.f[1].len == 0) 0 else self.f[1][i];
             w.* = switch (self.kind) {
                 .copy_bf16, .copy_f32, .widen, .capture_tap => x,

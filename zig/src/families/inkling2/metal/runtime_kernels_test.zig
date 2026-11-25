@@ -60,6 +60,16 @@ test "linear launches bind H=2304 rows and the exact eight-byte argument ABI" {
     try t.expect(!p.valid(.capture_tap, .{ .rows = 1, .n = p.hidden, .k = 4 }));
 }
 
+test "banking B12 gathers exactly one block per row, including the last prompt row" {
+    try t.expect(p.valid(.copy_bf16, .{ .rows = p.max_rows, .n = p.hidden, .k = 3 }));
+    try t.expect(!p.valid(.copy_bf16, .{ .rows = 1, .n = p.hidden, .k = 2 }));
+    try t.expectEqual(@as(u32, 3), p.args(.copy_bf16, .{ .rows = 32, .n = p.hidden, .k = 3 }).boundary);
+    for ([_]usize{ 0, 1, 31, p.max_rows - 1 }) |row| {
+        try t.expectEqual((row * p.block_slots + 2) * p.hidden, p.bankOffset(row, 0));
+        try t.expectEqual((row * p.block_slots + 3) * p.hidden - 1, p.bankOffset(row, p.hidden - 1));
+    }
+}
+
 test "DSpark capture channels are packed [row][tap][H] in visit order" {
     try t.expectEqual(@as(usize, 4), p.tap_channels);
     try t.expectEqual(@as(usize, 0), p.tapOffset(0, 0));

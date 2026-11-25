@@ -40,7 +40,9 @@ kernel void tf_ink2_attn_prompt(const device bfloat* q [[buffer(0)]], const devi
     device float* part_o [[buffer(6)]], device float2* part_ml [[buffer(7)]],
     constant InkPromptArgs& a [[buffer(8)]], uint3 tg [[threadgroup_position_in_grid]],
     uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint t [[thread_index_in_threadgroup]]) {
+#ifdef TF_SIMD_FRAGS
   threadgroup bfloat ks[KEYS * D], vs[KEYS * D];
+#endif
   const InkPromptSeg s = segs[0];
   const uint group = a.heads / a.kv_heads, total = uint(s.n) * group, m0 = tg.x * PAIRS;
   if (m0 >= total) return;
@@ -60,6 +62,7 @@ kernel void tf_ink2_attn_prompt(const device bfloat* q [[buffer(0)]], const devi
   float upper[2] = {-INFINITY, -INFINITY}, whole[2] = {0.0f, 0.0f};
   for (uint kt = b_lo; kt <= k_hi; kt += KEYS) {
     const uint tile_end = min(kt + KEYS, k_hi + 1);
+#ifdef TF_SIMD_FRAGS
     for (uint e = t; e < KEYS * D; e += 256) {
       const uint key = e / D, col = e % D, kp = kt + key;
       const bool live = kp < tile_end;
@@ -68,6 +71,11 @@ kernel void tf_ink2_attn_prompt(const device bfloat* q [[buffer(0)]], const devi
       vs[e] = live ? vc[at] : bfloat(0);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+#else
+    const device bfloat* tile_k = kc + hb + size_t(kt % a.ring) * D;
+    const device bfloat* tile_v = vc + hb + size_t(kt % a.ring) * D;
+    const int keys = int(tile_end - kt);
+#endif
     if ((kt - b_lo) % 1024 == 0) {
       for (uint d = 0; d < 8; ++d) acc[d] = tfp::frag<float>(0);
       top[0] = top[1] = -INFINITY; mass[0] = mass[1] = 0.0f;
@@ -77,10 +85,17 @@ kernel void tf_ink2_attn_prompt(const device bfloat* q [[buffer(0)]], const devi
       for (uint d = 0; d < 8; ++d) {
         tfp::frag<bfloat> qa, kb0, kb1, kb2, kb3;
         tfp::frag_get_rows(qa, qb0, qb1, 16 * d, home, row_a < total, row_b < total);
+#ifdef TF_SIMD_FRAGS
         tfp::frag_get_t(kb0, ks, D, 0, 16 * d, home);
         tfp::frag_get_t(kb1, ks, D, 16, 16 * d, home);
         tfp::frag_get_t(kb2, ks, D, 32, 16 * d, home);
         tfp::frag_get_t(kb3, ks, D, 48, 16 * d, home);
+#else
+        ink_tile_get(kb0, tile_k, 0, 16 * d, home, keys);
+        ink_tile_get(kb1, tile_k, 16, 16 * d, home, keys);
+        ink_tile_get(kb2, tile_k, 32, 16 * d, home, keys);
+        ink_tile_get(kb3, tile_k, 48, 16 * d, home, keys);
+#endif
         tfp::mma_16x32<false, true>(score[0], score[1], qa, kb0, kb1);
         tfp::mma_16x32<false, true>(score[2], score[3], qa, kb2, kb3);
       }
@@ -131,8 +146,13 @@ kernel void tf_ink2_attn_prompt(const device bfloat* q [[buffer(0)]], const devi
       for (uint d = 0; d < 8; ++d) for (uint e = 0; e < 8; ++e) acc[d][e] *= keep[e >> 2];
       for (uint f = 0; f < 4; ++f) for (uint d = 0; d < 8; d += 2) {
         tfp::frag<bfloat> v0, v1;
+#ifdef TF_SIMD_FRAGS
         tfp::frag_get(v0, vs, D, 16 * f, 16 * d, home);
         tfp::frag_get(v1, vs, D, 16 * f, 16 * d + 16, home);
+#else
+        ink_tile_get(v0, tile_v, 16 * f, 16 * d, home, keys);
+        ink_tile_get(v1, tile_v, 16 * f, 16 * d + 16, home, keys);
+#endif
         tfp::mma_16x32<false, false>(acc[d], acc[d + 1], p[f], v0, v1);
       }
     }
@@ -143,7 +163,9 @@ kernel void tf_ink2_attn_prompt(const device bfloat* q [[buffer(0)]], const devi
       ink_fold(upper[h], whole[h], top[h], mass[h], x, y);
       for (uint d = 0; d < 8; ++d) for (uint e = 4 * h; e < 4 * h + 4; ++e) out[d][e] = out[d][e] * x + acc[d][e] * y;
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup); // no simdgroup reads ks/vs when the next tile overwrites them
+#ifdef TF_SIMD_FRAGS
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+#endif
   }
   if (m >= total) return;
   for (uint d = 0; d < 8; ++d) for (uint e = 0; e < 8; ++e) {

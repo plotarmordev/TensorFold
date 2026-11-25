@@ -45,6 +45,7 @@ pub fn requireMapped(d: limits.MetalLaunch) !void {
 
 /// Only launches the loader can build on this device enter the limits compiler; declarations are checked first.
 pub fn supported(device: mtl.Device, d: limits.MetalLaunch) bool {
+    if (std.mem.startsWith(u8, d.name, "metal inkling2 units ")) return device.tensorUnits();
     if (std.mem.eql(u8, d.name, "metal inkling2 vision ik2_gemm_bf16_nt_rows")) return !device.tensorUnits();
     if (std.mem.startsWith(u8, d.name, "qwen27 prompt ")) return device.tensorUnits() == (std.mem.indexOf(u8, d.name, " m5 ") != null);
     if (std.mem.startsWith(u8, d.name, "lfm2 masked prompt "))
@@ -236,6 +237,8 @@ fn resolve(a: std.mem.Allocator, device: mtl.Device, d: limits.MetalLaunch, comp
             @import("inkling2_metal").loop
         else if (std.mem.startsWith(u8, d.name, "metal inkling2 experts "))
             @import("inkling2_metal").experts
+        else if (std.mem.startsWith(u8, d.name, "metal inkling2 units "))
+            @import("inkling2_metal").experts_units
         else if (std.mem.startsWith(u8, d.name, "metal inkling2 mma tf_ink2_dense"))
             @import("inkling2_metal").dense_mma
         else if (std.mem.startsWith(u8, d.name, "metal inkling2 mma tf_inkling2_loop"))
@@ -248,7 +251,7 @@ fn resolve(a: std.mem.Allocator, device: mtl.Device, d: limits.MetalLaunch, comp
             @import("inkling2_metal").prompt_attention
         else
             @import("inkling2_metal").attention;
-        const pre_m5 = if (std.mem.startsWith(u8, d.name, "metal inkling2 prompt ")) @import("inkling2_metal").prompt_attention_pre_m5 else body;
+        const pre_m5 = if (std.mem.startsWith(u8, d.name, "metal inkling2 units ")) "" else if (std.mem.startsWith(u8, d.name, "metal inkling2 prompt ")) @import("inkling2_metal").prompt_attention_pre_m5 else body;
         return .{ .decl = d, .function = fun, .here = body, .pre_m5 = pre_m5 };
     }
     if (std.mem.startsWith(u8, d.name, "lfm2 masked prompt ")) {
