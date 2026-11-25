@@ -34,6 +34,8 @@ pub const Vae = struct {
         const d = try dec.Decoder.init(init.gpa, vae.layers, config.rope_theta);
         errdefer d.deinit();
         try d.load(init.io, a, try std.fmt.allocPrint(a, "{s}/diffusion_pytorch_model.safetensors", .{vae_dir}));
+        // H3_PROFILE: wait after every stage and print where a picture's decoder seconds went
+        d.profile = if (init.environ_map.get("H3_PROFILE")) |v| v.len > 0 else false;
         std.debug.print("decoder weights in bf16 in {d:.1} s\n", .{dec.seconds() - loading});
         return .{ .config = config, .d = d };
     }
