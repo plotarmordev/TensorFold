@@ -16,8 +16,9 @@ Verified 2026-11-25 on Mac17,15 (Apple M5 Ultra, 256 GiB, macOS 27.0), `tensorfo
 
 ## Service
 
-- Binary: this checkout's `zig-out/native/bin/tensorfold-native` (copy it before changing worktrees; the
-  recipe uses a copy outside the worktree so later `zig build` runs cannot swap the running binary).
+- Binary: `/Users/agents/.local/libexec/tensorfold-inkling/tensorfold-native` (this checkout's
+  `zig-out/native/bin/tensorfold-native` copied to a stable agents-owned path — never point the plist at a
+  worktree's `zig-out/` or `.scratch/`, which are deleted when the card's worktree is removed).
 - launchd LaunchAgent `com.infra.tensorfold.inkling` in the `agents` account (this Mac's bot account):
   `~/Library/LaunchAgents/com.infra.tensorfold.inkling.plist`, `KeepAlive`, `ThrottleInterval` 30 s,
   logs to `~/Library/Logs/infra/tensorfold-inkling.log`.
@@ -30,8 +31,10 @@ Verified 2026-11-25 on Mac17,15 (Apple M5 Ultra, 256 GiB, macOS 27.0), `tensorfo
 - `--parallel 1` is the concurrency bound: one stream at a time, extras wait. `--context 32768` keeps one
   stream's KV plus prompt state inside the admission budget (startup prints
   `171.6 GiB for stream and prompt state` against 256 GiB).
-- Memory bound is admission refusal: the server reports the 20.8 GiB floor and refuses to open the model
-  when the host cannot supply it, rather than displacing `drama-speech`.
+- Memory: the server reports a 20.8 GiB floor (weights plus a 2 GiB runtime margin) and refuses to open the
+  model when admission cannot fit the configured context — it budgets from total host memory, not from
+  whatever `drama-speech` currently uses, so coexistence is the measured idle behaviour below, not a
+  guarantee admission makes.
 
 ### API keys
 
@@ -82,13 +85,20 @@ request is slower while Metal compiles its pipelines.
 - 401 without a key, 403 for a read-scoped key on POST, 200 for `omp-agents` on `/v1/models` and
   `/v1/chat/completions`; `/v1/models` reports `id: inkling-2-mini`, `owned_by: tensorfold`,
   `context_length: 32768`.
-- A real chat request through the bearer key returns `model: "inkling-2-mini"`, `engine: "lanes"`,
-  drafts on; the service is still `state = running` afterwards and after `launchctl kickstart -k`.
+- A second authorized process reached the model through the `inkling-local` provider as configured:
+  `omp -p --model inkling-local/inkling-2-mini` authenticated with the file-derived bearer key and logged
+  `key=omp-agents` on `POST /v1/chat/completions` (HTTP 200); and a card reviewer ran the provider path as
+  its own bot and read `OK` back with `model: "inkling-2-mini"`. The service is still `state = running`
+  after each request and after `launchctl kickstart -k`.
 - `drama-speech` (`127.0.0.1:18794`, `--parallel 1`) answered a voice take in 1.9 s while the Inkling
   service was loaded and idle (18.0 s for the same take earlier that hour with no Inkling; voice takes
   vary with GPU warm state, the service does not hold the GPU between requests).
+- Startup reports `drafts: copies only` (no `--drafter` flag; DSpark needs the mtp path passed explicitly —
+  this deployment keeps copy drafting off). A request's log line shows `accepted=0/0` accordingly.
 - The model thinks by default (`reasoning.default_enabled`): a client that wants a short direct answer
-  should send `chat_template_kwargs {"enable_thinking": false}` or accept `reasoning_content`.
+  should send `chat_template_kwargs {"enable_thinking": false}` or accept `reasoning_content`. At the
+  current decode rate (~1 tok/s under GPU contention) a thinking reply can take minutes; keep requests
+  small or turn thinking off for latency-sensitive agent calls.
 
 ## Coexistence rules
 
