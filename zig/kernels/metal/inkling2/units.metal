@@ -2,7 +2,7 @@
 using namespace metal;
 
 struct Ink2GroupedArgs { uint k, n, topk, cap; };
-struct Ink2GroupArgs { uint pairs, experts, cap; };
+struct Ink2UnitsGroupArgs { uint pairs, experts, cap; };
 
 inline uint ink2_word(device const uchar* p) {
   return as_type<uint>(uchar4(*(device const packed_uchar4*)p));
@@ -20,7 +20,7 @@ inline float ink2_e4m3_bits(uint code) {
 
 [[kernel, max_total_threads_per_threadgroup(32)]] void tf_ink2_group_units(
     device const uint* ids [[buffer(0)]], device uint* counts [[buffer(1)]],
-    device uint* members [[buffer(2)]], constant Ink2GroupArgs& a [[buffer(3)]],
+    device uint* members [[buffer(2)]], constant Ink2UnitsGroupArgs& a [[buffer(3)]],
     uint e [[thread_position_in_grid]]) {
   if (e >= a.experts) return;
   uint n = 0u;

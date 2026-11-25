@@ -265,12 +265,12 @@ fn convInputForAttention(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scrat
     const raw = if (key) at(s.k_conv, base * state.kv_width * 2) else at(s.v_conv, base * state.kv_width * 2);
     const projected = if (key) at(s.k_raw, base * state.kv_width * 2) else at(s.v_raw, base * state.kv_width * 2);
     const normalized = if (key) at(s.k_norm, 0) else if (v.hasMessages() or lp.kind == .global) at(s.v_norm, 0) else at(s.q_norm, 0);
-    const taps = cache.staged(v.cache_slot, if (key) 0 else 1, 0);
+    const taps = staged(s, cache, rows, v.cache_slot, if (key) 0 else 1, 0);
     copyBf16(m, e, cache.history(v.cache_slot, if (key) 0 else 1), taps, 3 * state.kv_width);
-    copyBf16(m, e, projected, cache.staged(v.cache_slot, if (key) 0 else 1, 3), rows * state.kv_width);
+    copyBf16(m, e, projected, staged(s, cache, rows, v.cache_slot, if (key) 0 else 1, 3), rows * state.kv_width);
     switch (if (key) w.attn.k_conv else w.attn.v_conv) {
-        .static => |weight| glue.convStatic(&m.glue, e, cache.history(v.of(.conv).?, if (key) 0 else 1), projected, r(weight), raw, @intCast(rows), state.kv_width),
-        .dynamic => |d| glue.convDynamic(&m.glue, e, cache.history(v.of(.conv).?, if (key) 0 else 1), projected, at(normalized.buf, normalized.off + base * state.hidden * 2), r(d.static_w), r(d.projection), raw, @intCast(rows), state.kv_width),
+        .static => |weight| glue.convStatic(&m.glue, e, cache.history(v.cache_slot, if (key) 0 else 1), projected, r(weight), raw, @intCast(rows), state.kv_width),
+        .dynamic => |d| glue.convDynamic(&m.glue, e, cache.history(v.cache_slot, if (key) 0 else 1), projected, at(normalized.buf, normalized.off + base * state.hidden * 2), r(d.static_w), r(d.projection), raw, @intCast(rows), state.kv_width),
     }
 }
 
@@ -344,7 +344,10 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
         };
         if (channel) |ch| captureTap(m, e, at(s.p, 0), to, rows, ch);
     }
-    if (v.pass > 1 and v.layer == 6) bankAndReset(m, e, s, rows);
+    if (v.pass > 1 and v.layer == 6) {
+        bankAndReset(m, e, s, rows);
+        widen(m, e, at(s.p, 0), at(s.partial, 0), rows * state.hidden);
+    }
     const w = &m.weights.layers[v.layer];
     try prepareAttentionInputs(m, e, s, v, rows);
     const knorm = if (gated or lp.kind == .global) at(s.k_norm, 0) else at(s.q_norm, 0);
@@ -357,12 +360,7 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     try project(m, e, w.attn.gate, at(s.q_norm, 0), at(s.gate, 0), rows);
     try attendSegments(m, e, s, v, segments);
     try project(m, e, w.attn.wo, at(s.att, 0), at(s.attn_dense, 0), rows);
-    var base: usize = 0;
-    for (segments) |seg| {
-        staticPostConv(m, e, seg.cache, v.cache_slot, 2, at(s.attn_dense, 0), w.attn_conv, at(s.attn_conv, 0), base, seg.rows);
-        base += seg.rows;
-    }
-    runtime(m, e, .attention_partial, &.{ at(s.p, 0), at(s.attn_conv, 0), at(s.blocks, 0), at(s.partial, 0) }, rows * state.hidden, if (lp.boundary) lp.blocks_in + 1 else 0);
+    attentionPartial(m, e, s, segments, v.cache_slot, w.attn_conv, if (lp.boundary) lp.blocks_in + 1 else 0);
     residual(m, e, s, m.weights.mlp_queries[v.layer], lp.mlp_sources, rows);
     if (gated) {
         const c = w.controllers.?[3];
@@ -375,12 +373,7 @@ fn visit(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, v: *const la
     else
         glue.router(&m.glue, e, at(s.mlp_normed, 0), r(w.router_weight), r(w.router_bias), at(s.route_ids, 0), at(s.route_weights, 0), @intCast(rows));
     try routedExperts(m, e, s, v.layer, rows);
-    base = 0;
-    for (segments) |seg| {
-        staticPostConv(m, e, seg.cache, v.cache_slot, 3, at(s.mlp_out, 0), w.mlp_conv, at(s.mlp_conv, 0), base, seg.rows);
-        base += seg.rows;
-    }
-    runtime(m, e, .mlp_partial, &.{ at(s.partial, 0), at(s.mlp_conv, 0), at(s.p, 0) }, rows * state.hidden, 0);
+    mlpPartial(m, e, s, segments, v.cache_slot, w.mlp_conv);
     if (v.cache_slot == 5) copyBf16(m, e, at(s.p, 0), at(s.prelude, 0), rows * state.hidden);
 }
 
@@ -435,9 +428,8 @@ pub fn runShared(m: *const Model, s: *state.Scratch, segments: []const Segment, 
     const e = cb.compute(.serial);
     glue.embedNorm(&m.glue, e, options.ids orelse at(s.ids, 0), r(m.weights.embed), r(m.weights.embed_norm), at(s.p, 0), @intCast(rows));
     for (options.images) |im| copyBf16(m, e, at(im.buf, im.off), at(s.p, im.row * state.hidden * 2), im.rows * state.hidden);
-    for (m.weight_plan.visits[0..m.weight_plan.n_visits]) |*v| try visit(m, e, s, v, segments, rows, options.taps);
     widen(m, e, at(s.p, 0), at(s.partial, 0), rows * state.hidden);
-    for (m.weight_plan.visits.slice()) |*v| try visit(m, e, s, v, segments, rows, options.taps);
+    for (m.weight_plan.visits[0..m.weight_plan.n_visits]) |*v| try visit(m, e, s, v, segments, rows, options.taps);
     const final = finalPlan(rows, options.all, options.taps != null);
     const first: usize = if (final.work_rows == rows) 0 else rows - 1;
     glue.ar(&m.glue, e, at(s.blocks, first * state.block_slots * state.hidden * 2), row(s.partial, first, state.hidden * 4), r(m.weights.output_query), at(s.mlp_ar, 0), m.weight_plan.final_sources, 1, arBatch(final.work_rows));

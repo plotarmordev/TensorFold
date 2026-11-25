@@ -12,6 +12,17 @@ inline size_t ink_prompt_rh(const thread InkPromptSeg& s, uint heads, uint group
   return (size_t(s.row0) + pair / group) * heads + kvh * group + pair % group;
 }
 
+#ifndef TF_SIMD_FRAGS
+// A cache tile never wraps its ring: tile starts and the ring's row count are both multiples of 64.
+inline void ink_tile_get(thread tfp::frag<bfloat>& f, const device bfloat* tile, int r, int c, short2 home, int keys) {
+  const device bfloat* q = tile + (r + home.y) * int(D) + (c + home.x);
+  const bfloat none = bfloat(0);
+  const bfloat4 zero = bfloat4(none, none, none, none);
+  f = tfp::frag<bfloat>(r + home.y < keys ? bfloat4(*(const device bfloat4*)q) : zero,
+                        r + home.y + 8 < keys ? bfloat4(*(const device bfloat4*)(q + 8 * int(D))) : zero);
+}
+#endif
+
 inline void ink_fold(thread float& mm, thread float& ll, float m, float l, thread float& a, thread float& b) {
   const float mn = max(mm, m);
   a = precise::exp2(mm - mn);

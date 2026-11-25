@@ -46,6 +46,23 @@ const mma_cap: u32 = 256;
 /// A chunk of at least this many rows takes the simdgroup-matrix kernels, where the GPU has no tensor units.
 pub const mma_rows: u32 = 16;
 pub const max_grouped_rows: u32 = plan.max_grouped_rows;
+const units_gu_k: u32 = 2304;
+const units_down_k: u32 = 1152;
+const units_group_cap: u32 = 1024;
+const turned_rows: u32 = 512;
+const units_names = [_][:0]const u8{
+    "tf_ink2_group_units",
+    "tf_ink2_nvfp4_gu_units",
+    "tf_ink2_nvfp4_down_units",
+    "tf_ink2_mxfp8_gu_units",
+    "tf_ink2_mxfp8_down_units",
+    "tf_ink2_logits_units",
+    "tf_ink2_dense_units",
+    "tf_ink2_nvfp4_gu_units_t",
+    "tf_ink2_nvfp4_down_units_t",
+    "tf_ink2_mxfp8_gu_units_t",
+    "tf_ink2_mxfp8_down_units_t",
+};
 
 const MmaGroupArgs = extern struct { pairs: u32, experts: u32, cap: u32 };
 const MmaArgs = extern struct { k: u32, n: u32, topk: u32, cap: u32 };
@@ -307,4 +324,62 @@ pub fn guGrouped(p: *const Pipelines, e: mtl.ComputeEncoder, x: Ref, w: Ref, sca
         .nvfp4 => if (nv_globals) |g| return nvfp4GuGrouped(p, e, x, w, scales, g.amax, g.denominator, group_buf, out, c) else return error.MissingNvfp4Globals,
         .mxfp8 => return mxfp8GuGrouped(p, e, x, w, scales, group_buf, out, c),
     }
+}
+
+const UnitsArgs = extern struct { k: u32, n: u32, topk: u32, cap: u32 };
+const DenseUnitsArgs = extern struct { rows: u32, n: u32, k: u32 };
+const LogitUnitsArgs = extern struct { rows: u32, vocab: u32 };
+
+/// M5 tensor units cover both decode and wide prompt chunks, with an expert's pairs grouped once.
+pub fn units(p: *const Pipelines, e: mtl.ComputeEncoder, down: bool, input: Ref, weight: Ref, scales: Ref, globals: ?Globals, out: Ref, c: Call) !void {
+    return launchUnits(p, e, down, c.rows > turned_rows, input, weight, scales, globals, out, c);
+}
+
+pub fn unitsTurned(p: *const Pipelines, e: mtl.ComputeEncoder, down: bool, input: Ref, weight: Ref, scales: Ref, globals: ?Globals, out: Ref, c: Call) !void {
+    return launchUnits(p, e, down, true, input, weight, scales, globals, out, c);
+}
+
+fn launchUnits(p: *const Pipelines, e: mtl.ComputeEncoder, down: bool, turned: bool, input: Ref, weight: Ref, scales: Ref, globals: ?Globals, out: Ref, c: Call) !void {
+    try plan.check(c);
+    const pipes = p.units orelse return error.NoTensorUnits;
+    const n_weight = if (down) c.n else 2 * c.n;
+    if (c.k != (if (down) units_down_k else units_gu_k) or n_weight % 32 != 0 or c.rows > units_group_cap) return error.BadExpertShape;
+    const groups = p.groups orelse return error.NoTensorUnits;
+    const first: usize = if (turned) 7 else 1;
+    var slot: usize = 0;
+    for ([_]Ref{ input, weight, scales }) |value| {
+        e.setBuffer(value.buf, value.off, slot);
+        slot += 1;
+    }
+    if (c.format == .nvfp4) {
+        const g = globals orelse return error.MissingNvfp4Globals;
+        for ([_]Ref{ g.amax, g.denominator }) |value| {
+            e.setBuffer(value.buf, value.off, slot);
+            slot += 1;
+        }
+    }
+    e.setBuffer(groups, 0, slot);
+    e.setBuffer(groups, plan.expert_count * @sizeOf(u32), slot + 1);
+    e.setBuffer(out.buf, out.off, slot + 2);
+    e.setValue(UnitsArgs{ .k = c.k, .n = c.n, .topk = c.topk, .cap = units_group_cap }, slot + 3);
+    e.setPipeline(pipes[first + (if (c.format == .mxfp8) @as(usize, 2) else 0) + @as(usize, @intFromBool(down))]);
+    e.dispatchGroups(mtl.Size.of(if (turned) n_weight / 16 else n_weight / 32, c.experts, 1), mtl.Size.of(256, 1, 1));
+}
+
+pub fn denseUnits(p: *const Pipelines, e: mtl.ComputeEncoder, input: Ref, weight: Ref, out: Ref, rows: u32, n: u32, k: u32) !void {
+    const pipes = p.units orelse return error.NoTensorUnits;
+    if (rows == 0 or n == 0 or (k != 2304 and k != 3072)) return error.BadExpertShape;
+    for ([_]Ref{ input, weight, out }, 0..) |value, slot| e.setBuffer(value.buf, value.off, slot);
+    e.setValue(DenseUnitsArgs{ .rows = rows, .n = n, .k = k }, 3);
+    e.setPipeline(pipes[6]);
+    e.dispatchGroups(mtl.Size.of((n + 31) / 32, (rows + 15) / 16, 1), mtl.Size.of(256, 1, 1));
+}
+
+pub fn logitsUnits(p: *const Pipelines, e: mtl.ComputeEncoder, input: Ref, weight: Ref, out: Ref, rows: u32, vocab: u32) !void {
+    const pipes = p.units orelse return error.NoTensorUnits;
+    if (rows == 0 or vocab == 0) return error.BadExpertShape;
+    for ([_]Ref{ input, weight, out }, 0..) |value, slot| e.setBuffer(value.buf, value.off, slot);
+    e.setValue(LogitUnitsArgs{ .rows = rows, .vocab = vocab }, 3);
+    e.setPipeline(pipes[5]);
+    e.dispatchGroups(mtl.Size.of((vocab + 31) / 32, (rows + 15) / 16, 1), mtl.Size.of(256, 1, 1));
 }
