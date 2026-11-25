@@ -1,0 +1,343 @@
+//! Byte runs of large files on one shared queue: each is checked in memory before it is written to its file.
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Auth = @import("pull_auth.zig").Auth;
+
+pub const workers = 16;
+const attempts = 6;
+/// A resolved location is used this long before the hub is asked again (its signed links last about an hour).
+const fresh_ns: i96 = 30 * std.time.ns_per_min;
+
+/// One file a node fills in part: its hub URL (resolved to the storage link once), where it lands, and its full size.
+pub const Target = struct { url: []const u8, path: []const u8, size: u64 };
+
+/// One run of bytes [first, end) of target `file`; `check` decides whether the fetched bytes are the release's.
+pub const Run = struct {
+    file: u32,
+    first: u64,
+    end: u64,
+    /// The run's own checks, by index into the caller's table (none for a header run).
+    units: [2]u32,
+};
+
+/// The caller's check: true when a run's `bytes` (from its `first`) match what the release publishes for them.
+pub const Check = struct {
+    ctx: *const anyopaque,
+    run: *const fn (ctx: *const anyopaque, r: Run, bytes: []const u8) bool,
+};
+
+const Link = struct {
+    mutex: std.Io.Mutex = .init,
+    url: ?[]u8 = null,
+    at: i96 = 0,
+};
+
+const Shared = struct {
+    io: std.Io,
+    auth: Auth,
+    targets: []const Target,
+    links: []Link,
+    runs: []const Run,
+    check: Check,
+    max: u64,
+    bodies: []Auth.Body,
+    positions: []u64,
+    next: std.atomic.Value(usize) = .init(0),
+    bytes: std.atomic.Value(u64) = .init(0),
+    running: std.atomic.Value(u32) = .init(0),
+    stop: std.atomic.Value(bool) = .init(false),
+};
+
+/// Fetches every run over up to 16 connections; a run whose bytes fail `check` comes again, up to six times.
+pub fn fetch(a: Allocator, io: std.Io, targets: []const Target, runs: []const Run, check: Check, auth: Auth, progress: ?*std.Io.Writer) !void {
+    if (runs.len == 0) return;
+    const w = std.Io.Dir.cwd();
+    for (targets) |t| {
+        if (auth.bearer != null) {
+            const old = w.openFile(io, t.path, .{}) catch null;
+            if (old) |file| {
+                file.close(io);
+                if (auth.fileContains(a, io, t.path) catch true) {
+                    w.deleteFile(io, t.path) catch {};
+                    return error.HubCredentialBody;
+                }
+            }
+        }
+        const f = try w.createFile(io, t.path, .{ .read = true, .truncate = false });
+        defer f.close(io);
+        // the file keeps its full size so the release's offsets hold; bytes no run brings stay holes on disk
+        if ((try f.length(io)) != t.size) try f.setLength(io, t.size);
+    }
+    const bodies = try a.alloc(Auth.Body, targets.len);
+    for (bodies) |*body| body.* = .init(auth);
+    defer for (bodies) |*body| body.deinit(a);
+    const positions = try a.alloc(u64, targets.len);
+    @memset(positions, 0);
+    const links = try a.alloc(Link, targets.len);
+    for (links) |*l| l.* = .{};
+    var max: u64 = 0;
+    var left: u64 = 0;
+    for (runs) |r| {
+        max = @max(max, r.end - r.first);
+        left += r.end - r.first;
+    }
+    var s: Shared = .{ .io = io, .auth = auth, .targets = targets, .links = links, .runs = runs, .check = check, .max = max, .bodies = bodies, .positions = positions };
+    var failures: [workers]?anyerror = @splat(null);
+    var threads: [workers]std.Thread = undefined;
+    const n = if (auth.bearer != null) @min(@as(usize, 1), runs.len) else @min(workers, runs.len);
+    s.running.store(@intCast(n), .release);
+    for (0..n) |i| threads[i] = std.Thread.spawn(.{}, worker, .{ &s, &failures[i] }) catch |e| {
+        s.stop.store(true, .release);
+        s.running.store(@intCast(i), .release);
+        for (threads[0..i]) |t| t.join();
+        return e;
+    };
+    const start = std.Io.Clock.awake.now(io).toNanoseconds();
+    var shown = start;
+    while (s.running.load(.acquire) > 0) {
+        std.Io.sleep(io, .fromMilliseconds(200), .awake) catch {};
+        const now = std.Io.Clock.awake.now(io).toNanoseconds();
+        if (progress == null or now - shown < 15 * std.time.ns_per_s) continue;
+        shown = now;
+        const got: f64 = @floatFromInt(s.bytes.load(.monotonic));
+        const secs = @as(f64, @floatFromInt(now - start)) / std.time.ns_per_s;
+        progress.?.print("  {d:.2} of {d:.2} GiB, {d:.1} MiB/s\n", .{ got / (1 << 30), @as(f64, @floatFromInt(left)) / (1 << 30), got / (1 << 20) / secs }) catch {};
+        progress.?.flush() catch {};
+    }
+    for (threads[0..n]) |t| t.join();
+    for (failures[0..n]) |failure| if (failure) |e| {
+        if (e == error.HubCredentialBody) for (targets) |t| w.deleteFile(io, t.path) catch {};
+        return e;
+    };
+    finish(&s) catch |e| {
+        if (e == error.HubCredentialBody) for (targets) |t| w.deleteFile(io, t.path) catch {};
+        return e;
+    };
+}
+
+fn worker(s: *Shared, failure: *?anyerror) void {
+    defer _ = s.running.fetchSub(1, .acq_rel);
+    var client = @import("pull_http.zig").client(std.heap.page_allocator, s.io);
+    defer client.deinit();
+    const buf = std.heap.page_allocator.alloc(u8, @intCast(s.max)) catch |e| {
+        failure.* = e;
+        s.stop.store(true, .release);
+        return;
+    };
+    defer std.heap.page_allocator.free(buf);
+    // one open file a worker: runs come in file order, so a handle serves many runs
+    var open: Open = .{};
+    defer open.close(s.io);
+    while (!s.stop.load(.acquire)) {
+        const i = s.next.fetchAdd(1, .monotonic);
+        if (i >= s.runs.len) return;
+        const r = s.runs[i];
+        const file = open.get(s.io, r.file, s.targets[r.file].path) catch |e| {
+            failure.* = e;
+            s.stop.store(true, .release);
+            return;
+        };
+        one(s, &client, file, r, buf[0..@intCast(r.end - r.first)]) catch |e| {
+            failure.* = e;
+            s.stop.store(true, .release);
+            return;
+        };
+    }
+}
+
+const Open = struct {
+    index: ?u32 = null,
+    file: ?std.Io.File = null,
+
+    fn get(o: *Open, io: std.Io, index: u32, path: []const u8) !std.Io.File {
+        if (o.index == index) return o.file.?;
+        o.close(io);
+        o.file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write });
+        o.index = index;
+        return o.file.?;
+    }
+
+    fn close(o: *Open, io: std.Io) void {
+        if (o.file) |f| f.close(io);
+        o.* = .{};
+    }
+};
+
+/// One run: fetched whole into `buf`, checked, then written; a stale link is resolved again.
+fn one(s: *Shared, client: *std.http.Client, file: std.Io.File, r: Run, buf: []u8) !void {
+    if (s.auth.bearer != null and r.first < s.positions[r.file]) return error.RangeUnsupported;
+    var last: anyerror = error.ReadFailed;
+    var wait_ms: u64 = 250;
+    for (0..attempts) |_| {
+        const link = location(s, client, r.file) catch |e| {
+            if (e == error.HubDenied or e == error.HubCredentialRedirect) return e;
+            last = e;
+            std.Io.sleep(s.io, .fromMilliseconds(@intCast(wait_ms)), .awake) catch {};
+            wait_ms *= 2;
+            continue;
+        };
+        get(client, s.auth, link, r.first, buf) catch |e| {
+            if (e == error.HubDenied or e == error.HubCredentialRedirect) return e;
+            last = e;
+            if (e == error.Forbidden) forget(s, r.file, link);
+            std.Io.sleep(s.io, .fromMilliseconds(@intCast(wait_ms)), .awake) catch {};
+            wait_ms *= 2;
+            continue;
+        };
+        if (!s.check.run(s.check.ctx, r, buf)) {
+            last = error.ChecksumMismatch;
+            continue;
+        }
+        if (s.auth.bearer == null) {
+            try file.writePositionalAll(s.io, buf, r.first);
+        } else {
+            try bridge(s, file, r.file, r.first);
+            try advance(s, file, r.file, buf);
+        }
+        _ = s.bytes.fetchAdd(buf.len, .monotonic);
+        return;
+    }
+    return last;
+}
+
+/// Feeds the file's next `bytes` (at its stream position) through its scanner and writes the prefix proven safe.
+fn advance(s: *Shared, file: std.Io.File, index: u32, bytes: []const u8) !void {
+    const body = &s.bodies[index];
+    const held = body.buffered();
+    const safe = try body.feed(std.heap.page_allocator, bytes);
+    if (safe.len > 0) {
+        try file.writePositionalAll(s.io, safe, s.positions[index] - @as(u64, @intCast(held)));
+        body.commit(safe.len);
+    }
+    s.positions[index] += bytes.len;
+}
+
+/// Whether no raw or percent-encoded credential can contain `byte`: not the secret's own, `%` or a hex digit.
+fn breaks(secret: []const u8, byte: u8) bool {
+    return byte != '%' and !std.ascii.isHex(byte) and std.mem.indexOfScalar(u8, secret, byte) == null;
+}
+
+/// Carries the stream over on-disk bytes (checked clean, or holes) to `to`, from the last byte no match can contain.
+fn bridge(s: *Shared, file: std.Io.File, index: u32, to: u64) !void {
+    var buf: [64 << 10]u8 = undefined;
+    while (s.positions[index] < to and s.bodies[index].buffered() > 0) try preserved(s, file, index, &buf, to);
+    if (s.positions[index] >= to) return;
+    const bearer = s.auth.bearer.?;
+    const secret = if (std.mem.startsWith(u8, bearer, "Bearer ")) bearer[7..] else bearer;
+    var end = to;
+    while (end > s.positions[index]) {
+        const n: usize = @intCast(@min(buf.len, end - s.positions[index]));
+        const from = end - n;
+        if (try file.readPositionalAll(s.io, buf[0..n], from) != n) return error.ShortRange;
+        var k = n;
+        while (k > 0) {
+            k -= 1;
+            if (breaks(secret, buf[k])) {
+                s.positions[index] = from + k; // nothing held: skipped clean bytes start no match
+                end = 0;
+                break;
+            }
+        }
+        if (end != 0) end = from;
+    }
+    while (s.positions[index] < to) try preserved(s, file, index, &buf, to);
+}
+
+/// The next on-disk bytes before `to`, fed through the scanner and written back unchanged where safe.
+fn preserved(s: *Shared, file: std.Io.File, index: u32, buf: []u8, to: u64) !void {
+    const n: usize = @intCast(@min(buf.len, to - s.positions[index]));
+    if (try file.readPositionalAll(s.io, buf[0..n], s.positions[index]) != n) return error.ShortRange;
+    try advance(s, file, index, buf[0..n]);
+}
+
+/// Each file's held tail: settled over the bytes after its last run, or at its real end.
+fn finish(s: *Shared) !void {
+    if (s.auth.bearer == null) return;
+    for (s.targets, s.bodies, 0..) |target, *body, i| {
+        if (body.buffered() == 0) continue;
+        const index: u32 = @intCast(i);
+        const file = try std.Io.Dir.cwd().openFile(s.io, target.path, .{ .mode = .read_write });
+        defer file.close(s.io);
+        var buf: [64 << 10]u8 = undefined;
+        while (s.positions[index] < target.size and body.buffered() > 0) try preserved(s, file, index, &buf, target.size);
+        const tail = try body.finish(std.heap.page_allocator);
+        if (tail.len > 0) try file.writePositionalAll(s.io, tail, target.size - @as(u64, @intCast(tail.len)));
+    }
+}
+
+/// The storage link the hub redirects `file` to, asked once and again when it grows old or is refused.
+fn location(s: *Shared, client: *std.http.Client, file: u32) ![]const u8 {
+    const l = &s.links[file];
+    try l.mutex.lock(s.io);
+    defer l.mutex.unlock(s.io);
+    const now = std.Io.Clock.awake.now(s.io).toNanoseconds();
+    if (l.url) |u| if (now - l.at < fresh_ns) return u;
+    // an older link may still be in use by another worker: it stays allocated (a few a file an hour)
+    const u = try resolve(std.heap.page_allocator, client, s.auth, s.targets[file].url);
+    l.url = u;
+    l.at = now;
+    return u;
+}
+
+fn forget(s: *Shared, file: u32, link: []const u8) void {
+    const l = &s.links[file];
+    l.mutex.lockUncancelable(s.io);
+    defer l.mutex.unlock(s.io);
+    if (l.url != null and l.url.?.ptr == link.ptr) l.at = 0;
+}
+
+/// Where `url` lands: the Location of a redirect, else `url` itself.
+pub fn resolve(a: Allocator, client: *std.http.Client, auth: Auth, url: []const u8) ![]u8 {
+    var req: std.http.Client.Request = undefined;
+    const response = try auth.send(client, &req, .HEAD, try std.Uri.parse(url), .{ .redirect_behavior = .unhandled, .headers = .{ .accept_encoding = .{ .override = "identity" } } }, &.{});
+    defer req.deinit();
+    if (response.head.status.class() == .redirect) {
+        const to = response.head.location orelse return error.HttpRedirectLocationMissing;
+        if (auth.reflects(to)) return error.HubCredentialRedirect;
+        if (!std.mem.startsWith(u8, to, "https://") and !std.mem.startsWith(u8, to, "http://")) return error.RelativeRedirect;
+        return a.dupe(u8, to);
+    }
+    if (response.head.status != .ok) return error.HubStatus;
+    return a.dupe(u8, url);
+}
+
+/// Bytes [first, first + buf.len) of `link` into `buf`; the storage must answer 206 for exactly that range.
+fn get(client: *std.http.Client, auth: Auth, link: []const u8, first: u64, buf: []u8) !void {
+    var range_buf: [64]u8 = undefined;
+    const headers = [_]std.http.Header{.{ .name = "Range", .value = try std.fmt.bufPrint(&range_buf, "bytes={d}-{d}", .{ first, first + buf.len - 1 }) }};
+    var req: std.http.Client.Request = undefined;
+    var response = try auth.send(client, &req, .GET, try std.Uri.parse(link), .{ .redirect_behavior = .not_allowed, .extra_headers = &headers, .headers = .{ .accept_encoding = .{ .override = "identity" } } }, &.{});
+    defer req.deinit();
+    if (response.head.status == .forbidden or response.head.status == .gone) return error.Forbidden;
+    if (response.head.status != .partial_content) return error.RangeUnsupported;
+    var reader_buf: [64 << 10]u8 = undefined;
+    var rd = response.reader(&reader_buf);
+    var done: usize = 0;
+    while (done < buf.len) {
+        const n = rd.readSliceShort(buf[done..]) catch return error.ReadFailed;
+        if (n == 0) return error.ShortRange;
+        done += n;
+    }
+}
+
+/// Runs over sorted (offset, length) pieces of one file: adjacent pieces join while the run stays under `limit` bytes.
+pub fn coalesce(a: Allocator, file: u32, offs: []const [2]u64, unit0: u32, limit: u64, out: *std.ArrayList(Run)) !void {
+    var i: usize = 0;
+    while (i < offs.len) {
+        var j = i + 1;
+        while (j < offs.len and offs[j][0] == offs[j - 1][0] + offs[j - 1][1] and offs[j][0] + offs[j][1] - offs[i][0] <= limit) j += 1;
+        try out.append(a, .{ .file = file, .first = offs[i][0], .end = offs[j - 1][0] + offs[j - 1][1], .units = .{ unit0 + @as(u32, @intCast(i)), unit0 + @as(u32, @intCast(j)) } });
+        i = j;
+    }
+}
+
+test "adjacent pieces join into runs up to the limit, and a gap starts a new run" {
+    var out: std.ArrayList(Run) = .empty;
+    defer out.deinit(std.testing.allocator);
+    const offs = [_][2]u64{ .{ 100, 10 }, .{ 110, 10 }, .{ 120, 10 }, .{ 140, 10 }, .{ 150, 10 } };
+    try coalesce(std.testing.allocator, 3, &offs, 7, 25, &out);
+    try std.testing.expectEqual(@as(usize, 3), out.items.len);
+    try std.testing.expectEqual(Run{ .file = 3, .first = 100, .end = 120, .units = .{ 7, 9 } }, out.items[0]);
+    try std.testing.expectEqual(Run{ .file = 3, .first = 120, .end = 130, .units = .{ 9, 10 } }, out.items[1]);
+    try std.testing.expectEqual(Run{ .file = 3, .first = 140, .end = 160, .units = .{ 10, 12 } }, out.items[2]);
+}

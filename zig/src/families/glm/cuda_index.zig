@@ -1,0 +1,229 @@
+//! A prompt chunk's DSA indexer in CUDA (glm_index.cu): the bytes of tf_glm_scores and tf_glm_select_rows.
+
+const std = @import("std");
+const cuda = @import("cuda");
+const cuda_pdl = @import("cuda_pdl.zig");
+
+const sparse = @import("cuda_sparse.zig");
+
+pub const topk = sparse.topk_pools;
+/// glm_index_scores: rows a CTA (a warp each), 64-pool tiles a CTA, threads a CTA.
+pub const score_rows = 8;
+pub const score_tiles = 16;
+pub const threads = score_rows * 32;
+/// glm_index_pools' block: glm_index::T.
+pub const pool_threads = 256;
+/// The rows a launch must have to take it: where tf_glm_scores' `loop` tiling starts.
+pub const rows_from = sparse.score_loop_from;
+pub const cap_max = 4096;
+
+/// TF_GLM_INDEX_CUDA: unset, blank or 1 (both kernels), scores (only the scores, to bisect), 0 (neither).
+pub const Mode = enum {
+    off,
+    both,
+    scores,
+
+    pub fn parse(text: ?[]const u8) !Mode {
+        const n = try @import("sys").environment.value(u32, "TF_GLM_INDEX_CUDA", text, 0);
+        return switch (n) {
+            0 => .both,
+            1 => .off,
+            2 => .scores,
+            else => unreachable,
+        };
+    }
+
+    pub fn read() !Mode {
+        return parse((@import("sys").environment.Process{}).get("TF_GLM_INDEX_CUDA"));
+    }
+};
+
+/// A decode window's 64-pool tiles a CTA by its rows and blocks, fit to a sweep on GB10 (speed only).
+pub fn decodeLoop(rows: usize, nb: usize) usize {
+    const want: usize = if (rows <= 4) 1 else if (rows <= 8) 2 else rows / 4 * ((nb + 1023) / 1024);
+    return @max(1, @min(@min(score_tiles, want), @max(1, nb / 32)));
+}
+
+/// glm_index_scores' grid: rows in CTAs of 8, the `nb` pool blocks in runs of score_tiles.
+pub fn scoresGrid(rows: usize, nb: usize) [2]u32 {
+    return .{ @intCast(cdiv(rows, score_rows)), @intCast(@max(1, cdiv(nb, score_tiles))) };
+}
+
+/// The candidates a row of the pools kernel keeps and the floor's target (speed only; the pools are the same).
+pub const Tile = struct { cap: usize, target: usize };
+
+pub fn tile(np: usize) Tile {
+    if (np <= 12288) return .{ .cap = 1024, .target = 724 };
+    if (np <= 32768) return .{ .cap = 2048, .target = 1024 };
+    return .{ .cap = cap_max, .target = 2048 };
+}
+
+pub const Kernels = struct {
+    module: cuda.Module,
+    scores_fn: cuda.Function,
+    pools_fn: cuda.Function,
+    /// Whether the pools kernel replaces tf_glm_select_rows (Mode.both).
+    select: bool,
+
+    /// `image`: cuda.kernels.glm_index.
+    pub fn load(d: *const cuda.Driver, image: []const u8, mode: Mode) !Kernels {
+        if (image.len == 0) return error.NoIndexKernels;
+        var m = try cuda.Module.load(d, image);
+        errdefer m.unload();
+        return .{ .module = m, .scores_fn = try m.function("tf_glm_index_scores"), .pools_fn = try m.function("tf_glm_index_pools"), .select = mode == .both };
+    }
+
+    pub fn unload(k: *Kernels) void {
+        k.module.unload();
+    }
+
+    /// Whether `rows` rows over `np` pools with this key cache layout go through the kernels.
+    pub fn takes(k: *const Kernels, rows: usize, np: usize, pk: u64, ps: u64) bool {
+        _ = k;
+        return rows >= rows_from and np >= topk and pk % 16 == 0 and ps % 16 == 0;
+    }
+
+    /// Whether a decode window takes the scores kernel: under rows_from rows, 8 from 64 blocks (4 from 2,048), aligned.
+    pub fn takesDecode(k: *const Kernels, rows: usize, np: usize, nb: usize, pk: u64, ps: u64) bool {
+        _ = k;
+        const wide = (rows >= 8 and nb >= 64) or (rows >= 4 and nb >= 2048);
+        return wide and rows < rows_from and np >= topk and pk % 16 == 0 and ps % 16 == 0;
+    }
+
+    /// tf_glm_scores' launch for `rows` rows at `at` into out [rows][np]; the first `nb` 64-pool blocks are written.
+    pub fn scores(k: *const Kernels, s: cuda.Stream, qi: u64, wts: u64, w_stride: usize, pk: u64, out: u64, at: u64, rows: usize, np: usize, nb: usize, scale: f32, wscale: f32, heads: usize, pt: u64, ps: u64, g: sparse.Geometry) !void {
+        return k.scoresTiles(s, qi, wts, w_stride, pk, out, at, rows, np, nb, scale, wscale, heads, pt, ps, score_tiles, g);
+    }
+
+    /// As scores, `loop` 64-pool tiles a CTA (speed only: every tiling writes the same scores).
+    pub fn scoresTiles(k: *const Kernels, s: cuda.Stream, qi: u64, wts: u64, w_stride: usize, pk: u64, out: u64, at: u64, rows: usize, np: usize, nb: usize, scale: f32, wscale: f32, heads: usize, pt: u64, ps: u64, loop: usize, g: sparse.Geometry) !void {
+        const grid: [2]u32 = .{ @intCast(cdiv(rows, score_rows)), @intCast(@max(1, cdiv(nb, loop))) };
+        var a: cuda.Args = .{};
+        inline for (.{ qi, wts, @as(i64, @intCast(w_stride)), pk, out, at, @as(i64, @intCast(rows)), @as(i64, @intCast(np)), @as(i64, @intCast(nb)), scale, wscale, @as(i64, @intCast(heads)), @as(c_int, @intCast(loop)), pt, @as(i64, @intCast(ps)), @as(c_int, @intCast(g.pool)), @as(c_int, @intCast(g.rope)), g.inv }) |v| a.add(v);
+        try cuda_pdl.launch(k.scores_fn, .{ .grid = .{ .x = grid[0], .y = grid[1] }, .block = .{ .x = threads } }, s, &a);
+    }
+
+    /// tf_glm_select_rows' launch: each row's g.topk best pools of scores [rows][np] into out [rows][g.topk] int64.
+    pub fn pools(k: *const Kernels, s: cuda.Stream, scores_ptr: u64, out: u64, at: u64, rows: usize, np: usize, path: u64, g: sparse.Geometry) !void {
+        const t = tile(np);
+        var a: cuda.Args = .{};
+        inline for (.{ scores_ptr, out, @as(i64, @intCast(np)), at, @as(c_int, @intCast(g.topk)), @as(c_int, @intCast(t.cap)), @as(c_int, @intCast(t.target)), path, @as(c_int, @intCast(g.pool)) }) |v| a.add(v);
+        try cuda_pdl.launch(k.pools_fn, .{ .grid = .{ .x = @intCast(rows) }, .block = .{ .x = pool_threads } }, s, &a);
+    }
+};
+
+fn cdiv(a: usize, b: usize) usize {
+    return (a + b - 1) / b;
+}
+
+test "GLM index: TF_GLM_INDEX_CUDA is on unless 0, scores bisects, and a typo is refused" {
+    try std.testing.expectEqual(Mode.both, try Mode.parse(null));
+    try std.testing.expectEqual(Mode.both, try Mode.parse(""));
+    try std.testing.expectEqual(Mode.both, try Mode.parse(" \t"));
+    try std.testing.expectEqual(Mode.both, try Mode.parse("1"));
+    try std.testing.expectEqual(Mode.off, try Mode.parse("0"));
+    try std.testing.expectEqual(Mode.scores, try Mode.parse("scores"));
+    try std.testing.expectError(error.InvalidEnvironment, Mode.parse("on"));
+    try std.testing.expectError(error.InvalidEnvironment, Mode.parse("off"));
+}
+
+test "GLM index: the scores grid covers 8 rows a CTA and 16 pool blocks a CTA" {
+    // a 512-row chunk over 147,456 pools: 2,304 blocks
+    try std.testing.expectEqual([2]u32{ 64, 144 }, scoresGrid(512, 2304));
+    try std.testing.expectEqual([2]u32{ 9, 1 }, scoresGrid(65, 16));
+    try std.testing.expectEqual([2]u32{ 8, 2 }, scoresGrid(64, 17));
+    try std.testing.expectEqual([2]u32{ 1, 1 }, scoresGrid(1, 0));
+}
+
+test "GLM index: the candidate cap follows the pool count and stays in shared memory" {
+    try std.testing.expectEqual(Tile{ .cap = 1024, .target = 724 }, tile(12288));
+    try std.testing.expectEqual(Tile{ .cap = 2048, .target = 1024 }, tile(12289));
+    try std.testing.expectEqual(Tile{ .cap = 2048, .target = 1024 }, tile(32768));
+    try std.testing.expectEqual(Tile{ .cap = 4096, .target = 2048 }, tile(32769));
+    try std.testing.expect(tile(1 << 30).cap <= cap_max);
+}
+
+test "GLM index: a decode window's tiles a CTA follow its rows and blocks" {
+    try std.testing.expectEqual(@as(usize, 1), decodeLoop(4, 4064)); // 4 rows at 1M: a tile a CTA
+    try std.testing.expectEqual(@as(usize, 2), decodeLoop(8, 4064));
+    try std.testing.expectEqual(@as(usize, 16), decodeLoop(16, 4064)); // 1M: 1,024 blocks round up
+    try std.testing.expectEqual(@as(usize, 8), decodeLoop(16, 2048)); // 512K
+    try std.testing.expectEqual(@as(usize, score_tiles), decodeLoop(32, 4064));
+    try std.testing.expectEqual(@as(usize, 4), decodeLoop(16, 1024)); // 256K
+    try std.testing.expectEqual(@as(usize, 2), decodeLoop(32, 64)); // 16K: nb / 32 keeps the CTAs
+    try std.testing.expectEqual(@as(usize, 1), decodeLoop(8, 8));
+    try std.testing.expectEqual(@as(usize, score_tiles), decodeLoop(48, 1 << 20));
+}
+
+test "GLM index: decode windows on aligned key caches take the scores kernel" {
+    const k: Kernels = undefined;
+    try std.testing.expect(k.takesDecode(8, 4096, 64, 0x1000, 32768)); // 16K: the contract's 8 rows over 4,096 pools
+    try std.testing.expect(!k.takesDecode(8, 4096, 63, 0x1000, 32768)); // under 64: tf_glm_scores, no slower on GB10
+    try std.testing.expect(!k.takesDecode(rows_from - 1, 4096, 63, 0x1000, 32768));
+    try std.testing.expect(k.takesDecode(rows_from - 1, 216080, 3376, 0x1000, 32768));
+    try std.testing.expect(k.takesDecode(4, 216080, 2048, 0x1000, 32768)); // 4 rows from ~512K
+    try std.testing.expect(!k.takesDecode(4, 65536, 800, 0x1000, 32768));
+    try std.testing.expect(!k.takesDecode(1, 216080, 3376, 0x1000, 32768)); // one row: tf_glm_scores
+    try std.testing.expect(!k.takesDecode(rows_from, 4096, 64, 0x1000, 32768)); // prompt-sized: Kernels.takes
+    try std.testing.expect(!k.takesDecode(16, 4096, 64, 0x1008, 32768));
+    try std.testing.expect(!k.takesDecode(16, topk - 1, 64, 0x1000, 32768));
+}
+
+test "GLM index: only prompt-sized launches on aligned key caches take the kernels" {
+    const k: Kernels = undefined;
+    try std.testing.expect(k.takes(rows_from, 1024, 0x1000, 32768));
+    try std.testing.expect(!k.takes(rows_from - 1, 1024, 0x1000, 32768));
+    try std.testing.expect(!k.takes(512, 1024, 0x1008, 32768));
+    try std.testing.expect(!k.takes(512, 1024, 0x1000, 32760));
+    try std.testing.expect(!k.takes(512, topk - 1, 0x1000, 32768));
+}
+
+/// A driver that records each launched function's handle, in order (selectTokens below, without a device).
+const Recorded = struct {
+    var n: usize = 0;
+    var ids: [16]usize = undefined;
+    fn launch(f: cuda.abi.Function, _: c_uint, _: c_uint, _: c_uint, _: c_uint, _: c_uint, _: c_uint, _: c_uint, _: cuda.abi.Stream, _: ?[*]?*anyopaque, _: ?[*]?*anyopaque) callconv(.c) c_int {
+        if (n < ids.len) ids[n] = @intFromPtr(f);
+        n += 1;
+        return 0;
+    }
+    fn function(out: *cuda.abi.Function, _: cuda.abi.Module, name: [*:0]const u8) callconv(.c) c_int {
+        out.* = @ptrFromInt(if (std.mem.eql(u8, std.mem.span(name), "tf_glm_dsa_tokens")) @as(usize, 41) else 40);
+        return 0;
+    }
+};
+
+test "GLM index: prompt chunks take the kernels; a decode row, an unaligned key cache and a small pool cap keep tf_glm_scores" {
+    const glue = @import("cuda_glue.zig");
+    const latent = @import("cuda_latent.zig");
+    var d: cuda.Driver = undefined;
+    d.api.cuLaunchKernel = Recorded.launch;
+    d.api.cuLaunchKernelEx = @import("cuda_pdl.zig").forwardEx(Recorded.launch);
+    d.func_name = null;
+    d.api.cuModuleGetFunction = Recorded.function;
+    var ks: glue.Kernels = undefined; // 20 tf_glm_scores, 21 tf_glm_select_rows, 22 its wide form
+    ks.scores = .{ .d = &d, .handle = @ptrFromInt(20) };
+    ks.select_rows = .{ .d = &d, .handle = @ptrFromInt(21) };
+    ks.select_rows_wide = .{ .d = &d, .handle = @ptrFromInt(22) };
+    const ops: cuda.Module = .{ .d = &d, .handle = null }; // 40 tf_glm_add_i32, 41 tf_glm_dsa_tokens
+    const stream: cuda.Stream = .{ .d = &d, .handle = null };
+    const s: sparse.Scratch = .{ .scores = 0x10000, .ls = 0, .li = 0, .pools = 0x20000, .at = 0x30000 };
+    const table: latent.Table = .{ .pt = 0x4000, .ps = 32768, .page_rows = 512 };
+    const Case = struct { rows: usize, pk: u64, cap: usize, want: []const usize };
+    for ([_]Mode{ .both, .scores }) |mode| {
+        // 30 tf_glm_index_scores, 31 tf_glm_index_pools
+        const k: Kernels = .{ .module = undefined, .scores_fn = .{ .d = &d, .handle = @ptrFromInt(30) }, .pools_fn = .{ .d = &d, .handle = @ptrFromInt(31) }, .select = mode == .both };
+        const set: glue.Set = .{ .glue = &ks, .index = &k };
+        const prompt: []const usize = if (mode == .both) &.{ 30, 31, 41 } else &.{ 30, 21, 41 };
+        for ([_]Case{
+            .{ .rows = 512, .pk = 0x1000, .cap = 1 << 20, .want = prompt }, // a prompt chunk of 512 rows at 65,536
+            .{ .rows = 1, .pk = 0x1000, .cap = 1 << 20, .want = &.{ 20, 22, 41 } }, // a decode row: the wide select
+            .{ .rows = 512, .pk = 0x1008, .cap = 1 << 20, .want = &.{ 20, 21, 41 } }, // keys off 16 bytes
+            .{ .rows = 512, .pk = 0x1000, .cap = 256, .want = &.{ 20, 21, 41 } }, // fewer than 512 pools
+        }) |c| {
+            Recorded.n = 0;
+            try sparse.selectTokens(set, ops, stream, 0x5000, 0x6000, 160, c.pk, table, 0x7000, 65536, c.rows, 32, 128, .{}, c.cap, s, 0x8000, 0x9000);
+            try std.testing.expectEqualSlices(usize, c.want, Recorded.ids[0..Recorded.n]);
+        }
+    }
+}

@@ -1,0 +1,86 @@
+# Attested HTTP voices
+
+`tensorfold-native serve MODEL --voices DIR --default-voice NAME` loads the catalog at startup. Without these flags the built-in voice and speech request lowering are unchanged. `--default-voice` defaults to `default`; a configured name must exist. A missing, malformed or unattested catalog file refuses startup rather than silently substituting a voice. Without `--manage-voices`, restart to reload files.
+
+`POST /v1/audio/speech` selects a catalog entry with `voice` (or the existing `speaker` alias). An absent, empty or case-insensitive `default` selects the configured default. Other names match exactly. Reference arrays, `ref_audio`, `ref_text` and paths in a request remain unsupported; an inline voice object needs `--request-voices` (below). `GET /v1/voices` returns `{"voices": ["default", ...], "details": [{"id": NAME, "description": TEXT}, ...]}` with catalog names sorted, without transcripts, codes or attestation notes; `description` is the file's optional one-line description (at most 200 bytes), else empty. Non-speech models return the existing unknown-route response.
+
+Each regular `NAME.json` file contains:
+
+```json
+{
+  "format": "drama3-http-voice/1",
+  "source": {"kind": "synthetic", "note": "Generated integer codes for a parser example, not recorded speech."},
+  "description": "Warm, even narrator.",
+  "references": [{"text": "A small cloud passes.", "codes": [[7,1,2,3,4,5,6,7,8,9]]}]
+}
+```
+
+The example codes are synthetic, not an acoustic-quality fixture. Names contain ASCII letters, digits, hyphens and underscores, begin with a letter or digit, and cannot be `default` in any case. Names are bounded by the loader. Symlink catalog entries are refused.
+
+The mandatory `source.kind` is `synthetic` (generated audio), `self` (the operator's own voice), or `consented` (explicit permission from the speaker). `source.note` must be nonempty UTF-8 describing the provenance or consent. This is an operator attestation, not proof of identity or consent. Notes are not returned by the API.
+
+The model's licence, the [Fish Audio Community License Agreement](https://huggingface.co/fishaudio/drama-3/blob/main/LICENSE) v1.0, section IV(b)(i), forbids using it to "generate speech that imitates the voice of an identifiable natural person without that person's prior consent (or, for a minor, the consent of a parent or legal guardian, and for a deceased person, the consent of the holder of the relevant rights) or another legal right to do so". The attestation records the operator's claim; it does not grant that consent or right.
+
+Reference `text` is the exact transcript. Codes are frame-major signed integers, with the semantic code first and residual codebooks following, in the same order as upstream `drama3-generate --encode` emits. Do not substitute codes from an unrelated codec.
+
+The loader enforces the family's reference count, transcript length, frame count and codebook ranges before serving. It also rejects empty references, structural prompt tokens, malformed speaker tags, oversized files and oversized catalogs. The assembled prompt must still fit the engine's advertised prompt budget. Reference rows go through the same family `prompt.build` used by the generation CLI; only the tokenizer interface is adapted.
+
+## Voices added while serving
+
+`--manage-voices` (off by default) adds two routes for keys with the `admin` scope, or any key in a key file without scopes; `inference` and `read` keys get 403. Without an API key every client is an admin, so serve with `--api-key-file` before turning it on. Without the flag both routes answer as before, with the unknown-route 404.
+
+- `POST /v1/voices` adds or replaces `name`. The body is `{"name": NAME, ...}` plus either a voice file's own fields (`format`, `source`, `references`, optional `description`), or `{"audio": BASE64, "text": TRANSCRIPT, "source": {...}}` with optional `description`. `audio` is a WAV file (PCM 8, 16, 24 or 32-bit, or float32, any channel count, at most 30 seconds, and a rate from 1 to 192,000 Hz whose reduced ratio `rate / gcd(rate, 44100)` is at most 640; this includes 8/16/24/32/44.1/48/64/88.2/96/176.4/192 kHz) in standard base64, resampled and encoded by the loaded model's own codec, on the speech engine's thread when a lane is free. The attestation and transcript are checked before any audio is encoded. The reply is `{"id": NAME, "description": TEXT, "added": true}` with 201, or `"added": false` with 200 for a replaced voice.
+- `DELETE /v1/voices/NAME` deletes a voice; the configured `--default-voice` cannot be deleted (409), and an unknown name is a 404.
+
+With `--voices DIR`, an added voice is written to `DIR/NAME.json` (through a temporary file renamed into place, before the catalog changes) and a deleted one's file is removed, so a restart loads the same catalog. Without a directory, changes last until the server stops. A request reads its voice once, when it arrives: a voice deleted or replaced while it runs does not change its audio. The reference prompt cache keys on the reference rows themselves, so a replaced voice never reuses the old voice's saved rows.
+
+## Inline voices
+
+`--request-voices` (off by default) lets `voice` in `POST /v1/audio/speech` be a voice file's object instead of a name: `"voice": {"format": "drama3-http-voice/1", "source": {...}, "references": [...]}`, checked as the catalog checks a file, attestation included. It builds the same prompt as a catalog voice with the same references, and takes no `speaker` field. Without the flag, an object `voice` gets the same refusal as before.
+
+## Speech limits and discovery
+
+`GET /v1/models` includes a `speech` object only for a loaded speech engine. `max_assembled_prompt_rows` counts all backbone prompt rows, including wrappers, reference transcripts and acoustic reference codes. `max_generated_acoustic_frames` is the output budget, not a text-token limit. `sample_rate_hz` and `samples_per_acoustic_frame` describe the output geometry. `max_input_code_points` is the separate HTTP input-text policy; it is not a tokenizer or assembled-row budget.
+
+The existing `context_length` and `max_model_len` fields describe the combined positional window. Drama reserves one row: assembled prompt rows plus generated frames plus that reserved row must fit the context. Explicit `--max-frames` values are honored exactly or refused; only the omitted default retains its low-context clamp. The minimum prompt has two rows, so the largest possible explicit frame budget is `--context - 3`, before accounting for the actual request's prompt.
+
+An overlong assembled prompt is refused before engine submission. Its error reports the assembled-row limit, the request text's tokens and the acoustic reference-frame count separately. The request text's tokens are its own rows in the assembled prompt: the text with the speaker tag the builder adds, encoded as the prompt encodes it (on the default voice, with the tokenizer's special tokens). Reference transcripts and structural wrappers are not among them, but count toward the assembled total. Discovery reports the loaded budgets, not a qualification of a larger model-config window. Drama serves `--context` 1025 through 8192 and at most 4,096 assembled prompt rows, on one device per engine (one Mac on Metal, without `--speed-up`).
+
+## Dialogue speakers
+
+Speech input and reference transcripts accept `<|speaker:N|>` with decimal IDs from `0` through `15`. Tags can change speakers within one request. Untagged text defaults to speaker 0; a leading tag after Unicode whitespace is preserved. Leading zeros, negative IDs, non-ASCII digits, incomplete tags and IDs above 15 are rejected.
+
+For example, send this body to `POST /v1/audio/speech` with your served model name:
+
+```json
+{
+  "model": "MODEL",
+  "input": "<|speaker:0|> Is the gate open? <|speaker:15|> Yes, come through. <|speaker:0|> Thank you.",
+  "response_format": "wav"
+}
+```
+
+For streamed audio, set `"stream": true` and `"response_format": "pcm"`. To condition speakers on reference audio, create a catalog entry whose reference transcripts have matching tags, such as `<|speaker:0|> First reference transcript.` and `<|speaker:15|> Second reference transcript.`, then select its name with `"voice": "conversation"`. The HTTP `speaker` field remains an alias for that catalog name; dialogue speaker IDs belong in the text tags.
+
+One catalog entry still accepts at most **four reference passages**, even though there are sixteen valid speaker IDs. Each passage keeps its own transcript and code rows. Reusing a catalog entry preserves its exact reference prefix; changing a reference speaker tag changes that prefix. Speaker tags specify the prompt's roles; this does not guarantee distinguishable voices without suitable references or establish voice similarity.
+
+The public [Drama 3 MLX prompt implementation](https://github.com/Sogni-AI/drama3-mlx/blob/ecc235039ccd5f982f66a6982184f57432354ab4/drama3_mlx/prompt.py) provides a behavior reference for these speaker markers. TensorFold uses its existing native prompt builder.
+
+## Writing a voice file
+
+`zig build drama3-voice` builds the writer next to `drama3-generate`, which it runs once per reference to encode the audio:
+
+```sh
+drama3-voice --codec MODEL/codec.pth --ref-audio tone.wav --ref-text "A small cloud passes." \
+  --source-kind synthetic --source-note "A generated test tone." --out voices/tone.json
+```
+
+Repeat `--ref-audio` and `--ref-text` in pairs for up to four references. `--generate PATH` names the encoder when `drama3-generate` is not on `PATH`. The writer refuses, before encoding, a missing or invalid attestation, transcripts the speech request would reject, and an output name the catalog cannot load. The encoder writes into a fresh private directory beside the output. The writer replaces `NAME.json` by an atomic rename only after the catalog's own parser accepts the new file.
+
+The operator's encoder binary and processes with the same UID are trusted. The safety boundary covers other users (including shared sticky directories), stale files or symlinks, encoder failures and concurrent tool runs; it does not cover a malicious encoder or same-UID processes renaming the operator's directories during a run. The output parent must not allow other users to rename the operator's entries; a shared sticky directory is suitable.
+
+Each run exclusively creates a randomly named private directory with owner-only access beside the output, retrying name collisions. The encoder receives an ordinary path with a fresh output name for each reference; writing nothing is an error. Directory-relative reads reject code-file symlinks. The validated final file is staged in that directory and renamed over `NAME.json`, replacing a destination symlink rather than following it. No pre-existing file is touched before publication.
+
+Cleanup restores owner access on the private directory and removes its contents and the directory. Before publication, cleanup failures are reported alongside the primary error. After publication, a cleanup failure is a warning on stderr naming the leftover directory, and the command succeeds because the output is correct. Abrupt termination such as SIGKILL can also leave a private directory behind.
+
+Cleanup responsibility starts immediately after directory creation, before allocating its encoder pathname, so allocation failure also removes the private directory.

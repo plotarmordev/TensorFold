@@ -1,0 +1,427 @@
+//! Flash Next's streams beside the first take attention-cache pages from the core pool (TF_FLASHNEXT_KV_PAGES=n).
+const std = @import("std");
+const cuda = @import("cuda");
+const kv = @import("core").kv_pool;
+const prompt = @import("cuda_prompt.zig");
+const pages = @import("cuda_pages.zig");
+const mtp = @import("cuda_mtp.zig");
+const snap = @import("cuda_snap.zig");
+const wt = @import("cuda_prompt_wt.zig");
+
+/// Rows past a request's prompt and reply its pages hold: one drafted window's, as many as the load's buffers hold.
+pub fn windowRows() usize {
+    return mtp.bufferRows();
+}
+
+/// TF_FLASHNEXT_KV_PAGES=n: streams beside the first take n-position pages from one pool (unset, blank or 0: none).
+pub fn paging() !usize {
+    return pagingOf(@import("core").profile.given(.TF_FLASHNEXT_KV_PAGES));
+}
+
+pub fn pagingOf(v: ?[]const u8) !usize {
+    const n = std.fmt.parseInt(usize, v orelse return 0, 10) catch return error.BadFlashNextKvPages;
+    if (n != 0 and !pages.valid(n)) return error.BadFlashNextKvPages;
+    return n;
+}
+
+/// TF_FLASHNEXT_KV_PAGES_ALL=1: every stream on pages, none on its own contiguous caches (checks).
+pub fn pagedOnly() bool {
+    const v = @import("core").profile.get(.TF_FLASHNEXT_KV_PAGES_ALL) orelse return false;
+    return std.mem.eql(u8, v, "1");
+}
+
+/// Pages a stream maps at most: a full window and one more drafted window.
+fn mostPages(capacity: usize, tokens: usize) usize {
+    return (capacity + windowRows() + tokens - 1) / tokens;
+}
+
+fn al(n: usize) usize {
+    return std.mem.alignForward(usize, n, 256);
+}
+
+const conv_bytes = mtp.conv_bytes;
+const state_bytes = wt.state_n * 4;
+const tail_bytes = wt.ple_tail_n * wt.wide * 2;
+
+/// A running stream's own states in its run: each DeltaNet layer's convolution tail and state, the n-gram tail.
+fn seqRunBytes() usize {
+    return wt.linear_n * (al(conv_bytes) + al(state_bytes)) + al(tail_bytes);
+}
+
+/// The MTP head a drafting lane runs: its draft vocabulary and the widest prompt chunk whose streams it keeps.
+pub const Head = struct { draft_n: usize, rows: usize };
+
+/// Fixed: a lane's table and `extra` (image rows); paged: the attention caches (the head's too); a run: the states.
+pub fn layout(capacity: usize, tokens: usize, head: ?Head, extra: usize) kv.Layout {
+    const layers = wt.attn_n + @intFromBool(head != null);
+    const run = seqRunBytes() + if (head) |h| mtp.Draft.runBytes(h.draft_n, h.rows) else 0;
+    return .{ .fixed_bytes = mostPages(capacity, tokens) * 4 + extra, .token_bytes = pages.pageBytesOf(tokens, layers) / tokens, .page_tokens = @intCast(tokens), .snap_bytes = snap.bytes(0, head != null, .full), .run_bytes = run };
+}
+
+/// Where a stream's caches came from: no pool, the one stream on its own caches beside a pool, or a pool lane.
+pub const From = enum { none, own, pool };
+
+/// The backend's paging: the pool `attach` made, its layout from load, and whether the own stream is taken.
+pub const State = struct {
+    pool: ?*Pool = null,
+    layout: ?kv.Layout = null,
+    head: ?Head = null,
+    paged_only: bool = false,
+    own_busy: bool = false,
+
+    pub fn choose(s: *const State) From {
+        if (s.pool == null) return .none;
+        return if (!s.paged_only and !s.own_busy) .own else .pool;
+    }
+
+    pub fn opened(s: *State, from: From) void {
+        if (from == .own) s.own_busy = true;
+    }
+
+    /// A stream's caches given back: a lane's to the pool (true), else the caller frees them (false).
+    pub fn close(s: *State, from: From, seq: *prompt.Seq) bool {
+        switch (from) {
+            .pool => return s.pool.?.close(seq),
+            .own => s.own_busy = false,
+            .none => {},
+        }
+        return false;
+    }
+
+    /// Whether a new stream of `rows` rows waits for the arena's thread before its open (Pool.waits); own stream: no.
+    pub fn waits(s: *const State, rows: usize, others: usize) bool {
+        if (s.choose() != .pool) return false;
+        return s.pool.?.waits(@min(rows + windowRows(), prompt.max_tokens), others > 0);
+    }
+
+    /// The lane host's admission: the own stream is free, or a lane and the request's pages are.
+    pub fn fits(s: *const State, prompt_rows: u32, max_tokens: u32) bool {
+        const p = s.pool orelse return true;
+        if (!s.paged_only and !s.own_busy) return true;
+        return p.fits(@as(usize, prompt_rows) + max_tokens + windowRows());
+    }
+};
+
+/// One pool lane: its cache's views (its run's states, its stream's pages), that stream's lease and its run.
+const Lane = struct { seq: prompt.Seq, lease: kv.Lease = .{}, used: bool = false, run: u32 = 0 };
+
+pub const Pool = struct {
+    gpa: std.mem.Allocator,
+    e: *prompt.Engine,
+    layout: kv.Layout,
+    capacity: usize,
+    head: ?Head,
+    pool: kv.Pool,
+    arena: @import("cuda_kv_arena.zig").Arena,
+    lanes: []Lane,
+
+    /// `streams` lanes and `count` pages of layout `l`, made and touched now; a lane holds only its table idle.
+    pub fn init(gpa: std.mem.Allocator, e: *prompt.Engine, l: kv.Layout, capacity: usize, head: ?Head, streams: usize, count: usize) !*Pool {
+        return initOn(gpa, e, l, capacity, head, streams, count, null, null);
+    }
+
+    /// As init, the arena from pieces on `device` (null: one cuMemAlloc), with `io` mapped ahead on its own thread.
+    pub fn initOn(gpa: std.mem.Allocator, e: *prompt.Engine, l: kv.Layout, capacity: usize, head: ?Head, streams: usize, count: usize, device: ?cuda.abi.Device, io: ?std.Io) !*Pool {
+        if (!pages.valid(l.page_tokens) or capacity > prompt.max_tokens or count > @as(usize, std.math.maxInt(c_int)) + 1) return error.BadFlashNextKvPages;
+        const page_bytes = try std.math.mul(usize, @intCast(l.token_bytes), l.page_tokens);
+        if (page_bytes == 0) return error.BadFlashNextKvPages;
+        _ = try std.math.add(u64, l.run_bytes, page_bytes - 1);
+        const p = try gpa.create(Pool);
+        errdefer gpa.destroy(p);
+        // pieces mapped as the lanes first use them: memory no stream has taken stays free at load
+        var arena = try @import("cuda_kv_arena.zig").Arena.alloc(gpa, e.driver, try std.math.mul(usize, count, page_bytes), device, io);
+        errdefer arena.free();
+        p.* = .{ .gpa = gpa, .e = e, .layout = l, .capacity = capacity, .head = head, .pool = try kv.Pool.init(gpa, count, page_bytes), .arena = arena, .lanes = &.{} };
+        errdefer p.pool.deinit();
+        p.lanes = try gpa.alloc(Lane, streams);
+        errdefer gpa.free(p.lanes);
+        var made: usize = 0;
+        errdefer for (p.lanes[0..made]) |*x| x.seq.deinit(gpa);
+        for (p.lanes) |*x| {
+            x.* = .{ .seq = try p.laneSeq() };
+            made += 1;
+        }
+        errdefer cuda.completion.drain(e.driver, e.stream.*, "flashnext: failed pool initialization did not drain");
+        if (!arena.lazy()) try arena.buf.fill8(0, e.stream.handle); // pieces are zeroed as they map
+        for (p.lanes) |x| try x.seq.paged.?.table.fill8(0, e.stream.handle);
+        p.mapAhead(true);
+        try e.stream.synchronize();
+        return p;
+    }
+
+    /// A lane's cache: views only (states mapped from its run at open, attention caches on the arena) and a table.
+    fn laneSeq(p: *Pool) !prompt.Seq {
+        const gpa = p.gpa;
+        const d = p.e.driver;
+        var table = try cuda.DeviceBuffer.alloc(d, mostPages(p.capacity, p.layout.page_tokens) * 4);
+        errdefer table.free();
+        const paged: pages.Paged = .{ .base = p.arena.buf.ptr, .table = table, .ids = &.{}, .tokens = p.layout.page_tokens, .own_ids = false, .layers = wt.attn_n + @intFromBool(p.head != null) };
+        const conv = try gpa.alloc(cuda.DeviceBuffer, wt.linear_n);
+        errdefer gpa.free(conv);
+        const state = try gpa.alloc(cuda.DeviceBuffer, wt.linear_n);
+        errdefer gpa.free(state);
+        const kc = try paged.views(gpa, d, .key);
+        errdefer gpa.free(kc);
+        const vc = try paged.views(gpa, d, .value);
+        errdefer gpa.free(vc);
+        const ikc = try paged.views(gpa, d, .index);
+        errdefer gpa.free(ikc);
+        const pooled = try paged.views(gpa, d, .pooled);
+        errdefer gpa.free(pooled);
+        const none: cuda.DeviceBuffer = .{ .d = d, .ptr = 0, .len = 0, .borrowed = true };
+        @memset(conv, none);
+        @memset(state, none);
+        return .{ .conv = conv, .state = state, .kc = kc, .vc = vc, .ikc = ikc, .pooled = pooled, .paged = paged, .tail = none, .history = .{ p.e.eos, p.e.eos }, .fed = 0, .logits = try gpa.alloc(u8, prompt.vocabulary * 2), .cap = 0 };
+    }
+
+    pub fn deinit(p: *Pool) void {
+        cuda.completion.drain(p.e.driver, p.e.stream.*, "flashnext: the pool did not drain at close");
+        for (p.lanes) |*x| {
+            if (x.used) {
+                p.pool.releaseRun(x.run, p.layout.runPages());
+                p.pool.finish(&x.lease);
+            }
+            x.seq.deinit(p.gpa);
+        }
+        p.gpa.free(p.lanes);
+        p.arena.free();
+        p.pool.deinit();
+        p.gpa.destroy(p);
+    }
+
+    /// Whether a lane is free, the pool can promise a cache of `cap` rows and a run now, and a run is free.
+    pub fn fits(p: *const Pool, cap: usize) bool {
+        if (cap > p.capacity + windowRows()) return false;
+        const k = p.layout.runPages();
+        for (p.lanes) |x| if (!x.used) return p.pool.fits(p.layout.pages(cap) + k) and p.pool.findRun(k) != null;
+        return false;
+    }
+
+    /// Whether an open of `cap` rows waits: beside other streams, the arena's thread maps its pieces; true until then.
+    pub fn waits(p: *Pool, cap: usize, others: bool) bool {
+        // alone, or a piece the thread failed: false; the open maps on its own thread, as before (or fails: LaneMemory)
+        if (!others or !p.arena.lazy()) return false;
+        const k = p.layout.runPages();
+        const n = p.layout.pages(cap);
+        var ids: [2048]u32 = undefined;
+        if (n > ids.len or !p.pool.fits(n + k)) return false;
+        const run = p.pool.findRun(k) orelse return false;
+        const pb = p.layout.pageBytes();
+        var posted = false;
+        if (!p.meet(@as(u64, run) * pb, k * pb, &posted)) return false;
+        for (nextPages(&p.pool, k, ids[0..n])) |id| if (!p.meet(@as(u64, id) * pb, pb, &posted)) return false;
+        return posted;
+    }
+
+    fn meet(p: *Pool, off: u64, n: u64, posted: *bool) bool {
+        switch (p.arena.reach(off, n)) {
+            .mapped => {},
+            .posted => posted.* = true,
+            .caller => return false,
+        }
+        return true;
+    }
+
+    /// A free lane's cleared cache (a copy) with `cap` rows' pages and its run; LaneMemory: not now.
+    pub fn open(p: *Pool, cap: usize) !prompt.Seq {
+        if (cap > p.capacity + windowRows()) return error.PromptTooLong;
+        const x = for (p.lanes) |*x| {
+            if (!x.used) break x;
+        } else return error.LaneMemory;
+        const k = p.layout.runPages();
+        const n = p.layout.pages(cap);
+        if (n > mostPages(p.capacity, p.layout.page_tokens)) return error.PromptTooLong;
+        try p.pool.promise(&x.lease, n + k);
+        errdefer p.pool.finish(&x.lease);
+        // the run first: pages fill from the bottom, runs from the top; a fragmented pool waits (LaneMemory)
+        const run = p.pool.claimRun(&x.lease, k) orelse return error.LaneMemory;
+        errdefer p.pool.releaseRun(run, k);
+        errdefer cuda.completion.drain(p.e.driver, p.e.stream.*, "flashnext: a failed lane open did not drain");
+        var up: Upload = .{ .p = p, .table = x.seq.paged.?.table };
+        try p.pool.cover(&x.lease, n, .{ .ctx = &up, .write = Upload.write });
+        x.seq.paged.?.ids = x.lease.ids.items;
+        x.run = run;
+        try p.mapStates(&x.seq);
+        try p.e.clearSeq(&x.seq, cap);
+        // a new generation each open: every lane's caches share the arena's address, so the graph keys need it
+        x.seq.gen = @import("cuda_window_graph.zig").nextGen();
+        x.used = true;
+        return x.seq;
+    }
+
+    fn runBase(p: *const Pool, x: *const Lane) u64 {
+        return p.arena.buf.ptr + @as(u64, x.run) * p.layout.pageBytes();
+    }
+
+    /// The lane's states as views of its run, laid out afresh (a kept window swaps state buffers with the head's).
+    fn mapStates(p: *Pool, seq: *prompt.Seq) !void {
+        if (p.layout.runPages() * p.layout.pageBytes() < seqRunBytes()) return error.FlashNextRunTooShort;
+        const x = p.laneOf(seq).?;
+        try p.arena.ensure(@as(u64, x.run) * p.layout.pageBytes(), p.layout.runPages() * p.layout.pageBytes(), p.e.stream.handle);
+        var at = p.runBase(x);
+        for (seq.conv) |*b| {
+            b.* = .{ .d = p.e.driver, .ptr = at, .len = conv_bytes, .borrowed = true };
+            at += al(conv_bytes);
+        }
+        for (seq.state) |*b| {
+            b.* = .{ .d = p.e.driver, .ptr = at, .len = state_bytes, .borrowed = true };
+            at += al(state_bytes);
+        }
+        seq.tail = .{ .d = p.e.driver, .ptr = at, .len = tail_bytes, .borrowed = true };
+    }
+
+    /// The MTP head of the stream on lane cache `seq`: its cache on the stream's pages, its buffers in the run.
+    pub fn draft(p: *Pool, seq: *const prompt.Seq, cap: usize) !mtp.Draft {
+        const h = p.head orelse return error.FlashNextRunTooShort;
+        const x = p.laneOf(seq) orelse return error.UnknownStream;
+        const run_len = p.layout.runPages() * p.layout.pageBytes();
+        if (run_len < seqRunBytes()) return error.FlashNextRunTooShort;
+        return mtp.Draft.initIn(p.gpa, p.e.driver, cap, h.draft_n, h.rows, &x.seq.paged.?, p.runBase(x) + seqRunBytes(), run_len - seqRunBytes());
+    }
+
+    fn laneOf(p: *Pool, seq: *const prompt.Seq) ?*Lane {
+        const t = (seq.paged orelse return null).table.ptr;
+        for (p.lanes) |*x| if (x.seq.paged.?.table.ptr == t) return x;
+        return null;
+    }
+
+    /// A lane's stream ended: its pages and run go back once the forwards reading them are done. False: not a lane's.
+    pub fn close(p: *Pool, seq: *prompt.Seq) bool {
+        const x = p.laneOf(seq) orelse return false;
+        if (!x.used) return true;
+        cuda.completion.drain(p.e.driver, p.e.stream.*, "flashnext: a closed stream did not drain");
+        p.pool.releaseRun(x.run, p.layout.runPages());
+        p.pool.finish(&x.lease);
+        p.mapAhead(false); // on the arena's thread: the reply's last token, sent after this, does not wait for it
+        if (seq.media) |*m| m.deinit(); // the stream's image state, held by its copy
+        seq.media = null;
+        x.seq.paged.?.ids = &.{};
+        x.seq.cap = 0;
+        x.used = false;
+        return true;
+    }
+
+    /// Maps what an open reaches first (`runs`: at load, the lanes' runs too, here; else on the arena's thread).
+    fn mapAhead(p: *Pool, runs: bool) void {
+        if (!p.arena.lazy()) return;
+        const pb = p.layout.pageBytes();
+        const s = p.e.stream.handle;
+        if (runs) {
+            const k = @min(p.layout.runPages() * p.lanes.len, p.pool.total());
+            p.arena.ensure((p.pool.total() - k) * pb, k * pb, s) catch return;
+        }
+        var ids: [1024]u32 = undefined; // two pieces' worth: a request's pages and a keep's held ones
+        const n: usize = @intCast(@min(ids.len, @max(1, 2 * @import("cuda_kv_arena.zig").piece_bytes / pb)));
+        for (nextPages(&p.pool, p.layout.runPages(), ids[0..n])) |id| {
+            if (!runs) p.arena.post(@as(u64, id) * pb, pb) else p.arena.ensure(@as(u64, id) * pb, pb, s) catch return;
+        }
+    }
+
+    /// A lane's new table entries uploaded to its device table.
+    const Upload = struct {
+        p: *Pool,
+        table: cuda.DeviceBuffer,
+
+        fn write(ctx: *anyopaque, ids: []const u32, from: usize) anyerror!void {
+            const u: *Upload = @ptrCast(@alignCast(ctx));
+            errdefer cuda.completion.drain(u.p.e.driver, u.p.e.stream.*, "flashnext: a failed table upload did not drain");
+            const pb = u.p.layout.pageBytes();
+            for (ids[from..]) |id| try u.p.arena.ensure(@as(u64, id) * pb, pb, u.p.e.stream.handle); // before any read
+            try u.table.uploadAsync(from * 4, std.mem.sliceAsBytes(ids[from..]), u.p.e.stream.handle);
+            try u.p.e.stream.synchronize(); // the ids slice may move as the lease grows
+        }
+    };
+};
+
+test "TF_FLASHNEXT_KV_PAGES: unset, empty or whitespace-only text reads as no pages; every valid size unchanged" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const t = std.testing;
+    const env = @import("sys").env;
+    const name = "TF_FLASHNEXT_KV_PAGES";
+    const before = if (std.c.getenv(name)) |v| try t.allocator.dupeSentinel(u8, std.mem.span(v), 0) else null;
+    defer {
+        if (before) |v| {
+            _ = env.setenv(name, v, 1);
+            t.allocator.free(v);
+        } else _ = env.unsetenv(name);
+    }
+    _ = env.unsetenv(name);
+    try t.expectEqual(@as(usize, 0), try paging());
+    for ([_][:0]const u8{ "", " ", "\t", " \t\r\n" }) |v| {
+        try t.expectEqual(@as(c_int, 0), env.setenv(name, v, 1));
+        try t.expectEqual(@as(usize, 0), try paging());
+    }
+    for ([_][:0]const u8{ "0", "4", "256" }, [_]usize{ 0, 4, 256 }) |v, n| {
+        try t.expectEqual(@as(c_int, 0), env.setenv(name, v, 1));
+        try t.expectEqual(n, try paging());
+    }
+    for ([_][:0]const u8{ "abc", " 256", "256 ", "\t256", "6", "18446744073709551616" }) |v| {
+        try t.expectEqual(@as(c_int, 0), env.setenv(name, v, 1));
+        try t.expectError(error.BadFlashNextKvPages, paging());
+    }
+    try t.expectEqual(@as(usize, 0), try pagingOf(null));
+    try t.expectError(error.BadFlashNextKvPages, pagingOf(""));
+    try t.expectError(error.BadFlashNextKvPages, pagingOf(" "));
+}
+
+/// The page ids the free stack hands an open out next, past the run of `run_pages` it claims first, into `out`.
+pub fn nextPages(pool: *const kv.Pool, run_pages: usize, out: []u32) []u32 {
+    const run = if (run_pages > 0) pool.findRun(run_pages) else null;
+    var n: usize = 0;
+    var i = pool.nfree;
+    while (i > 0 and n < out.len) {
+        i -= 1;
+        const id = pool.free[i];
+        if (run) |r| if (id >= r and id < r + run_pages) continue;
+        out[n] = id;
+        n += 1;
+    }
+    return out[0..n];
+}
+
+test "mapped ahead: the pages the free stack hands out next, page 0 first, then past the ones held" {
+    var pool = try kv.Pool.init(std.testing.allocator, 64, 4096);
+    defer pool.deinit();
+    var out: [100]u32 = undefined;
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2, 3 }, nextPages(&pool, 0, out[0..4]));
+    var held: [5]u32 = undefined;
+    try std.testing.expect(pool.hold(&held));
+    try std.testing.expectEqualSlices(u32, &.{ 5, 6, 7, 8 }, nextPages(&pool, 0, out[0..4])); // what a keep leaves next
+    for (held) |id| pool.release(id);
+    try std.testing.expectEqual(@as(usize, 64), nextPages(&pool, 0, &out).len);
+    try std.testing.expect(pool.idle());
+}
+
+test "mapped ahead: after a close the next pages are the freed and fresh ones, never the run the next open claims" {
+    var pool = try kv.Pool.init(std.testing.allocator, 64, 4096);
+    defer pool.deinit();
+    var l: kv.Lease = .{};
+    try pool.promise(&l, 4 + 5);
+    const run = pool.claimRun(&l, 4).?;
+    for (0..5) |_| _ = try pool.take(&l);
+    var held: [3]u32 = undefined;
+    try std.testing.expect(pool.hold(&held)); // a keep's pages
+    pool.releaseRun(run, 4); // close: the run back, then the lane's pages
+    pool.finish(&l);
+    var out: [8]u32 = undefined;
+    const next = nextPages(&pool, 4, &out);
+    for (next) |id| try std.testing.expect(id < run); // the run the next open claims again is no page it is handed
+    try std.testing.expect(std.mem.indexOfScalar(u32, next, 8) != null); // the first fresh page past the keep's
+    for (held) |id| pool.release(id);
+}
+
+test "a stream's pages: its rows and a drafted window, no more than a full window's" {
+    const l = layout(40960, 256, null, 0);
+    try std.testing.expectEqual(pages.pageBytes(256), l.pageBytes());
+    const h = layout(40960, 256, .{ .draft_n = 32768, .rows = 1536 }, 0);
+    try std.testing.expectEqual(pages.pageBytesOf(256, wt.attn_n + 1), h.pageBytes());
+    try std.testing.expect(h.run_bytes >= seqRunBytes() + mtp.Draft.runBytes(32768, 1536));
+    try std.testing.expectEqual(@as(usize, 161), mostPages(40960, 256));
+    try std.testing.expect(l.pages(40960 + windowRows()) <= mostPages(40960, 256));
+}
+
+test {
+    _ = @import("cuda_kv_init_test.zig");
+    _ = @import("cuda_kv_lifetime_test.zig");
+    _ = @import("cuda_kv_arena.zig");
+}

@@ -1,0 +1,535 @@
+//! Required tools through both request parsers, the real feature gate and the shared constrained lane core.
+const std = @import("std");
+const api = @import("engine_api");
+const lanes = @import("lanes");
+const json = @import("json");
+const errors = @import("errors.zig");
+const mt = @import("model_text.zig");
+const Server = @import("server.zig").Server;
+const openai = @import("openai.zig");
+const responses = @import("responses_translate.zig");
+const tools = @import("tool_grammar.zig");
+const parse = @import("tool_parse.zig");
+const a = std.testing.allocator;
+const specs = "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"parameters\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}},\"required\":[\"q\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"now\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]";
+
+pub const Text = struct {
+    form: enum { xml, json, gemma, lfm2, unknown } = .json,
+    pub fn text(t: *Text) mt.Text {
+        return .{ .ctx = t, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocab, .eos_ids = eos, .render = render, .template_source = source } };
+    }
+    pub fn encode(_: *anyopaque, g: std.mem.Allocator, s: []const u8, _: bool) mt.Error![]u32 {
+        const ids = try g.alloc(u32, s.len);
+        for (s, ids) |ch, *id| id.* = if (ch == '\n') 95 else @as(u32, ch) - 32;
+        return ids;
+    }
+    pub fn decode(_: *anyopaque, g: std.mem.Allocator, ids: []const u32) std.mem.Allocator.Error![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        for (ids) |id| if (id < 95) try out.append(g, @intCast(id + 32)) else if (id == 95) try out.append(g, '\n');
+        return out.toOwnedSlice(g);
+    }
+    fn tokenId(_: *anyopaque, s: []const u8) ?u32 {
+        return if (std.mem.eql(u8, s, "<tool_call>")) 28 else null;
+    }
+    fn tokenString(_: *anyopaque, g: std.mem.Allocator, id: u32) std.mem.Allocator.Error![]u8 {
+        return decode(undefined, g, &.{id});
+    }
+    fn vocab(_: *anyopaque) u32 {
+        return 97;
+    }
+    fn eos(_: *anyopaque) []const u32 {
+        return &.{96};
+    }
+    fn source(_: *anyopaque) []const u8 {
+        return "";
+    }
+    fn render(ptr: *anyopaque, g: std.mem.Allocator, _: json.Value, _: mt.RenderOptions, _: *[]const u8) mt.Error!mt.Rendered {
+        const t: *Text = @ptrCast(@alignCast(ptr));
+        return .{ .text = try (g.dupe(u8, switch (t.form) {
+            .xml => "<tool_call><function=tfprobe_fn><parameter=tfprobe_k>v</parameter></function></tool_call>",
+            .json => "<tool_call>{\"name\":\"tfprobe_fn\",\"arguments\":{\"tfprobe_k\":\"v\"}}</tool_call>",
+            .gemma => "<|tool_call>call:tfprobe_fn{tfprobe_k:<|\"|>v<|\"|>}<tool_call|>",
+            .lfm2 => "<|tool_call_start|>[tfprobe_fn(tfprobe_k='v')]<|tool_call_end|>",
+            .unknown => "prompt",
+        })) };
+    }
+};
+pub const Stub = struct {
+    pub fn engine(s: *Stub) api.Engine {
+        return .{ .ctx = s, .vtable = &.{ .info = info, .submit = submit, .cancel = cancel, .status = status, .memory = memory } };
+    }
+    fn info(_: *anyopaque) api.Info {
+        return .{ .name = "qwen27" };
+    }
+    fn submit(_: *anyopaque, _: api.Id, _: *const api.Request, _: api.Sink) api.SubmitError!void {
+        unreachable;
+    }
+    fn cancel(_: *anyopaque, _: api.Id) void {}
+    fn status(_: *anyopaque, out: *api.Status, _: []u32) void {
+        out.* = .{};
+    }
+    fn memory(_: *anyopaque, _: bool) ?api.Memory {
+        return null;
+    }
+};
+
+// The compiler boundary records the production grammar; no xgrammar library or GPU is loaded in this fixture.
+pub const Compile = struct {
+    pub fn compiler(c: *Compile) api.grammar.Compiler {
+        var out: api.grammar.Compiler = undefined;
+        out.h = c;
+        out.words = 4;
+        out.f.compile = compile;
+        out.f.free = free;
+        out.f.close = free;
+        return out;
+    }
+    fn compile(ptr: *anyopaque, kind: c_int, _: [*]const u8, _: usize, _: [*]u8, _: usize) callconv(.c) ?*anyopaque {
+        std.debug.assert(kind == 5);
+        return ptr;
+    }
+    fn free(_: *anyopaque) callconv(.c) void {}
+};
+pub fn value(g: std.mem.Allocator, s: []const u8) !json.Value {
+    return (try json.parse(g, s)).ok;
+}
+
+test "required tools: unsupported required tools name the actual backend before any grammar or admission" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var text: Text = .{};
+    var stub: Stub = .{};
+    const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+    defer srv.deinit();
+    var cx: errors.Cx = .{ .a = arena.allocator() };
+    const f = try value(cx.a, "{\"tool_call_required\":true}");
+    var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 200 };
+    const offered = (try value(cx.a, specs)).array;
+    try std.testing.expectError(error.Refused, srv.checkFeatures(&cx, f, true, false, &.{1}, offered, &request));
+    try std.testing.expectEqual(@as(u16, 400), cx.status());
+    try std.testing.expect(std.mem.indexOf(u8, cx.message, "qwen27") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cx.message, "grammar") != null);
+    try std.testing.expect(request.structure == null and request.call == null);
+    srv.info.name = "lanes";
+    srv.config.identity.backend = "cuda";
+    try std.testing.expectError(error.Refused, srv.checkFeatures(&cx, f, true, false, &.{1}, offered, &request));
+    try std.testing.expect(std.mem.indexOf(u8, cx.message, "cuda") != null);
+}
+
+test "required tools: Gemma and unknown templates can constrain required calls on a grammar backend" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    var stub: Stub = .{};
+    var compile: Compile = .{};
+    var compiler = compile.compiler();
+    for ([_]@FieldType(Text, "form"){ .xml, .json, .gemma, .unknown }) |form| {
+        var text: Text = .{ .form = form };
+        const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+        defer srv.deinit();
+        srv.info.structures = true;
+        srv.grammars = &compiler;
+        var cx: errors.Cx = .{ .a = g };
+        var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 200 };
+        try srv.checkFeatures(&cx, try value(g, "{\"tool_call_required\":true}"), true, false, &.{1}, (try value(g, specs)).array, &request);
+        try std.testing.expect(request.structure != null);
+    }
+}
+
+test "required tools: an LFM2 template gets the Pythonic grammar, one call or several, and other forms do not" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    var stub: Stub = .{};
+    var compile: Compile = .{};
+    var compiler = compile.compiler();
+    for ([_]@FieldType(Text, "form"){ .json, .lfm2 }) |form| for ([_]bool{ false, true }) |single| {
+        var text: Text = .{ .form = form };
+        const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+        defer srv.deinit();
+        srv.info.structures = true;
+        srv.grammars = &compiler;
+        var cx: errors.Cx = .{ .a = g };
+        const fields = try value(g, if (single) "{\"tool_call_required\":true,\"tool_call_single\":true}" else "{\"tool_call_required\":true}");
+        var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 200 };
+        try srv.checkFeatures(&cx, fields, true, false, &.{1}, (try value(g, specs)).array, &request);
+        const structure = request.structure.?;
+        try std.testing.expectEqualStrings("structural_tag", @tagName(structure.kind));
+        const python = std.mem.indexOf(u8, structure.text, "<|tool_call_start|>") != null;
+        try std.testing.expectEqual(form == .lfm2, python);
+        try std.testing.expectEqual(form == .lfm2 and !single, std.mem.indexOf(u8, structure.text, "(\\\", \\\" call)*") != null);
+        if (form == .lfm2) try std.testing.expect(std.mem.indexOf(u8, structure.text, "q=\\\" (py_str)") != null);
+    };
+}
+
+pub fn body(cx: *errors.Cx, response: bool, choice: []const u8) !json.Value {
+    const History = struct {
+        pub fn conversation(_: @This(), c: *errors.Cx, _: json.Value) errors.Refused![]json.Value {
+            return c.refuse("this fixture has no stored response");
+        }
+    };
+    const b = try json.newObject(cx.a);
+    if (response) {
+        try b.put(cx.a, "input", .{ .string = "hi" });
+        const offered = (try value(cx.a, specs)).array;
+        const flat = try cx.a.alloc(json.Value, offered.len);
+        for (offered, flat) |tool, *t| {
+            const f = tool.get("function").?.object;
+            try f.put(cx.a, "type", .{ .string = "function" });
+            t.* = .{ .object = f };
+        }
+        try b.put(cx.a, "tools", .{ .array = flat });
+    } else {
+        try b.put(cx.a, "messages", try value(cx.a, "[{\"role\":\"user\",\"content\":\"hi\"}]"));
+        try b.put(cx.a, "tools", try value(cx.a, specs));
+    }
+    try b.put(cx.a, "tool_choice", try value(cx.a, choice));
+    try b.put(cx.a, "parallel_tool_calls", .{ .bool = false });
+    return if (response) (try responses.translate(cx, .{ .object = b }, History{})).chat else .{ .object = b };
+}
+
+test "required tools: both routes parse required and named calls and enforce a complete tool reply with drafted equals plain" {
+    const witness = @import("tool_required_witness.zig");
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    var stub: Stub = .{};
+    var compile: Compile = .{};
+    var compiler = compile.compiler();
+    for ([_]bool{ false, true }) |response| for ([_]bool{ false, true }) |named| for ([_]@FieldType(Text, "form"){ .xml, .json, .gemma, .unknown }) |form| {
+        var text: Text = .{ .form = form };
+        const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+        defer srv.deinit();
+        srv.info.structures = true;
+        srv.grammars = &compiler;
+        var cx: errors.Cx = .{ .a = g };
+        const choice = if (!named) "\"required\"" else if (response) "{\"type\":\"function\",\"name\":\"now\"}" else "{\"type\":\"function\",\"function\":{\"name\":\"now\"}}";
+        const input = try openai.chatInput(srv, &cx, try body(&cx, response, choice));
+        try std.testing.expect(input.fields.get("tool_call_required").?.truthy());
+        try std.testing.expectEqual(@as(usize, if (named) 1 else 2), input.tools.len);
+        var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 512 };
+        try srv.checkFeatures(&cx, input.fields, true, false, &.{1}, input.tools, &request);
+        const structure = request.structure.?;
+        const root = try value(g, structure.text);
+        const format = root.get("format").?;
+        try std.testing.expectEqualStrings("sequence", format.strField("type").?);
+        try std.testing.expectEqual(@as(usize, 3), format.get("elements").?.array.len);
+        const reply = try witness.text(g, root);
+        try std.testing.expect(std.mem.startsWith(u8, reply, if (form == .gemma) "<|tool_call>call:" else "<tool_call>"));
+        if (named) try std.testing.expect(std.mem.indexOf(u8, structure.text, "lookup") == null);
+        const want = try Text.encode(undefined, g, reply, false);
+        for ([_]u64{ 1235, 1236 }) |seed| {
+            const plain = try witness.run(want, 0, seed);
+            defer a.free(plain.tokens);
+            for ([_]u32{ 1, 4 }) |depth| {
+                const drafted = try witness.run(want, depth, seed);
+                defer a.free(drafted.tokens);
+                try std.testing.expectEqualSlices(u32, plain.tokens, drafted.tokens);
+                try std.testing.expect(drafted.drafted > 0);
+            }
+            const decoded = try Text.decode(undefined, g, plain.tokens);
+            const result = try parse.parse(g, decoded, input.tools, 1);
+            try std.testing.expectEqualStrings("", result.content);
+            try std.testing.expectEqual(@as(usize, 1), result.calls.?.len);
+            try std.testing.expectEqualStrings(if (named) "now" else "lookup", result.calls.?[0].get("function").?.strField("name").?);
+        }
+    };
+}
+
+test "required tools: required without tools, unknown names and competing grammars are refused while auto and none stay optional" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var text: Text = .{};
+    var stub: Stub = .{};
+    const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+    defer srv.deinit();
+    var cx: errors.Cx = .{ .a = arena.allocator() };
+    for ([_]bool{ false, true }) |response| {
+        const missing = try body(&cx, response, "\"required\"");
+        _ = missing.object.swapRemove("tools");
+        try std.testing.expectError(error.Refused, openai.chatInput(srv, &cx, missing));
+        const unknown = if (response) "{\"type\":\"function\",\"name\":\"absent\"}" else "{\"type\":\"function\",\"function\":{\"name\":\"absent\"}}";
+        try std.testing.expectError(error.Refused, openai.chatInput(srv, &cx, try body(&cx, response, unknown)));
+        const conflict = try body(&cx, response, "\"required\"");
+        try conflict.object.put(cx.a, "guided_regex", .{ .string = "x" });
+        try std.testing.expectError(error.Refused, openai.chatInput(srv, &cx, conflict));
+        for ([_][]const u8{ "\"auto\"", "\"none\"" }) |choice| {
+            const input = try openai.chatInput(srv, &cx, try body(&cx, response, choice));
+            try std.testing.expect(input.fields.get("tool_call_required") == null);
+            var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 20 };
+            try srv.checkFeatures(&cx, input.fields, input.tools.len > 0, false, &.{1}, input.tools, &request);
+            try std.testing.expect(request.structure == null);
+        }
+    }
+}
+
+test "required tools: Gemma constrained JSON arguments preserve punctuation inside string values" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    const reply = "<|tool_call>call:lookup{\"q\":\"a,b:c {d:e}\"}<tool_call|>";
+    const result = try parse.parse(g, reply, (try value(g, specs)).array, 1);
+    try std.testing.expect(result.calls != null);
+    const arguments = try value(g, result.calls.?[0].get("function").?.strField("arguments").?);
+    try std.testing.expectEqualStrings("a,b:c {d:e}", arguments.strField("q").?);
+}
+
+test "qwen27 tool calls: required and named calls use the masked lane fake through both routes" {
+    const witness = @import("tool_required_witness.zig");
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    var stub: Stub = .{};
+    var compile: Compile = .{};
+    var compiler = compile.compiler();
+    for ([_]bool{ false, true }) |response| for ([_]bool{ false, true }) |named| for ([_]@FieldType(Text, "form"){ .xml, .json, .gemma, .unknown }) |form| {
+        var text: Text = .{ .form = form };
+        const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+        defer srv.deinit();
+        srv.info.structures = @import("qwen27_masks").supported;
+        srv.grammars = &compiler;
+        var cx: errors.Cx = .{ .a = g };
+        const choice = if (!named) "\"required\"" else if (response) "{\"type\":\"function\",\"name\":\"now\"}" else "{\"type\":\"function\",\"function\":{\"name\":\"now\"}}";
+        const input = try openai.chatInput(srv, &cx, try body(&cx, response, choice));
+        try std.testing.expect(input.fields.get("tool_call_required").?.truthy());
+        try std.testing.expectEqual(@as(usize, if (named) 1 else 2), input.tools.len);
+        var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 512 };
+        try srv.checkFeatures(&cx, input.fields, true, false, &.{1}, input.tools, &request);
+        const structure = request.structure.?;
+        const root = try value(g, structure.text);
+        const format = root.get("format").?;
+        try std.testing.expectEqualStrings("sequence", format.strField("type").?);
+        try std.testing.expectEqual(@as(usize, 3), format.get("elements").?.array.len);
+        const reply = try witness.text(g, root);
+        try std.testing.expect(std.mem.startsWith(u8, reply, if (form == .gemma) "<|tool_call>call:" else "<tool_call>"));
+        if (named) try std.testing.expect(std.mem.indexOf(u8, structure.text, "lookup") == null);
+        const want = try Text.encode(undefined, g, reply, false);
+        for ([_]u64{ 1235, 1236 }) |seed| {
+            const plain = try witness.runTarget(want, 0, seed, @import("qwen27_mask_fake").Adapter);
+            defer a.free(plain.tokens);
+            for ([_]u32{ 1, 4 }) |depth| {
+                const drafted = try witness.runTarget(want, depth, seed, @import("qwen27_mask_fake").Adapter);
+                defer a.free(drafted.tokens);
+                try std.testing.expectEqualSlices(u32, plain.tokens, drafted.tokens);
+                try std.testing.expect(drafted.drafted > 0);
+            }
+            const decoded = try Text.decode(undefined, g, plain.tokens);
+            const result = try parse.parse(g, decoded, input.tools, 1);
+            try std.testing.expectEqualStrings("", result.content);
+            try std.testing.expectEqual(@as(usize, 1), result.calls.?.len);
+            try std.testing.expectEqualStrings(if (named) "now" else "lookup", result.calls.?[0].get("function").?.strField("name").?);
+        }
+    };
+}
+
+// The server's compile is the engine's too: a request keeps the handle until release, and frees each one once.
+test "a request's compiled grammar is kept for the engine, freed once at release, and an overridden one at once" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    const fake = lanes.grammar_fake;
+    const old = fake.install();
+    defer _ = lanes.grammar.swapLibrary(old);
+    var compiler = fake.compiler();
+    var text: Text = .{};
+    var stub: Stub = .{};
+    const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+    defer srv.deinit();
+    srv.info.structures = true;
+    srv.grammars = &compiler;
+    var cx: errors.Cx = .{ .a = g };
+    const offered = (try value(g, specs)).array;
+    var one: api.Request = .{ .prompt = &.{1}, .max_tokens = 200 };
+    try srv.checkFeatures(&cx, try value(g, "{\"response_format\":{\"type\":\"json_object\"}}"), false, false, &.{1}, &.{}, &one);
+    try std.testing.expect(one.structure.?.compiled != null);
+    try std.testing.expectEqual(@as(usize, 1), fake.compiles);
+    try std.testing.expectEqual(@as(usize, 0), fake.frees);
+    srv.release(false, one);
+    try std.testing.expectEqual(@as(usize, 1), fake.frees);
+    // a required tool's grammar, then response_format's: the first is freed when the second replaces it
+    var both: api.Request = .{ .prompt = &.{1}, .max_tokens = 200 };
+    const fields = try value(g, "{\"tool_call_required\":true,\"response_format\":{\"type\":\"json_object\"}}");
+    try srv.checkFeatures(&cx, fields, true, false, &.{1}, offered, &both);
+    try std.testing.expectEqual(@as(usize, 3), fake.compiles);
+    try std.testing.expectEqual(@as(usize, 2), fake.frees);
+    srv.release(false, both);
+    try std.testing.expectEqual(@as(usize, 3), fake.frees);
+    // a refused second grammar frees the first
+    var refused: api.Request = .{ .prompt = &.{1}, .max_tokens = 200 };
+    const bad = try value(g, "{\"tool_call_required\":true,\"guided_regex\":\"bad\"}");
+    try std.testing.expectError(error.Refused, srv.checkFeatures(&cx, bad, true, false, &.{1}, offered, &refused));
+    try std.testing.expectEqual(@as(usize, 4), fake.compiles);
+    try std.testing.expectEqual(@as(usize, 4), fake.frees);
+}
+
+test "security: a grammar over the size limit is refused before the compiler sees it, and one at the limit compiles" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    const fake = lanes.grammar_fake;
+    const old = fake.install();
+    defer _ = lanes.grammar.swapLibrary(old);
+    var compiler = fake.compiler();
+    var text: Text = .{};
+    var stub: Stub = .{};
+    const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+    defer srv.deinit();
+    srv.info.structures = true;
+    srv.grammars = &compiler;
+    const most = @import("grammar.zig").max_text;
+    const letters = try g.alloc(u8, most + 1);
+    @memset(letters, 'x');
+    for ([_]usize{ most, most + 1 }) |len| {
+        var cx: errors.Cx = .{ .a = g };
+        var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 64 };
+        const fields = try value(g, try std.fmt.allocPrint(g, "{{\"guided_regex\":\"{s}\"}}", .{letters[0..len]}));
+        const result = srv.checkFeatures(&cx, fields, false, false, &.{1}, &.{}, &request);
+        if (len <= most) {
+            try result;
+            srv.release(false, request);
+            continue;
+        }
+        try std.testing.expectError(error.Refused, result);
+        try std.testing.expectEqual(@as(u16, 400), cx.status());
+        try std.testing.expect(std.mem.indexOf(u8, cx.message, "guided_regex: the grammar is 524289 bytes, more than the 512 KiB") != null);
+    }
+    try std.testing.expectEqual(@as(usize, 1), fake.compiles); // the grammar over the limit never reached the compiler
+    try std.testing.expectEqual(@as(usize, 1), fake.frees);
+}
+
+fn never(_: *anyopaque) callconv(.c) c_int {
+    return 0;
+}
+
+fn overWork(_: *anyopaque) callconv(.c) c_int {
+    return 2;
+}
+
+test "security: tools count once against the grammar size limit: 300 KiB of required tools is served, 600 KiB refused" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    const fake = lanes.grammar_fake;
+    const old = fake.install();
+    defer _ = lanes.grammar.swapLibrary(old);
+    var compiler = fake.compiler();
+    var text: Text = .{};
+    var stub: Stub = .{};
+    const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+    defer srv.deinit();
+    srv.info.structures = true;
+    srv.grammars = &compiler;
+    const filler = try g.alloc(u8, 600 * 1024);
+    @memset(filler, 'x');
+    const schema = "[{{\"type\":\"function\",\"function\":{{\"name\":\"lookup\",\"parameters\":{{\"type\":\"object\",\"properties\":{{\"q\":{{\"type\":\"string\",\"description\":\"{s}\"}}}},\"required\":[\"q\"]}}}}}}]";
+    const named = "[{{\"type\":\"function\",\"function\":{{\"name\":\"{s}\",\"parameters\":{{\"type\":\"object\",\"properties\":{{}}}}}}}}]";
+    // a long description, then a long name: the grammar holds both, so both count
+    const cases = [_]struct { kib: usize, list: []const u8 }{
+        .{ .kib = 300, .list = try std.fmt.allocPrint(g, schema, .{filler[0 .. 300 * 1024]}) },
+        .{ .kib = 600, .list = try std.fmt.allocPrint(g, schema, .{filler[0 .. 600 * 1024]}) },
+        .{ .kib = 600, .list = try std.fmt.allocPrint(g, named, .{filler[0 .. 600 * 1024]}) },
+    };
+    for (cases) |case| {
+        const offered = (try value(g, case.list)).array;
+        const before = fake.compiles;
+        var cx: errors.Cx = .{ .a = g };
+        var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 64 };
+        // parallel calls: the structural tag holds the call twice, for the first call and the further ones
+        const result = srv.checkFeatures(&cx, try value(g, "{\"tool_call_required\":true}"), true, false, &.{1}, offered, &request);
+        if (case.kib == 300) {
+            try result;
+            try std.testing.expect(request.structure.?.text.len > 2 * 300 * 1024); // over 512 KiB, and served
+            try std.testing.expectEqual(before + 1, fake.compiles);
+            srv.release(false, request);
+            continue;
+        }
+        try std.testing.expectError(error.Refused, result);
+        try std.testing.expectEqual(@as(u16, 400), cx.status());
+        try std.testing.expect(std.mem.startsWith(u8, cx.message, "tools: the tools' names and schemas make a "));
+        try std.testing.expect(std.mem.endsWith(u8, cx.message, "-byte grammar, more than the 512 KiB a grammar may be"));
+        try std.testing.expectEqual(before, fake.compiles); // refused before the compiler saw it
+    }
+}
+
+test "grammar_budget: a boolean that marks a covered grammar, refused when malformed, unbuilt or not covered" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    const fake = lanes.grammar_fake;
+    const old = fake.install();
+    defer _ = lanes.grammar.swapLibrary(old);
+    var compiler = fake.compiler();
+    var text: Text = .{};
+    var stub: Stub = .{};
+    const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+    defer srv.deinit();
+    srv.info.structures = true;
+    srv.grammars = &compiler;
+    const offered = (try value(g, specs)).array;
+    const Want = struct { fields: []const u8, budget: ?bool, refusal: []const u8 = "" };
+    const cases = [_]Want{
+        .{ .fields = "{\"response_format\":{\"type\":\"json_object\"},\"grammar_budget\":true}", .budget = true },
+        .{ .fields = "{\"tool_call_required\":true,\"grammar_budget\":true}", .budget = true },
+        .{ .fields = "{\"response_format\":{\"type\":\"json_object\"},\"grammar_budget\":false}", .budget = false },
+        .{ .fields = "{\"response_format\":{\"type\":\"json_object\"}}", .budget = false },
+        .{ .fields = "{\"grammar_budget\":true}", .budget = null }, // no grammar: nothing to keep
+        .{ .fields = "{\"response_format\":{\"type\":\"json_object\"},\"grammar_budget\":\"yes\"}", .budget = null, .refusal = "must be a boolean" },
+    };
+    for (cases) |c| {
+        var cx: errors.Cx = .{ .a = g };
+        var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 64 };
+        const result = srv.checkFeatures(&cx, try value(g, c.fields), true, false, &.{1}, offered, &request);
+        if (c.refusal.len > 0) { // a refusal frees what it compiled
+            try std.testing.expectError(error.Refused, result);
+            try std.testing.expect(std.mem.indexOf(u8, cx.message, c.refusal) != null);
+            continue;
+        }
+        try result;
+        defer srv.release(false, request);
+        if (c.budget) |want| try std.testing.expectEqual(want, request.structure.?.budget) else try std.testing.expect(request.structure == null);
+    }
+    // a grammar past the library's work limit (2) is refused by name, never served with a partial mask
+    for ([_]?*const fn (*anyopaque) callconv(.c) c_int{ null, never, overWork }, [_][]const u8{ "libtfgrammar", "token-level, budgeted", "exceeded its work limit" }) |ready, why| {
+        compiler.f.budget_ready = ready;
+        var cx: errors.Cx = .{ .a = g };
+        var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 64 };
+        try std.testing.expectError(error.Refused, srv.checkFeatures(&cx, try value(g, cases[0].fields), true, false, &.{1}, offered, &request));
+        try std.testing.expectEqual(@as(u16, 400), cx.status());
+        try std.testing.expect(std.mem.indexOf(u8, cx.message, why) != null);
+    }
+    try std.testing.expectEqual(fake.compiles, fake.frees); // refused requests free what they compiled
+}
+
+test "auto tools: a strict tool gets the optional-call grammar, other auto requests none, LFM2 stays free" {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const g = arena.allocator();
+    var stub: Stub = .{};
+    var compile: Compile = .{};
+    var compiler = compile.compiler();
+    const strict = "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}},\"required\":[\"q\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"now\"}}]";
+    for ([_]@FieldType(Text, "form"){ .xml, .json, .gemma, .lfm2, .unknown }) |form| for ([_][]const u8{ specs, strict }) |offered| {
+        var text: Text = .{ .form = form };
+        const srv = try Server.init(a, std.testing.io, stub.engine(), text.text(), .{ .served_name = "m", .model_ids = &.{"m"} }, null);
+        defer srv.deinit();
+        srv.info.structures = true;
+        srv.grammars = &compiler;
+        var cx: errors.Cx = .{ .a = g };
+        var request: api.Request = .{ .prompt = &.{1}, .max_tokens = 200 };
+        try srv.checkFeatures(&cx, try value(g, "{}"), true, false, &.{1}, (try value(g, offered)).array, &request);
+        if (std.mem.eql(u8, offered, specs) or form == .lfm2) {
+            try std.testing.expect(request.structure == null);
+            continue;
+        }
+        const format = (try value(g, request.structure.?.text)).get("format").?;
+        try std.testing.expectEqualStrings("triggered_tags", format.strField("type").?);
+        try std.testing.expect(!format.get("stop_after_first").?.bool);
+        try std.testing.expect(std.mem.indexOf(u8, request.structure.?.text, "\"required\":[\"q\"]") != null);
+        var single: api.Request = .{ .prompt = &.{1}, .max_tokens = 200 };
+        try srv.checkFeatures(&cx, try value(g, "{\"tool_call_single\":true}"), true, false, &.{1}, (try value(g, offered)).array, &single);
+        try std.testing.expect((try value(g, single.structure.?.text)).get("format").?.get("stop_after_first").?.bool);
+        var required: api.Request = .{ .prompt = &.{1}, .max_tokens = 200 };
+        try srv.checkFeatures(&cx, try value(g, "{\"tool_call_required\":true}"), true, false, &.{1}, (try value(g, offered)).array, &required);
+        try std.testing.expectEqualStrings("sequence", (try value(g, required.structure.?.text)).get("format").?.strField("type").?);
+    };
+}

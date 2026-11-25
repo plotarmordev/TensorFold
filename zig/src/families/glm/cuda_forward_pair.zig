@@ -1,0 +1,145 @@
+//! A paired prompt step's pass (TF_GLM_PROMPT_PAIR): two chunks site by site, each one's exchanges under the other's.
+const glue = @import("cuda_glue.zig");
+const latent = @import("cuda_latent.zig");
+const fw = @import("cuda_forward.zig");
+const pieces = @import("cuda_forward_pieces.zig");
+const moe = @import("cuda_moe.zig");
+const experts = @import("cuda_experts.zig");
+const Forward = fw.Forward;
+const Pieces = fw.Pieces;
+const Site = fw.Forward.Site;
+const room = fw.Forward.room;
+const share = fw.Forward.share;
+
+/// Two consecutive prompt chunks of one sequence (`b` a view of `a`'s at its end), each on `pieced`'s kernels and bits.
+pub fn pairBody(a: *const Forward, b: *const Forward, ra: usize, rb: usize, final: bool) !void {
+    const two = [_]*const Forward{ a, b };
+    const rows = [_]usize{ ra, rb };
+    var cuts: [2][fw.max_pieces][2]usize = undefined;
+    var n: [2]usize = undefined;
+    for (two, rows, 0..) |f, R, i| {
+        if (f.pieces == null or f.prof != null or f.taps != null) return error.BadPair;
+        const c = &f.ranks[0].w.config;
+        for (f.ranks) |r| {
+            if (r.segs.len > 0 or !r.b.prefill or R == 0 or R > r.b.rows) return error.BadPair;
+            try glue.embedB16(f.set(), f.stream, r.b.ids, r.w.embed, r.b.x, R, c.hidden, c.hc);
+        }
+        if (f.images) |im| for (f.ranks) |r| try im.v.splice(f.stream, im.slot, r.st.pos, r.st.pos + R, r.b.x, c.hc);
+        n[i] = fw.ranges(R, f.pieces.?.count, &cuts[i]);
+        if (n[i] == 1 and !f.splits(R)) return error.BadPair; // run would take this chunk whole
+        for (f.ranks) |r| try f.pre(r, r.w.layers[0].attn_hc, r.w.layers[0].in_norm, R);
+    }
+    const layers = a.ranks[0].w.layers;
+    var li: usize = 0;
+    var di: usize = 0;
+    for (layers, 0..) |l, j| {
+        // b's mixer follows a's on the main stream, so a's caches, KDA state and conv rows of this layer are in
+        for (two, rows, 0..) |f, R, i| {
+            if (j > 0) try awaitShared(f, f.pieces.?, n[i]);
+            for (f.ranks) |r| try f.mixer(r, r.w.layers[j], li, di, R, @min(latent.chunksFor(r.st.pos + R), r.b.nch), null);
+            try exchangeGlue(f, f.pieces.?, j, .mixer, cuts[i][0..n[i]]);
+        }
+        const joint = a.pair_experts and switch (l.ffn) {
+            .dense => false,
+            .moe => |m| m.exl3 == null and m.routed.format == .nvfp4,
+        };
+        if (joint) switch (l.ffn) {
+            .moe => |m| try pairedMoe(a, b, m, j, ra, rb, cuts[0][0..n[0]], cuts[1][0..n[1]]),
+            .dense => unreachable,
+        } else for (two, rows, 0..) |f, R, i| {
+            try awaitShared(f, f.pieces.?, n[i]);
+            for (f.ranks) |r| try f.ffn(r, r.w.layers[j], R, null);
+            try exchangeGlue(f, f.pieces.?, j, .ffn, cuts[i][0..n[i]]);
+        }
+        switch (l.mixer) {
+            .kda => li += 1,
+            .mla => di += 1,
+        }
+    }
+    const heads = [2]bool{ false, final };
+    for (two, rows, 0..) |f, R, i| {
+        try awaitShared(f, f.pieces.?, n[i]);
+        try f.finish(R, heads[i]);
+    }
+}
+
+/// Both chunks' NVFP4 routed experts on one plan, with shared prefixes and combines on their original pieces.
+fn pairedMoe(a: *const Forward, b: *const Forward, m: moe.Layer, j: usize, ra: usize, rb: usize, cuts_a: []const [2]usize, cuts_b: []const [2]usize) !void {
+    const slots = m.top_k + 1;
+    const split = ra * slots;
+    try awaitShared(a, a.pieces.?, cuts_a.len);
+    for (a.ranks) |r| {
+        const k = a.moeKernels();
+        const d = r.w.config.hidden;
+        try moe.prepare(k, a.stream, m, r.b.moe, r.b.normed, d, ra, r.b.moe.pick, null); // prompt rows never take the direct path
+        for (cuts_a) |piece| try moe.shared(k, a.stream, m, r.b.moe, r.b.normed, d, piece[0], piece[1], true);
+    }
+    try awaitShared(b, b.pieces.?, cuts_b.len);
+    for (a.ranks, b.ranks) |ar, br| {
+        const k = a.moeKernels();
+        const d = ar.w.config.hidden;
+        try moe.prepare(k, a.stream, m, br.b.moe, br.b.normed, d, rb, ar.b.moe.pick + split * 4, null);
+        for (cuts_b) |piece| try moe.shared(k, a.stream, m, br.b.moe, br.b.normed, d, piece[0], piece[1], true);
+        const plan: experts.Plan = .{ .route = ar.b.moe.plan, .slots = slots, .experts = m.count + 1, .prompt = true };
+        try experts.runPair(k.experts, a.stream, m.routed, plan, ar.b.moe.pick, ar.b.normed, br.b.normed, d, ra, rb, ar.b.moe.eact, br.b.moe.eact, ar.b.moe.ey, br.b.moe.ey, @intCast(m.count));
+    }
+    try exchangeCombined(a, a.pieces.?, j, m, cuts_a);
+    try exchangeCombined(b, b.pieces.?, j, m, cuts_b);
+}
+
+/// A prepared MoE site's combine, then the same exchange, glue and sharing as exchangeGlue.
+fn exchangeCombined(f: *const Forward, p: *const Pieces, j: usize, m: moe.Layer, cut: []const [2]usize) !void {
+    const D = f.ranks[0].w.config.hidden;
+    const world = f.ranks[0].w.share.world;
+    const last = j + 1 == f.ranks[0].w.layers.len;
+    for (cut, 0..) |piece, q| {
+        const lo = piece[0];
+        const n = piece[1] - lo;
+        const split = f.splits(n);
+        for (f.ranks) |r| try moe.combine(f.moeKernels(), f.stream, m, r.b.moe, lo, piece[1], true, if (split) r.b.part + lo * D * 4 else room(r, lo) + r.w.share.rank * n * D * 4);
+        try p.filled[q].record(f.stream);
+        try p.side.wait(p.filled[q]);
+        try pieces.partials(f, p, lo, n, split);
+        var side = f.*;
+        side.stream = p.side;
+        if (split) {
+            for (f.ranks) |r| {
+                const mine = share(n, world, r.w.share.rank);
+                try side.glueRows(r, j, .ffn, lo + mine[0], lo + mine[1], room(r, lo), r.b.part + (lo + mine[0]) * D * 4); // split sends peers only (#4510)
+            }
+            try pieces.shareGlued(f, p, lo, n, last);
+        } else for (f.ranks) |r| try side.glueRows(r, j, .ffn, lo, piece[1], room(r, lo), 0);
+        try p.shared[q].record(p.side);
+    }
+}
+
+/// A paired site: each piece filled on the main stream, then on the side stream its exchange, glue and (split) sharing.
+fn exchangeGlue(f: *const Forward, p: *const Pieces, j: usize, site: Site, cut: []const [2]usize) !void {
+    const D = f.ranks[0].w.config.hidden;
+    const world = f.ranks[0].w.share.world;
+    const last = site == .ffn and j + 1 == f.ranks[0].w.layers.len;
+    var g = f.*; // the glue's launches go on the side stream
+    g.stream = p.side;
+    for (cut, 0..) |piece, q| {
+        const lo = piece[0];
+        const n = piece[1] - lo;
+        const split = f.splits(n);
+        for (f.ranks) |r| try f.fillRows(r, r.w.layers[j], site, lo, piece[1], if (split) r.b.part + lo * D * 4 else room(r, lo) + r.w.share.rank * n * D * 4);
+        try p.filled[q].record(f.stream);
+        try p.side.wait(p.filled[q]);
+        try pieces.partials(f, p, lo, n, split);
+        if (split) {
+            for (f.ranks) |r| {
+                const mine = share(n, world, r.w.share.rank);
+                try g.glueRows(r, j, site, lo + mine[0], lo + mine[1], room(r, lo), r.b.part + (lo + mine[0]) * D * 4);
+            }
+            try pieces.shareGlued(f, p, lo, n, last);
+        } else for (f.ranks) |r| try g.glueRows(r, j, site, lo, piece[1], room(r, lo), 0);
+        try p.shared[q].record(p.side);
+    }
+}
+
+/// Before a paired chunk's next site: its last site's pieces glued and shared on the side stream.
+fn awaitShared(f: *const Forward, p: *const Pieces, count: usize) !void {
+    for (p.shared[0..count]) |e| try f.stream.wait(e);
+}

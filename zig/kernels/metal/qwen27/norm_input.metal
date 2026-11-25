@@ -1,0 +1,75 @@
+// Runtime constants preserve the Python operator's projection-shaped arithmetic.
+#include <metal_stdlib>
+using namespace metal;
+typedef bfloat bfloat16_t;
+typedef half float16_t;
+[[kernel]] void custom_kernel_q27_norm_input_bfloat16_t_bfloat16_t_floatc_int32_t_bfloat16_t_float(
+  const device bfloat16_t* H [[buffer(0)]],
+  const device bfloat16_t* Wt [[buffer(1)]],
+  const constant float* eps [[buffer(2)]],
+  const device int32_t* dims [[buffer(3)]],
+  device bfloat16_t* XO [[buffer(4)]],
+  device float* XS [[buffer(5)]],
+  uint simdgroup_index_in_threadgroup [[simdgroup_index_in_threadgroup]],
+  uint thread_index_in_simdgroup [[thread_index_in_simdgroup]],
+  uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]],
+  uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]) {
+Q27_SPECIALIZE
+
+  const uint t = thread_position_in_threadgroup.x;
+  const uint m = threadgroup_position_in_grid.y;
+  #if Q27_XS
+  const int M = dims[0], MP = dims[1];
+  constexpr uint XS_T = (Q27_XS == 128) ? 8u : 4u;
+  constexpr uint XS_M = XS_T - 1u;
+  constexpr uint XS_S = (Q27_XS == 128) ? 3u : 2u;
+  #endif
+  constexpr int E = 16;
+  constexpr int TPG = K / E;
+  threadgroup float red[TPG / 32];
+  #if Q27_XS
+  if (int(m) >= M) {
+    if ((t & XS_M) == 0) XS[(t >> XS_S) * MP + m] = 0.0f;
+    return;
+  }
+  #endif
+  const int base = int(m) * K + int(t) * E;
+  float hv[E];
+  float ss = 0.0f;
+  for (int i = 0; i < E; i++) {
+    bfloat h = H[base + i];
+
+    hv[i] = float(h);
+    ss = fma(hv[i], hv[i], ss);
+  }
+  ss = simd_sum(ss);
+  if (thread_index_in_simdgroup == 0) red[simdgroup_index_in_threadgroup] = ss;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  float total = 0.0f;
+  for (int i = 0; i < TPG / 32; i++) total += red[i];
+  const float inv = metal::rsqrt(total / float(K) + eps[0]);
+  #if Q27_XS
+  float xv[E];
+  #endif
+  for (int i = 0; i < E; i++) {
+    #if defined(Q27_SHIFT) && Q27_SHIFT
+    const float gw = 1.0f + float(Wt[int(t) * E + i]);
+    #else
+    const float gw = float(Wt[int(t) * E + i]);
+    #endif
+    const bfloat x = bfloat(gw * (hv[i] * inv));
+    XO[base + i] = x;
+    #if Q27_XS
+    xv[i] = float(x);
+    #endif
+  }
+  #if Q27_XS
+  // Each group's values are summed in index order from zero, matching the lane projection sums.
+  float gs = 0.0f;
+  for (uint turn = 0; turn < XS_T; turn++) {
+    if ((t & XS_M) == turn) for (int i = 0; i < E; i++) gs += xv[i];
+    gs = simd_shuffle(gs, ushort((thread_index_in_simdgroup & ~XS_M) | turn));
+  }
+  if ((t & XS_M) == 0) XS[(t >> XS_S) * MP + m] = gs;
+  #endif
+}

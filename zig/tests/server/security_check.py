@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+import argparse
+import errno
+import os
+import re
+import selectors
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+
+KEY = b"audit-local-key"
+
+
+def launch(binary, fixtures):
+    env = os.environ.copy()
+    env.pop("TENSORFOLD_API_KEY", None)
+    env["TENSORFOLD_NO_LIVE"] = "1"
+    command = [str(binary), "serve", str(fixtures), "--host", "127.0.0.1",
+               "--port", "0", "--api-key", KEY.decode(), "--keep-warm", "0"]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    deadline = time.monotonic() + 15
+    output = bytearray()
+    try:
+        while process.poll() is None and time.monotonic() < deadline:
+            if not selector.select(0.1):
+                continue
+            output.extend(os.read(process.stdout.fileno(), 4096))
+            match = re.search(rb"PORT (\d+)\n", output)
+            if match:
+                reader = threading.Thread(target=process.stdout.read, daemon=True)
+                reader.start()
+                return process, int(match[1]), reader
+        raise RuntimeError("local fixture server did not start: " + output.decode(errors="replace"))
+    except BaseException:
+        process.terminate()
+        process.wait(timeout=5)
+        raise
+    finally:
+        selector.close()
+
+
+# the server's close reaching a client that is still sending: a reset, a closed pipe or a socket no longer connected
+CLOSED_FIRST = {errno.ECONNRESET, errno.EPIPE, errno.ENOTCONN}
+
+
+def exchange(port, data, closes_ok=False):
+    """The bytes the server sent back, and whether it closed while the request was still being sent or read."""
+    output = bytearray()
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+        connection.settimeout(5)
+        try:
+            connection.sendall(data)
+            connection.shutdown(socket.SHUT_WR)
+            while True:
+                part = connection.recv(8192)
+                if not part:
+                    break
+                output.extend(part)
+                if len(output) > 1 << 20:
+                    raise AssertionError("fixture response exceeded 1 MiB")
+        except OSError as error:
+            if not closes_ok or error.errno not in CLOSED_FIRST:
+                raise
+            return bytes(output), True
+    return bytes(output), False
+
+
+def refused_or_closed(output, expected):
+    """A close mid-request may cut the refusal off, but nothing it delivered may be a served (2xx) reply."""
+    if re.match(rb"HTTP/1\.[01] 2", output):
+        raise AssertionError("the server answered a request it should have refused")
+    if b"\r\n\r\n" in output:
+        try:
+            actual = statuses(output)
+        except AssertionError:
+            return  # the refusal itself was cut off by the close
+        if actual != expected:
+            raise AssertionError(f"expected {expected} or a close, got {actual}")
+
+
+def statuses(wire):
+    result = []
+    while wire:
+        head, marker, wire = wire.partition(b"\r\n\r\n")
+        if not marker:
+            raise AssertionError("incomplete response header")
+        lines = head.split(b"\r\n")
+        result.append(int(lines[0].split(b" ", 2)[1]))
+        lengths = [int(line.split(b":", 1)[1]) for line in lines[1:]
+                   if line.lower().startswith(b"content-length:")]
+        if len(lengths) != 1 or len(wire) < lengths[0]:
+            raise AssertionError("invalid response length")
+        wire = wire[lengths[0]:]
+    return result
+
+
+def cases():
+    decision = b'{"state":null,"questions":{"q":{"instructions":"Choose one","criteria":{"A":"Alpha","B":"Beta"}}}}'
+    for path in (b"/systemone", b"/alternative/systemone", b"/systemone/?x=1", b"/v1/systemone"):
+        yield "key required for " + path.decode(), [401], (
+            b"POST " + path + b" HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: "
+            + str(len(decision)).encode() + b"\r\n\r\n" + decision)
+        yield "valid key admits " + path.decode(), [200], (
+            b"POST " + path + b" HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer " + KEY
+            + b"\r\nContent-Length: " + str(len(decision)).encode() + b"\r\n\r\n" + decision)
+    nested = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    # the DELETE carries the key so it reaches routing, where its body must be consumed, not dispatched
+    for method, path, expected in ((b"GET", b"/health", 200), (b"DELETE", b"/unknown", 404)):
+        key = b"Authorization: Bearer " + KEY + b"\r\n" if method == b"DELETE" else b""
+        head = method + b" " + path + b" HTTP/1.1\r\nHost: 127.0.0.1\r\n" + key
+        yield method.decode() + " body cannot become another request", [expected], (
+            head + b"Content-Length: " + str(len(nested)).encode() + b"\r\n\r\n" + nested)
+        yield method.decode() + " chunked body stays framed", [expected], (
+            head + b"Transfer-Encoding: chunked\r\n\r\n" + format(len(nested), "x").encode()
+            + b"\r\n" + nested + b"\r\n0\r\n\r\n")
+    malformed = (
+        b"Content-Length : 0\r\n",
+        b"Content-Length\t: 0\r\n",
+        b"Bad Header: x\r\nContent-Length: 0\r\n",
+        b"Broken-Line\r\nContent-Length: 0\r\n",
+        b": ignored\r\n",
+        b"X: first\r\n Content-Length: 0\r\n",
+        b"X: embedded\x00byte\r\n",
+        b"X: embedded\rbyte\r\n",
+    )
+    for index, headers in enumerate(malformed):
+        yield f"malformed header {index} closes before routing", [400], (
+            b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n" + headers + b"\r\n")
+    yield "truncated request head cannot dispatch", [400], b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+    yield "GET conflicting framing is rejected", [400], (
+        b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+    # an unread body has a small cap; past it the server refuses and closes, maybe before the whole body is sent
+    for size, expected in ((65536, 200), (65537, 400)):
+        yield f"GET body of {size} bytes against the unread cap", [expected], (
+            b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: "
+            + str(size).encode() + b"\r\n\r\n" + b"x" * size), expected != 200
+    # the cap is decided on the declared length before any body is read, so a head alone shows it with no race
+    yield "GET declaring 65537 bytes is refused before its body is read", [400], (
+        b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: 65537\r\n\r\n")
+    yield "GET body preserves a genuine following request", [200, 200], (
+        b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\n\r\ndata"
+        b"GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer " + KEY
+        + b"\r\nConnection: close\r\n\r\n")
+    yield "ordinary pipelining remains supported", [200, 200], (
+        b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n" + nested)
+
+
+HEALTH = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+CLOSING = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+SLOTS = 128
+
+
+def answered(port):
+    """True when a new client is served; a full server answers 503 or resets the connection."""
+    try:
+        return statuses(exchange(port, CLOSING)[0]) == [200]
+    except (AssertionError, OSError):
+        return False
+
+
+def held_slots(port):
+    """Every connection slot taken by clients with no request in progress: half kept alive, half silent."""
+    held = []
+    try:
+        for index in range(SLOTS):
+            connection = socket.create_connection(("127.0.0.1", port), timeout=5)
+            held.append(connection)
+            if index % 2:
+                continue
+            connection.sendall(HEALTH)
+            if not connection.recv(8192).startswith(b"HTTP/1.1 200"):
+                raise AssertionError("keep-alive health request was not answered")
+        if answered(port):
+            raise AssertionError("the fixture server did not fill up")
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            time.sleep(1)
+            if answered(port):
+                return
+        raise AssertionError("no slot came free within 12 seconds")
+    finally:
+        for connection in held:
+            connection.close()
+
+
+def slot_cases():
+    yield "connections with no request give their slots up once every slot is taken", held_slots
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("binary", type=Path)
+    parser.add_argument("--fixtures", type=Path, default=Path(__file__).resolve().parent / "fixtures")
+    args = parser.parse_args()
+    process, port, reader = launch(args.binary.resolve(), args.fixtures.resolve())
+    failed = 0
+    total = 0
+    try:
+        for label, expected, data, *closes_ok in cases():
+            total += 1
+            try:
+                output, closed = exchange(port, data, bool(closes_ok and closes_ok[0]))
+                if closed:
+                    refused_or_closed(output, expected)
+                    label += " (the server closed first)"
+                else:
+                    actual = statuses(output)
+                    if actual != expected:
+                        raise AssertionError(f"expected {expected}, got {actual}")
+                print("PASS", label)
+            except (AssertionError, OSError, ValueError) as error:
+                failed += 1
+                print("FAIL", label + ":", str(error))
+        for label, check in slot_cases():
+            total += 1
+            try:
+                check(port)
+                print("PASS", label)
+            except (AssertionError, OSError, ValueError) as error:
+                failed += 1
+                print("FAIL", label + ":", str(error))
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        reader.join(timeout=5)
+    print(f"SUMMARY server-security: {total - failed} passed, {failed} failed, 0 skipped")
+    return bool(failed)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,600 @@
+//! The Qwen hybrids' CUDA lane backend, with live windows and reserved streams.
+const std = @import("std");
+const cuda = @import("cuda");
+const lanes = @import("lanes");
+const c = @import("config.zig");
+const E = @import("cuda_engine.zig");
+pub const warm = @import("cuda_warm.zig");
+pub const reservation = @import("cuda_reserve.zig");
+pub const window_costs = @import("cuda_window_costs.zig");
+pub const cost_adapter = @import("cuda_cost_adapter.zig");
+const draws = @import("draw.zig");
+const pick = @import("cuda_pick.zig").pick;
+const Draft = @import("cuda_draft.zig").Draft;
+const cuda_rope = @import("cuda_rope.zig");
+const prefill = @import("cuda_prefill.zig");
+const readout = @import("cuda_readout.zig");
+pub const Readout = readout.Readout;
+pub const readout_piece_rows = readout.piece_rows;
+const Fill = prefill.Fill;
+const reuse = @import("cuda_reuse.zig");
+const Mtp = @import("cuda_mtp.zig").Mtp;
+const mtp_state = @import("cuda_native_mtp_state.zig");
+const pages_mod = @import("cuda_pages.zig");
+const kv_host_mod = @import("cuda_kv_host.zig");
+const cache_mod = @import("cuda_cache.zig");
+const prefix_mod = @import("cuda_prefix.zig");
+const kv_pool = @import("core").kv_pool;
+const be = lanes.backend;
+const plan = @import("cuda_native_plan.zig");
+pub const round_timing = @import("cuda_round_timing.zig");
+pub const vision = @import("cuda_vision.zig");
+pub const slide = @import("cuda_slide.zig");
+pub const linked = slide.linked;
+pub const model_type = "qwen3_5";
+/// MLX's 4-bit tables, EXL3; ModelOpt's MIXED_PRECISION (nvidia/Qwen3.8-27B-NVFP4) and single-format NVFP4.
+pub const formats: []const []const u8 = &.{ "mlx-q4g64", "exl3", "modelopt-mixed", "modelopt-nvfp4" };
+pub const default_context: i64 = 32768;
+/// A plain BF16 checkpoint's preflight counts its text tensors, not the tower and MTP in its shards.
+pub const textWeightBytes = @import("cuda_bf16_bytes.zig").textWeightBytes;
+pub const visionBytes = @import("cuda_bf16_bytes.zig").visionBytes;
+/// BF16 serves decisions with a joint head, chat with a tower and no head (cuda_decide.chat); text-only is refused.
+pub const decision_formats: []const []const u8 = &.{"bf16"};
+const decide = @import("cuda_decide.zig");
+const joint = @import("cuda_joint_readout.zig");
+pub const max_segments: u32 = 1;
+pub const prompt_rows: u32 = E.max_rows;
+/// --drafter loads a DFlash2 draft model or the target checkpoint's dense or routed MTP head.
+pub const takes_drafter = true;
+pub const max_mtp_drafts = @import("cuda_mtp.zig").max_drafts;
+/// A request's pages hold one more forward past its prompt and reply (TF_QWEN_KV_PAGES).
+pub const window_rows: u32 = pages_mod.window_rows;
+/// Kept prompt states for the shared cache (cuda_reuse.zig) on the host budget, on the zero-anchored chunk grid.
+pub const snap_bytes = reuse.bytes;
+pub const snap_save = reuse.save;
+pub const snap_restore = reuse.restore;
+pub const snap_drop = reuse.drop;
+pub const snap_spare = @import("cuda_spares.zig").spare;
+pub const snap_trim = @import("cuda_spares.zig").trim;
+pub const snap_reuses = @import("cuda_spares.zig").reuses;
+pub const snap_host = true;
+pub const snap_lookahead: u32 = 0;
+pub const snap_grid: u32 = E.grid_rows;
+/// Nanoseconds a reply's background warm pass waits for the next request before its first chunk.
+pub const warm_quiet: u64 = 150 * std.time.ns_per_ms;
+/// Keep a warm pass's end only where a resume can use it.
+pub const warm_usable = true;
+/// --learn-conversations: the kept states' disk image, the probe their identity hashes, the facts they depend on.
+pub const kept_disk = @import("cuda_disk.zig");
+/// cuda_prefill cuts a cold pass at the request's chunk starts too, so the server may send its message starts.
+pub const request_starts = true;
+const starts = @import("cuda_request_starts.zig");
+pub const request_starts_default_on = starts.default_on;
+pub const request_starts_switch = starts.switch_name;
+pub const requestStartsOn = starts.on;
+/// explain() words open refusals too (--vision on a checkpoint without a tower it reads).
+pub const explains_open = true;
+/// The server's reading of the room left now; null if unreadable.
+pub const Room = @import("cuda_mtp.zig").Room;
+/// `room` and `drafter` size an EXL3 checkpoint's load: its embedding rows go to host memory when the card is short.
+pub const Options = struct { context: usize, drafts: bool, mtp_drafts: ?u32 = null, segments: usize = 1, slide: bool = false, vision: ?vision.Limits = null, kv8: bool = false, prompt_int8: bool = false, precision: ?enum { full } = null, rope_yarn: ?f64 = null, room: ?Room = null, drafter: ?[]const u8 = null, tp: usize = 1, rank: usize = 0, master: ?[]const u8 = null, master_port: u16 = 29551 };
+/// The window --context may ask for: the config's, or the YaRN window its block or --rope-yarn makes.
+pub const contextCeiling = plan.contextCeiling;
+
+/// What the native server drives: the lane backend, the facts its round loop reads, and how to free it.
+pub const Loaded = struct {
+    learns: ?*E.Engine = null,
+    learn_bytes: usize = 0,
+    backend: be.Backend,
+    facts: lanes.Model,
+    rows: u32,
+    prompt_rows: u32, // Effective scratch rows, capped by the loaded context.
+    /// Device bytes each admitted stream allocates (recurrences, convolution tails, keys and values).
+    stream_bytes: usize,
+    free_streams: u32 = 0,
+    ctx: *anyopaque,
+    deinit: *const fn (*anyopaque) void,
+    /// Called with the admitted stream count: that many caches allocated and touched now, as memory commits on touch.
+    reserve: *const fn (*anyopaque, u32) anyerror!void,
+    /// --vision: the tower the server's image requests reach (native/cuda_vision_offer.zig).
+    vision: ?*vision.Vision = null,
+    /// What the prompt cache's saves copy: the engine and the streams' caches.
+    target: *reuse.Target,
+    /// TF_QWEN_KV_PAGES: the streams beside the first take pages of one pool (null: a window each).
+    layout: ?kv_pool.Layout = null,
+    /// TF_QWEN_KV_SHARE: the family keeps prompts as pool pages itself; the host makes no prompt cache of its own.
+    own_prompt_cache: bool = false,
+    /// TF_QWEN_KV_SHARE or TF_QWEN_KV_PAGES_ALL: every stream runs on the pool's pages; the engine's window sits idle.
+    all_on_pages: bool = false,
+    /// TF_QWEN_KV_PAGES_ALL=1: the engine's own stream takes pages too, a window of them set aside by the plan.
+    engine_paged: bool = false,
+    /// An integrated GPU: kept states in device memory on the host budget (Target.device), the startup line says so.
+    device_snaps: bool = false,
+    /// A Clef checkpoint's readouts (the engine then answers only those); null for every other checkpoint.
+    readouts: ?lanes.readout.Info = null,
+};
+
+pub const cacheBytes = plan.cacheBytes;
+pub const cacheBytesWithTaps = plan.cacheBytesWithTaps;
+/// The pool's layout with a drafter (`extra` bytes a stream): DFlash2's ring and taps in the run, the rest fixed.
+pub fn pagedLayout(p: *anyopaque, extra: u64) ?kv_pool.Layout {
+    const l: *Lanes = @ptrCast(@alignCast(p));
+    if (l.page_tokens == 0) return null;
+    const ring = l.ringBytes();
+    const in_run = ring + if (l.draft != null) l.e.tapBytes() else 0; // DFlash2 counts the target's taps as its own
+    l.extra = @intCast(extra -| in_run);
+    return pages_mod.layout(l.e, l.capacity, l.page_tokens, ring, l.extra);
+}
+
+/// The pool beside the first stream's window (engine_paged: for it too): `streams` more lanes and `pages` pages.
+pub fn attach(p: *anyopaque, streams: u32, pages: usize) !void {
+    const l: *Lanes = @ptrCast(@alignCast(p));
+    const ring = l.ringBytes();
+    // TF_QWEN_KV_SHARE and TF_QWEN_KV_PAGES_ALL: every stream on pages, a lane each (PAGES_ALL: no window reserved)
+    l.paged_only = (l.engine_paged or l.share_snaps > 0) and (streams > 0 or l.engine_paged);
+    const pool_lanes = if (l.paged_only) streams + 1 else streams;
+    l.pages = try pages_mod.Pages.init(l.gpa, l.e, pages_mod.layout(l.e, l.capacity, l.page_tokens, ring, l.extra), l.capacity, ring, pool_lanes, pages);
+    if (pool_lanes > 0) {
+        if (l.draft) |d| d.ring_of = .{ .ctx = l, .ring = Lanes.ringOf, .all = l.engine_paged };
+        if (l.mtp) |m| m.ring_of = .{ .ctx = l, .area = Lanes.ringOf, .all = l.engine_paged };
+    }
+    if (l.share_snaps > 0 and streams > 0) l.prefix = try prefix_mod.Prefix.init(l.gpa, l.e, l.pages.?, l.share_snaps);
+    if (l.prefix != null and prefix_mod.fewSnapshots(l.share_snaps, streams + 1)) std.log.warn("TF_QWEN_KV_SHARE={d} keeps under 4 recurrent-state snapshots a stream at --parallel {d}: live streams evict each other's before a resume; set it to {d} or more", .{ l.share_snaps, streams + 1, 4 * (streams + 1) });
+}
+
+pub const kvHostRefusal = kv_host_mod.refusal;
+/// Host bytes are absent before any geometry or cap read when the switch is unset.
+pub fn kvHostRoom(p: *anyopaque) !u64 {
+    return kv_host_mod.room(@as(*Lanes, @ptrCast(@alignCast(p))));
+}
+
+/// The lane host's admission: the first stream's window is free, or a lane and the request's pages are.
+pub fn fits(p: *anyopaque, prompt: u32, max_tokens: u32) bool {
+    const l: *Lanes = @ptrCast(@alignCast(p));
+    if (l.pool.items.len > 0 and !l.paged_only) return true;
+    return if (l.pages) |pg| pg.fits(prompt, max_tokens) else true;
+}
+
+/// The pool the lane host's ledger admits this family's promises by (#1943).
+pub fn ledgerPool(p: *anyopaque) ?*@import("core").kv_pool.Pool {
+    return if (@as(*Lanes, @ptrCast(@alignCast(p))).pages) |pg| &pg.pool else null;
+}
+
+pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: []const u8, kernels: ?[]const u8, o: Options) !Loaded {
+    const clef = try decide.check(gpa, io, dir, .{ .drafter = o.drafter != null, .slide = o.slide, .vision = o.vision != null, .kv8 = o.kv8, .prompt_int8 = o.prompt_int8 });
+    var loaded = try openLanes(gpa, io, ctx, dir, kernels, o);
+    if (!clef) return loaded;
+    errdefer loaded.deinit(loaded.ctx);
+    if (loaded.layout != null) return error.QwenJointPages;
+    const l: *Lanes = @ptrCast(@alignCast(loaded.ctx));
+    var why: @import("core").joint_schema.Problem = .{};
+    const j = joint.Joint.open(gpa, io, l.e, dir, o.context, &why) catch |err| {
+        std.log.err("the joint schema head cannot open ({s}): {s}", .{ @errorName(err), why.text });
+        return err;
+    };
+    loaded.backend = l.useReadout(j.readout()); // the lanes own the head from here
+    loaded.stream_bytes += joint.streamBytes(j.head.cfg, o.context);
+    loaded.readouts = j.readout().info;
+    return loaded;
+}
+
+/// `open` without the decision-only refusals: the runners open a BF16 backbone with a test readout through it.
+pub fn openLanes(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: []const u8, kernels: ?[]const u8, o: Options) !Loaded {
+    if (kernels != null) return error.QwenHasNoCapturedKernels;
+    if (o.slide and o.kv8) return error.UnsupportedLearningFormat;
+    try @import("cuda_sm110_open.zig").check(gpa, io, ctx, o);
+    const page_tokens = try pages_mod.paging();
+    const engine_paged = page_tokens > 0 and pages_mod.pagedOnly();
+    const page_test = try cache_mod.pageTest();
+    _ = try cache_mod.cacheRows(o.context, page_test);
+    if (page_tokens > 0 and o.slide) return error.QwenPagesNoLearner;
+    if (kv_host_mod.onHost()) try kv_host_mod.checkDevice(try ctx.attribute(.integrated) != 0, page_tokens, engine_paged);
+    const share_snaps = try prefix_mod.sharing();
+    if (kv_host_mod.onHost()) try kv_host_mod.checkShared(share_snaps);
+    // shared save marks are page edges and become cold-pass cuts independent of the compute chunk grid
+    if (share_snaps > 0 and page_tokens == 0) return error.QwenShareNeedsPages;
+    if (kv_host_mod.onHost() and share_snaps == 0) std.log.warn("TF_QWEN_KV_HOST pins the KV pages in host memory; the prompt cache would pin more beside them: set --prompt-cache-gib to bound it", .{});
+    const e = try E.Engine.init(gpa, io, ctx, dir, o.kv8, fitOf(o), o.context);
+    errdefer e.deinit();
+    if (o.rope_yarn) |f| { // --rope-yarn over the downloaded config: its table, and the window it allows
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        defer arena.deinit();
+        const r = try cuda_rope.resolveDir(arena.allocator(), io, dir, f);
+        e.g.context = r.ceiling;
+        try @import("cuda_rope_table.zig").set(e, r.rope);
+    }
+    if (o.prompt_int8) {
+        try e.int8.enable(e); // --prompt-precision int8: prompt projections quantize their inputs
+        try e.warmPromptInt8(); // allocate the optional INT8 workspace before admission
+    }
+    if (e.g.vocab != c.vocab) return error.UnsupportedQwenVocab; // draw.zig's masks are sized by the 2B's vocabulary
+    if (o.slide) _ = try @import("cuda_learn_shape.zig").from(e.g);
+    // --vision: the checkpoint's tower, its weights and one call's scratch loaded beside the model's
+    const v: ?*vision.Vision = if (o.vision) |lim| try vision.Vision.open(gpa, io, ctx.d, e.stream, dir, e.g.hidden, lim) else null;
+    errdefer if (v) |x| x.deinit();
+    const timing_on = round_timing.Trace.enabled();
+    const trace = try round_timing.Trace.create(gpa, timing_on and e.g.hidden == 5120 and e.g.layers == 64 and e.g.experts == 0);
+    errdefer if (trace) |x| gpa.destroy(x);
+    const l = try gpa.create(Lanes);
+    l.* = .{ .gpa = gpa, .io = io, .e = e, .capacity = o.context, .mtp_drafts = o.mtp_drafts, .page_tokens = page_tokens, .engine_paged = engine_paged, .page_test = page_test, .share_snaps = share_snaps, .cost_context = ctx, .room = o.room, .startup = e.startup, .vision = v, .target = undefined, .timing_on = timing_on, .trace = trace };
+    l.target = .{ .e = e, .caches = &l.caches, .seen = &l.seen, .device = try ctx.attribute(.integrated) != 0 };
+    return .{
+        .learns = if (o.slide) e else null,
+        .learn_bytes = if (o.slide) @import("cuda_train.zig").memory(try @import("cuda_learn_shape.zig").from(e.g)) + e.streamBytes(o.context) else 0,
+        .backend = l.backend(),
+        .facts = modelFacts(@intCast(e.window_rows), @intCast(e.verify_rows), e.g),
+        .rows = @intCast(e.window_rows),
+        .prompt_rows = @intCast(e.scratch_rows),
+        .stream_bytes = try cacheBytes(e, o.context, page_test),
+        .ctx = l,
+        .deinit = release,
+        .reserve = reserve,
+        .vision = v,
+        .target = &l.target,
+        .device_snaps = l.target.device,
+        .layout = if (page_tokens > 0) pages_mod.layout(e, o.context, page_tokens, 0, 0) else null,
+        .own_prompt_cache = share_snaps > 0,
+        .all_on_pages = page_tokens > 0 and share_snaps > 0 and !engine_paged, // the engine's window idle
+        .engine_paged = engine_paged,
+    };
+}
+
+/// What an EXL3 load must leave room for: one stream at the asked window, and the drafter that loads beside it.
+fn fitOf(o: Options) ?@import("cuda_host_embed.zig").Fit {
+    const r = o.room orelse return null;
+    const room = r.read(r.ctx) orelse return null;
+    return .{ .room = room, .context = o.context, .drafter = if (o.drafts) o.drafter else null, .prompt_int8 = o.prompt_int8 };
+}
+pub fn learnModel(p: *anyopaque, dir: []const u8) slide.Model {
+    const l: *Lanes = @ptrCast(@alignCast(p));
+    return .{ .e = l.e, .dir = dir, .lay = slide.layout(l.e.g.hidden, l.e.g.layers, l.e.g.intermediate, 0) catch unreachable };
+}
+
+/// A checkpoint's facts: the dense 27B also copies from the root (a drafter raises its copy match, draft.copyMatch).
+pub const modelFacts = plan.modelFacts;
+pub const laneFacts = plan.laneFacts;
+
+fn reserve(p: *anyopaque, streams: u32) anyerror!void {
+    const l: *Lanes = @ptrCast(@alignCast(p));
+    try reservation.target(E.Cache, E.Part, l, streams); // with a pool: the first window, the shapes on its lanes
+}
+const drafter_open = @import("cuda_drafter_open.zig");
+pub const Opened = drafter_open.Opened;
+pub const openDrafter = drafter_open.openDrafter;
+pub const finishDrafterOpen = drafter_open.finishDrafterOpen;
+pub const explain = @import("cuda_native_explain.zig").explain;
+fn release(p: *anyopaque) void {
+    @as(*Lanes, @ptrCast(@alignCast(p))).deinit();
+}
+
+pub const Lanes = struct {
+    timing_on: bool = false,
+    trace: ?*round_timing.Trace = null,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    e: *E.Engine,
+    capacity: usize,
+    /// TF_QWEN_KV_PAGES's positions a page (0: no pool) and the pool `attach` made.
+    page_tokens: usize = 0,
+    page_test: usize = 0,
+    pages: ?*pages_mod.Pages = null,
+    paged_only: bool = false,
+    /// TF_QWEN_KV_SHARE's snapshots (0: off) and the prompt cache over the pool's pages `attach` made.
+    share_snaps: usize = 0,
+    prefix: ?*prefix_mod.Prefix = null,
+    engine_paged: bool = false, // TF_QWEN_KV_PAGES_ALL=1: no window reserved, the engine's own stream a pool lane
+    /// The DFlash2 drafter, when one is attached: its rings go into the pool lanes' runs.
+    draft: ?*Draft = null,
+    /// The MTP drafter, when attached: its ring and state go into the pool lanes' runs.
+    mtp: ?*Mtp = null,
+    mtp_drafts: ?u32 = null,
+    room: ?Room = null,
+    /// A drafter's bytes a stream outside the lanes' runs (pagedLayout).
+    extra: usize = 0,
+    cost_context: ?*const cuda.Context = null,
+    cost_identity: ?[32]u8 = null,
+    cost_kind: cost_adapter.Kind = .dflash,
+    startup: warm.profile.Times = .{},
+    /// --vision's tower: an image prompt's images encoded at its prefill.
+    vision: ?*vision.Vision = null,
+    target: reuse.Target,
+    caches: std.AutoHashMapUnmanaged(*lanes.Stream, *E.Cache) = .empty,
+    /// An image prompt's images as its kept states name them (cuda_reuse.zig), from its prefill to its release.
+    seen: std.AutoHashMapUnmanaged(*lanes.Stream, []reuse.Seen) = .empty,
+    /// Caches at the full window, kept between streams: allocated and touched once (`reserve`), reset on reuse.
+    pool: std.ArrayList(*E.Cache) = .empty,
+    warmed: warm.Seen = .{},
+    calibration: ?*Draft = null,
+    /// Prompt passes going a cut at a time (prefill_step), from their first step to their last.
+    fills: std.AutoHashMapUnmanaged(*lanes.Stream, Fill) = .empty,
+    /// The latest normalized prompt rows, valid until the next target forward.
+    last_mtp_normed: ?mtp_state.View = null,
+    /// The expected direct suffix lets feature lookup reject expired views.
+    last_mtp_direct_expected: ?mtp_state.View = null,
+    /// The readout readout streams fill (none: they are refused) and each one's state, from its first piece to release.
+    readout: readout.Side = .{},
+
+    fn deinit(self: *Lanes) void {
+        self.readout.deinit(self.gpa, self.e); // drained and closed before any cache a pending piece writes goes
+        var it = self.caches.valueIterator();
+        while (it.next()) |cache| self.give(cache.*); // a pool lane's pages back, a window to the reserve
+        self.caches.deinit(self.gpa);
+        var seen = self.seen.valueIterator();
+        while (seen.next()) |v| self.gpa.free(v.*);
+        self.seen.deinit(self.gpa);
+        for (self.pool.items) |cache| self.drop(cache);
+        self.pool.deinit(self.gpa);
+        var fills = self.fills.valueIterator();
+        while (fills.next()) |f| f.deinit();
+        self.fills.deinit(self.gpa);
+        if (self.prefix) |x| x.deinit(); // its pages back to the pool before the pool goes
+        if (self.pages) |p| p.deinit();
+        if (self.vision) |v| v.deinit();
+        self.target.spares.deinit(); // after the host closed the prompt cache, the last to give buffers back
+        self.e.deinit();
+        if (self.trace) |x| self.gpa.destroy(x);
+        self.gpa.destroy(self);
+    }
+
+    fn drop(self: *Lanes, cache: *E.Cache) void {
+        if (cache.owner != null) {
+            cuda.completion.drain(self.e.d, self.e.stream, "recurrent cache disposal did not drain");
+            E.recurrent.completed(self.e);
+        }
+        cache.deinit(self.gpa);
+        self.gpa.destroy(cache);
+    }
+
+    /// A cache for a new stream: a pooled one reset, a pool lane with its pages, else one more window.
+    pub fn take(self: *Lanes, prompt: usize, max_new: usize) !*E.Cache {
+        if (!self.paged_only) if (self.pool.pop()) |cache| {
+            try cache.reset(self.e);
+            return cache;
+        };
+        if (self.pages) |p| return p.open(prompt, max_new); // LaneMemory: the lane host waits for a stream to end
+        const cache = try self.gpa.create(E.Cache);
+        errdefer self.gpa.destroy(cache);
+        cache.* = try E.Cache.init(self.gpa, self.e, self.capacity);
+        return cache;
+    }
+
+    pub fn give(self: *Lanes, cache: *E.Cache) void {
+        if (self.pages) |p| if (p.close(cache)) return;
+        if (cache.owner != null) {
+            cache.last = null;
+            E.recurrent.release(cache);
+            if (self.caches.count() == 0) E.recurrent.idle(self.e);
+        }
+        self.pool.append(self.gpa, cache) catch self.drop(cache);
+    }
+
+    /// Each width timed on a reset cache after its captured launch shape is warm.
+    pub fn timeWindows(self: *Lanes, d: anytype, reserved: ?*E.Cache) !void {
+        self.startup.add(try cost_adapter.measure(self, d, reserved));
+    }
+
+    /// The text streams' entries, and the same with a readout's completion once one is attached.
+    const text_vtable: be.Backend.VTable = .{ .prefill = prefillFn, .prefill_step = prefillStepFn, .cancel_prefill = cancelPrefillFn, .reports_fill = true, .first = firstFn, .first_masked = firstMaskedFn, .queue = queueFn, .read = readFn, .verify = verifyFn, .keep = keepFn, .draft = draftFn, .prepare_features = prepareFeaturesFn, .features = featuresFn, .release = releaseFn };
+    const read_vtable: be.Backend.VTable = blk: {
+        var v = text_vtable;
+        v.readout_finish = readoutFinishFn;
+        break :blk v;
+    };
+
+    fn backend(self: *Lanes) be.Backend {
+        return .{ .ptr = self, .round_observer = if (self.trace) |x| x.observer() else null, .first_before_draft = true, .penalties = true, .chunk_invariant = true, .vtable = if (self.readout.readout != null) &read_vtable else &text_vtable };
+    }
+
+    /// Readout streams from now on fill through `r` (one rank; before the first stream): the backend to hand on.
+    pub fn useReadout(self: *Lanes, r: Readout) be.Backend {
+        self.readout.readout = r;
+        return self.backend();
+    }
+
+    /// What the engine's readouts take, for its `Info` (null: none).
+    pub fn readouts(self: *const Lanes) ?lanes.readout.Info {
+        return if (self.readout.readout) |r| r.info else null;
+    }
+
+    fn readoutFinishFn(ptr: *anyopaque, stream: *lanes.Stream, logits: []u16) !void {
+        return readout.finish(cast(ptr), stream, logits);
+    }
+
+    /// A drafter's bytes in each lane's run: DFlash2's ring, or MTP's ring and state (0: no drafter).
+    pub fn ringBytes(self: *const Lanes) usize {
+        if (self.draft) |d| return d.c.ringBytes();
+        return if (self.mtp) |m| m.areaBytes() else 0;
+    }
+
+    /// The ring in the run of the lane `stream`'s cache holds; null: its cache is a reserved window's.
+    fn ringOf(ptr: *anyopaque, stream: *lanes.Stream) ?u64 {
+        const self = cast(ptr);
+        const cache = self.caches.get(stream) orelse return null;
+        return cache.drafter_ring;
+    }
+
+    fn cast(ptr: *anyopaque) *Lanes {
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    pub fn cacheOf(self: *Lanes, stream: *lanes.Stream) !*E.Cache {
+        return self.caches.get(stream) orelse error.UnknownQwenStream;
+    }
+
+    fn prefillFn(ptr: *anyopaque, stream: *lanes.Stream) !void {
+        return prefill.whole(cast(ptr), stream);
+    }
+
+    fn prefillStepFn(ptr: *anyopaque, stream: *lanes.Stream, max_rows: u32) !bool {
+        if (stream.readout != null) return readout.step(cast(ptr), stream, max_rows);
+        return prefill.step(cast(ptr), stream, max_rows);
+    }
+
+    pub fn restoreKept(self: *Lanes, cache: *E.Cache, saved: *anyopaque, seen: []const reuse.Seen) !void {
+        return reuse.restoreCache(self.e, cache, saved, seen);
+    }
+
+    fn cancelPrefillFn(ptr: *anyopaque, stream: *lanes.Stream) !void {
+        return prefill.cancel(cast(ptr), stream);
+    }
+
+    fn endFill(self: *Lanes, stream: *lanes.Stream) void {
+        prefill.endFill(self, stream);
+    }
+
+    fn firstFn(ptr: *anyopaque, stream: *lanes.Stream, position: u64) !u64 {
+        return firstMaskedFn(ptr, stream, position, &.{});
+    }
+
+    fn firstMaskedFn(ptr: *anyopaque, stream: *lanes.Stream, position: u64, mask: []const u32) !u64 {
+        const self = cast(ptr);
+        const cache = try self.cacheOf(stream);
+        if (position != cache.len) return error.InvalidQwenPosition;
+        return try draws.draw(self.gpa, cache.logits, stream.sampling, position, mask);
+    }
+
+    fn queueFn(ptr: *anyopaque, stream: *lanes.Stream, feed: be.Feed, position: u64) !u64 {
+        const self = cast(ptr);
+        const cache = try self.cacheOf(stream);
+        if (position != cache.len + 1) return error.InvalidQwenPosition;
+        const token: u32 = switch (feed) {
+            .value => |v| v,
+            .handle => |h| @intCast(h),
+        };
+        if (stream.penalties.active()) {
+            try self.e.penalties.window(self.gpa, stream, cache.len, token);
+            try self.e.penalties.row(self.gpa, 0, stream.penalties, &.{});
+        }
+        try self.e.forward(&.{.{ .cache = cache, .rows = 1, .undo = self.e.learning != null }}, &.{token}, .{ .draws = &.{pick(stream.sampling, position)} });
+        cache.last = null;
+        return self.e.tokens[0];
+    }
+
+    fn readFn(_: *anyopaque, handle: u64) !u32 {
+        if (handle >= c.vocab) return error.InvalidQwenToken;
+        return @intCast(handle);
+    }
+
+    /// Each window (a pending token and drafts) checked, then as many as fit a forward; a tree's rows keyed by depth.
+    fn verifyFn(ptr: *anyopaque, windows: []const be.Window, out: []be.Verified) !void {
+        const self = cast(ptr);
+        const t0 = if (self.timing_on) std.Io.Clock.awake.now(self.io) else std.Io.Timestamp.zero;
+        defer if (self.timing_on) @import("cuda_draft.zig").timing("verify", self.io, t0);
+        if (self.trace) |x| x.reset();
+        if (windows.len != out.len) return error.InvalidQwenWindows;
+        for (windows, out) |w, o| {
+            const rows = w.rows();
+            if (w.held != 0 or rows > self.e.window_rows or w.positions.len != rows) return error.UnsupportedQwenWindow;
+            if (w.masks.len != 0 and w.masks.len != rows * draws.mask_words) return error.InvalidQwenMasks;
+            if (o.sampled.len != rows or o.drafts.len != w.tokens.len) return error.InvalidQwenOutputs;
+            const cache = try self.cacheOf(w.stream);
+            var depth: [E.most_window]u64 = undefined;
+            for (w.positions, 0..) |p, r| {
+                const parent: i32 = if (w.parents) |ps| ps[r] else if (r == 0) -1 else @intCast(r - 1);
+                if (r == 0 and parent != -1) return error.UnsupportedQwenWindow;
+                if (r > 0 and (parent < 0 or parent >= @as(i32, @intCast(r)))) return error.UnsupportedQwenWindow;
+                depth[r] = if (parent < 0) 0 else depth[@intCast(parent)] + 1;
+                if (p != cache.len + depth[r] + 1) return error.InvalidQwenPosition;
+            }
+        }
+        var at: usize = 0;
+        while (at < windows.len) {
+            var parts: [E.max_segs]E.Part = undefined;
+            var ids: [E.grid_rows]u32 = undefined; // verify rows: verify_rows at most
+            var picks: [E.grid_rows]E.Draw = undefined;
+            var n: usize = 0;
+            var total: usize = 0;
+            var masked = false;
+            while (at + n < windows.len and n < E.max_segs and total + windows[at + n].rows() <= self.e.verify_rows) : (n += 1) {
+                const w = windows[at + n];
+                parts[n] = .{ .cache = self.caches.get(w.stream).?, .rows = w.rows(), .parents = w.parents, .undo = self.e.learning != null };
+                ids[total] = w.pending;
+                @memcpy(ids[total + 1 ..][0..w.tokens.len], w.tokens);
+                for (w.positions, 0..) |p, r| picks[total + r] = pick(w.stream.sampling, p);
+                if (w.stream.penalties.active()) try self.e.penalties.stageWindow(self.gpa, w, parts[n].cache.len, total);
+                masked = masked or w.masks.len != 0;
+                total += w.rows();
+            }
+            // structured output draws on the host, over each row's logits with its mask applied
+            const started = if (self.trace != null) std.Io.Clock.awake.now(self.io) else std.Io.Timestamp.zero;
+            try self.e.forward(parts[0..n], ids[0..total], if (masked) .logits else .{ .draws = picks[0..total] });
+            if (self.trace) |x| {
+                const ns = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+                const bucket = if (self.e.learning != null or self.e.pockets.any()) 0 else E.Engine.Shape.init(total, n, true, self.e.n_taps > 0, 1).total;
+                x.frame(at, n, total, bucket, @as(f64, @floatFromInt(ns)) / 1e6);
+            }
+            var row: usize = 0;
+            for (windows[at..][0..n], out[at..][0..n]) |w, o| {
+                for (o.sampled, w.positions, 0..) |*t, p, r| {
+                    const mask = if (w.masks.len > 0) w.masks[r * draws.mask_words ..][0..draws.mask_words] else &.{};
+                    t.* = if (masked) try draws.draw(self.gpa, self.e.rowLogits(row + r), w.stream.sampling, p, mask) else self.e.tokens[row + r];
+                }
+                @memcpy(o.drafts, w.tokens);
+                row += w.rows();
+            }
+            at += n;
+        }
+    }
+
+    /// The accepted path of each window (a chain's prefix or a tree's branch): the state as that chain leaves it.
+    fn keepFn(ptr: *anyopaque, windows: []const be.Window, paths: []const []const u32) !void {
+        const self = cast(ptr);
+        const t0 = std.Io.Clock.awake.now(self.io);
+        defer @import("cuda_draft.zig").timing("keep", self.io, t0);
+        for (windows, paths) |w, path| {
+            const cache = try self.cacheOf(w.stream);
+            if (cache.last == null) continue; // already kept: nothing to roll back
+            try cache.keep(self.e, path);
+        }
+    }
+
+    fn draftFn(_: *anyopaque, requests: []const be.DraftRequest) !void {
+        for (requests) |r| if (r.depth != 0) return error.QwenCheckpointHasNoDraftHead;
+    }
+
+    /// A drafter's tapped layers, before any stream's caches exist: each forward fills their rings after.
+    fn prepareFeaturesFn(ptr: *anyopaque, taps: []const u32) !void {
+        const self = cast(ptr);
+        if (self.caches.count() != 0 or self.pool.items.len != 0) return error.TapsAfterStreams;
+        try self.e.setTaps(taps);
+    }
+    /// Rows [start, start + count) of a stream's tap ring (slot position % tapRows()), the newest tapRows() rows kept.
+    fn featuresFn(ptr: *anyopaque, stream: *lanes.Stream, taps: []const u32, start: u64, count: u32) !be.Features {
+        const self = cast(ptr);
+        if (taps.len != self.e.n_taps) return error.TapsMismatch;
+        const cache = try self.cacheOf(stream);
+        const ring = cache.tap orelse return error.NoTaps;
+        const row_bytes: usize = self.e.g.hidden * 2;
+        if (self.fills.get(stream)) |fill| if (prefill.onlySkippedMtpPrefix(start, count, fill.mtp_tap_from))
+            return .{ .buffer = ring.ptr, .offset = start, .rows = 0, .row_bytes = @intCast(self.e.n_taps * row_bytes), .space = .device, .dtype = .bf16 };
+        // a long prompt asks for more rows than the ring keeps; the drafter reads only its window of the newest
+        const held_from = cache.written -| self.e.tapRows();
+        if (start + count > cache.written or start + count <= held_from) return error.RowsNotHeld;
+        const normalized = try mtp_state.normalizedFeaturesOrExpired(self.last_mtp_direct_expected, self.last_mtp_normed, self.mtp != null, stream, self.e.mtp_prompt.epoch, cache.written, start, count, self.e.x, row_bytes);
+        return .{ .buffer = ring.ptr, .offset = start, .rows = count, .row_bytes = @intCast(self.e.n_taps * self.e.g.hidden * 2), .space = .device, .dtype = .bf16, .normalized = normalized };
+    }
+    fn releaseFn(ptr: *anyopaque, stream: *lanes.Stream) void {
+        const self = cast(ptr);
+        mtp_state.release(&self.last_mtp_normed, &self.last_mtp_direct_expected, stream);
+        readout.release(self, stream);
+        if (self.caches.fetchRemove(stream)) |entry| self.give(entry.value);
+        if (self.seen.fetchRemove(stream)) |entry| self.gpa.free(entry.value);
+        self.endFill(stream);
+    }
+    /// Each image's first placeholder row and identity: a kept state resumes only the same images.
+    pub fn seenOf(self: *Lanes, images: []const lanes.stream.Image) ![]reuse.Seen {
+        const seen = try self.gpa.alloc(reuse.Seen, images.len);
+        for (seen, images) |*s, im| s.* = .{ .at = im.at, .id = im.hash };
+        return seen;
+    }
+};
+test "Qwen stepped prefill: cancel between host iterations retains only the last completed cut" {
+    try @import("cuda_prefill_test.zig").cancelled(Lanes, Lanes.backend);
+}
+test "Qwen stepped prefill: a cap (the flag's or fcfs's) cuts on the 128 grid in cold chunks; marks keep at cold cuts" {
+    try @import("cuda_prefill_test.zig").capped(Lanes, Lanes.backend);
+}
+test {
+    _ = @import("cuda_admit_test.zig");
+    _ = @import("cuda_mtp_budget.zig");
+}

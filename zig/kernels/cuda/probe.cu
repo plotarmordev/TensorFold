@@ -1,0 +1,90 @@
+// Runtime test kernels: copies, argument passing, module globals, graphs and launch cost; nothing here serves a model.
+
+#include <cstdint>
+
+#include "glm_pdl.cuh"
+
+struct ProbeView {
+    const float* src;
+    int n;
+    float scale;
+};
+
+__device__ int tf_probe_table[4];
+
+extern "C" __global__ void tf_probe_fill(float* out, float base, uint32_t n) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = base + static_cast<float>(i);
+}
+
+extern "C" __global__ void tf_probe_axpy(float* y, const float* x, float a, uint32_t n) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = a * x[i] + y[i];
+}
+
+// One thread adds to a counter, so a chain of these is a chain of dependent launches.
+extern "C" __global__ void tf_probe_step(unsigned long long* counter, unsigned long long add) {
+    *counter += add;
+}
+
+// By-value struct, bool, int8, double and int64 parameters, echoed so the host can check its packing.
+extern "C" __global__ void tf_probe_args(float* out, ProbeView view, bool flag, int8_t small, double wide, long long big) {
+    const int i = threadIdx.x;
+    if (i < view.n) out[i] = view.src[i] * view.scale;
+    if (i == 0) {
+        out[view.n] = flag ? 1.0f : 0.0f;
+        out[view.n + 1] = static_cast<float>(small);
+        out[view.n + 2] = static_cast<float>(wide);
+        out[view.n + 3] = static_cast<float>(big);
+    }
+}
+
+extern "C" __global__ void tf_probe_read_table(int* out) {
+    out[threadIdx.x] = tf_probe_table[threadIdx.x] * 2;
+}
+
+// Each block records its rank in its thread-block cluster, so the host sees the cluster launch attribute took.
+extern "C" __global__ void tf_probe_cluster_rank(unsigned* out) {
+    unsigned rank = 0xFFFFFFFFu;  // no clusters before sm_90: the host skips this test there
+#if __CUDA_ARCH__ >= 900
+    asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(rank));
+#endif
+    if (threadIdx.x == 0) out[blockIdx.x] = rank;
+}
+
+// A dependent step for programmatic dependent launch: waits on the previous grid, then lets the next one start early.
+extern "C" __global__ void tf_probe_pdl_step(unsigned long long* counter, unsigned long long add) {
+#if __CUDA_ARCH__ >= 900
+    asm volatile("griddepcontrol.wait;" ::: "memory");
+#endif
+    *counter += add;
+#if __CUDA_ARCH__ >= 900
+    asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
+#endif
+}
+
+// glm-pdl-order: lets the next grid in at once, spins about `spins` clocks, then copies `src` over `dst`.
+extern "C" __global__ void tf_probe_pdl_slow_copy(const uint4* src, uint4* dst, long long n16, long long spins) {
+    glm_pdl::trigger();
+    const long long t0 = clock64();
+    while (clock64() - t0 < spins) {
+    }
+    for (long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x; i < n16; i += (long long)gridDim.x * blockDim.x)
+        dst[i] = src[i];
+}
+
+// glm-pdl-order's planted control: reads `in` before its wait (no GLM kernel may), keeps what thread 0 saw in `seen`.
+extern "C" __global__ void tf_probe_pdl_early_read(const unsigned* in, unsigned* out, unsigned* seen, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned v = i < n ? in[i] : 0u;
+    if (i == 0) seen[0] = v;
+    glm_pdl::wait();
+    if (i < n) out[i] = v * 2u + 1u;
+}
+
+// glm-pdl-order: the same read after glm_pdl::enter(), as every GLM kernel opens.
+extern "C" __global__ void tf_probe_pdl_enter_read(const unsigned* in, unsigned* out, int n) {
+    glm_pdl::enter();
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = in[i] * 2u + 1u;
+}
