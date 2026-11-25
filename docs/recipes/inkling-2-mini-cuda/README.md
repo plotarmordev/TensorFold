@@ -88,36 +88,40 @@ but their future results are not evidence for this card's bar.
 
 ## K/V pages by TMA bulk copies
 
-`kv-pages.sh`, job `top-c14c8b8357c6` at `6b6a342e8`: attention stages each 64-key K/V page into shared memory with
+`kv-pages.sh`, job `top-60037639894e` at `62718958f`: attention stages each 64-key K/V page into shared memory with
 `cp.async.bulk` on sm_90+; the control is the same tree built with `TF_INK2_KV_LOADS=1` (the per-thread loads).
 The attention contract passed on both builds. At 64 streams (64 distinct prompts, greedy, 128 tokens, medians of 3),
 all 192 replies per arm and context were byte-identical across control, candidate, control (576 replies per context).
 
 | Context (prompt) | Arm | Achieved K/V, GB/s | 64-stream decode, tok/s | End to end, tok/s |
 |---|---|---:|---:|---:|
-| 1K (858) | control | 24 | 132.6 | 132.5 |
-| 1K (858) | candidate | 24 | 130.5 | 130.3 |
-| 1K (858) | control | 24 | 132.9 | 132.7 |
+| 1K (858) | control | 24 | 133.5 | 133.3 |
+| 1K (858) | candidate | 24 | 131.6 | 131.4 |
+| 1K (858) | control | 24 | 133.3 | 133.1 |
 | 8K (7,814) | control | 16 | 38.2 | 22.5 |
 | 8K (7,814) | candidate | 18 | 41.5 | 22.2 |
 | 8K (7,814) | control | 16 | 38.1 | 22.4 |
 
-The bulk copies are output-neutral on the measured 64-stream replies, but 1K decode was 1.6–1.8% slower than
-the controls; 8K decode was 8.6–8.9% faster while end-to-end was 0.9–1.3% slower. Achieved K/V is derived from the
-cache layout and the decode rate, not read from a counter. Its 16–24 GB/s is below the GB10's 273 GB/s peak;
-this estimate alone does not identify the decode bottleneck.
+The bulk copies are output-neutral on the measured 64-stream replies (the contract's 68 served forms were also
+byte-identical between loaders), but 1K decode was 1.3–1.4% slower than the controls; 8K decode was 8.6–8.9% faster
+while end-to-end was 0.9–1.3% slower. Achieved K/V is derived from the cache layout and the decode rate, not read
+from a counter. Its 16–24 GB/s is below the GB10's 273 GB/s peak; this estimate alone does not identify the decode
+bottleneck.
 
-The Desk's Strata v0.2.19 GB10 receipt (card 247) measured both packs on BOTTOM's GB10 — the same chip, a different
-machine — under two unmatched workloads:
+The Desk's Strata v0.2.19 GB10 receipt (card 247) measured both packs on this same GB10 (TOP, `top-235245577b2a`)
+under Strata's own `--bench`, and earlier on BOTTOM's GB10 (same chip, different machine) under two unmatched
+workloads:
 
 | 64 streams, total tok/s (median of 3) | Strata SQ-20 | Strata SQ-10 |
 |---|---:|---:|
-| Strata's own `--bench`, decode only (`bottom-c5e4253968cb`) | 332.1 | 442.8 |
-| HTTP end to end, distinct prompts (`bottom-8e4de9ca491c` / `bottom-93a2de938e6e`) | 180.8 | 240.7 |
+| Strata's own `--bench`, decode only, on TOP (`top-235245577b2a`) | 321.0 | 436.7 |
+| Strata's own `--bench`, decode only, on BOTTOM (`bottom-c5e4253968cb`) | 332.1 | 442.8 |
+| HTTP end to end, distinct prompts, on BOTTOM (`bottom-8e4de9ca491c` / `bottom-93a2de938e6e`) | 180.8 | 240.7 |
 
-Neither row matches this receipt's workload: the `--bench` row decodes 32 tokens over distinct 64-id synthetic
-prompts; the HTTP rows use 21–47-token chat prompts and their replies came back mostly empty (Strata's server drops
-the thinking span), so tokens were counted but no usable answer text was served. This receipt's 130.5–132.9 (1K)
-and 38.1–41.5 (8K) tok/s decode 128 greedy tokens over 858/7,814-token prompts on TOP. The published GB10 rows
-(SQ-20 1,145.1, SQ-10 805.8) did not reproduce — the Desk's own-bench figures are 29%/55% of them — and remain
-unmatched. No matched Strata throughput claim follows; Strata on this GB10 has no measured SQ-20 row on TOP itself.
+No row matches this receipt's workload: the `--bench` rows decode 32 tokens over distinct 64-id synthetic prompts;
+the HTTP rows use 21–47-token chat prompts and their replies came back mostly empty (Strata's server drops the
+thinking span), so tokens were counted but no usable answer text was served. This receipt's 130.5–132.9 (1K) and
+38.1–41.5 (8K) tok/s decode 128 greedy tokens over 858/7,814-token prompts on TOP, slower than Strata's same-machine
+own-bench 321.0/436.7 but under a heavier, byte-verified workload. The published GB10 rows (SQ-20 1,145.1, SQ-10
+805.8) did not reproduce — the Desk's TOP own-bench figures are 28%/54% of them — and remain unmatched. No matched
+Strata throughput claim follows.
