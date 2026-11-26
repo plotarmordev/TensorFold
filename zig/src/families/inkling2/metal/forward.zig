@@ -38,6 +38,9 @@ pub fn finalPlan(rows: usize, all: bool, taps: bool) FinalPlan {
     };
 }
 
+/// Narrow prompts keep the ordered projection path; wide tiles amortize tensor-unit setup.
+const min_unit_rows: usize = 64;
+
 const RArgs = extern struct { count: u32, boundary: u32 = 0 };
 const NormArgs = extern struct { rows: u32, width: u32, heads: u32 = 0, bits: u32 = 0, group: u32 = 0, eps: f32 };
 pub const DenseArgs = extern struct { rows: u32, n: u32, k: u32, ldy: u32 };
@@ -142,7 +145,7 @@ pub fn encodeDense(comptime Encoder: type, m: anytype, e: Encoder, weight: ck.Te
 /// On M5, multi-row prompt projections use tensor units; all other shapes keep upstream's existing paths.
 fn project(m: *const Model, e: mtl.ComputeEncoder, weight: ck.Tensor, input: Ref, out: Ref, rows: usize) !void {
     const k = weight.shape[weight.rank - 1];
-    if (m.experts.units != null and rows > state.window_rows and (k == 2304 or k == 3072))
+    if (m.experts.units != null and rows > min_unit_rows and (k == 2304 or k == 3072))
         return experts.denseUnits(&m.experts, e, x(input), x(r(weight)), x(out), @intCast(rows), @intCast(weight.shape[weight.rank - 2]), @intCast(k));
     if (m.dense_mma) |mma| {
         const n: u32 = @intCast(weight.shape[weight.rank - 2]);
@@ -283,7 +286,7 @@ fn routedExperts(m: *const Model, e: mtl.ComputeEncoder, s: *state.Scratch, laye
     const gu_call = experts.Call{ .rows = @intCast(rows), .k = state.hidden, .n = state.intermediate, .format = precision };
     const down_call = experts.Call{ .rows = @intCast(rows), .k = state.intermediate, .n = state.hidden, .format = precision };
     // Tensor-unit expert reductions change greedy choices at small widths; keep ordered sums there.
-    if (m.experts.units != null and rows > 32) {
+    if (m.experts.units != null and rows > min_unit_rows) {
         const nv = precision == .nvfp4;
         const gu_globals: ?experts.Globals = if (nv) .{ .amax = x(r(w.gu.amax.?)), .denominator = x(r(w.gu.denominator.?)) } else null;
         const down_globals: ?experts.Globals = if (nv) .{ .amax = x(r(w.down.amax.?)), .denominator = x(r(w.down.denominator.?)) } else null;
@@ -436,7 +439,7 @@ pub fn runShared(m: *const Model, s: *state.Scratch, segments: []const Segment, 
     norm(m, e, at(s.mlp_ar, 0), m.weights.norm, at(s.mlp_normed, 0), final.work_rows);
     if (options.taps) |to| captureTap(m, e, at(s.mlp_normed, 0), to, final.capture_rows, 3);
     const logits = if (options.all) at(s.logits_all, 0) else at(segments[0].cache.logits, 0);
-    if (m.experts.units != null)
+    if (m.experts.units != null and final.logits_rows > min_unit_rows)
         try experts.logitsUnits(&m.experts, e, x(at(s.mlp_normed, final.logits_row * state.hidden * 2)), x(r(m.weights.unembed)), x(logits), @intCast(final.logits_rows), m.config.text.unpadded_vocab)
     else
         glue.logits(&m.glue, e, at(s.mlp_normed, final.logits_row * state.hidden * 2), r(m.weights.unembed), logits, @intCast(final.logits_rows), m.config.text.unpadded_vocab);

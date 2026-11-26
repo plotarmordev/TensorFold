@@ -168,9 +168,15 @@ pub const Probe = struct {
             .copy_f32 => {},
         }
         if (fill == .nonfinite) self.f[0][if (self.kind == .copy_bf16 and shape.k == 3) 2 * p.hidden else 0] = std.math.nan(f32);
-        self.refs[0] = try self.input(self.f[0], self.kind == .copy_bf16 or self.kind == .widen or self.kind == .attention_partial or self.kind == .capture_tap);
-        // Production widens into its own FP32 input; every invocation reads and replaces only t[i].
-        if (self.kind == .mlp_partial) self.wide = self.refs[0];
+        if (self.kind == .mlp_partial) {
+            // The widened t is mutable scratch, not an immutable contract input.
+            const original = std.mem.sliceAsBytes(self.f[0]);
+            self.refs[0] = try self.rig.scratch(original.len);
+            @memcpy(self.rig.bytes(self.refs[0], original.len), original);
+            self.wide = self.refs[0];
+        } else {
+            self.refs[0] = try self.input(self.f[0], self.kind == .copy_bf16 or self.kind == .widen or self.kind == .attention_partial or self.kind == .capture_tap);
+        }
         const elem: c.Elem = switch (self.kind) {
             .copy_bf16, .mlp_partial, .capture_tap => .bf16,
             .copy_f32, .widen, .attention_partial => .f32,
@@ -183,7 +189,12 @@ pub const Probe = struct {
         return true;
     }
 
+    /// Each contract repeat starts with the same pre-convolution t, even though widening replaces it in place.
     pub fn run(self: *Probe) !void {
+        if (self.kind == .mlp_partial) {
+            const original = std.mem.sliceAsBytes(self.f[0]);
+            @memcpy(self.rig.bytes(self.refs[0], original.len), original);
+        }
         const pass = self.rig.begin();
         const e = pass.e;
         e.setPipeline(self.pipe);
